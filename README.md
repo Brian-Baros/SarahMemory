@@ -3,7 +3,6 @@
 **Release Date:** December 05, 2025  
 **Author:** Brian Lee Baros  
 **License:** © 2025 Brian Lee Baros. All Rights Reserved.
-
 ---
 
 ## Overview
@@ -38,7 +37,82 @@ SarahMemory/
 ```bash
 python SarahMemoryMain.py
 ```
+Launching the Application & Developer Operational Instructions
 
+Initial Launch
+---------------
+Before running SarahMemory for regular use, the system must generate its internal directory structure and datasets.
+
+Run the following:
+python SarahMemoryMain.py
+
+On the first execution, the program will initialize required folders and system paths.
+It will then exit automatically once the structure is created.
+
+
+Dataset Initialization
+-----------------------
+Next, generate the default SarahMemory databases:
+
+python SarahMemoryDBCreate.py
+
+This script creates approximately 10 core databases and populates them with baseline values.
+Once complete, launch the program again:
+
+python SarahMemoryMain.py
+
+Optional Performance Enhancements & Personalization Tools
+----------------------------------------------------------
+The following components are optional. They are not required for normal operation but can improve performance and personalization.
+
+Optional: Install Additional Language Models / Object Models
+------------------------------------------------------------
+Run the model setup utility:
+
+python SarahMemoryLLM.py
+
+This tool allows you to:
+- Install 3rd-party language models
+- Install additional sentence-transformers
+- Install object-detection and vision models
+
+Model usage preferences can be configured in:
+SarahMemoryGlobals.py
+
+Advanced Personalization (Optional)
+-----------------------------------
+These tools enable deeper system integration and dataset expansion. Intended for advanced users.
+
+Step 1 — System Indexing
+Run:
+python SarahMemorySystemIndexer.py
+
+This tool indexes selected parts of your system, including:
+- Application paths
+- System data
+- Windows Registry entries
+- Custom folders and documents
+
+Indexing assists SarahMemory’s AI-Agent with automation and voice-triggered commands.
+
+Step 2 — System Learning
+Run:
+python SarahMemoryLearn.py
+
+This script processes the indexed dataset and integrates selected information into the databases
+created earlier via SarahMemoryDBCreate.py.
+
+Advanced Customization (Expert Users)
+--------------------------------------
+As of version 7.7.5, the configuration menu inside SarahMemoryGUI.py is not finalized.
+
+You may run it:
+python SarahMemoryGUI.py
+
+However, settings cannot yet be reliably saved from the GUI. I will work on this in Version 8.0.0 
+
+Advanced configuration must be performed manually in:
+SarahMemoryGlobals.py
 ---
 
 ## License
