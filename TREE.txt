@@ -1,0 +1,186 @@
+|   .env.example
+|   .gitignore
+|   Donate_Now_QR-code.jpg
+|   icon.ico
+|   LICENSE
+|   README.md
+|   requirements.txt
+|   SarahMemory-local_api_server.py
+|   SarahMemoryAdaptive.py
+|   SarahMemoryADDONLCHR.py
+|   SarahMemoryAdvCU.py
+|   SarahMemoryAiFunctions.py
+|   SarahMemoryAPI.py
+|   SarahMemoryAvatar.py
+|   SarahMemoryAvatarPanel.py
+|   SarahMemoryBrowser.py
+|   SarahMemoryCleanup.py
+|   SarahMemoryCleanupDaily.py
+|   SarahMemoryCognitiveServices.py
+|   SarahMemoryCompare.py
+|   SarahMemoryCryptoGenesis.py
+|   SarahMemoryDatabase.py
+|   SarahMemoryDBCreate.py
+|   SarahMemoryDiagnostics.py
+|   SarahMemoryDL.py
+|   SarahMemoryEncryption.py
+|   SarahMemoryExpressOut.py
+|   SarahMemoryFacialRecognition.py
+|   SarahMemoryFilesystem.py
+|   SarahMemoryGlobals.py
+|   SarahMemoryGUI.py
+|   SarahMemoryHi.py
+|   SarahMemoryInitialization.py
+|   SarahMemoryIntegration.py
+|   SarahMemoryLedger.py
+|   SarahMemoryLLM.py
+|   SarahMemoryMain.py
+|   SarahMemoryMigrations.py
+|   SarahMemoryNetwork.py
+|   SarahMemoryOptimization.py
+|   SarahMemoryPersonality.py
+|   SarahMemoryReminder.py
+|   SarahMemoryReply.py
+|   SarahMemoryResearch.py
+|   SarahMemorySi.py
+|   SarahMemorySOBJE.py
+|   SarahMemorySoftwareResearch.py
+|   SarahMemoryStartup.py
+|   SarahMemorySynapes.py
+|   SarahMemorySync.py
+|   SarahMemorySystemIndexer.py
+|   SarahMemorySystemLearn.py
+|   SarahMemoryUpdater.py
+|   SarahMemoryVault.py
+|   SarahMemoryVoice.py
+|   SarahMemoryWebSYM.py
+|   SarahMemory_Developer_Instructions.txt
+|   SarahWalletVisualizer.py
+|   SOFTDEV0_LLC_Logo.png
+|   The_SarahMemory_Project.jpeg
+|   TREE.txt
+|   UnifiedAvatarController.py
+|   
++---api
+|   |   launch_local_server.bat
+|   |   
+|   \---server
+|           app.py
+|           
++---data
+|   +---addons
+|   |   \---SarahCanvasStudio
+|   |       |   SarahCanvas.py
+|   |       |   SarahCanvas.py_launch.log
+|   |       |   VideoEditorCore.py
+|   |       |   VideoEditorCore.py_launch.log
+|   |       |   
+|   |       \---data
+|   |           +---canvas
+|   |           |       ai_art_20250612_150655.png
+|   |           |       
+|   |           \---video_output
+|   +---mods
+|   |   \---themes
+|   |           Dark_Theme.css
+|   |           HAL2000_Theme.css
+|   |           Light_Theme.css
+|   |           Matrix_Theme.css
+|   |           Skynet_Theme.css
+|   |           Tron.css
+|   |           Vibrant_Theme.css
+|   |           
+|   +---settings
+|   |       contacts.json
+|   |       settings.json
+|   |       
+|   +---sync
+|   |       SarahBioSyncCore.py
+|   |       what_is_this.txt
+|   |       
+|   +---ui
+|   |       app.js
+|   |       index.html
+|   |       styles.css
+|   |       
+|   \---vault
+|           readme.txt
+|           
++---documents
+|   |   icon.ico
+|   |   LICENSE
+|   |   README-1ST.txt
+|   |   The SarahMemory v6.5 Project - Technical Guide.docx
+|   |   The SarahMemory v7.7.5-8_AiOS Project Plan.docx
+|   |   What Makes SarahMemory different.docx
+|   |   
+|   \---FlowCharts
+|           01_Bootup_Sequence.md
+|           02_GUI_Interface.md
+|           03_Agent_Task_Execution.md
+|           04_Left_Hemisphere.md
+|           05_Reply_Compare.md
+|           06_Right_Hemisphere.md
+|           07_Avatar_Pipeline.md
+|           08_Flags_Matrix.md
+|           09_Network.md
+|           10_Module_Interaction_Graph.md
+|           11_Flags_Interaction.md
+|           A1_GPT5_Repair_Prompt.txt
+|           A2_Mesh_Whitepaper_Draft.md
+|           mermaid flowchart v773.txt
+|           
++---mobile
+|   |   build instructions.txt
+|   |   buildozer.spec
+|   |   icon.png
+|   |   main.py
+|   |   sarahmemory.kv
+|   |   SarahMemoryMobileMain.py
+|   |   SarahMemoryMobile[app].ini
+|   |   
+|   +---contacts
+|   |   \---images
+|   \---exports
+\---resources
+    +---avatars
+    |   |   morph_targets.json
+    |   |   
+    |   +---expressions
+    |   |       blush.glb
+    |   |       smile.glb
+    |   |       wink.glb
+    |   |       
+    |   +---jpg
+    |   |       avatar.jpg
+    |   |       
+    |   +---models
+    |   |       base_female.glb
+    |   |       
+    |   +---shaders
+    |   |       skin_firm.shader
+    |   |       skin_wet.shader
+    |   |       
+    |   \---skins
+    |           clothing_casual.glb
+    |           clothing_suit.glb
+    |           
+    +---sound
+    |   |   LyricsToSong.py
+    |   |   MusicGenerator.py
+    |   |   
+    |   +---effects
+    |   |       reverb.dll
+    |   |       
+    |   \---instruments
+    +---tools
+    |       AutoRecoveryDaemon.py
+    |       diagnostic_runner.py
+    |       GPUVerifier.py
+    |       SarahMemorySetup.bat
+    |       SarahMemoryStartup.py
+    |       SarahVideoCore.py
+    |       
+    \---voices
+            KateAudreyMix.vcf
+            

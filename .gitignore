@@ -1,0 +1,130 @@
+# ============================================
+# SarahMemory Project - .gitignore
+# Target: Local Windows + Linux + Mobile + Cloud client
+# ============================================
+
+# --------------------------------------------
+# Python bytecode / cache
+# --------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+
+# --------------------------------------------
+# Virtual environments
+# --------------------------------------------
+venv/
+.env/
+.env.bak
+*.venv/
+
+# --------------------------------------------
+# OS / editor junk
+# --------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --------------------------------------------
+# Logs / temp runtime files
+# --------------------------------------------
+*.log
+*.tmp
+*.bak
+
+# Auto-generated addon logs
+data/addons/SarahCanvasStudio/*_launch.log
+
+# --------------------------------------------
+# Databases / local runtime data
+# (keep databases out of Git – they are generated at runtime)
+# --------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+
+# --------------------------------------------
+# Secrets / real environment configs
+# (example file .env.example IS tracked)
+# --------------------------------------------
+.env
+.env.*
+!/.env.example
+
+# --------------------------------------------
+# Build / dist artifacts (Python, Kivy, etc.)
+# --------------------------------------------
+build/
+dist/
+.eggs/
+*.egg-info/
+*.spec
+
+# Kivy / Buildozer artifacts for mobile app
+.buildozer/
+.mobile_build/
+mobile/bin/
+mobile/.gradle/
+mobile/.idea/
+mobile/__pycache__/
+
+# --------------------------------------------
+# Data outputs generated at runtime
+# (keep themes, UI, and settings, but ignore heavy outputs)
+# --------------------------------------------
+
+# Canvas / media outputs created by SarahCanvasStudio
+data/addons/SarahCanvasStudio/data/canvas/
+data/addons/SarahCanvasStudio/data/video_output/
+
+# Sync scratch / temporary exports (keep core scripts)
+data/sync/*.tmp
+data/sync/*.log
+
+# Vault runtime data (key + encrypted blob created locally)
+# NOTE: These are user-specific and must NOT be committed.
+data/vault/vault.key
+data/vault/vault.dat
+
+# --------------------------------------------
+# Resources - keep structure, ignore potential large/generated content
+# --------------------------------------------
+# We KEEP:
+#   resources/avatars (models, shaders, skins)
+#   resources/sound (scripts, config)
+#   resources/tools (core tools)
+#   resources/voices (voice config)
+#
+# If in the future large generated binary blobs appear, add them explicitly:
+# resources/avatars/**/renders/
+# resources/sound/exports/
+# etc.
+
+# --------------------------------------------
+# Documents / project docs
+# --------------------------------------------
+# We KEEP all docs, plans, and flowcharts.
+#   documents/
+#   documents/FlowCharts/
+#   TREE.txt
+#
+# DO NOT ignore *.txt or *.md globally – they are part of documentation.
+
+# --------------------------------------------
+# API / server deployment junk (if any)
+# --------------------------------------------
+api/server/__pycache__/
+api/server/*.pyc
+
+# --------------------------------------------
+# Safety note:
+# TREE.txt is intentionally tracked as part of documentation.
+# Do NOT add any patterns that ignore it.
+# --------------------------------------------

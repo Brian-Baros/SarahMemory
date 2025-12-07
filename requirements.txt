@@ -1,0 +1,225 @@
+# ==========================================================
+# SarahMemory Project — requirements.txt (v8.0.0)
+#--==The SarahMemory Project==--
+#File: requirements.txt
+#Part of the SarahMemory Companion AI-bot Platform
+#Version: v8.0.0
+#Date: 2025-12-05
+#Time: 10:11:54
+#Author: © 2025 Brian Lee Baros. All Rights Reserved.
+#www.linkedin.com/in/brian-baros-29962a176
+#https://www.facebook.com/bbaros
+#brian.baros@sarahmemory.com
+#'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+#https://www.sarahmemory.com
+#https://api.sarahmemory.com
+#https://ai.sarahmemory.com
+#===============================================================================
+# Target Systems:
+#   • Windows 10/11 (full local client)
+#   • Linux (headless mode / PythonAnywhere cloud)
+#   • Python 3.10 – 3.13 (spaCy is gated for ≤3.12 only)
+#
+# PURPOSE:
+#   This is the ONLY master requirements file for the entire
+#   SarahMemory Project. Anyone who clones the GitHub repo
+#   installs this file to run the **local SarahMemory Client**.
+#
+#   By default, the local client connects to the OFFICIAL
+#   SarahMemory Cloud backend (PythonAnywhere). Users DO NOT need
+#   to create their own cloud version unless they intentionally
+#   choose to set up their own backend, which requires deep
+#   configuration.
+#
+#   This file includes:
+#   • All required AI/ML, CV, Audio, GUI, Web, Crypto, Research,
+#     and Automation dependencies.
+#   • Optional Windows-only sections protected with markers.
+#   • Optional heavy 3D DCC tools (Blender) commented out.
+#
+#   This file lists ONLY top-level dependencies.
+#   Pip will install transitive deps automatically.
+#
+# INSTALLATION:
+#   python -m venv venv
+#   venv\Scripts\activate        # Windows
+#   source venv/bin/activate     # Linux/macOS
+#   pip install -r requirements.txt
+# ==========================================================
+
+
+# ----------------------------------------------------------
+# CORE AI & MACHINE LEARNING STACK
+# ----------------------------------------------------------
+# These libraries power embeddings, model inference, memory
+# search, transformers, and local CPU/GPU operations.
+sentence-transformers>=2.6,<3.0
+transformers>=4.46,<5.0
+torch>=2.3,<3.0
+faiss-cpu>=1.7.4,<1.13
+scikit-learn>=1.4,<1.8
+numpy>=1.26,<2.4
+huggingface-hub>=0.32,<2.0
+
+
+# ----------------------------------------------------------
+# VISION / AUDIO / INTERACTION STACK
+# ----------------------------------------------------------
+# Handles webcam feeds, object detection, audio I/O, and
+# real-time interactions used by SarahMemoryVoice & GUI tools.
+onnxruntime>=1.18,<2.0
+opencv-python>=4.8,<5.0
+Pillow>=10.2,<12.1
+pygame>=2.5,<2.7
+SpeechRecognition>=3.10,<3.15
+pyttsx3>=2.9,<3.1
+
+# Windows-only microphone backend requiring PortAudio.
+pyaudio>=0.2.14 ; platform_system == "Windows"
+
+# YOLOv8 object detection (avatars, environment mapping, OCR assist)
+ultralytics>=8.0,<9.0
+
+# Additional audio tools
+noisereduce>=3.0,<4.0
+pydub>=0.25,<1.0
+webrtcvad>=2.0.10
+
+
+# ----------------------------------------------------------
+# GUI / DESKTOP WEBVIEW (Local Frontend Shell)
+# ----------------------------------------------------------
+# Used by SarahMemoryGUI.py for the Windows-native graphical UI.
+PyQt5>=5.15.11
+PyQt5-Qt5>=5.15.2
+PyQt5_sip>=12.17.0
+
+# pywebview allows a full HTML/JS UI inside a desktop window.
+pywebview==6.0
+tkhtmlview>=0.2.0
+tkinterweb>=3.23.10
+
+
+# ----------------------------------------------------------
+# DOCUMENT PARSING / OCR & TEXT EXTRACTORS
+# ----------------------------------------------------------
+# Supports PDF, DOCX, YAML configs and advanced regex pipelines.
+mammoth>=1.9,<2.0
+PyPDF2>=3.0,<4.0
+python-docx>=1.1,<1.3
+PyYAML>=6.0,<7.0
+regex>=2024.11.6
+
+
+# ----------------------------------------------------------
+# WEB / API / RESEARCH / NLP LAYERS
+# ----------------------------------------------------------
+# Flask + CORS power both local and cloud API endpoints.
+flask>=2.2,<3.2
+flask_cors>=3.0,<4.0
+fastapi>=0.110,<0.121
+
+# HTTP clients used by SarahMemoryResearch and internal API calls.
+requests>=2.31,<3.0
+aiohttp>=3.9,<3.14
+httpx>=0.25,<0.29
+
+# OpenAI / LLM integrations (cloud + optional local use).
+openai>=1.0,<3.0
+anthropic==0.18.1
+
+# Research tools, language ID, scraping, tokenizers.
+beautifulsoup4>=4.12,<5.0
+langdetect>=1.0,<2.0
+nltk>=3.8,<3.10
+
+# spaCy does NOT support Python 3.13, so restrict to older versions.
+spacy>=3.6,<3.9 ; python_version < "3.13"
+
+# Workflow orchestration for LLM chains.
+langchain>=0.2,<0.5
+
+# Model validation (used across API modules)
+pydantic>=2.4,<2.13
+selenium google-generativeai webdriver-manager
+
+# ----------------------------------------------------------
+# DATA / SYSTEM UTILITIES
+# ----------------------------------------------------------
+# Critical for scheduling, system diagnostics, file syncing,
+# DB access, .env configuration, and clipboard (for automation).
+APScheduler>=3.10,<3.12
+dropbox>=12.0,<13.0
+paramiko>=3.4,<4.0
+psutil>=5.9,<6.0
+scipy>=1.10,<1.17
+SQLAlchemy>=2.0,<2.1
+PyMySQL>=1.1,<1.2
+python-dotenv>=1.0,<2.0
+pyperclip>=1.9.0
+mysql-connector-python
+
+
+# ----------------------------------------------------------
+# BLOCKCHAIN / CRYPTO LAYER
+# ----------------------------------------------------------
+# Used for wallet operations, chain messaging, identity,
+# signing, encryption, and secure communication.
+#cryptography>=42.0,<47.0
+cryptography==41.0.7
+pycryptodome>=3.19,<3.24
+eth-account>=0.9,<0.14
+web3>=6.0,<8.0
+PyJWT==2.8.0 
+# pyjwt>=2.8,<3.0 
+bcrypt==4.1.2
+
+
+# ----------------------------------------------------------
+# WINDOWS-ONLY DESKTOP AUTOMATION
+# ----------------------------------------------------------
+# Controls system windows, mouse, keyboard automation and
+# is required for SarahMemoryAgent (macro + game automation).
+pyautogui>=0.9.54 ; platform_system == "Windows"
+pygetwindow>=0.0.9 ; platform_system == "Windows"
+pyscreeze>=1.0.1 ; platform_system == "Windows"
+mouseinfo>=0.1.3 ; platform_system == "Windows"
+pywin32>=311 ; platform_system == "Windows"
+comtypes>=1.2.0 ; platform_system == "Windows"
+
+
+# ----------------------------------------------------------
+# SCRAPING / SPIDERBOTS (Research Pipeline)
+# ----------------------------------------------------------
+# Scrapy 2.12+ officially supports Python 3.13.
+scrapy>=2.12,<3.0
+
+
+# ----------------------------------------------------------
+# UTILITY / LOGGING / COMPRESSION
+# ----------------------------------------------------------
+tqdm>=4.66,<5.0
+rich>=13.7,<14.0
+orjson>=3.9,<3.12
+zstandard>=0.22,<0.26
+matplotlib>=3.8,<3.11
+pandas>=2.1,<2.3
+
+
+# ----------------------------------------------------------
+# DEVELOPMENT / BUILD TOOLS
+# ----------------------------------------------------------
+# setuptools required by several packages to build wheels.
+setuptools>=65.5.0
+pip>=24.3
+virtualenv>=20.30.0
+
+
+# ----------------------------------------------------------
+# OPTIONAL 3D / DCC (COMMENTED - POWER USERS ONLY)
+# These libraries are extremely heavy and WILL fail on most
+# user systems unless Blender SDK is installed.
+# ----------------------------------------------------------
+# bpy>=4.4.0               # Blender Python integration
+# blender>=1.4             # Blender automation helper
+trimesh>=4.6,<4.10         # 3D geometry tools (lightweight)
