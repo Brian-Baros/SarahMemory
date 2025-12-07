@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width,initial-scale=1'/>
+  <title>SarahMemory — Web UI</title>
+  <link rel='stylesheet' href='styles.css'/>
+  <link id='themeLink' rel='stylesheet' href='unified-theme.css'/>
+</head>
+<body>
+  <div id='app'>
+    <aside id='left-rail' class='rail'>
+      <section class='rail-section'>
+        <header>
+          <h2>Chats</h2>
+          <button class='collapse' data-target='left-rail' title='Collapse/Expand'>☰</button>
+        </header>
+        <div class='calendar'>
+          <label for='thread-date' class='label'>Search Chats by date</label>
+          <input id='thread-date' type='date' class='full'/>
+        </div>
+        <div class='thread-list' id='thread-list'></div>
+      </section>
+    </aside>
+
+    <section id='center'>
+      <div id='topbar'>
+        <div class='brand'>SarahMemory</div>
+        <div class='spacer'></div>
+        <span id='userInfo' class='user-info' style='display:none;'></span>
+        <button id='loginBtn' class='icon' title='Login'>Login</button>
+        <button id='settingsBtn' title='Settings' class='icon'>⚙</button>
+      </div>
+
+      <div id='chat'>
+        <div id='messages' aria-label='Conversation' role='log'></div>
+        <form id='composer' autocomplete='off'>
+          <button type='button' id='mic' class='icon mic' title='Voice input'>🎤</button>
+          <input id='prompt' type='text' placeholder='Ask anything…' autocomplete='off'/>
+          <label class='file'>
+            <input id='file' type='file' multiple/>
+            <span id='fileChip' class='chip'>Choose files</span>
+          </label>
+          <button id='send' type='submit'>Send</button>
+        </form>
+      </div>
+    </section>
+
+    <aside id='right-rail' class='rail'>
+      <section class='rail-section'>
+        <header>
+          <h2>Preview</h2>
+          <button class='collapse' data-target='right-rail' title='Collapse/Expand'>☰</button>
+        </header>
+        <video id='webcam' autoplay playsinline muted></video>
+        <video id='remote' autoplay playsinline hidden></video>
+        <img id='snapshot' alt='desktop capture'>
+        <div class='row video-controls'>
+          <button id='webcamToggle' class='icon' title='Toggle webcam'>Webcam: On</button>
+          <button id='micToggle' class='icon' title='Mute/unmute microphone'>Microphone: On</button>
+          <button id='voiceToggle' class='icon' title='Mute/unmute AI voice'>Voice: On</button>
+        </div>
+        <div id='stats'></div>
+      </section>
+
+      <section class='rail-section collapsed'>
+        <header>
+          <h2>Contacts</h2>
+          <button class='section-toggle' title='Collapse/Expand'>▾</button>
+        </header>
+<div class='section-body'>
+  <!-- Search -->
+  <div style="padding:.4rem .6rem;">
+    <input id="c-search" type="search" placeholder="Search contacts…" class="full"/>
+  </div>
+
+  <!-- Contacts list -->
+  <div id='contacts'></div>
+
+  <!-- Quick add / edit -->
+  <form id='new-contact' class='stack' autocomplete='off'>
+    <div class="row">
+      <input id='c-name' type='text' placeholder='Display name' />
+      <input id='c-address' type='text' placeholder='Address (user@host or id)' />
+    </div>
+    <div class="row">
+      <input id='c-phone' type='tel' placeholder='Phone (optional)' />
+      <input id='c-notes' type='text' placeholder='Notes (optional)' />
+    </div>
+    <div class="row">
+      <button id='c-save' class="btn" type='submit'>Add contact</button>
+      <button id='c-clear' class="btn" type='button'>Clear</button>
+      <span class="spacer"></span>
+      <button id='c-import' class="btn" type='button' title="Import contacts (JSON)">⤓</button>
+      <button id='c-export' class="btn" type='button' title="Export contacts (JSON)">⤒</button>
+    </div>
+  </form>
+
+  <!-- Detail panel -->
+  <div id="contact-detail" class="panel"></div>
+
+  <!-- Messages -->
+  <div class="subsection">
+    <h3>Messages</h3>
+    <div id="thread" class="thread-box" aria-live="polite"></div>
+    <form id="thread-composer" autocomplete="off">
+      <input id="thread-input" type="text" placeholder="Write a message…" />
+      <button class="btn" type="submit">Send</button>
+    </form>
+  </div>
+
+  <!-- Keypad -->
+  <div class="subsection">
+    <h3>Keypad</h3>
+    <div id="keypad" class="keypad">
+      <button data-tone="1">1</button>
+      <button data-tone="2">2</button>
+      <button data-tone="3">3</button>
+      <button data-tone="4">4</button>
+      <button data-tone="5">5</button>
+      <button data-tone="6">6</button>
+      <button data-tone="7">7</button>
+      <button data-tone="8">8</button>
+      <button data-tone="9">9</button>
+      <button data-tone="*">*</button>
+      <button data-tone="0">0</button>
+      <button data-tone="#">#</button>
+    </div>
+    <div class="dial-row">
+      <button id="btn-call" class="btn primary" type="button">Call</button>
+      <button id="btn-video" class="btn" type="button">Video</button>
+      <button id="btn-end" class="btn danger" type="button">End</button>
+    </div>
+    <div class="row" style="justify-content:center;gap:.6rem">
+      <label class="chip"><input id="call-mic" type="checkbox" checked/> Mic</label>
+      <label class="chip"><input id="call-cam" type="checkbox" checked/> Cam</label>
+      <label class="chip"><input id="call-spk" type="checkbox" checked/> Speaker</label>
+    </div>
+    <div id="call-status" class="muted" style="text-align:center;padding:.4rem">Idle</div>
+  </div>
+</div>
+</section>
+
+      <section class='rail-section collapsed'>
+        <header>
+          <h2>Reminders</h2>
+          <button class='section-toggle' title='Collapse/Expand'>▾</button>
+        </header>
+        <div class='section-body'>
+          <div id='reminders'></div>
+          <form id='new-reminder'>
+            <input id='rem-title' type='text' placeholder='Reminder title'/>
+            <input id='rem-when' type='datetime-local'/>
+            <input id='rem-note' type='text' placeholder='Note (optional)'/>
+            <button type='submit'>Add reminder</button>
+          </form>
+        </div>
+      </section>
+    </aside>
+  </div>
+
+  <div id='statusbar' class='statusbar'>
+    <div class='sb-left'>
+      <span class='mode'>MODE: <strong id='mode-text'>Any</strong></span>
+    </div>
+    <div class='sb-right'>
+      <span class='led local' id='led-local' title='Local'></span>
+      <span class='led web' id='led-web' title='Web'></span>
+      <span class='led api' id='led-api' title='API'></span>
+      <span class='led net' id='led-net' title='Network'></span>
+      <span id='status-text' class='status-text'>Ready</span>
+    </div>
+  </div>
+
+  <div id='settings' class='settings' hidden>
+    <header>
+      <h3>Settings</h3>
+      <button id='settingsClose' class='icon' title='Close'>✖</button>
+    </header>
+    <div class='group'>
+      <label><input id='optReply' type='checkbox'/> Show source badges</label>
+      <label><input id='optCompare' type='checkbox'/> Enable compare lines</label>
+      <label>Route
+        <select id='routeMode'>
+          <option>Any</option><option>Local</option><option>Web</option><option>API</option>
+        </select>
+      </label>
+    </div>
+    <div class='group'>
+      <label>Voice
+        <select id='voiceSelect'></select>
+      </label>
+      <label>Rate <input id='voiceRate' type='range' min='0.5' max='2' step='0.05' value='1'></label>
+      <label>Pitch <input id='voicePitch' type='range' min='0.5' max='2' step='0.05' value='1'></label>
+      <label>Volume <input id='voiceVol' type='range' min='0' max='1' step='0.05' value='1'></label>
+    </div>
+    <div class='group'>
+      <label>Theme
+        <select id='themeSelect'></select>
+      </label>
+      <button id='openAvatar' class='icon'>Avatar Panel</button>
+    </div>
+  </div>
+
+  <script src='app.js'></script>
+
+  <!-- Login/Register Modal -->
+  <div id='authModal' class='modal' hidden>
+    <div class='modal-content'>
+      <div class='modal-header'>
+        <h2 id='authModalTitle'>Welcome to SarahMemory</h2>
+        <button id='authModalClose' class='icon' title='Close'>✖</button>
+      </div>
+
+      <!-- Registration Form -->
+      <form id='registerForm' class='auth-form' hidden>
+        <div class='form-group'>
+          <label>Email:</label>
+          <input type='email' id='regEmail' required />
+        </div>
+        <div class='form-group'>
+          <label>Display Name:</label>
+          <input type='text' id='regName' />
+        </div>
+        <div class='form-group'>
+          <label>Password:</label>
+          <input type='password' id='regPassword' required minlength='8' />
+        </div>
+        <div class='form-group'>
+          <label>PIN (4 digits):</label>
+          <input type='text' id='regPin' required pattern='[0-9]{4}' maxlength='4' />
+        </div>
+        <button type='submit' class='btn primary'>Register</button>
+        <p class='form-footer'>Already have an account? <a href='#' id='showLogin'>Sign in</a></p>
+      </form>
+
+      <!-- Login Form -->
+      <form id='loginForm' class='auth-form'>
+        <div class='form-group'>
+          <label>Email:</label>
+          <input type='email' id='loginEmail' required />
+        </div>
+        <div class='form-group'>
+          <label>Password:</label>
+          <input type='password' id='loginPassword' required />
+        </div>
+        <div class='form-group'>
+          <label>PIN:</label>
+          <input type='text' id='loginPin' required pattern='[0-9]{4}' maxlength='4' />
+        </div>
+        <button type='submit' class='btn primary'>Sign In</button>
+        <p class='form-footer'>Don't have an account? <a href='#' id='showRegister'>Register</a></p>
+      </form>
+
+      <!-- Email Verification Form -->
+      <form id='verifyForm' class='auth-form' hidden>
+        <p>Please enter the 6-digit code sent to your email:</p>
+        <div class='form-group'>
+          <input type='text' id='verifyCode' required pattern='[0-9]{6}' maxlength='6' placeholder='000000' />
+        </div>
+        <button type='submit' class='btn primary'>Verify</button>
+      </form>
+
+      <div id='authMessage' class='auth-message'></div>
+    </div>
+  </div>
+
+</body>
+</html>

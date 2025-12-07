@@ -1,0 +1,11 @@
+{
+    "api_mode": "Any",
+    "voice_profile": "Microsoft Hazel Desktop - English (Great Britain)",
+    "pitch": 1.2,
+    "bass": 1.3,
+    "treble": 1.2,
+    "avatar_file": "avatar.jpg",
+    "engine_selection": "Microsoft3DViewer",
+    "theme": "Light_Theme.css",
+    "speech_rate": "Normal"
+}

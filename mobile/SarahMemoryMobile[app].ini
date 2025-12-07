@@ -1,0 +1,17 @@
+[app]
+title = SarahMemory
+package.name = sarahmemory
+package.domain = com.sarahmemory
+source.dir = .
+source.include_exts = py,png,jpg,kv,txt
+version = 1.0.0
+requirements = python3,kivy,requests
+orientation = portrait
+fullscreen = 0
+android.api = 31
+android.minapi = 24
+android.archs = arm64-v8a, armeabi-v7a, x86_64
+android.permissions = INTERNET, RECORD_AUDIO, CAMERA
+
+[buildozer]
+log_level = 2

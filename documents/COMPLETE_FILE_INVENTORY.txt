@@ -1,0 +1,639 @@
+===================================================================================
+SARAHMEMORY PROJECT v7.7.5-8
+COMPLETE CORE PYTHON FILES INVENTORY
+===================================================================================
+
+Date: December 1, 2025
+Total Core Python Files: 52 (SarahMemory*.py modules)
+Total Project Python Files: 56 (including utilities)
+Total Lines of Code: 32,825+ lines
+Total Size: ~1.2 MB of Python code
+
+===================================================================================
+📋 CORE MODULE FILES (Alphabetical)
+===================================================================================
+
+----------------------------
+FILE: SarahMemory-local_api_server.py         
+SIZE: 2.7K       LINES:     65
+PURPOSE: === Optional Deep Utility/Ext Module Imports ===
+A lightweight, optional micro-HTTP server used only in certain development, debugging, or fallback scenarios.
+It provides minimal local REST endpoints that mimic the full SarahMemoryAPI behavior without
+requiring the entire server infrastructure.
+Used for:
+Local-only LLM testing
+Manual UI testing when pywebview bridge is unavailable
+Sandboxed developer mode
+Extension loaders and micro-service hooks
+
+----------------------------
+FILE: SarahMemoryADDONLCHR.py                 
+SIZE: 6.2K       LINES:    155
+PURPOSE: SarahMemoryADDONLCHR.py First Designed to allow additional Python Add-ons to be intergrated or opened during Orginal GUI development
+This is the plugin orchestration engine responsible for:
+Scanning the /addons/ directory
+Loading Python add-ons dynamically
+Handling safe-mode restrictions
+Registering add-on event hooks into the main SarahMemory pipeline
+Managing compatibility between versions
+This module allows SarahMemory to evolve through modular, pluggable components.
+
+----------------------------
+FILE: SarahMemoryAPI.py                       
+SIZE: 24K        LINES:    738
+PURPOSE: SarahMemoryAPI.py
+The primary REST API server powering both:
+The WebUI (ai.sarahmemory.com)
+Remote device connections (mobile companion & mesh peers)
+Provides:
+/send_message for LLM interactions
+Upload, file management, sync endpoints
+Authentication, device authorization
+Routing to SarahMemoryAiFunctions, LLM, and Compare engines
+Cloud/offline hybrid routing
+Supports multiple providers: OpenAI, Anthropic, Groq, Gemini, Local Models, and Ollama.
+
+----------------------------
+FILE: SarahMemoryAdaptive.py                  
+SIZE: 13K        LINES:    360
+PURPOSE: SarahMemoryAdaptive.py
+Adaptive Behavior Engine.
+This module learns user preferences, patterns, timing, and operational habits.
+Examples:
+Adapting reply style
+Adjusting verbosity
+Prioritizing certain tasks automatically
+Learning daily routines for reminders or automation
+Weighting emotional tone based on long-term behavior patterns
+Functions as the "personality auto-tuning layer" beneath SarahMemoryPersonality.py.
+
+----------------------------
+FILE: SarahMemoryAdvCU.py                     
+SIZE: 48K        LINES:   1326
+PURPOSE: SarahMemoryAdvCU.py , aka Advanced Context Unit, to determined  "intent" when orginally developed
+Advanced Computer Use module — one of the largest and most powerful files. 
+It handles:
+Windows automation
+App launching and management
+Process control
+System scripting
+Keyboard/mouse macros
+Game automation
+Screenshot/interaction tools
+Automation workflows
+Background macro learning
+This module is the key to SarahMemory acting like a full automation OS agent.
+
+----------------------------
+FILE: SarahMemoryAiFunctions.py               
+SIZE: 59K        LINES:   1606
+PURPOSE: SarahMemoryAiFunctions.py  - Now also acts as a built in Ai-Agent
+Small wrapper all modules can call; never throws.
+The central intelligence utilities used by every AI component.
+This module:
+Normalizes queries before sending to LLMs
+Performs safety checks
+Calls LLM providers
+Converts images/audio into LLM-compatible payloads
+Implements logic for multimodal reasoning
+Serves as the universal AI call wrapper
+This module never throws exceptions, ensuring system stability.
+
+----------------------------
+FILE: SarahMemoryAvatar.py                    
+SIZE: 17K        LINES:    383
+PURPOSE: SarahMemoryAvatar.py to work in conjuction with the SarahMemoryAvatarPanel.py and UnifiedAvatarController.py
+Controls the 2D/3D avatar rendering pipeline.
+Manages:
+Avatar posture
+Expressions
+Eye/mouth movement
+Animation sequences
+Reactive emotional visuals
+Avatar asset loading from RESOURCES_DIR
+Communicates heavily with GUI and AvatarPanel.
+
+----------------------------
+FILE: SarahMemoryAvatarPanel.py               
+SIZE: 7.7K       LINES:    217
+PURPOSE: SarahMemoryAvatarPanel.py ,relies also on the SarahMemoryAvatar.py,  and UnifiedAvatarController.py 
+This is ment to be a visual Panel, possibly even tranparent and become a multifunctional display window for displaying an Avatar,  
+displaying Imagines or Videos, and any type of multimedia in which may be asked by the user to the Ai, it may be used for Sound or other controls
+to interact with displayed media. 
+The GUI-side controller responsible for embedding and controlling the avatar within the interface.
+Handles:
+Avatar frame
+Animation timers
+Expression updates
+Rendering states
+User-triggered avatar actions
+The panel layer separates UI logic from avatar logic.
+
+----------------------------
+FILE: SarahMemoryBrowser.py                   
+SIZE: 27K        LINES:    706
+PURPOSE: SarahMemoryBrowser.py Description:
+Embedded in the GUI as a web browsing and information-gathering engine.
+Provides:
+Internal browser window
+Capture of screenshots and webpage text
+Search integration with SarahMemoryResearch
+Preview of local HTML files
+Future integration for web-based automation
+Supports browser segmentation for research workflows.
+
+----------------------------
+FILE: SarahMemoryCleanup.py                   
+SIZE: 7.3K       LINES:    199
+PURPOSE: SarahMemoryCleanup.py
+Performs major cleanup operations:
+Remove temp files
+Compact database
+Clean orphaned records
+Remove old logs
+Re-optimize datasets and embeddings
+Used manually or by daily maintenance.
+
+----------------------------
+FILE: SarahMemoryCleanupDaily.py              
+SIZE: 2.5K       LINES:     76
+PURPOSE: SarahMemoryCleanupDaily.py
+A scheduled daily task runner handling:
+Auto-cleaning logs
+Disk usage checks
+Dataset vacuuming
+Temporary file cleanup
+Lightweight system health checks
+Triggered from updater or startup sequence.
+
+----------------------------
+FILE: SarahMemoryCognitiveServices.py         
+SIZE: 9.5K       LINES:    234
+PURPOSE: SarahMemoryCognitiveServices.py Setup logging for Cognitive Services integration module
+Integrates third-party cognitive services (e.g., Microsoft, AWS Rekognition).
+Used for:
+OCR
+Audio analysis
+Face recognition fallback
+Document conversion pipelines
+Rarely invoked but critical for future interop features.
+
+----------------------------
+FILE: SarahMemoryCompare.py                   
+SIZE: 14K        LINES:    326
+PURPOSE: SarahMemoryCompare.py
+Compares multiple AI model responses to generate:
+Ranked answers
+Consensus reasoning
+Accuracy scoring
+Safety scoring
+Confidence analysis
+It is the “Left Hemisphere vs Right Hemisphere” arbitration engine.
+
+----------------------------
+FILE: SarahMemoryCryptoGenesis.py             
+SIZE: 4.3K       LINES:    142
+PURPOSE: SarahMemoryCryptoGenesis.py
+Prototype blockchain wallet / token structure.
+Handles:
+Local wallet generation
+Address creation
+Test token storage
+Future mesh token system
+Used in Phase D mesh economy.
+
+----------------------------
+FILE: SarahMemoryDBCreate.py                  
+SIZE: 36K        LINES:    645
+PURPOSE: SarahMemoryDBCreate.py
+Creates the entire SQLite3 database schema for SarahMemory.
+Defines:
+40+ tables (memory, embeddings, personality, reminders, tasks, logs, mesh, devices, etc.)
+Unique indices
+Constraints
+Schema versioning
+Critical for installation, migration, and upgrades.
+
+----------------------------
+FILE: SarahMemoryDL.py                        
+SIZE: 8.8K       LINES:    260
+PURPOSE: SarahMemoryDL.py
+Deep-learning layer interface:
+Embedding models
+Vectorization
+Semantic comparison
+Local ML model loading
+Optionally accelerated GPU logic
+Supports the memory embedding system.
+
+----------------------------
+FILE: SarahMemoryDatabase.py                  
+SIZE: 57K        LINES:   1498
+PURPOSE: SarahMemoryDatabase.py Setup logging for the database module
+The master SQL engine for the entire AiOS.
+Responsible for:
+CRUD operations
+Memory storage
+Log indexing
+Embeddings table management
+Bulk transactions
+Thread-safe connections
+Query optimization
+All other modules depend on it.
+
+----------------------------
+FILE: SarahMemoryDiagnostics.py               
+SIZE: 99K        LINES:   2511
+PURPOSE: SarahMemoryDiagnostics.py
+Full diagnostic suite.
+Runs system-wide tests including:
+File integrity
+Database integrity
+Network connectivity
+AI pipeline health
+Voice engine tests
+Sync system tests
+Phase A–D compatibility checks
+Generates text logs + system_logs.db entries.
+
+----------------------------
+FILE: SarahMemoryEncryption.py                
+SIZE: 11K        LINES:    265
+PURPOSE: SarahMemoryEncryption.py Setup logging for the encryption module
+Handles AES/RSA encryption for:
+Secure data
+Vault storage
+Mesh communications
+API key encryption
+File signing
+Forms the main cryptographic subsystem.
+
+----------------------------
+FILE: SarahMemoryExpressOut.py                
+SIZE: 7.5K       LINES:    174
+PURPOSE: SarahMemoryExpressOut.py
+Provides fast data export tools for:
+Clipboard
+Quick-share functions
+Saving to files
+Exporting memory or logs
+Used for rapid workflow automation.
+
+----------------------------
+FILE: SarahMemoryFacialRecognition.py         
+SIZE: 25K        LINES:    613
+PURPOSE: SarahMemoryFacialRecognition.py from SarahMemoryGlobals import run_async # Used in VSM module
+Face recognition + emotion detection engine.
+Handles:
+Real-time camera feeds
+Facial mesh extraction
+Emotional signal detection
+User identification
+Avatar influence signals
+Integrates with the Vision system.
+
+----------------------------
+FILE: SarahMemoryFilesystem.py                
+SIZE: 6.6K       LINES:    170
+PURPOSE: SarahMemoryFacialRecognition.py
+Central file I/O abstraction layer.
+Handles:
+Safe file reads/writes
+Directory operations
+Secure file moves
+Backup integrity checking
+Used by updater, sync, cleanup, and vault.
+
+----------------------------
+FILE: SarahMemoryGUI.py                       
+SIZE: 178K       LINES:   3965
+PURPOSE: SarahMemoryGUI.py
+The full desktop interface.
+Handles:
+Tabs
+Chat window
+Avatar window
+Contacts
+Voice tools
+Web browser frame
+System monitor
+File panel
+Settings panel
+Largest module in the entire system.
+
+----------------------------
+FILE: SarahMemoryGlobals.py                   
+SIZE: 87K        LINES:   195
+PURPOSE: SarahMemoryGlobals.py Orginally Designated to be the entire Configuration file .
+so every module can reason about the current runtime without duplicating logic.
+The beating heart of the entire platform.
+Defines:
+Global flags
+Runtime state
+Path management
+Directory tree
+Offline/online modes
+API keys
+Threading helpers
+Boot flags
+Environment routing
+All modules import this; nothing runs without it.
+
+----------------------------
+FILE: SarahMemoryHi.py                        
+SIZE: 6.7K       LINES:    188
+PURPOSE: SarahMemoryHi.py Orginally called "Hardware Information" 
+Setup logging for the system information module
+Hardware and system information interface.
+Provides:
+CPU/RAM info
+GPU details
+OS features
+Performance data
+Used by diagnostics, GUI, and optimization.
+
+----------------------------
+FILE: SarahMemoryInitialization.py            
+SIZE: 26K        LINES:    599
+PURPOSE: SarahMemoryInitialization.py
+Controls the boot process:
+Preflight checks
+Schema verification
+Loading major modules
+Running migration checks
+Vector embedding on boot
+Sync initialization
+This file decides what loads and when.
+
+----------------------------
+FILE: SarahMemoryIntegration.py               
+SIZE: 19K        LINES:    469
+PURPOSE: SarahMemoryIntegration.py
+Handles integrations with:
+FTP/SFTP backup
+Remote storage
+Third-party APIs
+Dataset synchronization
+Hash-based file comparison
+Drives the cloud/remote sync ecosystem.
+
+----------------------------
+FILE: SarahMemoryLLM.py                       
+SIZE: 11K        LINES:    249
+PURPOSE: SarahMemoryLLM.py
+Tool to install 3rd Party Language and Object Models. 
+----------------------------
+FILE: SarahMemoryLedger.py                    
+SIZE: 23K        LINES:    622
+PURPOSE: SarahMemoryLedger.py
+Implements blockchain / ledger features for Phase D mesh.
+Tracks:
+Ledger entries
+Token transactions
+Peer reputation
+Provides immutable audit trails.
+
+----------------------------
+FILE: SarahMemoryMain.py                      
+SIZE: 6.5K       LINES:    180
+PURPOSE: SarahMemoryMain.py # On Linux / PythonAnywhere, skip desktop UI modules
+The main entry point.
+Controls:
+CLI flags
+Headless/server/GUI mode
+Startup sequence
+Environment routing
+Integration menu
+Everything begins here.
+
+----------------------------
+FILE: SarahMemoryMigrations.py                
+SIZE: 1.9K       LINES:     69
+PURPOSE: SarahMemoryMigrations.py
+Handles database migrations during version upgrades.
+Ensures old installs update safely without data loss.
+
+----------------------------
+FILE: SarahMemoryNetwork.py                   
+SIZE: 52K        LINES:   1299
+PURPOSE: SarahMemoryNetwork.py , Orginally Designed to connect anything and everything, including Bluetooth and WiFi, RFID, GPS, Locations, etc.
+Network stack + Mesh Networking (Phase D).
+Supports:
+P2P device discovery
+Encrypted channels
+LAN chat
+Mesh broadcast
+Peer reputation
+Knowledge exchange
+VoIP groundwork
+Critical for future distributed intelligence.
+
+----------------------------
+FILE: SarahMemoryOptimization.py              
+SIZE: 6.7K       LINES:    173
+PURPOSE: SarahMemoryOptimization.py Setup logging for optimization module
+System performance optimizer.
+Handles:
+Memory usage
+CPU load balancing
+GPU checks
+AI task deferral
+Adaptive throttling
+Used heavily in idle/active state management.
+
+----------------------------
+FILE: SarahMemoryPersonality.py               
+SIZE: 26K        LINES:    670
+PURPOSE: SarahMemoryPersonality.py === AUTO-PATCH CALL (moved to module scope) ===
+Defines the personality structure.
+Includes:
+Traits
+Emotional drift
+Conversation style
+Memory-based personality growth
+Adaptive tone
+Used by Reply and Adaptive modules.
+
+----------------------------
+FILE: SarahMemoryReminder.py                  
+SIZE: 6.9K       LINES:    193
+PURPOSE: SarahMemoryReminder.py
+Reminder + Task scheduler.
+Provides:
+Time-based reminders
+Daily repeating schedules
+User notifications
+Sync integration with mobile apps
+
+----------------------------
+FILE: SarahMemoryReply.py                     
+SIZE: 34K        LINES:    874
+PURPOSE: SarahMemoryReply.py Description:
+The final reply engine.
+Responsible for:
+Generating final messages
+Merging Compare + LLM + Personality output
+Adding emotional tone
+Formatting responses
+Inserting actions/macros when needed
+This is the “Right Hemisphere.”
+
+----------------------------
+FILE: SarahMemoryResearch.py                  
+SIZE: 19K        LINES:    455
+PURPOSE: SarahMemoryResearch.py Windows-only registry module; safely optional on non-Windows / headless hosts
+Intelligent web research engine. A multi-pipeline engine that works together with SarahMemoryWebSYM.py and SarahMemoryReply.py
+Handles:
+Web scraping
+Data extraction
+Structured summaries
+Automated spider-bots
+Research caching
+Used when Sarah needs to “go find information.”
+
+----------------------------
+FILE: SarahMemorySOBJE.py                     
+SIZE: 40K        LINES:    892
+PURPOSE: SarahMemorySOBJE.py
+Orginally Called the Super OBJect Engine for Object Recognition to work together with SarahMemoryFacialRecognition.py 
+Subject Expertise Engine.
+Provides specialized knowledge in:
+Engineering
+Robotics
+CNC
+PLC
+Mathematics
+STEM
+Acts as a domain expert layer over LLM output.
+
+----------------------------
+FILE: SarahMemorySi.py                        
+SIZE: 13K        LINES:    371
+PURPOSE: SarahMemorySi.py Orginally Designed to Know about all "Software Information" of the types of software located on a system.
+Smart Insights Engine.
+Performs:
+Pattern recognition
+Behavioral predictions
+Next-action suggestions
+Daily summaries
+
+----------------------------
+FILE: SarahMemorySoftwareResearch.py          
+SIZE: 8.7K       LINES:    198
+PURPOSE: SarahMemorySoftwareResearch.py Setup logging for the software research module
+Researches installed software and system programs.
+Learns:
+Software purpose
+Compatibility
+Update side effects
+Used for predictive system protection.
+
+----------------------------
+FILE: SarahMemoryStartup.py                   
+SIZE: 3.6K       LINES:     92
+PURPOSE: SarahMemoryStartup.py Setup logging for the startup module
+Runs early boot checks before Initialization.
+Sets up:
+Logging
+Environment variables
+Error boundaries
+
+----------------------------
+FILE: SarahMemorySynapes.py                   
+SIZE: 8.5K       LINES:    226
+PURPOSE: SarahMemorySynapes.py Orginally designed to be the logical operational task manager and rightside hemisphere 
+def log_function_task(task_name, user_input, description):
+Neural-style event routing system.
+Handles:
+Internal “thought task” logging
+Function-level reasoning logs
+Task → Subtask mapping
+
+----------------------------
+FILE: SarahMemorySync.py                      
+SIZE: 7.9K       LINES:    195
+PURPOSE: SarahMemorySync.py Setup logging for the sync module
+Synchronization engine for Phase C mobile sync.
+Syncs:
+Contacts
+History
+Reminder tables
+Device profiles
+Local → cloud dataset synchronization
+
+----------------------------
+FILE: SarahMemorySystemIndexer.py             
+SIZE: 12K        LINES:    285
+PURPOSE: SarahMemorySystemIndexer.py
+Indexes system files and documents for:
+Search
+Embeddings
+Categorization
+Quick lookup
+Works with SystemLearn.
+Designed to Create a locational .db on a local system with End-User selected items including registry files.
+----------------------------
+FILE: SarahMemorySystemLearn.py               
+SIZE: 52K        LINES:   1226
+PURPOSE: SarahMemorySystemLearn.py 
+Indexes system files and documents for:
+Search
+Embeddings
+Categorization
+Quick lookup
+Works with SystemLearn.
+Takes the fully indexed .db created by SarahMemorySystemIndexer.py and ingest information from the user selected files listed in it. 
+----------------------------
+FILE: SarahMemoryUpdater.py                   
+SIZE: 25K        LINES:    649
+PURPOSE: SarahMemoryUpdater.py .git, __pycache__, venv, node_modules, dist, build, logs,
+Full auto-updater.
+Handles:
+Version checks
+File integrity
+Self-upgrade
+Backup creation
+Rollback
+Patch application
+Supports virtual disk testing for safe updates.
+
+----------------------------
+FILE: SarahMemoryVault.py                     
+SIZE: 9.2K       LINES:    253
+PURPOSE: SarahMemoryVault.py
+Encrypted vault system.
+Stores:
+Sensitive data
+Credentials
+Tokens
+API keys
+Uses AES/RSA hybrid protection.
+
+----------------------------
+FILE: SarahMemoryVoice.py                     
+SIZE: 23K        LINES:    607
+PURPOSE: SarahMemoryVoice.pyCross-platform/headless-safe voice module.
+Cross-platform Text-to-Speech (TTS) and Voice Recognition (STT).
+Supports:
+Windows SAPI
+macOS NSSpeech
+Linux speech engines
+Custom voice profiles
+User-added voice models
+Also provides wake-word support.
+
+----------------------------
+FILE: SarahMemoryWebSYM.py                    
+SIZE: 9.9K       LINES:    240
+PURPOSE: SarahMemoryWebSYM.py
+Web Symbols and interface utilities for WebUI.
+Defines small helper functions, formatting logic, and UI-specific behaviors for browser-based operation.
+Also has an advanced built-in Calculator Script for math queries. 
+
+----------------------------
+FILE: UnifiedAvatarController.py                 
+SIZE: 11K       LINES:    267
+PURPOSE: UnifiedAvatarController.py
+Designed to work with the SarahMemoryAvatar.py, SarahMemoryAvatarPanel.py and SarahMemoryVoice.py
+to assist in animation and puppetry of an Avatar movements, visualizations and sounds. 
+

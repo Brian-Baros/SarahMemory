@@ -1,0 +1,35 @@
+FUNCTIONAL 
+
+flowchart TD
+  A[Start: python SarahMemoryMain.py] --> B[Load SarahMemoryGlobals.py]
+  B --> C[SarahMemoryInitialization.run_initial_checks()]
+  C --> C1[ASCII Vector Bars (fallback)]
+  C --> D[safe_bootstrap_datastores()]
+  D --> E[SarahMemoryDiagnostics.run_personality_core_diagnostics()]
+  E --> F[SarahMemoryVoice.load_voice_settings()]
+  F --> G[SarahMemoryIntegration → Main Menu]
+  G -->|GUI| H[SarahMemoryGUI]
+  G -->|Exit| X[Safe Shutdown: release cameras, TTS off]
+  H --> I[User Input]
+  I --> J[SarahMemoryReply.generate_reply()]
+  J --> J1{Intent?}
+  J1 -->|Command| K[SarahMemoryAiFunctions/SarahMemorySi]
+  J1 -->|Chat| L[Local DB/Vector → API → Web]
+  L --> M[Bundle + meta[source,latency,intent]]
+  M --> N[GUI render + [Source: …]]
+  N --> O[Store response history]
+  O --> P[Optional: hub sync / context-update]
+
+NON-FUNCTIONAL
+
+flowchart LR
+  S[Settings] -->|Globals| R[Resource mgmt (psutil, SAFE_MODE)]
+  R --> B[Backups + Rotation]
+  R --> U[Updater (conservative)]
+  U --> Z[Rollback backups]
+  S --> Sec[Security: HMAC/Key, CSP headers]
+  Sec --> Hub[Server Hub (/api)]
+  Hub --> Rep[Reputation Wallets]
+  Hub --> Jobs[Job Dispatch]
+  R --> Logs[Telemetry/Logs]
+  Logs --> Diag[Diagnostics]

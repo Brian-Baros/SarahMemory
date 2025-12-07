@@ -1,0 +1,2 @@
+SarahBioSyncCore.py 
+This is just a raw starting point file to eventually incorporate biometrics into the SarahMemory program. This file is not complete and is just a sample starting point for the project. Upon future releases This may become a new Core File. 

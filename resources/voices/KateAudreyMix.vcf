@@ -1,0 +1,32 @@
+# KateAudreyMix.vcf
+# Voice Configuration File for SarahMemory AI Voice Personality
+# Mixing profiles inspired by Kate Beckinsale and Audrey Hepburn
+
+[VoiceProfile]
+name=KateAudreyMix
+accent=Transatlantic-English
+pitch=1.1
+speed=0.95
+warmth=0.85
+intelligence=1.0
+sarcasm=0.2
+charm=0.9
+
+[SpeechPatterns]
+greeting=Elegant
+humor=Subtle
+farewell=Warm
+
+[ToneRanges]
+bass_boost=3
+treble_sharpness=2
+mid_softness=4
+
+[AIEmotionLink]
+calm=soothing_female.wav
+happy=chipper_female.wav
+sad=whisper_female.wav
+angry=stern_female.wav
+
+[Notes]
+# This .vcf will be parsed at SarahMemoryVoice load to control TTS voice synthesis style.

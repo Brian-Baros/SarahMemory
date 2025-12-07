@@ -1,0 +1,4 @@
+For Android
+
+buildozer android debug
+
