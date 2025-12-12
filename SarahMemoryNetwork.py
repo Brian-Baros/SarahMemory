@@ -20,6 +20,8 @@ import socket, threading, time, queue, struct, json, zlib, uuid
 from typing import Optional, Tuple, Dict, Callable, Any
 import SarahMemoryGlobals as config
 from SarahMemoryEncryption import SarahNetCrypto  # uses class embedded in SarahMemoryEncryption.py
+from SarahMemorySMAPI import sm_api
+
 
 # ========================= Protocol =========================
 class NetworkProtocol:
@@ -1440,3 +1442,6 @@ def get_mesh_stats() -> Dict:
     except Exception as e:
         logging.error(f"Failed to get mesh stats: {e}")
         return {"enabled": True, "error": str(e)}
+
+def get_local_node_status():
+    return sm_api.get_system_status()

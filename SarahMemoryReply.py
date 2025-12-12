@@ -513,6 +513,34 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
         "model": None,
         "latency_ms": 0,
     }
+    # --- System Management Intents via SMAPI ---
+    try:
+        from SarahMemorySMAPI import sm_api
+        if text_in.lower() in ("system status", "check system", "status report"):
+            meta["intent"] = "system_status"
+            status = sm_api.get_system_status()
+            out = json.dumps(status, indent=2)
+            bundle = ReplyBundle(out, meta=meta).to_dict()
+            return _stamp_bundle(bundle)
+
+        if text_in.lower().startswith("set "):
+            parts = text_in.split()
+            if len(parts) >= 3:
+                key = parts[1]
+                value = " ".join(parts[2:])
+                if sm_api.set_user_setting(key, value):
+                    out = f"Updated setting '{key}' to '{value}'."
+                else:
+                    out = f"Failed to update '{key}'."
+                bundle = ReplyBundle(out, meta=meta).to_dict()
+                return _stamp_bundle(bundle)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------
+# OFFLINE CHECK
+# ---------------------------------------------------------------------
+
 
     # ---------------------------------------------------------------------
     # OFFLINE CHECK
