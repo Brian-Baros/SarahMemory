@@ -181,3 +181,5 @@ SarahMemorySMAPI.py - 12/12/2025 - ADDED FILE
 SarahMemoryUIupdater.py - 12/12/2025 - ADDED FILE
 SarahMemoryGlobals.py -12-12-2025 - Code modification for patch
 SarahMemoryGUI.py 12-12-2025 - Code modificaion for 3rd style custom GUI patching so End-User may use their own React/Vite Frontend
+SarahMemoryReply.py 12-12-2025 - Code modification for SarahMemorySMAPI.py
+SarahMemoryNetworking.py 12-12-2025 - Code modification for SarahMemorySMAPI.py
