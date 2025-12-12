@@ -170,3 +170,7 @@ SarahMemory is competing against: The entire centralized AI industry. Every corp
 
 ## Contact
 For questions, reach out to the author or visit [SarahMemory.com](https://www.sarahmemory.com)
+
+
+## NEW UPDATE OR ADDON CORE FILE
+SarahMemorySMAPI.py - 12/12/2025 
