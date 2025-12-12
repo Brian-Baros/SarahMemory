@@ -172,5 +172,10 @@ SarahMemory is competing against: The entire centralized AI industry. Every corp
 For questions, reach out to the author or visit [SarahMemory.com](https://www.sarahmemory.com)
 
 
-## NEW UPDATE OR ADDON CORE FILE
-SarahMemorySMAPI.py - 12/12/2025 
+## NEW MAIN BRANCH UPDATE OR ADDON CORE FILE
+SarahMemorySMAPI.py - 12/12/2025 - ADDED FILE
+
+NEW UPDATE-BRANCH UPDATES OR ADDON CORE FILE
+SarahMemoryUIupdater.py - 12/12/2025 - ADDED FILE
+SarahMemoryGlobals.py -12-12-2025 - Code modification for patch
+SarahMemoryGUI.py 12-12-2025 - Code modificaion for 3rd style custom GUI patching so End-User may use their own React/Vite Frontend
