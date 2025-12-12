@@ -2144,7 +2144,8 @@ def run_gui():
         return
 
     # Prefer modern Web UI if enabled in globals
-    if bool(getattr(config, "USE_WEBVIEW", False)):
+    ui_mode = getattr(config, "UI_MODE", "classic")
+    if bool(getattr(config, "USE_WEBVIEW", False)) and ui_mode in ("web", "custom"):
         try:
             import webview  # pywebview
         except Exception as e:
@@ -2153,12 +2154,27 @@ def run_gui():
             import os, json, io, base64, time
             from PIL import Image
 
+            # Decide which HTML file to load based on UI_MODE
+            html_path = None
+
+            if ui_mode == "custom":
+                # New React/Vite V8 build (same path used by SarahMemoryUIupdater.py)
+                base_dir = getattr(config, "BASE_DIR", os.getcwd())
+                html_path = os.path.join(base_dir, "data", "ui", "V8", "index.html")
+            elif ui_mode == "web":
+                # Original app.js-based WebUI
+                html_path = getattr(config, "WEBUI_HTML_PATH", None)
+                if not html_path:
+                    # Fallback: root index.html in the project directory
+                    base_dir = getattr(config, "BASE_DIR", os.getcwd())
+                    html_path = os.path.join(base_dir, "index.html")
+
             # Resolve URL: local file (offline) first, else remote clone
-            html_path = getattr(config, "WEBUI_HTML_PATH", None)
             if html_path and os.path.exists(html_path):
                 # Normalized file:// URL (⚠ backslashes must be escaped)
                 url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
             else:
+                # If the local file is missing, fall back to the hosted SarahMemory HTML
                 url = "https://www.sarahmemory.com/api/data/ui/SarahMemory.html"
 
             # --- JS Bridge expected by /data/ui/app.js ---
