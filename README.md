@@ -8,7 +8,7 @@
 ## Overview
 SarahMemory is a next-generation AI-Bot Companion Platform capable of learning, adapting, repairing, and interacting with users across both offline and online environments.
 
-This project includes 46 Python files that form the core of the SarahMemory AI Agent, featuring:
+This project includes 46+ Python files that form the core of the SarahMemory AI Agent, featuring:
 
 - GUI interface with AI Avatar and mini-browser
 - Built-in voice recognition and TTS
