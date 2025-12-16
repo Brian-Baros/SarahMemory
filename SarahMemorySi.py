@@ -117,12 +117,14 @@ except ImportError:
 
 try:
     import pygetwindow as gw
-except ImportError:
+except Exception:
+    # On Linux, pygetwindow can raise NotImplementedError at import-time.
     gw = None
 
 try:
     import pyautogui
-except ImportError:
+except Exception:
+    # On Linux/headless (no DISPLAY), pyautogui/mouseinfo can raise at import time.
     pyautogui = None
 
 # Core imports
@@ -153,18 +155,18 @@ def connect_software_db() -> sqlite3.Connection:
     """
     Connect to software database and ensure tables exist.
     v8.0: Enhanced with better error handling.
-    
+
     Returns:
         SQLite database connection
     """
     try:
         # Ensure directory exists
         os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
-        
+
         # Connect to database
         conn = sqlite3.connect(DATABASE_PATH, timeout=5.0)
         cursor = conn.cursor()
-        
+
         # Create tables
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS software_apps (
@@ -178,7 +180,7 @@ def connect_software_db() -> sqlite3.Connection:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS software_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -191,11 +193,63 @@ def connect_software_db() -> sqlite3.Connection:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
+        # --- v8.0 compatibility migrations (upgrade older schemas in-place) ---
+        # If software.db was created by an older build, the tables may exist but be missing
+        # newer columns (e.g., 'name'). SQLite will not update schemas automatically, so we
+        # best-effort ALTER TABLE to add missing columns. This must never crash startup.
+        try:
+            # software_apps: ensure required columns exist
+            cursor.execute("PRAGMA table_info(software_apps)")
+            app_cols = {row[1] for row in cursor.fetchall()}  # row[1] = column name
+
+            if "name" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN name TEXT")
+            if "path" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN path TEXT")
+            if "platform" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN platform TEXT")
+            if "last_used" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN last_used TEXT")
+            if "usage_count" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN usage_count INTEGER DEFAULT 0")
+            if "version" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN version TEXT DEFAULT '8.0.0'")
+            if "created_at" not in app_cols:
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+
+            # Ensure a unique index exists for ON CONFLICT(name) upserts (older DBs may lack it)
+            try:
+                cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_software_apps_name ON software_apps(name)")
+            except Exception:
+                pass
+
+            # software_events: ensure required columns exist
+            cursor.execute("PRAGMA table_info(software_events)")
+            evt_cols = {row[1] for row in cursor.fetchall()}
+
+            if "timestamp" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN timestamp TEXT")
+            if "event" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN event TEXT")
+            if "details" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN details TEXT")
+            if "app_name" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN app_name TEXT")
+            if "success" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN success BOOLEAN DEFAULT 1")
+            if "version" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN version TEXT DEFAULT '8.0.0'")
+            if "created_at" not in evt_cols:
+                cursor.execute("ALTER TABLE software_events ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except Exception:
+            # Never let migrations break the module load path
+            pass
+
         conn.commit()
         logger.debug("[v8.0] Software database connected")
         return conn
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Database connection error: {e}")
         raise
@@ -207,7 +261,7 @@ def cache_app_path(name: str, path: str) -> None:
     """
     Cache application path in database and memory.
     v8.0: Enhanced with usage tracking.
-    
+
     Args:
         name: Application name
         path: Application executable path
@@ -215,7 +269,7 @@ def cache_app_path(name: str, path: str) -> None:
     try:
         conn = connect_software_db()
         cursor = conn.cursor()
-        
+
         # Insert or update with usage count
         cursor.execute("""
             INSERT INTO software_apps (name, path, platform, last_used, usage_count)
@@ -225,16 +279,16 @@ def cache_app_path(name: str, path: str) -> None:
                 last_used = excluded.last_used,
                 usage_count = usage_count + 1
         """, (name.lower(), path, os.name, datetime.now().isoformat()))
-        
+
         conn.commit()
         conn.close()
-        
+
         # Update memory cache
         _app_cache[name.lower()] = path
-        
+
         logger.info(f"[v8.0] Cached: {name} → {path}")
         log_software_event("Cache App Path", f"Cached {name}", name)
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Cache error: {e}")
 
@@ -245,23 +299,23 @@ def search_registry_for_software(software_name: str) -> Optional[str]:
     """
     Search Windows registry for software installation path.
     v8.0: Enhanced with better error handling.
-    
+
     Args:
         software_name: Name of software to find
-        
+
     Returns:
         Installation path or None
     """
     if not winreg or os.name != 'nt':
         return None
-    
+
     try:
         registry_paths = [
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
             (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
             (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
         ]
-        
+
         for hive, path in registry_paths:
             try:
                 with winreg.OpenKey(hive, path) as key:
@@ -271,7 +325,7 @@ def search_registry_for_software(software_name: str) -> Optional[str]:
                             with winreg.OpenKey(key, subkey_name) as subkey:
                                 try:
                                     display_name, _ = winreg.QueryValueEx(subkey, "DisplayName")
-                                    
+
                                     # Fuzzy matching
                                     if software_name.lower() in display_name.lower():
                                         try:
@@ -289,9 +343,9 @@ def search_registry_for_software(software_name: str) -> Optional[str]:
                             continue
             except Exception as e:
                 logger.debug(f"[v8.0] Registry search error for {path}: {e}")
-                
+
         return None
-        
+
     except Exception as e:
         logger.warning(f"[v8.0] Registry access error: {e}")
         return None
@@ -303,24 +357,24 @@ def find_executable_in_folder(folder_path: str) -> Optional[str]:
     """
     Find executable file in specified folder.
     v8.0: Enhanced with recursive search.
-    
+
     Args:
         folder_path: Folder to search
-        
+
     Returns:
         Executable path or None
     """
     try:
         if not os.path.isdir(folder_path):
             return None
-        
+
         # Search in root folder first
         for file in os.listdir(folder_path):
             if file.lower().endswith(".exe"):
                 full_path = os.path.join(folder_path, file)
                 if os.path.isfile(full_path):
                     return full_path
-        
+
         # Search in bin subdirectory
         bin_path = os.path.join(folder_path, "bin")
         if os.path.isdir(bin_path):
@@ -329,9 +383,9 @@ def find_executable_in_folder(folder_path: str) -> Optional[str]:
                     full_path = os.path.join(bin_path, file)
                     if os.path.isfile(full_path):
                         return full_path
-        
+
         return None
-        
+
     except Exception as e:
         logger.debug(f"[v8.0] Executable search error: {e}")
         return None
@@ -343,20 +397,20 @@ def get_app_path(app_name: str) -> Optional[str]:
     """
     Get application executable path from cache or discovery.
     v8.0: Enhanced with multi-source lookup.
-    
+
     Args:
         app_name: Application name
-        
+
     Returns:
         Application path or None
     """
     app_name_lower = app_name.lower()
-    
+
     # Check memory cache first
     if app_name_lower in _app_cache:
         logger.debug(f"[v8.0] Memory cache hit: {app_name}")
         return _app_cache[app_name_lower]
-    
+
     # Check database
     try:
         conn = connect_software_db()
@@ -364,7 +418,7 @@ def get_app_path(app_name: str) -> Optional[str]:
         cursor.execute("SELECT path FROM software_apps WHERE name = ?", (app_name_lower,))
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             path = result[0]
             _app_cache[app_name_lower] = path  # Update memory cache
@@ -372,14 +426,14 @@ def get_app_path(app_name: str) -> Optional[str]:
             return path
     except Exception as e:
         logger.warning(f"[v8.0] Database lookup error: {e}")
-    
+
     # Search registry (Windows)
     if os.name == 'nt':
         path_from_registry = search_registry_for_software(app_name)
         if path_from_registry:
             cache_app_path(app_name, path_from_registry)
             return path_from_registry
-    
+
     # Not found
     logger.warning(f"[v8.0] Software not found: {app_name}")
     return None
@@ -391,21 +445,21 @@ def launch_application(path: str) -> bool:
     """
     Launch application by path.
     v8.0: Enhanced with process tracking.
-    
+
     Args:
         path: Application executable path
-        
+
     Returns:
         True if successful, False otherwise
     """
     try:
         proc = subprocess.Popen(path)
         active_launched_apps.append(proc)
-        
+
         logger.info(f"[v8.0] Launched: {path} (PID: {proc.pid})")
         log_software_event("Launch Application", f"Launched: {path}", os.path.basename(path))
         return True
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Launch error: {e}")
         log_software_event("Launch Application Error", f"Failed: {path} | {e}", os.path.basename(path))
@@ -418,7 +472,7 @@ def list_running_applications() -> List[Tuple[int, str]]:
     """
     List all running applications.
     v8.0: Enhanced with better error handling.
-    
+
     Returns:
         List of (PID, name) tuples
     """
@@ -429,10 +483,10 @@ def list_running_applications() -> List[Tuple[int, str]]:
                 running_apps.append((proc.info['pid'], proc.info['name']))
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        
+
         logger.debug(f"[v8.0] Found {len(running_apps)} running processes")
         return running_apps
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Process list error: {e}")
         return []
@@ -444,16 +498,16 @@ def terminate_application(app_name: str) -> bool:
     """
     Terminate a running application.
     v8.0: Enhanced with graceful shutdown.
-    
+
     Args:
         app_name: Application name
-        
+
     Returns:
         True if successful, False otherwise
     """
     try:
         app_name_lower = app_name.lower()
-        
+
         # Try to terminate from tracked apps
         for proc in active_launched_apps.copy():
             try:
@@ -468,7 +522,7 @@ def terminate_application(app_name: str) -> bool:
                         return True
             except Exception as e:
                 logger.debug(f"[v8.0] Terminate attempt failed: {e}")
-        
+
         # Fallback: search all processes
         for proc in psutil.process_iter(attrs=['pid', 'name']):
             try:
@@ -480,10 +534,10 @@ def terminate_application(app_name: str) -> bool:
                     return True
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
-        
+
         logger.warning(f"[v8.0] Terminate failed: {app_name} not found")
         return False
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Terminate error: {e}")
         log_software_event("Terminate Application Error", f"Failed: {app_name} | {e}", app_name)
@@ -497,7 +551,7 @@ def minimize_application(app_name: str) -> bool:
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
         return False
-    
+
     try:
         windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
@@ -515,7 +569,7 @@ def maximize_application(app_name: str) -> bool:
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
         return False
-    
+
     try:
         windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
@@ -533,7 +587,7 @@ def focus_application(app_name: str) -> bool:
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
         return False
-    
+
     try:
         windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
@@ -553,10 +607,10 @@ def manage_application_request(full_command: str) -> bool:
     """
     Handle application management commands.
     v8.0: Enhanced with better command parsing.
-    
+
     Args:
         full_command: Command string (e.g., "open notepad")
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -564,14 +618,14 @@ def manage_application_request(full_command: str) -> bool:
         parts = full_command.strip().lower().split()
         if len(parts) < 2:
             return False
-        
+
         action = parts[0]
         app_name = " ".join(parts[1:])
-        
+
         # Launch/Open/Start
         if action in ["open", "launch", "start"]:
             app_path = get_app_path(app_name)
-            
+
             if app_path:
                 return launch_application(app_path)
             else:
@@ -579,29 +633,29 @@ def manage_application_request(full_command: str) -> bool:
                 if os.name == 'nt':
                     return _windows_fallback_launch(app_name)
                 return False
-        
+
         # Close/Terminate/Kill
         elif action in ["close", "terminate", "kill", "exit", "quit"]:
             if "all" in app_name:
                 return _terminate_all_apps()
             return terminate_application(app_name)
-        
+
         # Maximize
         elif action == "maximize":
             return maximize_application(app_name)
-        
+
         # Minimize
         elif action == "minimize":
             return minimize_application(app_name)
-        
+
         # Focus
         elif action in ["focus", "bring"]:
             return focus_application(app_name)
-        
+
         else:
             logger.warning(f"[v8.0] Unknown action: {action}")
             return False
-            
+
     except Exception as e:
         logger.error(f"[v8.0] Manage request error: {e}")
         return False
@@ -613,7 +667,7 @@ def _windows_fallback_launch(app_name: str) -> bool:
     """Windows-specific fallback launch strategies."""
     try:
         base = app_name.replace('.exe', '').strip()
-        
+
         # Common Windows utilities
         common_apps = {
             'notepad': 'notepad.exe',
@@ -625,9 +679,9 @@ def _windows_fallback_launch(app_name: str) -> bool:
             'cmd': 'cmd.exe',
             'powershell': 'powershell.exe'
         }
-        
+
         exe = common_apps.get(base, app_name if app_name.endswith('.exe') else f"{app_name}.exe")
-        
+
         # Try direct Popen
         try:
             proc = subprocess.Popen([exe])
@@ -637,7 +691,7 @@ def _windows_fallback_launch(app_name: str) -> bool:
             return True
         except Exception:
             pass
-        
+
         # Try 'start' command
         try:
             subprocess.Popen(['cmd', '/c', 'start', '', exe], shell=True)
@@ -645,7 +699,7 @@ def _windows_fallback_launch(app_name: str) -> bool:
             return True
         except Exception:
             pass
-        
+
         # Try os.startfile
         try:
             os.startfile(exe)  # type: ignore[attr-defined]
@@ -653,9 +707,9 @@ def _windows_fallback_launch(app_name: str) -> bool:
             return True
         except Exception:
             pass
-        
+
         return False
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Fallback launch error: {e}")
         return False
@@ -684,83 +738,83 @@ def execute_play_command(action: str, target: str, original_query: str) -> str:
     """
     Handle media playback commands.
     v8.0: Enhanced with better parsing and error handling.
-    
+
     Args:
         action: Play action
         target: Media target
         original_query: Original user query
-        
+
     Returns:
         Status message
     """
     try:
         import re
         import webbrowser
-        
+
         song = None
         artist = None
         platform = "Spotify"  # Default
-        
+
         # Parse command
         match = re.match(
             r"play\s+(.*?)\s+(?:by\s+(.*?))?(?:\s+on\s+(\w+))?$",
             original_query,
             re.IGNORECASE
         )
-        
+
         if match:
             song = match.group(1)
             artist = match.group(2)
             platform = match.group(3) or platform
         else:
             song = original_query.replace("play", "").strip()
-        
+
         platform = platform.lower().strip()
-        
+
         # YouTube playback
         if "youtube" in platform:
             search_query = song.replace(" ", "+")
             webbrowser.open(f"https://www.youtube.com/results?search_query={search_query}")
             logger.info(f"[v8.0] YouTube search: {song}")
             return f"Searching YouTube for {song}"
-        
+
         # Spotify playback
         elif platform == "spotify":
             if not gw or not pyautogui:
                 return "Spotify automation requires pygetwindow and pyautogui"
-            
+
             # Open Spotify
             manage_application_request("open spotify")
             time.sleep(2)
-            
+
             # Find Spotify window
             windows = [w for w in gw.getWindowsWithTitle('Spotify') if not w.isMinimized]
             if windows:
                 windows[0].activate()
                 time.sleep(0.5)
-                
+
                 # Search
                 pyautogui.hotkey('ctrl', 'l')
                 search_query = f"{song} {artist}" if artist else song
                 pyautogui.write(search_query)
                 pyautogui.press('enter')
                 time.sleep(1.5)
-                
+
                 # Play first result
                 pyautogui.press('tab')
                 pyautogui.press('enter')
-                
+
                 logger.info(f"[v8.0] Spotify playback: {search_query}")
                 return f"Playing {search_query} on Spotify"
             else:
                 return "Spotify window not found"
-        
+
         # Media Player
         elif "media player" in platform:
             return f"[TODO] Local media player support for: {song}"
-        
+
         return f"Unsupported platform or command: {original_query}"
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Play command error: {e}")
         return f"Error executing play command: {e}"
@@ -772,7 +826,7 @@ def log_software_event(event: str, details: str, app_name: str = None) -> None:
     """
     Log software interaction event.
     v8.0: Enhanced with structured logging.
-    
+
     Args:
         event: Event name
         details: Event details
@@ -781,17 +835,17 @@ def log_software_event(event: str, details: str, app_name: str = None) -> None:
     try:
         conn = connect_software_db()
         cursor = conn.cursor()
-        
+
         cursor.execute(
             "INSERT INTO software_events (timestamp, event, details, app_name) VALUES (?, ?, ?, ?)",
             (datetime.now().isoformat(), event, details, app_name)
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         logger.debug(f"[v8.0] Logged event: {event}")
-        
+
     except Exception as e:
         logger.warning(f"[v8.0] Event log error: {e}")
 
@@ -815,27 +869,27 @@ def get_software_metrics() -> Dict[str, Any]:
     try:
         conn = connect_software_db()
         cursor = conn.cursor()
-        
+
         # Get total apps cached
         cursor.execute("SELECT COUNT(*) FROM software_apps")
         total_apps = cursor.fetchone()[0]
-        
+
         # Get recent events
         cursor.execute("""
             SELECT COUNT(*) FROM software_events
             WHERE datetime(timestamp) > datetime('now', '-7 days')
         """)
         recent_events = cursor.fetchone()[0]
-        
+
         # Get most used apps
         cursor.execute("""
             SELECT name, usage_count FROM software_apps
             ORDER BY usage_count DESC LIMIT 5
         """)
         top_apps = cursor.fetchall()
-        
+
         conn.close()
-        
+
         return {
             "total_apps_cached": total_apps,
             "recent_events": recent_events,
@@ -843,7 +897,7 @@ def get_software_metrics() -> Dict[str, Any]:
             "top_apps": [{"name": name, "count": count} for name, count in top_apps],
             "version": "8.0.0"
         }
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Metrics error: {e}")
         return {"error": str(e)}
@@ -855,20 +909,20 @@ if __name__ == '__main__':
     print("=" * 80)
     print("SarahMemory Software Interaction v8.0.0 - Test Mode")
     print("=" * 80)
-    
+
     # Test application detection
     print("\nTesting application detection:")
     test_apps = ["notepad", "calculator", "paint"]
-    
+
     for app in test_apps:
         path = get_app_path(app)
         print(f"{app:15} → {path or 'Not found'}")
-    
+
     # Display metrics
     print("\nSoftware Metrics:")
     import json
     print(json.dumps(get_software_metrics(), indent=2))
-    
+
     print("\n" + "=" * 80)
 
 logger.info("[v8.0] SarahMemorySi module loaded successfully")

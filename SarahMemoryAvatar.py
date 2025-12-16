@@ -30,6 +30,35 @@ import sqlite3
 
 DB_FILENAME = "avatar.db"
 
+def _ensure_avatar_state_table():
+    """Ensure avatar_state table and default row exist (v8.0 safe init)."""
+    try:
+        db_path = os.path.join(DATASETS_DIR, DB_FILENAME)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS avatar_state (
+                    id INTEGER PRIMARY KEY,
+                    emotion TEXT,
+                    expression TEXT,
+                    state TEXT
+                )
+            """)
+            cur.execute("SELECT COUNT(*) FROM avatar_state WHERE id = 1")
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    "INSERT INTO avatar_state (id, emotion, expression, state) VALUES (1, ?, ?, ?)",
+                    ("neutral", "neutral", "neutral")
+                )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"avatar_state table init failed: {e}")
+
+# initialize on import
+_ensure_avatar_state_table()
+
+
 # Setup logger
 logger = logging.getLogger("SarahMemoryAvatar")
 logger.setLevel(logging.DEBUG)

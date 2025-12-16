@@ -40,7 +40,16 @@ def log_research_event(event, details):
     Logs a research-related event to the programming.db database.
     """
     try:
-        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "memory", "datasets", "programming.db"))
+                # Resolve DB path using SarahMemoryGlobals when available; fallback to project-local data folder.
+        try:
+            base_dir = getattr(config, 'BASE_DIR', os.path.dirname(__file__))
+            datasets_dir = getattr(config, 'DATASETS_DIR', os.path.join(base_dir, 'data', 'memory', 'datasets'))
+            db_path = os.path.join(datasets_dir, 'programming.db')
+        except Exception:
+            db_path = os.path.join(os.path.dirname(__file__), 'data', 'memory', 'datasets', 'programming.db')
+        db_path = os.path.abspath(db_path)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("""

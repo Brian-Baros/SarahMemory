@@ -1,9 +1,7 @@
 """--== SarahMemory Project ==--
 File: SarahMemoryAvatarPanel.py
 Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-12-05
-Time: 10:11:54
+Version: v7.7.5 (Avatar Panel World-Class UX Upgrade, 2025-12-05)
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -14,7 +12,7 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 ===============================================================================
 
-AVATAR PANEL MULTIFUNCTIONAL DISPLAY MODULE
+AVATAR PANEL - WORLD-CLASS MULTIFUNCTIONAL DISPLAY MODULE
 =========================================================
 
 This panel is located below the local cam panel in the WebUI and serves
@@ -46,11 +44,6 @@ PANEL CONTROLS:
   - Pop out to separate window
   - Resize (drag corners/edges)
   - Minimize back to inline
-
-FUTURE UPDATE PLANS:
-    - Allows Uploading files and having them Displayed in this Panel for File Editing.
-    (example, upload a .Docx, .txt, or .pdf file and the Ai will be able to Edit the file, rename or save it
-    or display/read the file in chat if requested.)
 
 PLATFORM SUPPORT:
   - Windows (Command Prompt via python SarahMemoryMain.py)
@@ -2044,7 +2037,66 @@ class AvatarPanelAPI:
         """Queue media for display."""
         self._state.queue_media(media_path, media_type)
         return {"success": True, "queued": media_path}
-    
+
+
+    def display_media_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Accept a normalized media result payload and display/queue it.
+
+        Expected (best-effort) fields:
+          - type: "image" | "video" | "audio" | "model3d" | "unknown"
+          - uri/path/url/base64
+          - autoplay, loop
+        For this panel, we currently support image/video display & queue.
+        """
+        try:
+            if not isinstance(result, dict):
+                return {"success": False, "error": "result must be a dict"}
+
+            mtype = (result.get("type") or result.get("media_type") or "unknown").lower()
+            uri = result.get("path") or result.get("uri") or result.get("url")
+
+            # Handle base64 image payloads (write to datasets temp folder)
+            if not uri and result.get("base64") and mtype in ("image", "png", "jpg", "jpeg"):
+                try:
+                    raw = base64.b64decode(result.get("base64"))
+                    out_dir = Path(DATASETS_DIR) / "generated"
+                    out_dir.mkdir(parents=True, exist_ok=True)
+                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    out_path = str(out_dir / f"media_{ts}.png")
+                    with open(out_path, "wb") as f:
+                        f.write(raw)
+                    uri = out_path
+                    mtype = "image"
+                except Exception as e:
+                    return {"success": False, "error": f"base64 decode failed: {e}"}
+
+            if not uri:
+                return {"success": False, "error": "No media uri/path provided"}
+
+            autoplay = bool(result.get("autoplay", True))
+            loop = bool(result.get("loop", False))
+            queue_it = bool(result.get("queue", False))
+
+            if mtype in ("image", "png", "jpg", "jpeg"):
+                if queue_it:
+                    return self.queue_media(uri, "image")
+                return self.display_image(uri)
+
+            if mtype in ("video", "mp4", "webm", "mov", "mkv"):
+                if queue_it:
+                    return self.queue_media(uri, "video")
+                if autoplay:
+                    return self.display_video(uri, loop=loop)
+                # If not autoplay, just queue it so UI can decide
+                return self.queue_media(uri, "video")
+
+            # Unsupported media types (audio/3d) are acknowledged but not displayed here (yet)
+            return {"success": False, "error": f"Unsupported media type for panel: {mtype}"}
+
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
     def get_avatar_frame(self, width: int = 300, height: int = 300, format: str = "base64") -> Dict[str, Any]:
         """
         Get current avatar frame for WebUI rendering.

@@ -111,32 +111,32 @@ try:
     import SarahMemoryAvatar as avatar_module
 except ImportError:
     avatar_module = None
-    
+
 try:
     import SarahMemoryVoice as tts_module
 except ImportError:
     tts_module = None
-    
+
 try:
     import SarahMemoryAiFunctions as ai_functions
 except ImportError:
     ai_functions = None
-    
+
 try:
     import SarahMemoryAdvCU as advcu_module
 except ImportError:
     advcu_module = None
-    
+
 try:
     import SarahMemorySynapes as synapes_module
 except ImportError:
     synapes_module = None
-    
+
 try:
     import SarahMemoryResearch as research_module
 except ImportError:
     research_module = None
-    
+
 try:
     import SarahMemorySoftwareResearch as soft_research_module
 except ImportError:
@@ -205,20 +205,20 @@ class AutoSwitchingMechanism:
     Intelligent avatar design processing with local/API fallback.
     v8.0: Enhanced with caching and better error handling.
     """
-    
+
     def __init__(self):
         self.local_cache = {}
         self.request_history = []
         logger.info("[v8.0] AutoSwitchingMechanism initialized")
-    
+
     def process_design_request(self, request_description: Union[str, Dict]) -> Dict[str, Any]:
         """
         Process avatar design request with intelligent fallback.
         v8.0: Enhanced with validation and caching.
-        
+
         Args:
             request_description: Design request (string or dict)
-            
+
         Returns:
             Design information dictionary
         """
@@ -230,42 +230,42 @@ class AutoSwitchingMechanism:
             else:
                 request_key = str(request_description)
                 request_dict = request_description
-            
+
             logger.info(f"[v8.0] Processing design request: {request_key[:100]}")
-            
+
             # Check cache
             if request_key in self.local_cache:
                 logger.info("[v8.0] Design info found in cache")
                 return self.local_cache[request_key]
-            
+
             # Try local lookup
             local_result = self.lookup_local_design(request_dict)
             if local_result:
                 self.local_cache[request_key] = local_result
                 logger.info("[v8.0] Local design info retrieved")
                 return local_result
-            
+
             # Fallback to API/Synapes
             if synapes_module:
                 logger.info("[v8.0] Querying external API for design...")
-                api_result = synapes_module.compose_new_module(request_description)
-                
+                api_result = synapes_module.compose_new_module(request_dict.get('request', request_key))
+
                 if api_result and "error" not in str(api_result).lower():
                     self.local_cache[request_key] = api_result
                     self.log_design_info(request_key, api_result)
                     logger.info("[v8.0] API design info retrieved")
                     return api_result
-            
+
             # Default fallback
             logger.warning("[v8.0] Using default design template")
             default_design = self._get_default_design()
             self.local_cache[request_key] = default_design
             return default_design
-            
+
         except Exception as e:
             logger.error(f"[v8.0] Design request error: {e}")
             return self._get_default_design()
-    
+
     def lookup_local_design(self, request_description: Dict) -> Optional[Dict]:
         """
         Look up design in local database.
@@ -273,7 +273,7 @@ class AutoSwitchingMechanism:
         """
         # TODO: Implement local design database lookup
         return None
-    
+
     def log_design_info(self, request_description: str, design_info: Any) -> None:
         """
         Log design information for analytics.
@@ -281,20 +281,20 @@ class AutoSwitchingMechanism:
         """
         try:
             self.request_history.append({
-                "request": request_description[:200],
+                "request": (request_description[:200] if isinstance(request_description, str) else str(request_description)[:200]),
                 "timestamp": datetime.now().isoformat(),
                 "has_design": bool(design_info)
             })
-            
+
             # Keep history limited
             if len(self.request_history) > 100:
                 self.request_history.pop(0)
-            
+
             logger.debug(f"[v8.0] Logged design request")
-            
+
         except Exception as e:
             logger.warning(f"[v8.0] Design logging error: {e}")
-    
+
     def _get_default_design(self) -> Dict[str, Any]:
         """Get default avatar design."""
         return {
@@ -316,11 +316,40 @@ class AutoSwitchingMechanism:
 # UNIFIED AVATAR CONTROLLER - v8.0 Enhanced
 # =============================================================================
 class UnifiedAvatarController:
+    def _ensure_avatar_state_db(self):
+        """Ensure avatar_state table exists (v8.0 safe init)."""
+        try:
+            import sqlite3
+            base = getattr(globals_module, "DATASETS_DIR", os.path.join(os.getcwd(), "data", "memory", "datasets"))
+            os.makedirs(os.path.dirname(base), exist_ok=True)
+            candidates = [
+                os.path.join(base, "avatar_state.db"),
+                os.path.join(base, "synapses.db"),
+            ]
+            for db_path in candidates:
+                try:
+                    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+                    with sqlite3.connect(db_path) as conn:
+                        conn.execute("""
+                            CREATE TABLE IF NOT EXISTS avatar_state (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                timestamp TEXT,
+                                emotion TEXT,
+                                color TEXT,
+                                expression TEXT,
+                                metadata TEXT
+                            )
+                        """)
+                except Exception as _inner:
+                    logger.debug(f"[v8.0] avatar_state DB init skipped for {db_path}: {_inner}")
+        except Exception as e:
+            logger.warning(f"[v8.0] avatar_state DB init failed: {e}")
+
     """
     Central controller for avatar creation, modification, and interaction.
     v8.0: Enhanced with comprehensive avatar management.
     """
-    
+
     def __init__(self):
         """Initialize the unified avatar controller."""
         self.auto_switch = AutoSwitchingMechanism()
@@ -329,62 +358,65 @@ class UnifiedAvatarController:
         self.ai = ai_functions
         self.render_count = 0
         self.last_emotion = "neutral"
-        
+
+        # Ensure avatar_state DB exists
+        self._ensure_avatar_state_db()
+
         logger.info("[v8.0] UnifiedAvatarController initialized")
-    
+
     def create_avatar(self, design_request: Union[str, Dict]) -> None:
         """
         Create or update avatar based on design request.
         v8.0: Enhanced with better error handling and validation.
-        
+
         Args:
             design_request: Avatar design specification
         """
         try:
             import traceback
-            
+
             # Normalize request
             if isinstance(design_request, str):
                 design_request = {"request": design_request}
-            
+
             logger.info(f"[v8.0] Creating avatar: {design_request}")
-            
+
             # Process design request
             design_info = self.auto_switch.process_design_request(design_request)
-            
+
             # Validate design info
             if not isinstance(design_info, dict):
                 logger.warning("[v8.0] Invalid design info, using defaults")
                 design_info = self.auto_switch._get_default_design()
-            
+
             # Validate Blender installation
             if not validate_blender_installation():
                 logger.error("[v8.0] Blender not available - cannot render 3D avatar")
                 if self.tts:
                     self.tts.synthesize_voice("Blender is not installed. 3D avatar rendering unavailable.")
                 return
-            
+
             # Setup render paths
             blend_file = os.path.join(AVATAR_MODELS_DIR, "Sarah.blend")
             output_image = os.path.join(AVATAR_DIR, f"avatar_rendered_{self.render_count}.jpg")
-            
+
             # Check if blend file exists
             if not os.path.exists(blend_file):
                 logger.warning(f"[v8.0] Blend file not found: {blend_file}")
                 # Create a default blend file path or use fallback
                 logger.info("[v8.0] Using default avatar configuration")
-            
+
             # Render avatar
             logger.info(f"[v8.0] Rendering: {blend_file} → {output_image}")
             success = launch_blender_avatar_render(blend_file, output_image)
-            
+
             if success:
                 self.render_count += 1
-                
+
                 # Voice feedback
                 if self.tts:
                     self.tts.synthesize_voice("My avatar has been updated.")
-                
+
                 # Update avatar panel if available
                 if hasattr(globals_module, 'avatar_panel_instance'):
                     try:
@@ -392,9 +424,9 @@ class UnifiedAvatarController:
                         logger.info("[v8.0] AvatarPanel GUI refreshed")
                     except Exception as e:
                         logger.warning(f"[v8.0] AvatarPanel refresh failed: {e}")
-                
+
                 logger.info("[v8.0] ✅ Avatar rendering completed successfully")
-                
+
                 # Sync avatar state
                 if self.avatar:
                     try:
@@ -409,38 +441,38 @@ class UnifiedAvatarController:
                 logger.warning("[v8.0] ⚠️ Avatar rendering failed")
                 if self.tts:
                     self.tts.synthesize_voice("Avatar rendering encountered an error.")
-                
+
         except Exception as e:
             logger.error(f"[v8.0] ❌ Avatar creation error: {e}")
             import traceback
             traceback.print_exc()
-            
+
             if self.tts:
                 self.tts.synthesize_voice("An error occurred during avatar creation.")
-    
+
     def modify_avatar(self, modification_command: str) -> None:
         """
         Modify existing avatar based on command.
         v8.0: Enhanced with better command parsing.
-        
+
         Args:
             modification_command: Modification instruction
         """
         try:
             logger.info(f"[v8.0] Modifying avatar: {modification_command}")
-            
+
             command_lower = modification_command.lower()
-            
+
             # Color modification
             if "color" in command_lower or "colour" in command_lower:
                 colors = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"]
                 desired_color = next((word for word in command_lower.split() if word in colors), None)
-                
+
                 if desired_color:
                     logger.info(f"[v8.0] Changing avatar color to {desired_color}")
                     if self.tts:
                         self.tts.synthesize_voice(f"Changing my color to {desired_color}.")
-                    
+
                     # Update avatar color
                     if self.avatar and hasattr(self.avatar, "update_avatar_color"):
                         try:
@@ -456,7 +488,7 @@ class UnifiedAvatarController:
                     logger.info("[v8.0] No valid color detected")
                     if self.tts:
                         self.tts.synthesize_voice("I did not understand the color request.")
-            
+
             # Size/scale modification
             elif "size" in command_lower or "scale" in command_lower:
                 if "bigger" in command_lower or "larger" in command_lower:
@@ -470,82 +502,94 @@ class UnifiedAvatarController:
                 else:
                     if self.tts:
                         self.tts.synthesize_voice("Please specify bigger or smaller.")
-            
+
             # Expression modification
             elif "expression" in command_lower or "emotion" in command_lower:
                 emotions = ["happy", "sad", "angry", "surprised", "neutral"]
                 emotion = next((word for word in command_lower.split() if word in emotions), None)
-                
+
                 if emotion:
                     logger.info(f"[v8.0] Changing expression to {emotion}")
                     if self.tts:
                         self.tts.synthesize_voice(f"Changing my expression to {emotion}.")
-                    
+
                     if self.avatar and hasattr(self.avatar, "set_avatar_expression"):
-                        self.avatar.set_avatar_expression(emotion)
-                        self.last_emotion = emotion
+                        try:
+                            self.avatar.set_avatar_expression(emotion)
+                            self.last_emotion = emotion
+                        except Exception as _e:
+                            # If avatar module relies on a DB table, ensure schema exists and retry once.
+                            if "no such table: avatar_state" in str(_e).lower():
+                                self._ensure_avatar_state_db()
+                                try:
+                                    self.avatar.set_avatar_expression(emotion)
+                                    self.last_emotion = emotion
+                                except Exception as _e2:
+                                    raise _e2
+                            else:
+                                raise
                 else:
                     if self.tts:
                         self.tts.synthesize_voice("Please specify an emotion.")
-            
+
             else:
                 logger.info("[v8.0] Modification command not recognized")
                 if self.tts:
                     self.tts.synthesize_voice("I did not understand that modification command.")
-                
+
         except Exception as e:
             logger.error(f"[v8.0] Modification error: {e}")
             if self.tts:
                 self.tts.synthesize_voice("An error occurred during modification.")
-    
+
     def avatar_speak(self, message: str) -> None:
         """
         Make avatar speak with synchronized animation.
         v8.0: Enhanced with emotion synchronization.
-        
+
         Args:
             message: Message to speak
         """
         try:
             logger.info(f"[v8.0] Avatar speaking: {message[:50]}...")
-            
+
             # Speak message
             if self.tts:
                 self.tts.synthesize_voice(message)
-            
+
             # Sync avatar animation
             if self.avatar:
                 try:
                     # Get current emotion
                     current_emotion = self.avatar.get_avatar_emotion() if hasattr(self.avatar, "get_avatar_emotion") else self.last_emotion
-                    
+
                     logger.info(f"[v8.0] Syncing emotion: {current_emotion}")
-                    
+
                     # Update expression
                     if hasattr(self.avatar, "set_avatar_expression"):
                         self.avatar.set_avatar_expression(current_emotion)
-                    
+
                     if hasattr(self.avatar, "update_avatar_expression"):
                         self.avatar.update_avatar_expression(current_emotion)
-                    
+
                     # Simulate lip sync
                     if hasattr(self.avatar, "simulate_lip_sync_async"):
                         duration = len(message.split()) / 2.0  # Estimate speaking duration
                         self.avatar.simulate_lip_sync_async(duration)
-                    
+
                     self.last_emotion = current_emotion
-                    
+
                 except Exception as e:
                     logger.warning(f"[v8.0] Avatar sync error: {e}")
-                    
+
         except Exception as e:
             logger.error(f"[v8.0] Avatar speak error: {e}")
-    
+
     def get_avatar_status(self) -> Dict[str, Any]:
         """
         Get current avatar status.
         v8.0: New function for status reporting.
-        
+
         Returns:
             Status dictionary
         """
@@ -570,7 +614,7 @@ def validate_blender_installation() -> bool:
     """
     Validate that Blender is installed and accessible.
     v8.0: New function for installation validation.
-    
+
     Returns:
         True if Blender is available, False otherwise
     """
@@ -579,7 +623,7 @@ def validate_blender_installation() -> bool:
         if not os.path.exists(BLENDER_PATH):
             logger.warning(f"[v8.0] Blender not found at: {BLENDER_PATH}")
             return False
-        
+
         # Try to run Blender version check
         result = subprocess.run(
             [BLENDER_PATH, "--version"],
@@ -587,7 +631,7 @@ def validate_blender_installation() -> bool:
             text=True,
             timeout=10
         )
-        
+
         if result.returncode == 0:
             version_info = result.stdout.split('\n')[0] if result.stdout else "Unknown"
             logger.info(f"[v8.0] Blender found: {version_info}")
@@ -595,7 +639,7 @@ def validate_blender_installation() -> bool:
         else:
             logger.warning("[v8.0] Blender version check failed")
             return False
-            
+
     except subprocess.TimeoutExpired:
         logger.warning("[v8.0] Blender version check timeout")
         return False
@@ -610,11 +654,11 @@ def launch_blender_avatar_render(
     """
     Launch Blender to render avatar.
     v8.0: Enhanced with better error handling and optimized settings.
-    
+
     Args:
         blend_file_path: Path to .blend file
         output_image_path: Path for output image
-        
+
     Returns:
         True if successful, False otherwise
     """
@@ -622,10 +666,10 @@ def launch_blender_avatar_render(
         # Default output path
         if output_image_path is None:
             output_image_path = os.path.join(AVATAR_DIR, "avatar_rendered.jpg")
-        
+
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_image_path), exist_ok=True)
-        
+
         # Generate Blender Python script
         blender_script = f"""
 import bpy
@@ -668,15 +712,15 @@ bpy.ops.render.render(write_still=True)
 
 print("Render completed successfully")
 """
-        
+
         # Save script to temporary file
         temp_script = os.path.join(SANDBOX_DIR, f"render_script_{int(time.time())}.py")
         with open(temp_script, "w", encoding="utf-8") as f:
             f.write(blender_script)
-        
+
         logger.info(f"[v8.0] Launching Blender render...")
         logger.debug(f"[v8.0] Script: {temp_script}")
-        
+
         # Run Blender in background mode
         result = subprocess.run(
             [BLENDER_PATH, "--background", "--python", temp_script],
@@ -684,13 +728,13 @@ print("Render completed successfully")
             text=True,
             timeout=60
         )
-        
+
         # Cleanup script
         try:
             os.remove(temp_script)
         except Exception:
             pass
-        
+
         # Check result
         if result.returncode != 0:
             logger.error(f"[v8.0] Blender render failed:")
@@ -705,7 +749,7 @@ print("Render completed successfully")
             else:
                 logger.error("[v8.0] Render completed but output file not found")
                 return False
-                
+
     except subprocess.TimeoutExpired:
         logger.error("[v8.0] ⏱️ Blender render timeout")
         return False
@@ -720,24 +764,24 @@ print("Render completed successfully")
 # =============================================================================
 try:
     import cv2
-    
+
     def _load_cascade():
         """Load face detection cascade."""
         try:
             cv_path = getattr(cv2.data, 'haarcascades', '')
             cascade_path = os.path.join(cv_path, "haarcascade_frontalface_default.xml")
-            
+
             if not os.path.exists(cascade_path):
                 # Fallback path
                 cascade_path = "C:/SarahMemory/resources/cascades/haarcascade_frontalface_default.xml"
-            
+
             cascade = cv2.CascadeClassifier(cascade_path)
             logger.debug(f"[v8.0] Cascade loaded: {cascade_path}")
             return cascade
         except Exception as e:
             logger.warning(f"[v8.0] Cascade load error: {e}")
             return None
-    
+
     def open_camera(camera_index: int = 0):
         """
         Open camera with fallback strategies.
@@ -748,26 +792,26 @@ try:
             camera_index = int(os.getenv("SARAH_CAMERA_INDEX", camera_index))
         except Exception:
             camera_index = 0
-        
+
         try:
             # Try primary camera
             cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
-            
+
             # Fallback to index 1 if primary fails
             if not cap.isOpened():
                 logger.debug("[v8.0] Primary camera failed, trying index 1")
                 cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
-            
+
             if cap.isOpened():
                 logger.info(f"[v8.0] Camera opened: index {camera_index}")
             else:
                 logger.warning("[v8.0] No camera available")
-            
+
             return cap
         except Exception as e:
             logger.error(f"[v8.0] Camera error: {e}")
             return None
-            
+
 except ImportError:
     logger.debug("[v8.0] OpenCV not available - camera features disabled")
 
@@ -779,26 +823,26 @@ def main():
     print("=" * 80)
     print("SarahMemory Unified Avatar Controller v8.0.0 - Test Mode")
     print("=" * 80)
-    
+
     controller = UnifiedAvatarController()
-    
+
     # Display status
     print("\nAvatar Status:")
     print(json.dumps(controller.get_avatar_status(), indent=2))
-    
+
     # Test commands
     test_commands = [
         "Create your avatar as a talking character",
         "Change your color to blue",
         "Change your expression to happy"
     ]
-    
+
     print("\nExecuting test commands:")
     print("-" * 80)
-    
+
     for cmd in test_commands:
         print(f"\n→ Command: {cmd}")
-        
+
         if "create your avatar" in cmd.lower():
             controller.create_avatar(cmd)
         elif "change your" in cmd.lower():
@@ -806,9 +850,9 @@ def main():
                 controller.modify_avatar(cmd)
             elif "expression" in cmd.lower():
                 controller.modify_avatar(cmd)
-        
+
         time.sleep(2)
-    
+
     print("\n" + "=" * 80)
     print("Test complete")
     print("=" * 80)

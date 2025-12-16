@@ -90,6 +90,7 @@ import random
 import os
 import sqlite3
 import re
+import json
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -274,7 +275,7 @@ def log_expressive_event(event: str, details: str) -> None:
     """
     Log an expressive output event to the database.
     v8.0: Enhanced with connection pooling and error recovery.
-    
+
     Args:
         event: Event name/type
         details: Event details/description
@@ -284,14 +285,14 @@ def log_expressive_event(event: str, details: str) -> None:
             getattr(config, 'DATASETS_DIR', 'data/memory/datasets'),
             "system_logs.db"
         ))
-        
+
         # Ensure directory exists
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        
-        # Connect and create table if needed
+
+                # Connect and create table if needed
         conn = sqlite3.connect(db_path, timeout=5.0)
         cursor = conn.cursor()
-        
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS expressive_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -302,19 +303,31 @@ def log_expressive_event(event: str, details: str) -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        
+
+        # --- v8.0 compatibility migration: add 'version' column if older table exists ---
+        try:
+            cursor.execute("PRAGMA table_info(expressive_events)")
+            cols = {row[1] for row in cursor.fetchall()}  # row[1] = column name
+            if "version" not in cols:
+                cursor.execute("ALTER TABLE expressive_events ADD COLUMN version TEXT DEFAULT '8.0.0'")
+            if "created_at" not in cols:
+                cursor.execute("ALTER TABLE expressive_events ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+        except Exception:
+            # Never break logging path if PRAGMA/ALTER fails
+            pass
+
         # Insert event
         timestamp = datetime.now().isoformat()
         cursor.execute(
             "INSERT INTO expressive_events (timestamp, event, details, version) VALUES (?, ?, ?, ?)",
             (timestamp, event, details, "8.0.0")
         )
-        
+
         conn.commit()
         conn.close()
-        
+
         logger.debug(f"[v8.0] Logged expressive event: {event}")
-        
+
     except Exception as e:
         logger.warning(f"[v8.0] Failed to log expressive event: {e}")
 
@@ -325,12 +338,12 @@ def ethics_filter(text: str, mood: str = "neutral", context: str = "") -> str:
     """
     Filter text for ethical appropriateness and contextual sensitivity.
     v8.0: Enhanced with better pattern matching and context awareness.
-    
+
     Args:
         text: Input text to filter
         mood: Current emotional mood
         context: Conversational context
-        
+
     Returns:
         Filtered text
     """
@@ -341,24 +354,24 @@ def ethics_filter(text: str, mood: str = "neutral", context: str = "") -> str:
             r"\bhate\b", r"\bkill\b", r"\bdead\b",
             r"\bmoron\b", r"\bloser\b"
         ]
-        
+
         # Replace inappropriate content
         filtered = text
         for pattern in inappropriate_patterns:
             filtered = re.sub(pattern, "(inappropriate)", filtered, flags=re.I)
-        
+
         # Context-sensitive adjustments
         context_lower = (context or "").lower()
-        
+
         # Tone down enthusiasm in sad contexts
         if mood in ("joy", "anticipation") and any(
-            word in context_lower 
+            word in context_lower
             for word in ("sad", "death", "died", "passed away", "funeral", "loss", "grief")
         ):
             filtered = filtered.replace("!", ".")
             filtered = re.sub(r"(amazing|wonderful|fantastic|great)", "notable", filtered, flags=re.I)
             logger.debug(f"[v8.0][Ethics] Toned down {mood} for sad context")
-        
+
         # Avoid angry expressions in professional contexts
         if mood == "anger" and any(
             word in context_lower
@@ -366,9 +379,9 @@ def ethics_filter(text: str, mood: str = "neutral", context: str = "") -> str:
         ):
             filtered = re.sub(r"(angry|furious|mad)", "concerned", filtered, flags=re.I)
             logger.debug(f"[v8.0][Ethics] Moderated anger for professional context")
-        
+
         return filtered
-        
+
     except Exception as e:
         logger.warning(f"[v8.0][Ethics] Filter error: {e}")
         return text
@@ -380,11 +393,11 @@ def _pick_emoji(mood: str, default: str = "") -> str:
     """
     Select appropriate emoji for given mood.
     v8.0: Enhanced with policy integration and context awareness.
-    
+
     Args:
         mood: Emotional mood
         default: Default emoji if none found
-        
+
     Returns:
         Selected emoji
     """
@@ -394,18 +407,18 @@ def _pick_emoji(mood: str, default: str = "") -> str:
             policy = getattr(config, "EMOJI_POLICY", EMOJI_POLICY)
         except Exception:
             policy = EMOJI_POLICY
-        
+
         # Normalize mood
         mood = (mood or "neutral").lower()
-        
+
         # Try to find emoji for mood
         for key in (mood, "neutral"):
             emoji_list = policy.get(key, [])
             if emoji_list:
                 return random.choice(emoji_list)
-        
+
         return default
-        
+
     except Exception as e:
         logger.debug(f"[v8.0][Emoji] Selection error: {e}")
         return default
@@ -417,21 +430,21 @@ def voice_params_for_mood(mood: str, reduced: bool = False) -> Dict[str, float]:
     """
     Get voice prosody parameters for given mood.
     v8.0: Enhanced with additional emotional states and reduced mode.
-    
+
     Args:
         mood: Emotional mood
         reduced: Whether to use reduced/minimal parameters
-        
+
     Returns:
         Dictionary of voice parameters (rate, pitch, volume)
     """
     # Reduced mode returns neutral parameters
     if reduced:
         return {"rate": 0.0, "pitch": 0.0, "volume": 0.0}
-    
+
     # Normalize mood
     mood = (mood or "neutral").lower()
-    
+
     # Get parameters from map
     return VOICE_PROSODY_MAP.get(mood, VOICE_PROSODY_MAP["neutral"])
 
@@ -447,20 +460,20 @@ def format_expressive_output(
     """
     Format output with appropriate emotional expression.
     v8.0: Enhanced with multi-modal support and context awareness.
-    
+
     Args:
         text: Input text to format
         mood: Emotional mood
         channel: Output channel (text/voice/visual)
         footer: Optional footer text
-        
+
     Returns:
         Dictionary with formatted display_text and voice parameters
     """
     try:
         # Check if expressive output is enabled
         enabled = getattr(config, "EXPRESSIVE_OUTPUT_ENABLED", True)
-        
+
         # Check for reduced mode
         reduced = False
         try:
@@ -469,28 +482,28 @@ def format_expressive_output(
                 reduced = reduced_fn(None, None, None)
         except Exception:
             pass
-        
+
         # If disabled, return plain text
         if not enabled:
             display = text + (f"\n{footer}" if footer else "")
             return {"display_text": display, "voice": {}}
-        
+
         # Apply ethics filter
         decorated = ethics_filter(text, mood=mood)
-        
+
         # Add emoji for text channel (if text is substantial)
         if channel == "text" and len(text) >= 3:
             emoji = _pick_emoji(mood)
             if emoji and emoji not in decorated:
                 decorated = f"{decorated} {emoji}"
-        
+
         # Get voice parameters
         voice_params = voice_params_for_mood(mood, reduced=reduced)
-        
+
         # Add footer if provided
         if footer:
             decorated = f"{decorated}\n{footer}"
-        
+
         result = {
             "display_text": decorated,
             "voice": voice_params,
@@ -498,10 +511,10 @@ def format_expressive_output(
             "channel": channel,
             "version": "8.0.0"
         }
-        
+
         logger.debug(f"[v8.0][Format] {mood} → {channel} → {len(decorated)} chars")
         return result
-        
+
     except Exception as e:
         logger.warning(f"[v8.0][Format] Error: {e}")
         return {"display_text": text, "voice": {}}
@@ -513,43 +526,43 @@ def express_outbound_message(message: str, emotion: str = "neutral") -> str:
     """
     Enhance outbound messages with expressive phrases and emojis.
     v8.0: Enhanced with better phrase selection and context awareness.
-    
+
     Args:
         message: Original message
         emotion: Target emotion
-        
+
     Returns:
         Enhanced expressive message
     """
     try:
         # Normalize emotion
         emotion = emotion.lower() if emotion else "neutral"
-        
+
         # Get expression dictionary
         expr = expressions.get(emotion, expressions["neutral"])
-        
+
         # Select phrase and emoji
         phrase = random.choice(expr["phrases"]) if expr["phrases"] and expr["phrases"][0] else ""
         emoji = random.choice(expr["emojis"]) if expr["emojis"] and expr["emojis"][0] else ""
-        
+
         # Build expressive message
         expressive_message = message.strip()
-        
+
         if phrase:
             expressive_message += " " + phrase
-        
+
         if emoji:
             expressive_message += " " + emoji
-        
+
         # Log the event
         logger.info(f"[v8.0] Expressive message: {emotion} → {len(expressive_message)} chars")
         log_expressive_event(
             "Express Outbound Message",
             f"Emotion: {emotion} | Length: {len(expressive_message)}"
         )
-        
+
         return expressive_message
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Error in express_outbound_message: {e}")
         log_expressive_event("Express Outbound Message Error", f"Error: {e}")
@@ -559,10 +572,10 @@ def random_expressive_message(message: str) -> str:
     """
     Add a random expressive touch to the outbound message.
     v8.0: Enhanced with better emotion selection.
-    
+
     Args:
         message: Original message
-        
+
     Returns:
         Randomly enhanced message
     """
@@ -570,19 +583,19 @@ def random_expressive_message(message: str) -> str:
         # Select random emotion (excluding neutral)
         emotion_choices = [k for k in expressions.keys() if k != "neutral"]
         emotion = random.choice(emotion_choices)
-        
+
         # Generate enhanced message
         enhanced_message = express_outbound_message(message, emotion)
-        
+
         # Log the event
         logger.info(f"[v8.0] Random expressive: {emotion}")
         log_expressive_event(
             "Random Expressive Message",
             f"Emotion: {emotion} | Length: {len(enhanced_message)}"
         )
-        
+
         return enhanced_message
-        
+
     except Exception as e:
         logger.error(f"[v8.0] Error in random_expressive_message: {e}")
         log_expressive_event("Random Expressive Message Error", f"Error: {e}")
@@ -595,7 +608,7 @@ def get_expression_metrics() -> Dict[str, Any]:
     """
     Get metrics about expression usage.
     v8.0: New function for analytics.
-    
+
     Returns:
         Dictionary of expression metrics
     """
@@ -604,29 +617,29 @@ def get_expression_metrics() -> Dict[str, Any]:
             getattr(config, 'DATASETS_DIR', 'data/memory/datasets'),
             "system_logs.db"
         )
-        
+
         if not os.path.exists(db_path):
             return {"status": "no_data"}
-        
+
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
         # Get event counts
         cursor.execute("""
             SELECT COUNT(*) FROM expressive_events
             WHERE datetime(timestamp) > datetime('now', '-7 days')
         """)
         recent_count = cursor.fetchone()[0]
-        
+
         conn.close()
-        
+
         return {
             "recent_events": recent_count,
             "available_emotions": len(expressions),
             "emoji_variants": sum(len(e["emojis"]) for e in expressions.values()),
             "version": "8.0.0"
         }
-        
+
     except Exception as e:
         logger.warning(f"[v8.0][Metrics] Error: {e}")
         return {"status": "error", "message": str(e)}
@@ -638,28 +651,28 @@ if __name__ == '__main__':
     print("=" * 80)
     print("SarahMemory ExpressOut v8.0.0 - Test Mode")
     print("=" * 80)
-    
+
     logger.info("[v8.0] Starting ExpressOut test suite")
-    
+
     test_message = "Hello, welcome to our system!"
-    
+
     print(f"\nOriginal Message: {test_message}\n")
-    
+
     # Test each emotion
     print("Testing all emotions:")
     print("-" * 80)
-    
+
     for emotion in expressions.keys():
         enhanced = express_outbound_message(test_message, emotion)
         print(f"{emotion:15} → {enhanced}")
-    
+
     print("-" * 80)
-    
+
     # Test random expression
     print("\nTesting random expression:")
     random_msg = random_expressive_message(test_message)
     print(f"Random → {random_msg}")
-    
+
     # Test formatted output
     print("\nTesting formatted output:")
     formatted = format_expressive_output(
@@ -669,11 +682,11 @@ if __name__ == '__main__':
         footer="Have a great day!"
     )
     print(json.dumps(formatted, indent=2))
-    
+
     # Display metrics
     print("\nExpression Metrics:")
     print(json.dumps(get_expression_metrics(), indent=2))
-    
+
     print("\n" + "=" * 80)
     logger.info("[v8.0] ExpressOut test suite complete")
 

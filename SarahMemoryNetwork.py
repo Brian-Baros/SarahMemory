@@ -15,11 +15,21 @@ https://ai.sarahmemory.com
 ==============================================================================================================================================================
 """
 
+
 from __future__ import annotations
+
+import sys
+import os
+import logging
+
+
+
 import socket, threading, time, queue, struct, json, zlib, uuid
 from typing import Optional, Tuple, Dict, Callable, Any
 import SarahMemoryGlobals as config
 from SarahMemoryEncryption import SarahNetCrypto  # uses class embedded in SarahMemoryEncryption.py
+from SarahMemorySMAPI import sm_api
+
 
 # ========================= Protocol =========================
 class NetworkProtocol:
@@ -238,7 +248,7 @@ class NetworkNode:
         self.on_message: Callable[[str, dict, bytes], None] = lambda p, m, b: None
         self.on_log:     Callable[[str], None] = print
 
-    def _log(self, s: str): 
+    def _log(self, s: str):
         try: self.on_log(s)
         except Exception: pass
 
@@ -270,7 +280,7 @@ class NetworkNode:
             except Exception:
                 time.sleep(0.05)
 
-    
+
     def _tcp_conn_loop(self, conn: socket.socket, addr):
         peer = f"{addr[0]}:{addr[1]}"
         try:
@@ -323,7 +333,7 @@ class NetworkNode:
             except Exception: pass
 
 
-    
+
     def _udp_rx_loop(self):
         # UDP: a datagram is exactly one ciphertext (no length prefix)
         while not self._stop.is_set():
@@ -406,7 +416,7 @@ class NetworkNode:
             self._timeout = min(self._MAX_TIMEOUT, max(1.0, self._timeout * 1.5))
             return False
 
-    
+
     def _send_udp(self, addr, blob: bytes):
         try:
             # blob may contain a single framed message: [len][ct]
@@ -562,7 +572,7 @@ class ServerConnection:
             loop = None
         return loop
 
-    def ping_sync(self): 
+    def ping_sync(self):
         loop = self._ensure_loop()
         if loop and loop.is_running():
             import asyncio
@@ -740,7 +750,7 @@ class ServiceRegistry:
 
     def handle(self, mtype: int, peer: str, meta: dict, payload: bytes):
         fn = self._handlers.get(mtype)
-        if fn: 
+        if fn:
             fn(peer, meta, payload)
 
 def _nn_register_handler(self: "NetworkNode", mtype: int, fn: Callable[[str,dict,bytes],None]):
@@ -753,9 +763,9 @@ def _nn_on_message(self: "NetworkNode", peer: str, meta: dict, payload: bytes):
     mtype = int(meta.get("_mtype", getattr(NetworkProtocol, "T_DATA")))
     # Audit & IDS hook (non-fatal)
     try:
-        if hasattr(self, "_audit"): 
+        if hasattr(self, "_audit"):
             self._audit.log("rx", {"peer": peer, "mtype": mtype, "len": len(payload), "meta": meta})
-    except Exception: 
+    except Exception:
         pass
     # Dispatch if any service is registered; otherwise do nothing (back-compat)
     if hasattr(self, "_services"):
@@ -888,7 +898,7 @@ class OpusCodec:
             self._enc = self._dec = None
 
     def encode(self, pcm16: bytes) -> bytes:
-        if not self.ok: 
+        if not self.ok:
             return pcm16  # passthrough
         try:
             import array, opuslib
@@ -1319,14 +1329,14 @@ Features:
 # Try to import Phase D mesh module
 try:
     import importlib.util
-    
+
     phase_d_module_path = os.path.join(os.path.dirname(__file__), "SarahMemory_PhaseD_MeshNetwork.py")
-    
+
     if os.path.exists(phase_d_module_path):
         spec = importlib.util.spec_from_file_location("SarahMemory_PhaseD_MeshNetwork", phase_d_module_path)
         phase_d_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(phase_d_module)
-        
+
         # Import Phase D components
         MeshNode = phase_d_module.MeshNode
         MeshDatabase = phase_d_module.MeshDatabase
@@ -1338,13 +1348,13 @@ try:
         ReputationTier = phase_d_module.ReputationTier
         get_mesh_node = phase_d_module.get_mesh_node
         shutdown_mesh_node = phase_d_module.shutdown_mesh_node
-        
+
         PHASE_D_ENABLED = True
         logging.info("✅ Phase D Mesh Network loaded successfully")
     else:
         PHASE_D_ENABLED = False
         logging.info("ℹ️  Phase D module not found. Mesh networking disabled.")
-        
+
 except Exception as e:
     PHASE_D_ENABLED = False
     logging.warning(f"⚠️  Phase D mesh not available: {e}")
@@ -1358,18 +1368,18 @@ def mesh_network_available() -> bool:
 def start_mesh_node(port: int = 9999, node_id: Optional[str] = None) -> Optional[Any]:
     """
     Start a mesh network node.
-    
+
     Args:
         port: Port to listen on
         node_id: Optional node identifier
-    
+
     Returns:
         MeshNode instance if successful, None otherwise
     """
     if not PHASE_D_ENABLED:
         logging.warning("Phase D mesh network not available")
         return None
-    
+
     try:
         node = get_mesh_node(port=port)
         logging.info(f"✅ Mesh node started: {node.node_id} on port {port}")
@@ -1382,7 +1392,7 @@ def stop_mesh_node():
     """Stop the global mesh node."""
     if not PHASE_D_ENABLED:
         return
-    
+
     try:
         shutdown_mesh_node()
         logging.info("✅ Mesh node stopped")
@@ -1392,17 +1402,17 @@ def stop_mesh_node():
 def connect_to_mesh_peer(peer_address: Tuple[str, int]) -> bool:
     """
     Connect to a peer in the mesh network.
-    
+
     Args:
         peer_address: Tuple of (host, port)
-    
+
     Returns:
         True if connection successful
     """
     if not PHASE_D_ENABLED:
         logging.warning("Phase D mesh network not available")
         return False
-    
+
     try:
         node = get_mesh_node()
         success = node.connect_to_peer(peer_address)
@@ -1419,7 +1429,7 @@ def get_mesh_peers() -> List:
     """Get list of connected mesh peers."""
     if not PHASE_D_ENABLED:
         return []
-    
+
     try:
         node = get_mesh_node()
         return node.get_peers()
@@ -1431,7 +1441,7 @@ def get_mesh_stats() -> Dict:
     """Get mesh network statistics."""
     if not PHASE_D_ENABLED:
         return {"enabled": False}
-    
+
     try:
         node = get_mesh_node()
         stats = node.get_network_stats()
@@ -1440,3 +1450,6 @@ def get_mesh_stats() -> Dict:
     except Exception as e:
         logging.error(f"Failed to get mesh stats: {e}")
         return {"enabled": True, "error": str(e)}
+
+def get_local_node_status():
+    return sm_api.get_system_status()
