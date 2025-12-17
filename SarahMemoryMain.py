@@ -3,7 +3,7 @@ File: SarahMemoryMain.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2025-12-05
-Time: 10:11:54
+Time: 16:30:00
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -13,8 +13,8 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 ===============================================================================
-SarahMemory v8.0 - The Soon to be First True AI Operating System (AiOS) 
-Bootup Sequence with Full Media Integration
+SarahMemory v8.0 - The First True AI Operating System (AiOS)
+World-Class Bootup Sequence with Full Media Integration
 ===============================================================================
 """
 
@@ -118,21 +118,36 @@ def start_local_api_server():
     """
     Launch the local API server with enhanced v8.0 features.
     Supports both Windows and Linux/headless environments.
+
+    v8.0.0 Patch:
+      - SarahMemory-local_api_server.py is deprecated/removed.
+      - Always launch the unified Flask server at /api/server/app.py.
+      - Uses BASE_DIR/API_DIR from SarahMemoryGlobals to build an absolute path.
+      - Sets cwd to BASE_DIR so static/UI paths resolve consistently.
     """
     try:
-        # Determine which API server script to use based on availability
-        api_server_script = "SarahMemory-local_api_server.py"
+        # Resolve absolute app.py path under ../api/server/app.py
+        base_dir = getattr(config, "BASE_DIR", os.getcwd())
+        api_dir = getattr(config, "API_DIR", os.path.join(base_dir, "api"))
+        api_server_script = os.path.join(api_dir, "server", "app.py")
+
         if not os.path.exists(api_server_script):
-            # Fallback to app.py in api/server directory
-            api_server_script = os.path.join("api", "server", "app.py")
-        
+            # Last-resort fallbacks (keep boot non-blocking)
+            alt1 = os.path.join(base_dir, "api", "server", "app.py")
+            alt2 = os.path.join("api", "server", "app.py")
+            for cand in (alt1, alt2):
+                if os.path.exists(cand):
+                    api_server_script = cand
+                    break
+
         if not os.path.exists(api_server_script):
-            logger.warning("[BOOT] API server script not found. Skipping API server startup.")
+            logger.warning("[BOOT] API server script not found (expected ../api/server/app.py). Skipping API server startup.")
             return
-        
+
         # Launch API server as background process
         subprocess.Popen(
             [sys.executable, api_server_script],
+            cwd=base_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
@@ -140,6 +155,7 @@ def start_local_api_server():
         logger.info("[BOOT][v8.0] Local API server process launched successfully.")
     except Exception as e:
         logger.error(f"[BOOT ERROR][v8.0] Failed to launch local API server: {e}")
+
 
 
 def wait_for_api_server(timeout=10):
@@ -183,22 +199,23 @@ def display_v8_banner():
     """
     banner = """
 ───────────────────────────────────────────────────────────────────────────────
-                        THE SARAHMEMORY PROJECT (A i O S)
-    FIRST FULLY OPENSOURCE AI-DRIVEN CHATBOT/PLATFORM/ AND OPERATING SYSTEM
-                            Version 8.0.0
+                             S A R A H M E M O R Y   A i O S
+                    THE FIRST FULL AI-DRIVEN OPERATING SYSTEM
+                                   Version 8.0.0
 ───────────────────────────────────────────────────────────────────────────────
 
-     Features:
+
+    🌟 World-Class Features:
        • Self-Updating Intelligence        • Advanced Media Creation
        • Multi-Platform Support            • Voice & Sound Synthesis
        • Distributed Mesh Network          • Blockchain Integration
        • Autonomous Learning               • Professional Content Studio
 
-     Network Hubs:
+    📡 Network Hubs:
        • www.sarahmemory.com    - E-Commerce & Distribution
        • api.sarahmemory.com    - Network Hub & AI Ranking
        • ai.sarahmemory.com     - Web/Mobile Interface
-    
+
     © 2025 Brian Lee Baros | SOFTDEV0 LLC
     ═══════════════════════════════════════════════════════════════════════════
 """

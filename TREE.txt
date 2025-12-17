@@ -43,6 +43,7 @@
 |   SarahMemoryReply.py
 |   SarahMemoryResearch.py
 |   SarahMemorySi.py
+|   SarahMemorySMAPI.py
 |   SarahMemorySOBJE.py
 |   SarahMemorySoftwareResearch.py
 |   SarahMemoryStartup.py

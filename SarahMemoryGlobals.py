@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-12-08
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -382,6 +382,99 @@ VOICE_FEEDBACK_ENABLED = True #Allows AI to Speak back to End-User using TTS, de
 # Researching Halting Configuration
 INTERRUPT_FLAG = False  # Global state,
 INTERRUPT_KEYWORDS = ["stop", "just stop", "halt"] #Stops SarahMemoryResearch.py on Researching Information using Keywords
+
+# --- UI Stack Selection (Classic / Web / Custom) ---
+# Reads from .env: SARAH_UI_MODE = classic | web | custom
+UI_MODE = os.getenv("SARAH_UI_MODE", "classic").strip().lower()
+if UI_MODE not in ("classic", "web", "custom"):
+    UI_MODE = "classic"
+
+# Convenience booleans so other modules can just check caps instead of strings.
+USE_CLASSIC_GUI  = (UI_MODE == "classic")
+USE_LEGACY_WEBUI = (UI_MODE == "web")
+USE_CUSTOM_WEBUI = (UI_MODE == "custom")
+
+# --- Legacy WebUI (index.html + app.js + styles.css) paths ---
+# These are the files that already live in the repo root and can be served locally.
+LEGACY_WEBUI_DIR   = os.path.join(BASE_DIR)  # where the old index.html lives by default
+LEGACY_WEBUI_INDEX = os.path.join(LEGACY_WEBUI_DIR, "index.html")
+
+# --- Custom React/Vite WebUI (Lovable / Vite build) ---
+# Our pipeline:
+#   - SarahMemoryUIupdater.py clones into:   BASE_DIR/data/ui/V8_ui_src
+#   - It builds Vite "dist" there
+#   - Then copies dist/* into:              BASE_DIR/data/ui/V8
+#
+# So the *served* dist folder is always: BASE_DIR/data/ui/V8
+CUSTOM_UI_ROOT = os.getenv(
+    "SARAH_CUSTOM_UI_ROOT",
+    os.path.join(BASE_DIR, "data", "ui", "V8_ui_src"),
+)
+
+CUSTOM_UI_DIST_DIR = os.getenv(
+    "SARAH_CUSTOM_UI_DIST_DIR",
+    os.path.join(BASE_DIR, "data", "ui", "V8"),
+)
+
+CUSTOM_UI_INDEX = os.path.join(CUSTOM_UI_DIST_DIR, "index.html")
+
+# If a dev server is running (npm run dev / npm run preview), we can point pywebview
+# or the browser directly at this URL instead of a local file path.
+CUSTOM_UI_DEV_URL = os.getenv(
+    "SARAH_CUSTOM_UI_DEV_URL",
+    "http://127.0.0.1:5173",
+)
+
+
+def get_ui_launch_profile() -> dict:
+    """
+    Central place for SarahMemoryMain.py (and others) to decide:
+      - which UI mode is active
+      - which file or URL to open
+      - whether to prefer pywebview or an external browser
+    """
+    mode = globals().get("UI_MODE", "classic")
+    base = {
+        "mode": mode,
+        # USE_WEBVIEW is defined later (v7.7.5 GUI WebUI additions) and
+        # controls whether we embed a webview or open an external browser.
+        "use_webview": bool(globals().get("USE_WEBVIEW", True)),
+    }
+
+    if mode == "classic":
+        base.update({
+            "kind": "desktop_gui",
+            "entry": "SarahMemoryGUI.py",  # informational; actual import happens in main
+        })
+
+    elif mode == "web":
+        # Original app.js / index.html UI at repo root
+        base.update({
+            "kind": "legacy_webui",
+            "html_path": LEGACY_WEBUI_INDEX,
+            "html_dir": LEGACY_WEBUI_DIR,
+            "url": None,  # can be filled in by app.py if served via Flask
+        })
+
+    elif mode == "custom":
+        # Custom React/Vite build (Lovable / Vite)
+        base.update({
+            "kind": "custom_webui",
+            "html_path": CUSTOM_UI_INDEX,
+            "html_dir": CUSTOM_UI_DIST_DIR,
+            "dev_url": CUSTOM_UI_DEV_URL,
+        })
+
+    else:
+        # Failsafe: fall back to classic GUI
+        base.update({
+            "kind": "desktop_gui",
+            "entry": "SarahMemoryGUI.py",
+        })
+
+    return base
+
+
 # Build Learned Vector datasets, only need to be Ran Once after SarahMemorySystemLearn.py has been ran or when New information has been intergrated.
 IMPORT_OTHER_DATA_LEARN = True #Rebuilds Vector on each BOOT UP if True It will consistantly Rebuild every Boot when New Data is found,
 LEARNING_PHASE_ACTIVE = True #Keeps system from constantly rebuilding Vectored dataset. If True will rebuild constantly
@@ -451,7 +544,7 @@ USERNAME = os.getenv("USERNAME", "SarahUser")  # Primary user account name for p
 OS_TYPE = platform.system()  # System OS detected (Windows/Linux/macOS) for compatibility logic
 
 # --- IP/PORT Settings ---
-DEFAULT_PORT = 5500 # Localhost Flask API port for internal server communication
+DEFAULT_PORT = 8000 # Localhost Flask API port for internal server communication
 DEFAULT_HOST = "127.0.0.1"  # Loopback address for local testing only
 # === SarahNet (Mesh Comms) â€” managed in Globals (no external JSON) ==========
 SARAHNET_ENABLED: bool = True
@@ -637,6 +730,79 @@ FORCE_UPDATE: bool = os.environ.get("SARAH_FORCE_UPDATE", "0") in ("1", "true", 
 UPDATE_INTERVAL_MINUTES: int = int(os.environ.get("SARAH_UPDATE_INTERVAL_MINUTES", "240"))
 UPDATE_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_update.txt")
 UPDATE_POLICY = "never"
+UI_UPDATER_ENABLED: bool = os.environ.get("SARAH_UI_UPDATER_ENABLED", "1") in ("1", "true", "True")
+UI_UPDATER_SCHEDULE: str = os.environ.get("SARAH_UI_UPDATER_SCHEDULE", "daily").strip().lower()
+UI_UPDATER_INTERVAL_MINUTES: int = int(os.environ.get("SARAH_UI_UPDATER_INTERVAL_MINUTES", "1440"))
+UI_UPDATER_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_ui_update.txt")
+UI_UPDATER_SCRIPT: str = os.path.join(BASE_DIR, "SarahMemoryUIupdater.py")
+
+
+def SHOULD_RUN_UI_UPDATER(now: datetime | None = None) -> bool:
+    """
+    Decide whether the Web UI auto-updater should run.
+
+    This mirrors the core updater policy but is independent so that:
+      - It can be enabled/disabled separately (UI_UPDATER_ENABLED).
+      - It can run on a different cadence than the core updater.
+
+    The ``now`` argument allows tests or callers to inject a timestamp
+    (UTC datetime). When ``None``, datetime.utcnow() is used.
+    """
+    if not UI_UPDATER_ENABLED:
+        return False
+
+    try:
+        # Reuse the same 'friendly schedule' semantics as the core updater.
+        kind = (UI_UPDATER_SCHEDULE or "").strip().lower()
+        days = schedule_to_days(kind)
+        if days == 0:   # "never"
+            return False
+        if days == -1:  # "always"
+            return True
+
+        # Fallback to simple interval-minutes style if we have a prior stamp.
+        # We deliberately keep the policy simple here; more advanced logic can
+        # be layered in later if needed.
+        if not os.path.exists(UI_UPDATER_STAMP_FILE):
+            return True
+
+        from datetime import datetime, timedelta
+
+        with open(UI_UPDATER_STAMP_FILE, "r", encoding="utf-8") as fh:
+            iso = fh.read().strip() or None
+
+        if not iso:
+            return True
+
+        try:
+            last = datetime.fromisoformat(iso)
+        except Exception:
+            return True
+
+        now_dt = now or datetime.utcnow()
+        delta = now_dt - last
+        minutes = delta.total_seconds() / 60.0
+        return minutes >= max(1, UI_UPDATER_INTERVAL_MINUTES)
+
+    except Exception:
+        # On any parsing or IO failure, default to 'do not block forever' and
+        # allow the scheduler to attempt a run; failures are handled downstream.
+        return True
+
+
+def STAMP_UI_UPDATER_RUN(now: datetime | None = None) -> None:
+    """
+    Persist the last-successful UI updater run time (ISO-8601) into
+    UI_UPDATER_STAMP_FILE. Intended to be called by whichever component
+    launches ``SarahMemoryUIupdater.py`` after a successful run.
+    """
+    try:
+        now_dt = now or datetime.utcnow()
+        os.makedirs(os.path.dirname(UI_UPDATER_STAMP_FILE), exist_ok=True)
+        with open(UI_UPDATER_STAMP_FILE, "w", encoding="utf-8") as fh:
+            fh.write(now_dt.isoformat())
+    except Exception as exc:
+        logger.warning("[UI-Updater] Failed to stamp last run: %s", exc)
 
 def schedule_to_days(kind: str) -> int:
     """

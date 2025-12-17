@@ -1,7 +1,7 @@
 """--== SarahMemory Project ==--
 File: SarahMemoryAvatarPanel.py
 Part of the SarahMemory Companion AI-bot Platform
-Version: v7.7.5 (Avatar Panel World-Class UX Upgrade, 2025-12-05)
+Version: v8.0.0 (Avatar Panel World-Class UX Upgrade, 2025-12-05)
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros

@@ -45,6 +45,7 @@ if not logger.hasHandlers():
 
 # Core functional files that must be present in the root directory
 REQUIRED_FILES = [
+    os.path.join(config.API_DIR, "server", "app.py"), #API LOCAL and CLOUD SERVER
     os.path.join(config.BASE_DIR, "SarahMemoryAdaptive.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAdvCU.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAI.py") if hasattr(config, "HAS_AI_CORE") else os.path.join(config.BASE_DIR, "SarahMemoryAI.py"),
