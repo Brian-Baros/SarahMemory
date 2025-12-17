@@ -1,0 +1,16 @@
+/* SarahMemory Unified Theme — MATRIX (v7.7.5) */
+:root{
+  --bg:#000; --panel:#050805; --text:#c6ffd1; --muted:#59bf73;
+  --accent:#00ff6a; --border:#103e1c; --btn:#0a1a0f; --btnText:#c6ffd1;
+  --bubble-user:#082b13; --bubble-sarah:#061f0e; --chip:#0b1f12;
+}
+html,body{background:var(--bg);color:var(--text);font-family:"JetBrains Mono","Consolas","Lucida Console",monospace}
+.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
+.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
+.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
+.small,.muted{color:var(--muted)}
+
+.TFrame { background-color:#050805; }
+.TLabel { background-color:transparent; color:#00ff6a; foreground:#00ff6a; font-family:"Lucida Console","Consolas",monospace; font-size:11pt; }
+.TButton{ background-color:#0a1a0f; color:#00ff6a; foreground:#00ff6a; font-family:"Lucida Console","Consolas",monospace; font-size:10pt; bordercolor:#103e1c; }
+.ChatText{ background-color:#000000; color:#00ff6a; font-family:"Consolas","Lucida Console",monospace; font-size:11pt; }
