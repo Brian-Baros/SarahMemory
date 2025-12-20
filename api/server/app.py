@@ -25,7 +25,15 @@ from __future__ import annotations
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, session
-from flask_cors import CORS
+# --- Flask CORS (safe import for CLI testing & WSGI) ---
+try:
+    from flask_cors import CORS
+    _CORS_AVAILABLE = True
+except Exception as e:
+    CORS = None  # type: ignore
+    _CORS_AVAILABLE = False
+    print("[WARN] flask_cors not available:", e)
+
 from dotenv import load_dotenv
 load_dotenv()
 import re
@@ -66,28 +74,43 @@ except Exception as e:
     DATA_DIR = os.path.join(BASE_DIR, "data")  # /api/server/data
     PROJECT_VERSION = "8.0.0" # Ensure v8.0.0 as per spec
 
-# Prefer project root as templates if index.html lives there
-TEMPLATE_DIR = BASE_DIR if os.path.exists(os.path.join(BASE_DIR, "index.html")) else WEB_DIR
 
-STATIC_DIR = os.path.join(BASE_DIR, "static")  # /api/server/static
+# Identity / branding (server-side source of truth)
+BRAND_NAME = "Sarah"
+PLATFORM_NAME = "SarahMemory AiOS"
+CREATOR_NAME = "Brian Lee Baros"
+ORG_NAME = "SOFTDEV0 LLC"
+
+def _identity_payload():
+    return {
+        "name": BRAND_NAME,
+        "platform": PLATFORM_NAME,
+        "version": APP_VERSION,
+        "creator": CREATOR_NAME,
+        "organization": ORG_NAME,
+        "build": "webui-server",
+    }
+
+def _is_identity_question(text: str) -> bool:
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    keys = [
+        "what is your name", "who are you", "your name",
+        "version", "what version", "version number",
+        "who made you", "who created you", "creator",
+        "who designed you", "designer", "engineer",
+        "who engineered you", "who built you",
+        "brian lee baros", "softdev0",
+    ]
+    return any(k in t for k in keys)
+
+# Prefer server/static as templates if the SPA build exists
+SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(SERVER_DIR, "static")
+TEMPLATE_DIR = SERVER_DIR if os.path.exists(os.path.join(STATIC_DIR, "index.html")) else WEB_DIR
 WALLETS_DIR = os.path.join(DATA_DIR, "wallets")
 META_DB = os.path.join(DATA_DIR, "meta.db") # merged meta DB
-
-# ---------------------------------------------------------------------------
-# Web UI (React/Vite) serving (Local Option 3 / UI_MODE=custom)
-# ---------------------------------------------------------------------------
-# By convention, the custom V8 web UI lives at:  <BASE_DIR>/data/ui/V8/(dist|/)
-# Lovable/Vite builds typically output to /dist; we support both layouts.
-UI_V8_DIR = os.path.join(DATA_DIR, "ui", "V8")
-UI_V8_DIST_DIR = os.path.join(UI_V8_DIR, "dist")
-UI_V8_ROOT = UI_V8_DIST_DIR if os.path.exists(os.path.join(UI_V8_DIST_DIR, "index.html")) else UI_V8_DIR
-
-def _ui_v8_exists() -> bool:
-    try:
-        return os.path.exists(os.path.join(UI_V8_ROOT, "index.html"))
-    except Exception:
-        return False
-
 LOGS_DIR = os.path.join(DATA_DIR, "logs") # Default to DATA_DIR/logs
 
 # Ensure directories exist
@@ -95,6 +118,89 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(WALLETS_DIR, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Global runtime state (kept intentionally small and fast)
+# ---------------------------------------------------------------------------
+APP_VERSION = PROJECT_VERSION  # API/UI convenience alias
+
+# Persistent state file (safe JSON, kept in DATA_DIR)
+STATE_DB = os.path.join(DATA_DIR, "server_state.json")  # JSON, not sqlite
+WALLET_DB = os.path.join(DATA_DIR, "wallets.db")        # sqlite (created on demand)
+
+# Simple feature toggles (web UI can control these)
+MIC_ON = True
+TTS_ON = True
+
+MIC_ENABLED = MIC_ON
+TTS_ENABLED = TTS_ON
+VOICE_OUTPUT_ON = TTS_ON
+VOICE_OUTPUT_ENABLED = TTS_ON
+# Small in-memory cache for hot endpoints (rankings/wallet/etc.)
+_CACHE = {}
+def _cache_get(key: str):
+    item = _CACHE.get(key)
+    if not item:
+        return None
+    value, expires_at = item
+    if expires_at and time.time() > expires_at:
+        _CACHE.pop(key, None)
+        return None
+    return value
+
+def _cache_set(key: str, value, ttl_s: float = 0.0):
+    expires_at = (time.time() + ttl_s) if ttl_s and ttl_s > 0 else None
+    _CACHE[key] = (value, expires_at)
+
+def _cache_invalidate(prefix: str = ""):
+    if not prefix:
+        _CACHE.clear()
+        return
+    for k in list(_CACHE.keys()):
+        if k.startswith(prefix):
+            _CACHE.pop(k, None)
+
+def load_state() -> dict:
+    """Load persisted server state. Never raises."""
+    try:
+        if os.path.exists(STATE_DB):
+            with open(STATE_DB, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def save_state(state_or_key, value=None) -> None:
+    """Persist server state safely.
+    - If called with a dict, overwrites state.
+    - If called with (key, value), updates that key.
+    Never raises.
+    """
+    try:
+        if value is None and isinstance(state_or_key, dict):
+            state = state_or_key or {}
+        else:
+            key = str(state_or_key)
+            state = load_state()
+            state[key] = value
+        tmp = STATE_DB + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, indent=2, sort_keys=True)
+        os.replace(tmp, STATE_DB)
+    except Exception:
+        pass
+
+# Load persisted toggles at boot
+_boot_state = load_state()
+if isinstance(_boot_state, dict):
+    MIC_ON = bool(_boot_state.get("MIC_ON", MIC_ON))
+    TTS_ON = bool(_boot_state.get("TTS_ON", TTS_ON))
+MIC_ENABLED = MIC_ON
+TTS_ENABLED = TTS_ON
+VOICE_OUTPUT_ON = TTS_ON
+VOICE_OUTPUT_ENABLED = TTS_ON
 
 # Optional core modules
 ledger_mod = None
@@ -154,20 +260,23 @@ except Exception:
 
 # Apply CORS *after* app is created
 # Allow all your public frontends to call this API (GoogieHost + PythonAnywhere + local dev)
-try:
-    CORS(  # Use the imported CORS directly
-        app,
-        resources={
-            r"/api/*": {
-                "origins": "*"
-            }
-        },
-        supports_credentials=True,  # ⭐ THIS is critical for credentials:'include'
-    )
-except Exception as e:
-    app_logger.error(f"Failed to configure Flask-CORS: {e}. API will only work on same-origin calls or if CORS handled externally.")
-    # If flask-cors is not installed, API still works on same-origin calls.
-    pass
+if _CORS_AVAILABLE:
+    try:
+        CORS(  # Use the imported CORS directly
+            app,
+            resources={
+                r"/api/*": {
+                    "origins": "*"
+                }
+            },
+            supports_credentials=True,  # ⭐ THIS is critical for credentials:'include'
+        )
+    except Exception as e:
+        app_logger.error(f"Failed to configure Flask-CORS: {e}... only work on same-origin calls or if CORS handled externally.")
+        # If flask-cors is installed but misconfigured, API still works on same-origin calls.
+        pass
+else:
+    app_logger.warning("Flask-CORS not installed; CORS disabled (same-origin still works).")
 
 try:
     from SarahMemoryDatabase import init_database
@@ -212,62 +321,64 @@ def _ensure_dir(p: str):
 # Cache global paths to avoid recalculation on every request
 _cached_globals_paths = None
 def _globals_paths():
-    """Resolve and ensure existence of key directories/paths.
-
-    Returns a dict with keys:
-      - DATASETS_DIR, SETTINGS_DIR, THEMES_DIR, DOCUMENTS_DIR, USER_DB_PATH
+    """
+    Locate key SarahMemory paths from SarahMemoryGlobals.py.
+    Returns a dict with: DATA_DIR, ROOT_DIR, SANDBOX_DIR, ADDONS_DIR, MODS_DIR, SETTINGS_DIR
     """
     global _cached_globals_paths
     if _cached_globals_paths is not None:
         return _cached_globals_paths
 
-    try:
-        import SarahMemoryGlobals as G
-        DATASETS_DIR = getattr(G, "DATASETS_DIR", os.path.join(DATA_DIR, "memory", "datasets"))
-        SETTINGS_DIR = getattr(G, "SETTINGS_DIR", os.path.join(DATA_DIR, "settings"))
-        THEMES_DIR = getattr(G, "THEMES_DIR", os.path.join(DATA_DIR, "mods", "themes"))
-        DOCUMENTS_DIR = getattr(G, "DOCUMENTS_DIR", os.path.join(BASE_DIR, "documents"))
-        USER_DB_PATH = getattr(G, "USER_DB_PATH", os.path.join(DATASETS_DIR, "user_profile.db"))
-    except Exception as e:
-        app_logger.warning(f"SarahMemoryGlobals (paths) import failed or missing attributes. Falling back: {e}")
-        DATASETS_DIR = os.path.join(DATA_DIR, "memory", "datasets")
-        SETTINGS_DIR = os.path.join(DATA_DIR, "settings")
-        THEMES_DIR = os.path.join(DATA_DIR, "mods", "themes")
-        DOCUMENTS_DIR = os.path.join(DATA_DIR, "documents")
-        USER_DB_PATH = os.path.join(DATASETS_DIR, "user_profile.db")
+    # Defaults (work on PythonAnywhere / headless Linux too)
+    root_dir = os.path.abspath(os.getcwd())
+    data_dir = os.path.join(root_dir, "data")
+    sandbox_dir = os.path.join(root_dir, "sandbox")
+    addons_dir = os.path.join(data_dir, "addons")
+    mods_dir = os.path.join(root_dir, "mods")
+    settings_dir = os.path.join(data_dir, "settings")
 
-    for d in (DATASETS_DIR, SETTINGS_DIR, THEMES_DIR, DOCUMENTS_DIR):
-        _ensure_dir(d)
+    try:
+        import SarahMemoryGlobals as smg  # type: ignore
+        root_dir = os.path.abspath(getattr(smg, "ROOT_DIR", root_dir))
+        data_dir = os.path.abspath(getattr(smg, "DATA_DIR", data_dir))
+        sandbox_dir = os.path.abspath(getattr(smg, "SANDBOX_DIR", sandbox_dir))
+        addons_dir = os.path.abspath(getattr(smg, "ADDONS_DIR", addons_dir))
+        mods_dir = os.path.abspath(getattr(smg, "MODS_DIR", mods_dir))
+        settings_dir = os.path.abspath(getattr(smg, "SETTINGS_DIR", settings_dir))
+    except Exception:
+        pass
+
+    # Ensure dirs exist (best-effort)
+    for d in (data_dir, sandbox_dir, addons_dir, mods_dir, settings_dir):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
 
     _cached_globals_paths = {
-        "DATASETS_DIR": DATASETS_DIR,
-        "SETTINGS_DIR": SETTINGS_DIR,
-        "THEMES_DIR": THEMES_DIR,
-        "DOCUMENTS_DIR": DOCUMENTS_DIR,
-        "USER_DB_PATH": USER_DB_PATH,
+        "ROOT_DIR": root_dir,
+        "DATA_DIR": data_dir,
+        "SANDBOX_DIR": sandbox_dir,
+        "ADDONS_DIR": addons_dir,
+        "MODS_DIR": mods_dir,
+        "SETTINGS_DIR": settings_dir,
     }
     return _cached_globals_paths
 
+
+def _globals_dir(key: str, default_rel: str) -> str:
+    """Return a string path from _globals_paths()[key].
+    Falls back to CWD/default_rel if missing or invalid."""
     try:
-        import SarahMemoryGlobals as G
-        DATASETS_DIR = getattr(G, "DATASETS_DIR", os.path.join(DATA_DIR, "memory", "datasets"))
-        SETTINGS_DIR = getattr(G, "SETTINGS_DIR", os.path.join(DATA_DIR, "settings"))
-        THEMES_DIR = getattr(G, "THEMES_DIR", os.path.join(DATA_DIR, "mods", "themes"))
-        DOCUMENTS_DIR = getattr(G, "DOCUMENTS_DIR", os.path.join(BASE_DIR, "documents"))
-        USER_DB_PATH = getattr(G, "USER_DB_PATH", os.path.join(DATASETS_DIR, "user_profile.db"))
-    except Exception as e:
-        app_logger.warning(f"SarahMemoryGlobals (paths) import failed or missing attributes. Falling back: {e}")
-        DATASETS_DIR = os.path.join(DATA_DIR, "memory", "datasets")
-        SETTINGS_DIR = os.path.join(DATA_DIR, "settings")
-        THEMES_DIR = os.path.join(DATA_DIR, "mods", "themes")
-        DOCUMENTS_DIR = os.path.join(DATA_DIR, "documents")
-        USER_DB_PATH = os.path.join(DATASETS_DIR, "user_profile.db")
+        d = _globals_paths()
+        if isinstance(d, dict):
+            v = d.get(key)
+            if isinstance(v, (str, bytes, os.PathLike)):
+                return os.fspath(v)
+    except Exception:
+        pass
+    return os.path.join(os.path.abspath(os.getcwd()), default_rel)
 
-    for d in (DATASETS_DIR, SETTINGS_DIR, THEMES_DIR, DOCUMENTS_DIR):
-        _ensure_dir(d) # Ensure these directories exist
-
-    _cached_globals_paths = (DATASETS_DIR, SETTINGS_DIR, THEMES_DIR, DOCUMENTS_DIR, USER_DB_PATH)
-    return _cached_globals_paths
 
 
 def _get_hub_hmac_secret() -> str:
@@ -317,34 +428,39 @@ def _wallet_path_simple(node: str) -> str:
     return os.path.join(WALLETS_DIR, f"wallet-{safe}.srh")
 
 def ensure_wallet_simple(node: str):
-    p = _wallet_path_simple(node)
+    """Ensure minimal wallet tables exist."""
+    con = None
     try:
-        con = _connect_sqlite(p)
+        con = _connect_sqlite(WALLET_DB)
         cur = con.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS wallet (
-            id INTEGER PRIMARY KEY,
-            balance TEXT,
-            reputation REAL DEFAULT 0.0,
-            last_rep_ts REAL DEFAULT (strftime('%s','now')),
-            rep_daily REAL DEFAULT 0.0
-        )""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS txs (
-            id INTEGER PRIMARY KEY, ts REAL, delta TEXT, memo TEXT
-        )""")
-        cur.execute("SELECT COUNT(1) FROM wallet WHERE id=1")
-        row = cur.fetchone()
-        try:
-            n = int(row[0]) if row else 0
-        except Exception:
-            n = 0
-        if n <= 0:
-            cur.execute("INSERT INTO wallet(id,balance) VALUES(1, ?)", ("0",))
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS wallet (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT UNIQUE,
+                balance TEXT DEFAULT '0'
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT,
+                user_id TEXT,
+                delta TEXT,
+                note TEXT
+            )
+        """)
         con.commit()
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to ensure simple wallet for node {node}: {e}")
+        return True
+    except Exception as e:
+        logger.exception("ensure_wallet_simple failed: %s", e)
+        return False
     finally:
-        if con: con.close()
-    return p
+        try:
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
+
 
 def get_balance_simple(path: str) -> Decimal:
     balance = Decimal("0")
@@ -362,40 +478,122 @@ def get_balance_simple(path: str) -> Decimal:
     return balance
 
 def read_top_nodes(limit=10):
-    # Prefer richer ledger if present
-    if ledger_mod and _safe_getattr(ledger_mod, "top_nodes"):
+    """Return top nodes for the public leaderboard.
+
+    Preferred source (when enabled): GoogieHost MySQL table `sm_network_nodes`
+      - ordered by `trust_score` DESC
+      - limited to `limit`
+
+    Fallback source: local SQLite wallet (legacy/demo)
+    """
+    # --- Cloud MySQL path (preferred) ---
+    try:
+        cloud_enabled = str(os.getenv("CLOUD_DB_ENABLED", "false")).strip().lower() in ("1", "true", "yes", "on")
+        if cloud_enabled:
+            # Local import so the server can still boot even if MySQL client isn't installed.
+            try:
+                import pymysql  # type: ignore
+            except Exception:
+                pymysql = None
+
+            if pymysql is not None:
+                host = os.getenv("CLOUD_DB_HOST") or ""
+                name = os.getenv("CLOUD_DB_NAME") or ""
+                user = os.getenv("CLOUD_DB_USER") or ""
+                pwd = os.getenv("CLOUD_DB_PASSWORD") or ""
+                port = int(os.getenv("CLOUD_DB_PORT") or "3306")
+
+                if host and name and user and pwd:
+                    con = None
+                    try:
+                        con = pymysql.connect(
+                            host=host,
+                            user=user,
+                            password=pwd,
+                            database=name,
+                            port=port,
+                            connect_timeout=5,
+                            read_timeout=5,
+                            write_timeout=5,
+                            cursorclass=pymysql.cursors.DictCursor,
+                            charset="utf8mb4",
+                        )
+                        with con.cursor() as cur:
+                            cur.execute(
+                                """
+                                SELECT node_name, node_id, ip_address, is_online, trust_score
+                                FROM sm_network_nodes
+                                ORDER BY trust_score DESC, id ASC
+                                LIMIT %s
+                                """,
+                                (max(1, int(limit)),),
+                            )
+                            rows = cur.fetchall() or []
+                        leaders = []
+                        rank = 1
+                        for r in rows:
+                            leaders.append(
+                                {
+                                    "rank": rank,
+                                    "name": (r.get("node_name") or r.get("node_id") or "").strip() or f"Node-{rank}",
+                                    "org": "SarahMemory Node",
+                                    "rep": float(r.get("trust_score") or 0),
+                                    "node_id": r.get("node_id"),
+                                    "is_online": int(r.get("is_online") or 0),
+                                    "ip": r.get("ip_address"),
+                                }
+                            )
+                            rank += 1
+                        return leaders
+                    except Exception as e:
+                        logger.debug("read_top_nodes cloud MySQL failed: %s", e)
+                    finally:
+                        try:
+                            if con is not None:
+                                con.close()
+                        except Exception:
+                            pass
+    except Exception as e:
+        logger.debug("read_top_nodes cloud config failed: %s", e)
+
+    # --- Local fallback path (SQLite wallet) ---
+    ensure_wallet_simple()
+    con = None
+    try:
+        con = _connect_sqlite(WALLET_DB)
+        cur = con.cursor()
+        cur.execute("SELECT user_id, balance FROM wallet")
+        rows = cur.fetchall() or []
+        data = []
+        for r in rows:
+            uid = r[0]
+            bal = Decimal(str(r[1] if r[1] is not None else "0"))
+            data.append({
+                "rank": 0,
+                "name": uid,
+                "org": "Local Wallet",
+                "rep": float(bal),
+                "user_id": uid,
+                "balance": str(bal),
+            })
+        data.sort(key=lambda x: Decimal(str(x.get("rep", 0))), reverse=True)
+        # fill ranks
+        for i, item in enumerate(data[: max(1, int(limit))], start=1):
+            item["rank"] = i
+        return data[: max(1, int(limit))]
+    except Exception as e:
+        logger.debug("read_top_nodes sqlite fallback failed: %s", e)
+        return []
+    finally:
         try:
-            res = ledger_mod.top_nodes()
-            return res.get_json().get("leaders", [])
-        except Exception as e:
-            app_logger.warning(f"Error using SarahMemoryLedger.top_nodes, falling back to simple wallet: {e}")
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
 
-    rows = []
-    # Using glob.iglob for more memory-efficient iteration over many files if any
-    for fn in glob.iglob(os.path.join(WALLETS_DIR, "wallet-*.srh")):
-        con = None
-        try:
-            node = os.path.basename(fn).replace("wallet-", "").replace(".srh", "")
-            con = _connect_sqlite(fn)
-            cur = con.cursor()
-            cur.execute("SELECT balance, reputation FROM wallet WHERE id=1")
-            r = cur.fetchone()
-            bal = Decimal(str(r)) if r and r is not None else Decimal("0")
-            rep = float(r) if r and r is not None else 0.0
-            rows.append({"node": node, "balance": str(bal), "reputation": rep})
-        except sqlite3.Error as e:
-            app_logger.warning(f"Failed to read simple wallet for {fn}: {e}")
-        except Exception as e: # Catch other potential issues like Decimal conversion
-            app_logger.warning(f"General error reading simple wallet for {fn}: {e}")
-        finally:
-            if con: con.close()
 
-    rows.sort(key=lambda r: (Decimal(r), r), reverse=True)
-    return rows
 
-# ---------------------------------------------------------------------------
-# DB: meta tables (merged)
-# ---------------------------------------------------------------------------
+
 def ensure_meta_db():
     con = None
     try:
@@ -536,51 +734,33 @@ def api_session_bootstrap():
 
 @app.route("/api/")
 def api_index():
+    """API root health banner (JSON).
+
+    NOTE:
+    - The Ranking SPA is served at "/" (root_index).
+    - "/api/" is reserved for programmatic health/status checks used by the frontend heartbeat.
     """
-    API root:
-    - If a hub/leaderboard index.html exists, serve that.
-      We check both WEB_DIR and STATIC_DIR so this works on all layouts:
-        - Local:   BASE_DIR/api/server/static/index.html
-        - PA:      /home/Softdev0/SarahMemory/api/server/static/index.html
-        - Web:     https://www.sarahmemory.com/api/server/static/index.html
-    - Otherwise, return a simple JSON health banner.
-    """
-    candidates = []
-
-    # Template-based (if you ever put Jinja templates into WEB_DIR)
-    idx_web = os.path.join(WEB_DIR, "index.html")
-    if os.path.exists(idx_web):
-        try:
-            leaders = read_top_nodes(limit=10)
-            return render_template("index.html", leaders=leaders)
-        except Exception as e:
-            app_logger.warning(f"Error rendering WEB_DIR index.html: {e}")
-            candidates.append(idx_web)
-
-    # Pure static fallback (the hub index you mentioned)
-    idx_static = os.path.join(STATIC_DIR, "index.html")
-    if os.path.exists(idx_static):
-        try:
-            return send_file(idx_static)
-        except Exception as e:
-            app_logger.warning(f"Error sending STATIC_DIR index.html: {e}")
-            candidates.append(idx_static)
-
-    # Last resort: JSON banner
     return jsonify(
         {
             "ok": True,
+            "running": True,
             "service": "SarahMemory API",
             "version": PROJECT_VERSION,
-            "note": "No index.html found in WEB_DIR or STATIC_DIR",
-            "checked": candidates,
         }
     )
 
 @app.route("/")
-def root_redirect():
-    # Prefer the local custom UI when present; otherwise fall back to the API hub.
-    return redirect("/ui/") if _ui_v8_exists() else redirect("/api/")
+def root_index():
+    """Serve the Ranking/Web UI (static SPA) at the site root.
+
+    PythonAnywhere serves /assets and /static via static mappings, but "/" must be handled
+    by Flask. If the UI build is present, return static/index.html; otherwise fall back
+    to the API banner.
+    """
+    index_path = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(index_path):
+        return send_from_directory(STATIC_DIR, "index.html")
+    return redirect("/api/")
 
 @app.route("/api/static/<path:filename>")
 def static_serv(filename):
@@ -618,41 +798,60 @@ def api_loose_assets(filename: str):
 
 @app.route("/api/leaderboard")
 def api_leaderboard():
-    return jsonify({"leaders": read_top_nodes(limit=10)})
+    cache_key = 'leaderboard:10'
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return jsonify(cached)
+    payload = {'leaders': read_top_nodes(limit=10)}
+    _cache_set(cache_key, payload, ttl_s=5.0)
+    return jsonify(payload)
 
-# Refactored for better health check
 def _perform_health_checks():
-    """Internal function to gather health status."""
-    ok, notes = True, []
+    """
+    Quick, safe checks for: DB availability, core modules importability, and basic config sanity.
+    Designed to run fast at boot and via /api/health.
+    """
+    results = {
+        "ok": True,
+        "checks": [],
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "version": APP_VERSION,
 
-    if not os.path.isdir(WALLETS_DIR):
-        ok = False
-        notes.append("wallets folder missing")
 
-    con = None
+    }
+
+    def _add(name: str, ok: bool, detail: str = ""):
+        results["checks"].append({"name": name, "ok": bool(ok), "detail": detail})
+        if not ok:
+            results["ok"] = False
+
+    # Core module imports (best-effort)
+    for mod_name in ("SarahMemoryGlobals", "SarahMemoryVoice", "SarahMemoryDatabase", "SarahMemoryAPI"):
+        try:
+            __import__(mod_name)
+            _add(f"import:{mod_name}", True, "ok")
+        except Exception as e:
+            _add(f"import:{mod_name}", False, str(e))
+
+    # SQLite DB reachable?
     try:
-        con = _connect_sqlite(META_DB)
-        con.execute("SELECT 1")
-    except sqlite3.Error as e:
-        ok = False
-        notes.append(f"meta DB inaccessible: {e}")
-        app_logger.error(f"Meta DB health check failed: {e}")
-    finally:
-        if con: con.close()
-
-    # On PythonAnywhere / pure-API mode, there may be no SarahMemoryMain process.
-    main_running = False
-    try:
-        checker = _safe_getattr(sys.modules, "_is_running") # Access from current module's globals
-        if callable(checker):
-            main_running = bool(checker())
+        con = _connect_sqlite(STATE_DB)
+        con.execute("CREATE TABLE IF NOT EXISTS _health_ping (id INTEGER PRIMARY KEY, ts TEXT)")
+        con.close()
+        _add("sqlite:state_db", True, os.path.abspath(STATE_DB))
     except Exception as e:
-        app_logger.warning(f"Failed to check if SarahMemoryMain is running: {e}")
+        _add("sqlite:state_db", False, str(e))
 
-    return ok, notes, main_running
+    # Basic flags
+    try:
+        running = bool(globals().get("_is_running", True))
+        _add("flag:is_running", True, str(running))
+    except Exception as e:
+        _add("flag:is_running", False, str(e))
 
+    return results
 
-@app.route("/api/health")
+@app.get("/api/health")
 def api_health():
     """
     Universal health endpoint.
@@ -690,6 +889,11 @@ def api_chat():
     """
     try:
         payload = request.get_json(silent=True) or {}
+        # Optional metadata (kept lightweight; used by UI when available)
+        intent = str(payload.get("intent") or "")
+        tone = str(payload.get("tone") or "")
+        complexity = str(payload.get("complexity") or "")
+        avatar_request = bool(payload.get("avatar_request") or payload.get("avatar") or False)
         text = (payload.get("text") or "").strip()
 
         if not text:
@@ -700,36 +904,37 @@ def api_chat():
             }), 400
 
         # ------------------------------------------------------------------
-        # Identity guardrails (keep branding consistent; avoid "trained by ..." drift)
-        # ------------------------------------------------------------------
-        low = text.lower().strip()
-        if low in ("what is your name", "whats your name", "what's your name", "who are you"):
-            return jsonify({
-                "ok": True,
-                "reply": "I'm Sarah — your SarahMemory AI companion.",
-                "meta": {"source": "identity_guard", "version": PROJECT_VERSION},
-            }), 200
-        if low in ("who created you", "who made you", "who built you"):
-            return jsonify({
-                "ok": True,
-                "reply": "I was created by Brian Lee Baros as part of the SarahMemory AiOS project.",
-                "meta": {"source": "identity_guard", "version": PROJECT_VERSION},
-            }), 200
-
-        # Optional hints from the Web UI (won’t break older callers)
-        intent = (payload.get("intent") or "question").strip()
-        tone = (payload.get("tone") or "friendly").strip()
-        complexity = (payload.get("complexity") or "adult").strip()
 
         # ------------------------------------------------------------------
-        # Quick avatar command bridge (WebUI can react if it sees avatar_request)
+        # Identity guardrails (keep branding consistent; prevent model/provider drift)
         # ------------------------------------------------------------------
-        avatar_request = None
-        m = re.search(r"\bchange\s+your\s+avatar\s+to\s+(.+)$", low)
-        if m:
-            avatar_prompt = (m.group(1) or "").strip()
-            if avatar_prompt:
-                avatar_request = {"prompt": avatar_prompt, "kind": "avatar"}
+        if _is_identity_question(text):
+            ident = _identity_payload()
+            low = (text or "").strip().lower()
+
+            if "version" in low:
+                reply = (
+                    f"My name is {ident['name']} — your {ident['platform']} companion. "
+                    f"Server version: {ident['version']}."
+                )
+            elif any(k in low for k in (
+                "who made you", "who created you", "creator", "who built you",
+                "who designed you", "designer", "engineer", "who engineered you",
+            )):
+                reply = f"I was created by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}."
+            elif "mission" in low:
+                reply = f"My mission is to help you as {ident['platform']} — fast, accurate, and user-controlled."
+            elif "brian lee baros" in low:
+                reply = f"{ident['creator']} is the creator/lead engineer of the {ident['platform']} project."
+            else:
+                reply = f"I'm {ident['name']} — your {ident['platform']} companion."
+
+            return jsonify({
+                "ok": True,
+                "reply": reply,
+                "identity": ident,
+                "meta": {"source": "identity_guard", "version": ident["version"]},
+            }), 200
 
         reply_str = ""
         engine_source = "api" # Default source
@@ -1067,19 +1272,38 @@ def hub_reply():
 # ---------------------------------------------------------------------------
 SARAH_API_KEY = os.environ.get("SARAH_API_KEY", "") # Keep variable name consistent
 
-def _api_key_auth_ok() -> bool: # Renamed for clarity vs. JWT auth
-    """Authenticates API requests using SARAH_API_KEY from environment."""
-    if not SARAH_API_KEY:
-        app_logger.warning("SARAH_API_KEY not configured. API key authentication skipped. Insecure for production.")
-        return True # For dev/testing, allow if no key set
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header.split(" ", 1).strip()
-        # Use hmac.compare_digest for constant-time comparison
-        return hmac.compare_digest(token, SARAH_API_KEY)
+def _api_key_auth_ok() -> bool:
+    """
+    Optional lightweight auth for admin-ish endpoints.
+    Accepts either:
+      - X-API-Key: <key>
+      - Authorization: Bearer <key>
+    """
+    # allow local / dev with no auth if explicitly configured
+    try:
+        if config is not None and getattr(config, "ALLOW_NOAUTH_LOCAL", False):
+            return True
+    except Exception:
+        pass
+
+    api_key = (os.environ.get("SARAHMEMORY_API_KEY") or os.environ.get("API_KEY") or "").strip()
+    if not api_key:
+        # Backward compatible: no key configured => open
+        return True
+
+    hdr = (request.headers.get("X-API-Key") or "").strip()
+    if hdr and hmac.compare_digest(hdr, api_key):
+        return True
+
+    auth_header = (request.headers.get("Authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        if token and hmac.compare_digest(token, api_key):
+            return True
+
     return False
 
-@app.route("/api/register-node", methods=['POST'])
+@app.post("/api/register-node")
 def api_register_node():
     if not _api_key_auth_ok():
         return jsonify({"error": "Unauthorized: Invalid or missing API key"}), 401
@@ -1096,6 +1320,7 @@ def api_register_node():
                     (node_id, time.time(), meta))
         con.commit()
         ensure_wallet_simple(node_id)
+        _cache_invalidate('leaderboard')
         return jsonify({"ok": True}), 200
     except sqlite3.Error as e:
         app_logger.error(f"Failed to register node {node_id} to {META_DB}: {e}", exc_info=True)
@@ -1218,8 +1443,18 @@ def add_security_headers(resp):
         app_logger.error(f"Failed to add security headers: {e}")
     return resp
 
-# Centralized settings file path
-SETTINGS_FILE = os.path.join(_globals_paths()["SETTINGS_DIR"], "settings.json")  # SETTINGS_DIR/settings.json
+# Centralized settings file path (robust for headless/WSGI environments)
+# NOTE: Avoid KeyError at import-time if _globals_paths() returns a partial dict during early init.
+try:
+    _gp = _globals_paths() or {}
+    _settings_dir = _gp.get("SETTINGS_DIR") or os.path.join(_gp.get("DATA_DIR", os.path.join(os.getcwd(), "data")), "settings")
+    try:
+        os.makedirs(_settings_dir, exist_ok=True)
+    except Exception:
+        pass
+    SETTINGS_FILE = os.path.join(_settings_dir, "settings.json")  # SETTINGS_DIR/settings.json
+except Exception:
+    SETTINGS_FILE = os.path.join(os.getcwd(), "settings.json")
 
 @app.route("/get_user_setting")
 def get_user_setting():
@@ -1256,7 +1491,7 @@ def set_user_setting():
             app_logger.error(f"Error reading settings file {SETTINGS_FILE} for update: {e}")
             data = {} # If file is corrupted, start fresh with new setting
 
-    data = val
+    data[key] = val
     _ensure_dir(os.path.dirname(SETTINGS_FILE)) # Ensure settings directory exists
     try:
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
@@ -1361,19 +1596,56 @@ def toggle_camera():
     app.config["CAMERA_ON"] = state # Use app.config for global state
     return jsonify({"status":"ok","camera": state})
 
-@app.route("/toggle_microphone")
+@app.route("/toggle_microphone", methods=["POST"])
 def toggle_microphone():
-    state = request.args.get("state","").lower() in ("true","1","yes","on")
-    app.config["MIC_ON"] = state # Use app.config for global state
-    return jsonify({"status":"ok","microphone": state})
+    """
+    Enable/disable microphone capture for the UI.
+    Accepts JSON: { "enabled": true/false }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        desired = bool(data.get("enabled", True))
 
-@app.route("/toggle_voice_output")
+        global MIC_ON, MIC_ENABLED
+        MIC_ON = desired
+        MIC_ON = desired
+        MIC_ENABLED = MIC_ON
+
+        try:
+            save_state("MIC_ON", bool(desired))
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "mic_enabled": bool(desired)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/toggle_voice_output", methods=["POST"])
 def toggle_voice_output():
-    state = request.args.get("state","").lower() in ("true","1","yes","on")
-    app.config["VOICE_OUTPUT_ON"] = state # Use app.config for global state
-    return jsonify({"status":"ok","voice_output": state})
+    """
+    Enable/disable voice output for the UI.
+    Accepts JSON: { "enabled": true/false }
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        desired = bool(data.get("enabled", True))
 
-# Telecom (light stubs)
+        global VOICE_OUTPUT_ON, VOICE_OUTPUT_ENABLED
+        VOICE_OUTPUT_ON = desired
+        TTS_ON = desired
+        TTS_ENABLED = TTS_ON
+        VOICE_OUTPUT_ON = TTS_ON
+        VOICE_OUTPUT_ENABLED = TTS_ON
+
+        try:
+            save_state("TTS_ON", bool(desired))
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "voice_output_enabled": bool(desired)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/check_call_active")
 def check_call_active():
     return jsonify({"active": app.config.get("CALL_ACTIVE", False)}) # Use app.config
@@ -1527,7 +1799,7 @@ def delete_contact():
         if con: con.close()
 
 # Reminders
-REMINDERS_DB_PATH = os.path.join(_globals_paths(), "reminders.db") # _globals_paths() is DATASETS_DIR
+REMINDERS_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "reminders.db")
 
 def _init_reminders_db(db_path):
     """Helper to initialize reminders table."""
@@ -1628,7 +1900,7 @@ def run_automation_trigger():
         return jsonify({"status":"error", "error":str(e)}), 500
 
 # Calendar + Chat history (for Web UI)
-CHAT_HISTORY_DB_PATH = os.path.join(_globals_paths(), "context_history.db") # _globals_paths() is DATASETS_DIR
+CHAT_HISTORY_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "context_history.db")
 
 @app.route("/get_chat_threads_by_date")
 def get_chat_threads_by_date():
@@ -1878,6 +2150,7 @@ def _start_sarah_main():
 
     return False
 
+@app.post("/api/launch")
 def api_launch():
     try:
         if _is_running():
@@ -2030,15 +2303,15 @@ def auth_register():
 def auth_login():
     """Phase B: Login user with email, password, and PIN."""
     try:
-        data = request.json
-        email = data.get('email', '').strip().lower()
-        password = data.get('password', '')
-        pin = data.get('pin', '')
+        data = request.get_json(silent=True) or {}
+        email = (data.get('email') or '').strip().lower()
+        password = data.get('password') or ''
+        pin = data.get('pin') or ''
 
         if not email or not password or not pin:
             return jsonify({'error': 'Email, password, and PIN are required.'}), 400
 
-        # Import database function
+        # Import database function (cloud user auth)
         try:
             from SarahMemoryDatabase import _get_cloud_conn, sm_get_user_auth_data, sm_update_last_login
         except ImportError:
@@ -2054,53 +2327,67 @@ def auth_login():
             if not conn:
                 return jsonify({'error': 'Cloud database connection unavailable.'}), 503
 
-            user_auth = sm_get_user_auth_data(email, conn) # Fetch relevant fields for auth
+            user_auth = sm_get_user_auth_data(email, conn)
             if not user_auth:
-                return jsonify({'error': 'Invalid credentials.'}), 401 # Generic message for security
-
-            if not user_auth:
-                return jsonify({'error': 'Account disabled. Please contact support.'}), 403
-
-            # Verify password
-            if not bcrypt.checkpw(password.encode('utf-8'), user_auth.encode('utf-8')):
                 return jsonify({'error': 'Invalid credentials.'}), 401
 
-            # Verify PIN
-            if not bcrypt.checkpw(pin.encode('utf-8'), user_auth.encode('utf-8')):
-                return jsonify({'error': 'Invalid PIN.'}), 401
+            # Normalize auth record
+            def _field(obj, *names, default=None):
+                if isinstance(obj, dict):
+                    for n in names:
+                        if n in obj and obj[n] is not None:
+                            return obj[n]
+                try:
+                    for n in names:
+                        try:
+                            v = obj[n]
+                            if v is not None:
+                                return v
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                return default
 
-            # Check if email verified
-            if not user_auth:
-                return jsonify({'error': 'Email not verified. Please check your inbox for verification email.'}), 403
+            user_id = _field(user_auth, 'user_id', 'id', 'uid', default=email)
+            display_name = _field(user_auth, 'display_name', 'name', 'username', default=email.split('@')[0])
+            pw_hash = _field(user_auth, 'password_hash', 'pass_hash', 'password', 'pw_hash', default=None)
+            pin_hash = _field(user_auth, 'pin_hash', 'pinhash', 'pin', default=None)
+            is_active = _field(user_auth, 'is_active', 'active', default=1)
 
-            # Generate JWT token
-            token = generate_jwt_token(user_auth, user_auth, user_auth)
+            if str(is_active) in ("0", "false", "False", "no", "NO"):
+                return jsonify({'error': 'Account disabled. Please contact support.'}), 403
 
-            # Update last_login
-            sm_update_last_login(user_auth, conn)
+            if not pw_hash or not bcrypt.checkpw(password.encode('utf-8'), str(pw_hash).encode('utf-8')):
+                return jsonify({'error': 'Invalid credentials.'}), 401
 
+            if not pin_hash or not bcrypt.checkpw(pin.encode('utf-8'), str(pin_hash).encode('utf-8')):
+                return jsonify({'error': 'Invalid credentials.'}), 401
+
+            try:
+                sm_update_last_login(user_id, conn)
+            except Exception:
+                pass
+
+            token = generate_jwt_token(user_id, email, display_name)
             return jsonify({
-                'success': True,
+                'ok': True,
                 'token': token,
-                'user': {
-                    'id': user_auth,
-                    'email': user_auth,
-                    'display_name': user_auth
-                }
+                'user': {'user_id': user_id, 'email': email, 'display_name': display_name}
             }), 200
 
-        except Exception as e:
-            app_logger.exception(f" Login failed for {email}.")
-            return jsonify({'error': 'Login failed due to unexpected error.'}), 500
         finally:
-            if conn: conn.close()
+            try:
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
 
     except Exception as e:
-        app_logger.exception(f" Unhandled error during login route processing.")
-        return jsonify({'error': 'Internal server error during login.'}), 500
+        app_logger.error(f"auth_login failed: {e}", exc_info=True)
+        return jsonify({'error': 'Login failed.'}), 500
 
-
-@app.route('/api/auth/verify-email', methods=['POST'])
+@app.get("/api/auth/verify-email")
 def auth_verify_email():
     """Phase B: Verify email with code."""
     try:
@@ -2155,7 +2442,7 @@ def auth_verify_email():
         app_logger.exception(f" Unhandled error during email verification route processing.")
         return jsonify({'error': 'Internal server error during email verification.'}), 500
 
-@app.route('/api/user/preferences', methods=['POST'])
+@app.route('/api/user/preferences', methods=['GET', 'PUT', 'POST'])
 @require_auth
 def user_preferences():
     """Phase B: Get or update user preferences."""
@@ -2671,38 +2958,33 @@ def api_top_nodes():
 # --------------------------- SIMPLE SETTINGS SNAPSHOT ---------------------
 
 @app.route("/api/download/<path:filename>")
+@app.route("/api/download/<path:filename>")
 def api_download(filename):
-    """
-    Basic file download endpoint under DATA_DIR for diagnostics/testing.
-    **WARNING**: Ensure appropriate authorization/sanitization for security.
-    """
-    # Basic path traversal protection for filename
-    if ".." in filename or filename.startswith("/"):
-        return jsonify({"ok": False, "error": "Invalid path for download."}), 400
+    """Download a file that lives under DATA_DIR (safe path enforced)."""
+    if not filename:
+        return jsonify({"ok": False, "error": "Missing filename"}), 400
 
-    full_path = os.path.join(DATA_DIR, filename)
+    # Normalize and enforce containment within DATA_DIR
+    try:
+        base = os.path.abspath(DATA_DIR)
+        full_path = os.path.abspath(os.path.join(base, filename))
+        common_path = os.path.commonpath([base, full_path])
+    except Exception:
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
 
-    # Further security: prevent downloading sensitive files outside DATA_DIR
-    # Ensure full_path is truly within DATA_DIR
-    common_prefix = os.path.commonprefix()
-    if common_prefix != DATA_DIR: # If the common prefix is not the entire DATA_DIR, it's outside
-        app_logger.warning(f"Attempted download outside DATA_DIR: {full_path}")
-        return jsonify({"ok": False, "error": "Unauthorized file access."}), 403
+    if common_path != base:
+        app_logger.warning("Attempted download outside DATA_DIR: %s", full_path)
+        return jsonify({"ok": False, "error": "Invalid path"}), 400
 
-
-    if not os.path.exists(full_path):
-        return jsonify({"ok": False, "error": "File not found."}), 404
-
-    # Check if it's a directory
-    if os.path.isdir(full_path):
-        return jsonify({"ok": False, "error": "Cannot download directories directly."}), 400
+    if not os.path.exists(full_path) or not os.path.isfile(full_path):
+        return jsonify({"ok": False, "error": "File not found"}), 404
 
     try:
-        return send_file(full_path, as_attachment=True, download_name=os.path.basename(filename))
-    except Exception as e:
-        app_logger.exception(f"Error serving file for download: {full_path}")
-        return jsonify({"ok": False, "error": f"Error downloading file: {str(e)}"}), 500
-
+        # Use send_file so nested paths are fine after the containment check.
+        return send_file(full_path, as_attachment=True, download_name=os.path.basename(full_path))
+    except TypeError:
+        # Flask <2.0 compatibility: download_name not supported
+        return send_file(full_path, as_attachment=True)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
