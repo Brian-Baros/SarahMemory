@@ -2,7 +2,7 @@
 File: SarahMemoryDatabase.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-12-05
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -1279,135 +1279,60 @@ def load_quick_facts(limit=50):
 
 # === v7.7.3 schema guard: create missing tables at runtime (idempotent) ===
 def ensure_core_schema():
-    """Idempotent schema guard used across local + cloud deployments.
-
-    This function MUST be safe to call repeatedly and must never raise.
-    It ensures the minimal columns required by runtime logging paths exist,
-    even on legacy databases created by older versions.
-    """
     try:
-        # Resolve dataset directory safely (cross-platform).
-        try:
-            datasets_dir = getattr(config, "DATASETS_DIR", DATASETS_DIR)
-        except Exception:
-            datasets_dir = DATASETS_DIR
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            # Idempotent schema guard for legacy databases (never raises)
+            def _ensure_column(cur, table: str, col: str, col_type: str) -> None:
+                try:
+                    cur.execute(f"PRAGMA table_info({table})")
+                    existing = [r[1] for r in cur.fetchall()]
+                    if col not in existing:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass
 
-        # Helper: ensure a column exists on a table (best-effort, never raises).
-        def _ensure_column(cur, table: str, col: str, col_def: str):
-            try:
-                cur.execute(f"PRAGMA table_info({table})")
-                cols = [r[1] for r in (cur.fetchall() or [])]
-                if col not in cols:
-                    cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
-            except Exception:
-                pass
-
-        # Ensure core dirs exist.
-        try:
-            os.makedirs(datasets_dir, exist_ok=True)
-        except Exception:
-            pass
-
-        # Databases that may receive conversation logs depending on module/version.
-        core_dbs = []
-        try:
-            if DB_PATH:
-                core_dbs.append(DB_PATH)
-        except Exception:
-            pass
-        # Some modules reuse context_history.db for chat/conversation logging.
-        try:
-            core_dbs.append(os.path.join(datasets_dir, "context_history.db"))
-        except Exception:
-            pass
-
-        # Normalize + dedupe
-        core_dbs = [os.path.abspath(p) for p in core_dbs if p]
-        seen = set()
-        core_dbs = [p for p in core_dbs if not (p in seen or seen.add(p))]
-
-        for path in core_dbs:
-            try:
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-            except Exception:
-                pass
-            try:
-                with sqlite3.connect(path) as conn:
-                    c = conn.cursor()
-                    # conversations table (required by Phase diagnostics logging)
-                    c.execute("""CREATE TABLE IF NOT EXISTS conversations (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT,
-                        user_input TEXT,
-                        ai_response TEXT,
-                        intent TEXT,
-                        sentiment_score REAL,
-                        emotional_state TEXT
-                    )""")
-                    _ensure_column(c, "conversations", "intent", "TEXT")
-                    _ensure_column(c, "conversations", "sentiment_score", "REAL")
-                    _ensure_column(c, "conversations", "emotional_state", "TEXT")
-                    conn.commit()
-            except Exception:
-                # Never let schema drift break boot.
-                pass
-
-        # intent logs live in primary DB_PATH (ai_learning.db) only
-        try:
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute("""CREATE TABLE IF NOT EXISTS intent_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    intent TEXT,
-                    confidence REAL,
-                    extras TEXT
-                )""")
-                conn.commit()
-        except Exception:
-            pass
-
-        # personality DB schema guards
-        per_db = os.path.join(datasets_dir, "personality1.db")
-        try:
-            os.makedirs(os.path.dirname(per_db), exist_ok=True)
-        except Exception:
-            pass
-
-        try:
-            with sqlite3.connect(per_db) as pconn:
-                pc = pconn.cursor()
-                pc.execute("""CREATE TABLE IF NOT EXISTS emotion_states (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    joy REAL, anger REAL, fear REAL, sadness REAL, curiosity REAL, trust REAL,
-                    valence REAL, arousal REAL, primary_label TEXT, fer_source TEXT, notes TEXT
-                )""")
-                pc.execute("""CREATE TABLE IF NOT EXISTS responses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    intent TEXT,
-                    response TEXT,
-                    tone TEXT,
-                    complexity TEXT
-                )""")
-                # traits schema: ensure last_updated exists (legacy drift)
-                pc.execute("""CREATE TABLE IF NOT EXISTS traits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trait TEXT,
-                    value REAL,
-                    last_updated TEXT
-                )""")
-                _ensure_column(pc, "traits", "last_updated", "TEXT")
-                pconn.commit()
-        except Exception:
-            pass
-
+            c.execute("""CREATE TABLE IF NOT EXISTS conversations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                user_input TEXT,
+                ai_response TEXT,
+                intent TEXT,
+                sentiment_score REAL,
+                emotional_state TEXT,
+                session_id TEXT)""")
+            
+            _ensure_column(c, "conversations", "intent", "TEXT")
+            _ensure_column(c, "conversations", "sentiment_score", "REAL")
+            _ensure_column(c, "conversations", "emotional_state", "TEXT")
+            _ensure_column(c, "conversations", "session_id", "TEXT")
+            c.execute("""CREATE TABLE IF NOT EXISTS intent_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                intent TEXT,
+                confidence REAL,
+                extras TEXT)""")
+            conn.commit()
+        # personality1.db minimal tables
+        per_db = os.path.join(config.DATASETS_DIR, "personality1.db")
+        with sqlite3.connect(per_db) as pconn:
+            pc = pconn.cursor()
+            pc.execute("""CREATE TABLE IF NOT EXISTS emotion_states (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT,
+                joy REAL, anger REAL, fear REAL, sadness REAL, curiosity REAL, trust REAL,
+                valence REAL, arousal REAL, primary_label TEXT, fer_source TEXT, notes TEXT)""")
+            pc.execute("""CREATE TABLE IF NOT EXISTS responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent TEXT,
+                response TEXT,
+                tone TEXT,
+                complexity TEXT)""")
+            pconn.commit()
+            
     except Exception as e:
-        try:
-            logger.error(f"[ensure_core_schema] {e}")
-        except Exception:
-            pass
+        logger.error(f"[ensure_core_schema] {e}")
 def save_emotion_state(state: dict, fer_source: str = "unknown", notes: str = "") -> bool:
     try:
         ensure_core_schema()
@@ -1821,7 +1746,6 @@ def sm_get_conversation_messages(conversation_id, limit=50):
     finally:
         if conn:
             conn.close()
-            
 # ====================================================================
 # END OF SarahMemoryDatabase.py v8.0.0
 # ====================================================================
