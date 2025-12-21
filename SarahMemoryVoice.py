@@ -2,7 +2,7 @@
 File: SarahMemoryVoice.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-12-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -32,6 +32,7 @@ FEATURES:
 
 from __future__ import annotations
 
+import traceback
 import logging
 import os
 import sqlite3
@@ -39,7 +40,14 @@ from datetime import datetime
 import time
 import json
 from typing import Any, Dict, Optional, List
-
+# Optional custom voice model support (.pt files)
+try:
+    import torch
+    CUSTOM_TTS_AVAILABLE = True
+except ImportError:
+    CUSTOM_TTS_AVAILABLE = False
+    logging.warning("[VoiceEngine] Torch not available — custom .pt voices disabled")
+    
 # =============================================================================
 # OPTIONAL/NUMERICAL LIBRARIES
 # =============================================================================
@@ -937,17 +945,41 @@ def configure_voice(opts: Dict[str, Any]) -> None:
     except Exception as e:
         logger.error("[v8.0] configure_voice failed: %s", e)
 
+# Registry for custom TTS models loaded at runtime (for future expansion)
+custom_voice_models: Dict[str, Any] = {}
 
-def import_custom_voice_profile(filepath: str) -> None:
-    """v8.0: Placeholder for future custom voice import logic."""
+def import_custom_voice_profile(filepath: str):
+    """
+    Import a user-provided .pt TTS voice model.
+    Automatically registers it in VOICE_PROFILES and custom_voice_models.
+    """
     try:
-        if os.path.exists(filepath):
-            logger.info("[v8.0] Custom voice profile loaded from %s", filepath)
-        else:
-            logger.warning("[v8.0] Custom voice profile path invalid: %s", filepath)
-    except Exception as e:
-        logger.error("[v8.0] Failed to handle custom voice profile '%s': %s", filepath, e)
+        if not CUSTOM_TTS_AVAILABLE:
+            logger.error("[VoiceEngine] Torch not available — cannot load .pt voice files")
+            return False
 
+        if not os.path.exists(filepath):
+            logger.error(f"[VoiceEngine] Custom voice file not found: {filepath}")
+            return False
+
+        voice_name = os.path.splitext(os.path.basename(filepath))[0]
+        model = torch.jit.load(filepath, map_location="cpu")
+
+        # Add to global registry
+        custom_voice_models[voice_name] = model
+
+        # Mark it as a known profile so WebUI can list it
+        # (we keep the simple gender string, consistent with existing VOICE_PROFILES)
+        if voice_name not in VOICE_PROFILES:
+            VOICE_PROFILES[voice_name] = "custom"
+
+        logger.info(f"[VoiceEngine] Successfully imported custom voice: {voice_name}")
+        return True
+
+    except Exception as e:
+        logger.error(f"[VoiceEngine] Failed to import custom voice {filepath}: {e}")
+        traceback.print_exc()
+        return False
 
 # =============================================================================
 # MODULE SELF-TEST

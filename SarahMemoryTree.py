@@ -1,5 +1,19 @@
-#!/usr/bin/env python3
-"""
+"""--==The SarahMemory Project==--
+File: SarahMemoryTree.py
+Part of the SarahMemory Companion AI-bot Platform
+Version: v8.0.0
+Date: 2025-12-21
+Time: 10:11:54
+Author: © 2025 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+===============================================================================
+
 SarahMemoryTree.py (PythonAnywhere-safe)
 - Generates a directory tree for ~/SarahMemory
 - Writes to tree_YYYYMMDD-HHMMSS.txt (never overwrites to 0 bytes)
@@ -84,3 +98,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ====================================================================
+# END OF SarahMemoryTree.py v8.0.0
+# ====================================================================

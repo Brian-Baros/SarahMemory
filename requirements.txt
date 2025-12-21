@@ -60,6 +60,7 @@ faiss-cpu>=1.7.4,<1.13
 scikit-learn>=1.4,<1.8
 numpy>=1.26,<2.4
 huggingface-hub>=0.32,<2.0
+agentlightning
 
 
 # ----------------------------------------------------------
@@ -118,6 +119,8 @@ regex>=2024.11.6
 flask>=2.2,<3.2
 flask_cors>=3.0,<4.0
 fastapi>=0.110,<0.121
+waitress
+
 
 # HTTP clients used by SarahMemoryResearch and internal API calls.
 requests>=2.31,<3.0

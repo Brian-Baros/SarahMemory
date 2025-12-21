@@ -2,7 +2,7 @@
 File: SarahMemoryLyricsToSong.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-12-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -274,6 +274,14 @@ try:
 except ImportError:
     SCIPY_AVAILABLE = False
     logging.warning("[LyricsToSong] scipy not available - some DSP features disabled")
+
+# Optional custom voice model support (.pt files for singing/tts)
+try:
+    import torch
+    CUSTOM_TTS_AVAILABLE = True
+except ImportError:
+    CUSTOM_TTS_AVAILABLE = False
+    logging.warning("[LyricsToSong] Torch not available - custom .pt voices disabled")
 
 # Setup logging
 logging.basicConfig(
@@ -816,6 +824,35 @@ class VocalSynthesizer:
         """Initialize the Vocal Synthesizer"""
         self.projects = {}  # project_id -> VocalProject
         self.voice_profiles = VOICE_PROFILES.copy()
+        # Load custom .pt voices from ../resources/voices
+        from SarahMemoryGlobals import VOICES_DIR
+        self.custom_voice_models = {}  # filename → loaded torch model
+
+        if CUSTOM_TTS_AVAILABLE and os.path.exists(VOICES_DIR):
+            for file in os.listdir(VOICES_DIR):
+                if file.endswith(".pt"):
+                    voice_name = os.path.splitext(file)[0]  # ex: en-Carter_man
+                    filepath = os.path.join(VOICES_DIR, file)
+                    try:
+                        model = torch.jit.load(filepath, map_location="cpu")
+                        self.custom_voice_models[voice_name] = model
+
+                        # Register usable profile
+                        self.voice_profiles[voice_name] = {
+                            "gender": "custom",
+                            "range": (130.81, 523.25),
+                            "pitch_shift": 0,
+                            "formant_shift": 1.0,
+                            "vibrato_rate": 0,
+                            "vibrato_depth": 0,
+                            "is_custom": True,
+                            "file": filepath
+                        }
+
+                        logger.info(f"[VoiceEngine] Loaded custom voice model: {voice_name}")
+                    except Exception as e:
+                        logger.error(f"[VoiceEngine] Failed to load custom voice {file}: {e}")
+
         self.sample_rate = DEFAULT_SAMPLE_RATE
         
         # Initialize TTS engine
@@ -1478,3 +1515,7 @@ if __name__ == '__main__':
     print("\n" + "=" * 80)
     print("Testing complete!")
     print("=" * 80)
+
+# ====================================================================
+# END OF SarahMemoryLyricsToSong.py v8.0.0
+# ====================================================================

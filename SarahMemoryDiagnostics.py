@@ -2,7 +2,7 @@
 File: SarahMemoryDiagnostics.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-12-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -1653,8 +1653,129 @@ def run_hardware_diagnostics() -> dict:
 
     # CPU info
     try:
-        cpu = platform.processor() or "<unknown>"
-        _add("cpu", "info", True, f"CPU: {cpu}")
+        # Best-effort, cross-platform CPU details (never break diagnostics)
+        cpu_name = platform.processor() or ""
+        arch = platform.machine() or ""
+
+        physical = None
+        logical = None
+        freq_cur = None
+        freq_max = None
+        cache_desc = None
+        extra = {}
+
+        # psutil provides the most portable core/frequency data
+        try:
+            import psutil  # type: ignore
+            try:
+                physical = psutil.cpu_count(logical=False)
+                logical = psutil.cpu_count(logical=True)
+            except Exception:
+                pass
+            try:
+                f = psutil.cpu_freq()
+                if f:
+                    freq_cur = getattr(f, "current", None)
+                    freq_max = getattr(f, "max", None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # cpuinfo (if installed) gives the best brand/model string
+        try:
+            import cpuinfo  # type: ignore
+            info = cpuinfo.get_cpu_info() or {}
+            brand = info.get("brand_raw") or info.get("brand")
+            if brand:
+                cpu_name = str(brand)
+            hz_advertised = info.get("hz_advertised_friendly")
+            if hz_advertised:
+                extra["hz_advertised"] = hz_advertised
+            # Some platforms expose cache sizes
+            cache_l3 = info.get("l3_cache_size")
+            cache_l2 = info.get("l2_cache_size")
+            cache_l1d = info.get("l1_data_cache_size")
+            cache_l1i = info.get("l1_instruction_cache_size")
+            parts = []
+            if cache_l1d:
+                parts.append(f"L1d={cache_l1d}")
+            if cache_l1i:
+                parts.append(f"L1i={cache_l1i}")
+            if cache_l2:
+                parts.append(f"L2={cache_l2}")
+            if cache_l3:
+                parts.append(f"L3={cache_l3}")
+            if parts:
+                cache_desc = ", ".join(parts)
+        except Exception:
+            pass
+
+        # Windows: get detailed CPU name / cache / sockets via wmic if available
+        try:
+            if (platform.system() or "").lower() == "windows":
+                try:
+                    out = subprocess.check_output(
+                        ["wmic", "cpu", "get", "Name,NumberOfCores,NumberOfLogicalProcessors,L2CacheSize,L3CacheSize,MaxClockSpeed", "/format:list"],
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        timeout=8,
+                    )
+                    kv = {}
+                    for ln in out.splitlines():
+                        ln = ln.strip()
+                        if not ln or "=" not in ln:
+                            continue
+                        k, v = ln.split("=", 1)
+                        kv[k.strip()] = v.strip()
+                    if kv.get("Name"):
+                        cpu_name = kv.get("Name")
+                    if kv.get("NumberOfCores") and physical is None:
+                        try:
+                            physical = int(kv.get("NumberOfCores"))
+                        except Exception:
+                            pass
+                    if kv.get("NumberOfLogicalProcessors") and logical is None:
+                        try:
+                            logical = int(kv.get("NumberOfLogicalProcessors"))
+                        except Exception:
+                            pass
+                    l2 = kv.get("L2CacheSize")
+                    l3 = kv.get("L3CacheSize")
+                    if (l2 or l3) and not cache_desc:
+                        parts = []
+                        if l2:
+                            parts.append(f"L2={l2}KB")
+                        if l3:
+                            parts.append(f"L3={l3}KB")
+                        cache_desc = ", ".join(parts)
+                    max_mhz = kv.get("MaxClockSpeed")
+                    if max_mhz and freq_max is None:
+                        try:
+                            freq_max = float(max_mhz)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        name_out = cpu_name if cpu_name else "<unknown>"
+        detail_parts = [f"{name_out}", f"arch={arch or '<unknown>'}"]
+        if physical is not None:
+            detail_parts.append(f"cores={physical}")
+        if logical is not None:
+            detail_parts.append(f"threads={logical}")
+        if freq_cur is not None:
+            detail_parts.append(f"freq_cur={freq_cur:.0f}MHz")
+        if freq_max is not None:
+            detail_parts.append(f"freq_max={freq_max:.0f}MHz")
+        if cache_desc:
+            detail_parts.append(f"cache={cache_desc}")
+        if extra:
+            detail_parts.append(f"extra={extra}")
+
+        _add("cpu", "info", True, "; ".join(detail_parts))
     except Exception as e:
         _add("cpu", "info", False, f"CPU info failed: {e}")
 
@@ -1756,7 +1877,85 @@ def run_system_diagnostics() -> dict:
         import psutil  # type: ignore
         vm = psutil.virtual_memory()
         cpu = psutil.cpu_percent(interval=0.5)
-        _add("resources", "ram", True, f"Total: {vm.total / (1024**3):.1f} GB, Used: {vm.percent}%")
+
+        # Best-effort RAM module details (type/speed) without hard dependencies.
+        ram_extra = {}
+        try:
+            sysname = (platform.system() or "").lower()
+            if sysname == "windows":
+                # WMIC is available on many Windows systems (legacy but useful). Keep it best-effort.
+                try:
+                    out = subprocess.check_output(
+                        ["wmic", "memorychip", "get", "SMBIOSMemoryType,Speed,Manufacturer,PartNumber", "/format:csv"],
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        timeout=8,
+                    )
+                    # Parse CSV lines, collect unique values.
+                    types = set()
+                    speeds = set()
+                    mans = set()
+                    parts = set()
+                    for ln in out.splitlines():
+                        ln = ln.strip()
+                        if not ln or ln.lower().startswith("node,"):
+                            continue
+                        cols = [c.strip() for c in ln.split(",")]
+                        if len(cols) < 5:
+                            continue
+                        # Node,Manufacturer,PartNumber,SMBIOSMemoryType,Speed (ordering can vary across OS)
+                        # Try to locate by header heuristics
+                        # Many exports are: Node,Manufacturer,PartNumber,SMBIOSMemoryType,Speed
+                        manufacturer = cols[1] if len(cols) > 1 else ""
+                        part = cols[2] if len(cols) > 2 else ""
+                        mem_type = cols[3] if len(cols) > 3 else ""
+                        speed = cols[4] if len(cols) > 4 else ""
+                        if manufacturer:
+                            mans.add(manufacturer)
+                        if part:
+                            parts.add(part)
+                        if mem_type:
+                            types.add(mem_type)
+                        if speed:
+                            speeds.add(speed)
+                    if types:
+                        ram_extra["smbios_type"] = sorted(types)
+                    if speeds:
+                        ram_extra["speed_mhz"] = sorted(speeds)
+                    if mans:
+                        ram_extra["manufacturer"] = sorted(mans)[:3]
+                    if parts:
+                        ram_extra["part_numbers"] = sorted(parts)[:3]
+                except Exception:
+                    pass
+            elif sysname in ("linux", "darwin"):
+                # Try dmidecode on Linux (often requires sudo; best-effort only)
+                if sysname == "linux":
+                    try:
+                        out = subprocess.check_output(["dmidecode", "-t", "memory"], stderr=subprocess.STDOUT, text=True, timeout=8)
+                        # Pull a few useful fields if present
+                        speed = None
+                        mtype = None
+                        for ln in out.splitlines():
+                            s = ln.strip()
+                            if s.lower().startswith("type:") and not mtype:
+                                mtype = s.split(":", 1)[1].strip()
+                            if s.lower().startswith("speed:") and not speed:
+                                speed = s.split(":", 1)[1].strip()
+                        if mtype:
+                            ram_extra["type"] = mtype
+                        if speed:
+                            ram_extra["speed"] = speed
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        ram_detail = f"Total: {vm.total / (1024**3):.1f} GB, Available: {vm.available / (1024**3):.1f} GB, Used: {vm.percent}%"
+        if ram_extra:
+            ram_detail += f", Details: {ram_extra}"
+
+        _add("resources", "ram", True, ram_detail)
         _add("resources", "cpu", True, f"CPU load: {cpu}%")
     except Exception as e:
         _add("resources", "psutil", False, f"psutil not available or failed: {e}")
@@ -2521,3 +2720,6 @@ if __name__ == '__main__':
     else:
         # No arguments => show interactive diagnostics menu
         diagnostics_menu()
+# ====================================================================
+# END OF SarahMemoryDiagnostics.py v8.0.0
+# ====================================================================

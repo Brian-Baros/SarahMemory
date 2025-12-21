@@ -2,7 +2,7 @@
 File: SarahMemoryInitialization.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-12-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -569,8 +569,65 @@ def startup_info():
     
     time.sleep(0.5)
     
-    print("  ✓ CPU/RAM Check: OK. AI subsystems online.")
-    logger.info("[v8.0] CPU/RAM Check: OK. AI subsystems online.")
+    # v8.0 Patch: Provide real CPU/RAM details instead of generic "OK" (best-effort, cross-platform)
+    try:
+        uname = platform.uname()
+        cpu_model = (platform.processor() or getattr(uname, "processor", "") or getattr(uname, "machine", "") or "Unknown CPU").strip()
+        phys_cores = None
+        log_cores = None
+        freq_str = ""
+        ram_str = ""
+
+        try:
+            import psutil  # type: ignore
+            try:
+                phys_cores = psutil.cpu_count(logical=False)
+            except Exception:
+                phys_cores = None
+            try:
+                log_cores = psutil.cpu_count(logical=True)
+            except Exception:
+                log_cores = None
+            try:
+                freq = psutil.cpu_freq()
+                if freq:
+                    # Show max when available; fallback to current
+                    mhz = freq.max or freq.current
+                    if mhz:
+                        freq_str = f" @ {int(round(mhz))} MHz"
+            except Exception:
+                freq_str = ""
+
+            try:
+                vm = psutil.virtual_memory()
+                if vm:
+                    total_gb = vm.total / (1024**3)
+                    avail_gb = vm.available / (1024**3)
+                    ram_str = f"{total_gb:.1f} GB total, {avail_gb:.1f} GB available ({vm.percent:.1f}% used)"
+            except Exception:
+                ram_str = ""
+        except Exception:
+            psutil = None  # noqa: F841
+
+        core_str = ""
+        if phys_cores is not None or log_cores is not None:
+            core_str = f" | Cores: {phys_cores if phys_cores is not None else '?'} / Threads: {log_cores if log_cores is not None else '?'}"
+
+        cpu_details = f"{cpu_model}{core_str}{freq_str}".strip()
+        print_status_line("CPU", "✓", cpu_details if cpu_details else "OK")
+        if ram_str:
+            print_status_line("RAM", "✓", ram_str)
+        else:
+            print_status_line("RAM", "✓", "OK")
+
+        logger.info(f"[v8.0] CPU Details: {cpu_details}")
+        logger.info(f"[v8.0] RAM Details: {ram_str or 'OK'}")
+
+    except Exception as e:
+        # Never block boot banner if hardware probing fails
+        print("  ✓ CPU/RAM Check: OK. AI subsystems online.")
+        logger.info("[v8.0] CPU/RAM Check: OK. AI subsystems online.")
+        logger.warning(f"[v8.0] Detailed CPU/RAM report failed: {e}")
     
     print("  ✓ Awaiting SarahMemory Integration Menu...\n")
     logger.info("[v8.0] Awaiting SarahMemory Integration Menu...")

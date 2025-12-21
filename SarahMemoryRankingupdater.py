@@ -1,5 +1,5 @@
 """=== SarahMemory Project ===
-File: SarahMemoryUIupdater.py
+File: SarahMemoryRankingupdater.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2025-12-21
@@ -14,23 +14,23 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 ===============================================================================
 
-SarahMemoryUIupdater.py
-SarahMemory Web UI Auto Updater (PythonAnywhere, .env-driven)
+SarahMemoryRankingupdater.py
+SarahMemory API Ranking Homepage Auto Updater (PythonAnywhere, .env-driven)
 
 Behavior:
-    - Loads GITHUB_TOKEN (and optional UI_REPO_URL) from .env
+    - Loads GITHUB_TOKEN (and optional RANKING_REPO_URL) from .env
     - Ensures the following directory layout under the SarahMemory project:
 
         /home/Softdev0/SarahMemory/
             data/
-                ui/
+                ranking/
                     app.js
                     index.html
                     styles.css
                     V8/          <-- built static UI (served to users)
-                    V8_ui_src/   <-- GitHub repo source (sarah-s-dashboard)
+                    V8_ui_src/   <-- GitHub repo source (sarahmemory-api)
 
-    - Clones or updates the sarah-s-dashboard repo into:
+    - Clones or updates the sarahmemory-api repo into:
         data/ui/V8_ui_src
 
     - Runs `npm install` (first time) and `npm run build` in V8_ui_src
@@ -49,6 +49,7 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 
+import re
 # Try to load .env (if python-dotenv is available)
 try:
     from dotenv import load_dotenv  # type: ignore
@@ -62,9 +63,44 @@ except Exception as e:
 
 BASE_DIR = Path(__file__).resolve().parent
 
-DATA_UI_DIR = BASE_DIR / "data" / "ui"
-SRC_DIR = DATA_UI_DIR / "V8_ui_src"   # where the repo lives & builds
-TARGET_DIR = DATA_UI_DIR / "V8"       # where the built UI is deployed
+
+
+def resolve_static_target_dir() -> Path:
+    """
+    Resolve the Flask static directory for https://api.sarahmemory.com.
+
+    Default intent: ../api/server/static (relative to typical project layouts)
+
+    Override with env:
+        RANKING_TARGET_STATIC=/absolute/or/relative/path
+    """
+    override = os.getenv("RANKING_TARGET_STATIC")
+    if override:
+        return Path(override).expanduser().resolve()
+
+    base = BASE_DIR
+    candidates = [
+        base / "api" / "server" / "static",
+        base / "server" / "static",
+        base / "static",
+        base.parent / "api" / "server" / "static",
+        base.parent / "server" / "static",
+        base.parent / "static",
+        base.parent.parent / "api" / "server" / "static",
+        base.parent.parent / "server" / "static",
+        base.parent.parent / "static",
+    ]
+    for c in candidates:
+        if c.exists() and c.is_dir():
+            return c.resolve()
+
+    # If nothing exists yet, default to the user's requested layout
+    return (base / "api" / "server" / "static").resolve()
+
+
+DATA_UI_DIR = BASE_DIR / "data" / "ranking"
+SRC_DIR = DATA_UI_DIR / "Ranking_ui_src"   # where the repo lives & builds
+TARGET_DIR = resolve_static_target_dir()
 
 # Load GitHub token from .env (preferred)
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -72,13 +108,13 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 # Default repo URL if not overridden via env
 if GITHUB_TOKEN:
     DEFAULT_REPO_URL = (
-        f"https://{GITHUB_TOKEN}@github.com/Brian-Baros/sarah-s-dashboard.git"
+        f"https://{GITHUB_TOKEN}@github.com/Brian-Baros/sarahmemory-api.git"
     )
 else:
     # Works if repo is public; private needs token
-    DEFAULT_REPO_URL = "https://github.com/Brian-Baros/sarah-s-dashboard.git"
+    DEFAULT_REPO_URL = "https://github.com/Brian-Baros/sarahmemory-api.git"
 
-REPO_URL = os.getenv("UI_REPO_URL", DEFAULT_REPO_URL)
+REPO_URL = os.getenv("RANKING_REPO_URL", DEFAULT_REPO_URL)
 
 # The repo itself will live directly in SRC_DIR
 REPO_DIR = SRC_DIR.resolve()
@@ -142,18 +178,28 @@ def _mask_token(url: str) -> str:
     except Exception:
         return url
 
-def run_cmd(cmd: str, cwd: Path | None = None, check: bool = True) -> int:
+def run_cmd(cmd: str, cwd: Path | None = None, check: bool = True, env: dict | None = None) -> int:
     """
     Run a shell command and stream output to console.
     Raises CalledProcessError if check=True and command fails.
     """
     print(f"\n[CMD] {cmd} (cwd={cwd})")
+
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update({k: str(v) for k, v in env.items() if v is not None})
+
     result = subprocess.run(
         cmd,
         shell=True,
         cwd=str(cwd) if cwd else None,
-        text=True
+        text=True,
+        env=merged_env
     )
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd)
+    return result.returncode
+
     if check and result.returncode != 0:
         raise subprocess.CalledProcessError(result.returncode, cmd)
     return result.returncode
@@ -210,65 +256,73 @@ def ensure_repo() -> None:
 
 def ensure_node_modules(skip_install: bool = False) -> None:
     """
-    Install npm dependencies if node_modules is missing or incomplete.
+    Install npm dependencies if needed.
 
-    Fix for common headless/PythonAnywhere issues:
-      - node_modules may exist but devDependencies (vite) are missing, causing: `vite: not found`
-      - npm may have been run previously with production/omit=dev settings
+    PythonAnywhere gotcha:
+      - npm can run with production/omit=dev settings, which will skip devDependencies like Vite.
+      - That leads to: `sh: 1: vite: not found`
+
+    This function forces devDependencies to be installed by using `--include=dev`
+    and setting NPM_CONFIG_PRODUCTION=false for the command environment.
     """
-    pkg_json = REPO_DIR / "package.json"
-    if not pkg_json.exists():
-        print("[INFO] No package.json found; this repo does not appear to be a Node project. Skipping npm install.")
+    node_cwd = _detect_node_project_dir()
+    if node_cwd is None:
+        print("[INFO] No package.json found; skipping npm install (static-only repo).")
         return
 
-    node_modules = REPO_DIR / "node_modules"
+    pkg_json = node_cwd / "package.json"
+    if not pkg_json.exists():
+        print("[INFO] No package.json found; skipping npm install (static-only repo).")
+        return
+
+    node_modules = node_cwd / "node_modules"
     vite_bin = node_modules / ".bin" / ("vite.cmd" if os.name == "nt" else "vite")
+
+    npm_env = {"NPM_CONFIG_PRODUCTION": "false", "NODE_ENV": "development"}
 
     if skip_install and node_modules.exists() and vite_bin.exists():
         print("[INFO] Skipping npm install (requested) and node_modules looks complete.")
         return
 
+    # If node_modules exists but Vite is missing, force a dev-inclusive install.
     if node_modules.exists() and not vite_bin.exists():
-        print("[WARN] node_modules exists but Vite is missing. Re-installing dependencies with dev deps included...")
-        lock = REPO_DIR / "package-lock.json"
+        print("[WARN] node_modules exists but Vite is missing. Re-installing with devDependencies included...")
+        lock = node_cwd / "package-lock.json"
         if lock.exists():
             try:
-                run_cmd("npm ci --include=dev", cwd=REPO_DIR)
+                run_cmd("npm ci --include=dev", cwd=node_cwd, env=npm_env)
                 print("[INFO] npm ci complete.")
                 return
             except Exception as e:
                 print(f"[WARN] npm ci failed, falling back to npm install: {e}")
-
-        run_cmd("npm install --include=dev", cwd=REPO_DIR)
+        run_cmd("npm install --include=dev", cwd=node_cwd, env=npm_env)
         print("[INFO] npm install complete.")
         return
 
     if node_modules.exists():
-        print("[INFO] node_modules already exists. Skipping npm install.")
+        print("[INFO] node_modules already exists and appears usable. Skipping npm install.")
         return
 
     if skip_install:
         print("[WARN] --skip-install specified but node_modules is missing; build will likely fail.")
         return
 
-    print("[INFO] node_modules missing. Running npm install (this may take a while)...")
-    lock = REPO_DIR / "package-lock.json"
+    print("[INFO] node_modules missing. Running npm install (dev deps included)...")
+    lock = node_cwd / "package-lock.json"
     if lock.exists():
         try:
-            run_cmd("npm ci --include=dev", cwd=REPO_DIR)
+            run_cmd("npm ci --include=dev", cwd=node_cwd, env=npm_env)
             print("[INFO] npm ci complete.")
             return
         except Exception as e:
             print(f"[WARN] npm ci failed, falling back to npm install: {e}")
 
-    run_cmd("npm install --include=dev", cwd=REPO_DIR)
+    run_cmd("npm install --include=dev", cwd=node_cwd, env=npm_env)
     print("[INFO] npm install complete.")
 
 
 def build_frontend(skip_build: bool = False, build_script: str = "build") -> None:
-    """
-    Run npm run <build_script> (default: build).
-    """
+    """Run npm run <build_script> (default: build)."""
     if skip_build:
         print("[INFO] Skipping npm run build (requested).")
         return
@@ -278,8 +332,9 @@ def build_frontend(skip_build: bool = False, build_script: str = "build") -> Non
         print("[INFO] No package.json detected in repo. Skipping npm build (static UI repo).")
         return
 
-    print(f"[INFO] Running npm run {build_script} in {node_cwd}...")
-    run_cmd(f"npm run {build_script}", cwd=node_cwd)
+    print(f"[INFO] Building ranking frontend: npm run {build_script} (cwd={node_cwd})")
+    npm_env = {"NPM_CONFIG_PRODUCTION": "false", "NODE_ENV": "development"}
+    run_cmd(f"npm run {build_script}", cwd=node_cwd, env=npm_env)
     print("[INFO] Frontend build complete.")
 
 
@@ -386,7 +441,7 @@ def deploy_build(build_dir: Path) -> None:
             shutil.copy2(item, dest)
 
     print("[INFO] Deployment complete.")
-    print(f"[INFO] Web UI is now updated at: {TARGET_DIR}")
+    print(f"[INFO] API Ranking Page is now updated at: {TARGET_DIR}")
 
 
 def clear_src_dir() -> None:
@@ -414,7 +469,7 @@ def clear_src_dir() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="SarahMemory Web UI Updater (using .env, V8/V8_ui_src layout)"
+        description="SarahMemory API Ranking Page Updater (using .env, V8/V8_ui_src layout)"
     )
     parser.add_argument(
         "--skip-install",
@@ -445,7 +500,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("============================================================")
-    print("         SarahMemory AiOS v8.0.0 Web UI Updater             ")
+    print(" SarahMemory AiOS v8.0.0 API Network Hub Ranking Updater    ")
     print("============================================================")
     print(f"[INFO] BASE_DIR    = {BASE_DIR}")
     print(f"[INFO] DATA_UI_DIR = {DATA_UI_DIR}")
@@ -471,7 +526,7 @@ def main() -> int:
         # simply be cloned again if needed.
         clear_src_dir()
 
-        print("\n[OK] Web UI update finished successfully.")
+        print("\n[OK] API Network Hub Ranking Page update finished successfully.")
         return 0
 
     except subprocess.CalledProcessError as e:
@@ -486,5 +541,5 @@ if __name__ == "__main__":
     sys.exit(main())
 
 # ====================================================================
-# END OF SarahMemoryUIupdater.py v8.0.0
+# END OF SarahMemoryRankingupdater.py v8.0.0
 # ====================================================================

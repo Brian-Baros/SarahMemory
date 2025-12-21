@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-08
+Date: 2025-12-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -35,6 +35,7 @@ from datetime import datetime
 # Optional scheduler: if apscheduler is not installed in this environment,
 # just disable scheduler-based features instead of crashing the whole app.
 try:
+    import apscheduler
     from apscheduler.schedulers.background import BackgroundScheduler
 except Exception:
     BackgroundScheduler = None  # Scheduler features are skipped if unavailable
@@ -167,7 +168,7 @@ def get_runtime_meta():
 PROJECT_VERSION = "8.0.0"  # minor: updater scheduling, SR/TTS polish, research order fixes
 AUTHOR = "Brian Lee Baros"
 # --- Runtime/debug flags (unchanged lines may already exist above/below) ---
-REVISION_START_DATE  = "12/05/2025" #Date of System Overhaul
+REVISION_START_DATE  = "12/21/2025" #Date of System Overhaul
 DEBUG_MODE = True # Helps with SarahMemoryCompare and other debugging issues.
 ENABLE_RESEARCH_LOGGING = True # Track Message/query of the GUI from Start to Finished Response/Reply
 # This constant ensures downstream modules interpret API responses
@@ -2837,3 +2838,7 @@ if __name__ == "__main__":
         print(f"[ERROR] GUI launch failed: {e}")
         print("[INFO] You can edit settings.json directly or set environment variables")
         sys.exit(1)
+
+# ====================================================================
+# END OF SarahMemoryGlobals.py v8.0.0
+# ====================================================================
