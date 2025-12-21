@@ -1341,10 +1341,12 @@ def ensure_core_schema():
                         user_input TEXT,
                         ai_response TEXT,
                         intent TEXT,
-                        sentiment_score REAL
+                        sentiment_score REAL,
+                        emotional_state TEXT
                     )""")
                     _ensure_column(c, "conversations", "intent", "TEXT")
                     _ensure_column(c, "conversations", "sentiment_score", "REAL")
+                    _ensure_column(c, "conversations", "emotional_state", "TEXT")
                     conn.commit()
             except Exception:
                 # Never let schema drift break boot.
@@ -1819,7 +1821,7 @@ def sm_get_conversation_messages(conversation_id, limit=50):
     finally:
         if conn:
             conn.close()
-
+            
 # ====================================================================
 # END OF SarahMemoryDatabase.py v8.0.0
 # ====================================================================
