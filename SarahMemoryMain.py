@@ -2,7 +2,7 @@
 File: SarahMemoryMain.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-12-05
 Time: 16:30:00
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -145,14 +145,22 @@ def start_local_api_server():
             return
 
         # Launch API server as background process
-        subprocess.Popen(
+        # v8.0 Hotfix: keep a handle/PID so we can reliably stop it on shutdown
+        creationflags = 0
+        if platform.system() == "Windows":
+            # New process group so taskkill /T will terminate the entire tree
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+        proc = subprocess.Popen(
             [sys.executable, api_server_script],
             cwd=base_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+            creationflags=creationflags,
+            start_new_session=(platform.system() != "Windows")
         )
-        logger.info("[BOOT][v8.0] Local API server process launched successfully.")
+        # Store PID for shutdown_sequence to terminate cleanly
+        os.environ["SARAHMEMORY_LOCAL_API_PID"] = str(getattr(proc, "pid", ""))
+        logger.info("[BOOT][v8.0] Local API server process launched successfully (pid=%s).", getattr(proc, "pid", "?"))
     except Exception as e:
         logger.error(f"[BOOT ERROR][v8.0] Failed to launch local API server: {e}")
 

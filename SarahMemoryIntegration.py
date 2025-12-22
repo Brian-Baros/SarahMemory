@@ -20,6 +20,8 @@ Integration with Enhanced Features
 
 import logging
 import os
+import subprocess
+import re
 import sys
 import time
 import threading
@@ -485,7 +487,60 @@ def shutdown_sequence():
     print("═" * 78)
     
     terminate_flag.set()
-    
+
+    # v8.0 Hotfix: Ensure local API server fully terminates and releases PORT (Windows)
+    try:
+        port_val = os.environ.get("PORT") or str(getattr(config, "DEFAULT_PORT", "8000"))
+        port = int(port_val)
+    except Exception:
+        port = 8000
+
+    try:
+        pids = set()
+        pid_env = (os.environ.get("SARAHMEMORY_LOCAL_API_PID") or "").strip()
+        if pid_env.isdigit():
+            pids.add(int(pid_env))
+
+        if os.name == "nt":
+            # netstat -> collect all LISTENING PIDs on port
+            try:
+                out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
+            except Exception:
+                out = ""
+            needle = f":{port}"
+            for line in out.splitlines():
+                if needle in line and "LISTENING" in line.upper():
+                    parts = line.split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(int(parts[-1]))
+
+            # Kill only python-ish processes to avoid collateral damage
+            for pid in sorted(pids):
+                if pid <= 0 or pid == os.getpid():
+                    continue
+                try:
+                    info = subprocess.check_output(
+                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                        text=True,
+                        errors="ignore",
+                    ).strip()
+                    if not info or "No tasks" in info:
+                        continue
+                    image = info.split(",")[0].strip('"').lower()
+                    if "python" not in image and "wsgi" not in image and "gunicorn" not in image:
+                        continue
+                    subprocess.run(
+                        ["taskkill", "/PID", str(pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    logger.info("[v8.0] Stopped local API server process (pid=%s).", pid)
+                except Exception:
+                    # Best-effort only; do not block shutdown
+                    pass
+    except Exception:
+        pass
+
     logger.info("[v8.0] Safe shutdown completed successfully.")
     shutdown_tts()
     
