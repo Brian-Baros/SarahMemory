@@ -109,6 +109,10 @@ def _is_identity_question(text: str) -> bool:
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(SERVER_DIR, "static")
 TEMPLATE_DIR = SERVER_DIR if os.path.exists(os.path.join(STATIC_DIR, "index.html")) else WEB_DIR
+
+# Web UI dist root (Lovable/Vite build output)
+# Expected: <PROJECT_ROOT>/data/ui/v8/
+UI_DIST_DIR = os.path.abspath(os.path.join(SERVER_DIR, "..", "..", "data", "ui", "v8"))
 WALLETS_DIR = os.path.join(DATA_DIR, "wallets")
 META_DB = os.path.join(DATA_DIR, "meta.db") # merged meta DB
 LOGS_DIR = os.path.join(DATA_DIR, "logs") # Default to DATA_DIR/logs
@@ -749,6 +753,33 @@ def api_index():
         }
     )
 
+
+def _req_host() -> str:
+    """Return host without port, lowercased."""
+    try:
+        return (request.host or "").split(":", 1)[0].strip().lower()
+    except Exception:
+        return ""
+
+
+def _want_ui_for_request() -> bool:
+    """Host-based routing for the dual server.
+
+    Local:
+      - 127.0.0.1 / localhost -> Web UI
+    Cloud:
+      - ai.sarahmemory.com    -> Web UI
+      - api.sarahmemory.com   -> Network Hub
+
+    Default is hub, unless it matches UI conditions.
+    """
+    host = _req_host()
+    if host in ("127.0.0.1", "localhost"):
+        return True
+    if host.startswith("ai."):
+        return True
+    return False
+
 @app.route("/")
 def root_index():
     """Serve the Ranking/Web UI (static SPA) at the site root.
@@ -757,10 +788,86 @@ def root_index():
     by Flask. If the UI build is present, return static/index.html; otherwise fall back
     to the API banner.
     """
-    index_path = os.path.join(STATIC_DIR, "index.html")
-    if os.path.isfile(index_path):
+    # Prefer the Web UI (Lovable/Vite dist) for local + ai.* host.
+    if _want_ui_for_request():
+        ui_index = os.path.join(UI_DIST_DIR, "index.html")
+        if os.path.isfile(ui_index):
+            return send_from_directory(UI_DIST_DIR, "index.html")
+
+    # Otherwise, show the Network Hub landing (legacy /api/server/static/index.html)
+    hub_index = os.path.join(STATIC_DIR, "index.html")
+    if os.path.isfile(hub_index):
         return send_from_directory(STATIC_DIR, "index.html")
     return redirect("/api/")
+
+
+# -----------------------------------------------------------------------------
+# Web UI dist asset serving (local + ai.sarahmemory.com)
+# -----------------------------------------------------------------------------
+
+@app.route("/assets/<path:filename>")
+def ui_assets(filename):
+    if _want_ui_for_request():
+        base = os.path.join(UI_DIST_DIR, "assets")
+        if os.path.isdir(base):
+            return send_from_directory(base, filename)
+    return abort(404)
+
+
+@app.route("/themes/<path:filename>")
+def ui_themes(filename):
+    if _want_ui_for_request():
+        base = os.path.join(UI_DIST_DIR, "themes")
+        if os.path.isdir(base):
+            return send_from_directory(base, filename)
+    return abort(404)
+
+
+@app.route("/favicon.ico")
+def ui_favicon():
+    if _want_ui_for_request() and os.path.isfile(os.path.join(UI_DIST_DIR, "favicon.ico")):
+        return send_from_directory(UI_DIST_DIR, "favicon.ico")
+    return abort(404)
+
+
+@app.route("/robots.txt")
+def ui_robots():
+    if _want_ui_for_request() and os.path.isfile(os.path.join(UI_DIST_DIR, "robots.txt")):
+        return send_from_directory(UI_DIST_DIR, "robots.txt")
+    return abort(404)
+
+
+@app.route("/placeholder.svg")
+def ui_placeholder():
+    if _want_ui_for_request() and os.path.isfile(os.path.join(UI_DIST_DIR, "placeholder.svg")):
+        return send_from_directory(UI_DIST_DIR, "placeholder.svg")
+    return abort(404)
+
+
+@app.route("/<path:path>")
+def ui_spa_fallback(path):
+    """SPA fallback for non-/api routes.
+
+    Vite builds often use client-side routing; unknown paths must return index.html.
+    """
+    # Never hijack API routes
+    if path.startswith("api/"):
+        return abort(404)
+
+    if _want_ui_for_request():
+        candidate = os.path.join(UI_DIST_DIR, path)
+        if os.path.isfile(candidate):
+            return send_from_directory(UI_DIST_DIR, path)
+        # Client-side route: return index.html
+        ui_index = os.path.join(UI_DIST_DIR, "index.html")
+        if os.path.isfile(ui_index):
+            return send_from_directory(UI_DIST_DIR, "index.html")
+
+    # Fallback to hub static if present
+    candidate = os.path.join(STATIC_DIR, path)
+    if os.path.isfile(candidate):
+        return send_from_directory(STATIC_DIR, path)
+    return abort(404)
 
 @app.route("/api/static/<path:filename>")
 def static_serv(filename):
