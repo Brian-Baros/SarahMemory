@@ -81,6 +81,7 @@ import json
 import shutil
 import socket
 import hashlib
+import base64
 import difflib
 import subprocess
 import datetime as dt
@@ -163,6 +164,417 @@ AUTO_APPROVE = os.environ.get("SM_UPDATER_AUTOAPPROVE", "0") in ("1", "true", "T
 GIT_PUSH = os.environ.get("SM_UPDATER_GIT_PUSH", "0") in ("1", "true", "True")
 MODEL_NAME = os.environ.get("SM_UPDATER_MODEL", getattr(G, "DEFAULT_GPT_MODEL", "gpt-4.1-mini"))
 MAX_CHARS = int(os.environ.get("SM_UPDATER_MAX_CHARS", "20000"))  # per request; conservative
+
+# =============================================================================
+# MODS / PATCH FEEDS + CORPORATE LICENSE GATING (v8.0)
+#
+# Goal:
+# - Community users: pull patch manifests/files from GitHub (public)
+# - Corporate users (valid SarahMemory.lic): pull patch manifests/files from GoogieHost
+#   (served under /public_html/api/data/mods)
+#
+# Notes:
+# - This does NOT lock the base platform. It only controls access to CORPORATE update feeds.
+# - License verification is designed to be future-proof:
+#     1) Prefer Ed25519 signature verification (if crypto libs present + public key configured)
+#     2) Optional HMAC verification (if a shared secret is configured)
+#     3) If verification cannot be performed, license is treated as INVALID (safe default)
+# =============================================================================
+
+LICENSE_DIR = os.path.join(DATA_DIR, "license")
+LICENSE_FILE = os.path.join(LICENSE_DIR, "SarahMemory.lic")
+
+MODS_ROOT = os.environ.get("SM_MODS_ROOT", os.path.join(DATA_DIR, "mods"))
+MODS_ACTIVE_VERSION = os.environ.get("SM_MODS_ACTIVE_VERSION", "v800")
+MODS_ENABLED = os.environ.get("SM_MODS_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
+
+# Community patch feed (GitHub raw)
+SM_GITHUB_PATCH_REPO = os.environ.get("SM_GITHUB_PATCH_REPO", "")
+SM_GITHUB_PATCH_BRANCH = os.environ.get("SM_GITHUB_PATCH_BRANCH", "main")
+SM_GITHUB_PATCH_MANIFEST = os.environ.get("SM_GITHUB_PATCH_MANIFEST", "patches/manifest.json")
+SM_GITHUB_READ_TOKEN = os.environ.get("SM_GITHUB_READ_TOKEN", "").strip()
+
+# Corporate patch feed (GoogieHost / public_html/api/data/mods)
+# Default base URL derives from PUBLIC_API_BASE, falling back to api.sarahmemory.com if unset.
+SM_CORP_PATCH_BASE_URL = os.environ.get("SM_CORP_PATCH_BASE_URL", "").strip()
+SM_CORP_PATCH_MANIFEST = os.environ.get("SM_CORP_PATCH_MANIFEST", "manifest.json").strip()
+
+# License verification config
+# Provide ONE of:
+# - SM_LICENSE_PUBLIC_KEY_B64: Ed25519 public key (base64) for signature verification
+# - SM_LICENSE_HMAC_SECRET: shared secret for HMAC verification (not recommended for broad distribution)
+SM_LICENSE_PUBLIC_KEY_B64 = os.environ.get("SM_LICENSE_PUBLIC_KEY_B64", "").strip()
+SM_LICENSE_HMAC_SECRET = os.environ.get("SM_LICENSE_HMAC_SECRET", "").strip()
+
+
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(tz=dt.timezone.utc)
+
+
+def _parse_iso8601(s: str) -> Optional[dt.datetime]:
+    try:
+        # Accept "Z" suffix
+        s2 = s.strip().replace("Z", "+00:00")
+        d = dt.datetime.fromisoformat(s2)
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=dt.timezone.utc)
+        return d.astimezone(dt.timezone.utc)
+    except Exception:
+        return None
+
+
+def _sha256_bytes(b: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(b)
+    return h.hexdigest()
+
+
+def _safe_json_load(path: str) -> Optional[dict]:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"[v8.0] License/manifest JSON read failed: {e}")
+        return None
+
+
+def _license_payload_bytes(lic: dict) -> bytes:
+    """
+    Canonicalize license payload for signing:
+    - copy license dict
+    - remove signature fields
+    - JSON-dump with stable sorting and separators
+    """
+    payload = dict(lic or {})
+    payload.pop("signature", None)
+    payload.pop("sig", None)
+    payload.pop("signature_b64", None)
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _verify_license_signature_ed25519(payload: bytes, signature_b64: str) -> bool:
+    """
+    Verify Ed25519 signature. Requires either:
+    - 'cryptography' library, or
+    - 'nacl' (PyNaCl)
+    Safe default: return False on any error.
+    """
+    if not SM_LICENSE_PUBLIC_KEY_B64:
+        return False
+    try:
+        pub = base64.b64decode(SM_LICENSE_PUBLIC_KEY_B64)
+        sig = base64.b64decode(signature_b64)
+    except Exception:
+        return False
+
+    # Try cryptography first
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey  # type: ignore
+        pk = Ed25519PublicKey.from_public_bytes(pub)
+        pk.verify(sig, payload)
+        return True
+    except Exception:
+        pass
+
+    # Try PyNaCl
+    try:
+        import nacl.signing  # type: ignore
+        vk = nacl.signing.VerifyKey(pub)
+        vk.verify(payload, sig)
+        return True
+    except Exception:
+        return False
+
+
+def _verify_license_signature_hmac(payload: bytes, signature_b64: str) -> bool:
+    """
+    Optional HMAC verification: signature_b64 is expected to be base64(HMAC_SHA256(payload)).
+    Safe default: False if secret not configured.
+    """
+    if not SM_LICENSE_HMAC_SECRET:
+        return False
+    try:
+        import hmac
+        sig = base64.b64decode(signature_b64)
+        mac = hmac.new(SM_LICENSE_HMAC_SECRET.encode("utf-8"), payload, digestmod=hashlib.sha256).digest()
+        return hmac.compare_digest(sig, mac)
+    except Exception:
+        return False
+
+
+def _load_and_verify_license() -> Optional[dict]:
+    """
+    Returns parsed license dict if valid, else None.
+    Valid means:
+    - file exists
+    - tier indicates corporate/enterprise
+    - not expired
+    - signature validates (ed25519 preferred, hmac optional)
+    """
+    try:
+        if not os.path.isdir(LICENSE_DIR) or not os.path.isfile(LICENSE_FILE):
+            return None
+
+        lic = _safe_json_load(LICENSE_FILE)
+        if not lic:
+            return None
+
+        tier = str(lic.get("tier") or lic.get("license_tier") or "").strip().lower()
+        if tier not in ("corporate", "enterprise"):
+            logger.info("[v8.0] License present but tier not corporate/enterprise; treating as community.")
+            return None
+
+        exp = lic.get("expires_at") or lic.get("expires") or lic.get("expiry")
+        if not exp:
+            logger.warning("[v8.0] License missing expires_at; treating as invalid.")
+            return None
+
+        exp_dt = _parse_iso8601(str(exp))
+        if not exp_dt:
+            logger.warning("[v8.0] License expiry parse failed; treating as invalid.")
+            return None
+
+        if _utc_now() >= exp_dt:
+            logger.warning("[v8.0] License expired; corporate feed disabled.")
+            return None
+
+        sig = lic.get("signature") or lic.get("sig") or lic.get("signature_b64")
+        if not sig:
+            logger.warning("[v8.0] License missing signature; treating as invalid.")
+            return None
+
+        payload = _license_payload_bytes(lic)
+
+        ok = False
+        # Prefer ed25519 verification; fallback to HMAC if configured
+        if _verify_license_signature_ed25519(payload, str(sig)):
+            ok = True
+        elif _verify_license_signature_hmac(payload, str(sig)):
+            ok = True
+
+        if not ok:
+            logger.warning("[v8.0] License signature invalid or verification unavailable; corporate feed disabled.")
+            return None
+
+        logger.info("[v8.0] Corporate license verified successfully.")
+        return lic
+    except Exception as e:
+        logger.warning(f"[v8.0] License verification error: {e}")
+        return None
+
+
+def _http_get(url: str, headers: Optional[dict] = None, timeout_sec: int = 15) -> Optional[bytes]:
+    """
+    Minimal HTTP GET with urllib (no external deps). Returns bytes or None.
+    """
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, headers=headers or {})
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+            return resp.read()
+    except Exception as e:
+        logger.debug(f"[v8.0] HTTP GET failed for {url}: {e}")
+        return None
+
+
+def _write_file_atomic(path: str, data: bytes) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+        return True
+    except Exception as e:
+        logger.warning(f"[v8.0] Write failed for {path}: {e}")
+        return False
+
+
+def _mods_manifest_url_corporate() -> str:
+    base = SM_CORP_PATCH_BASE_URL
+    if not base:
+        base = os.environ.get("PUBLIC_API_BASE", "").strip() or "https://api.sarahmemory.com"
+    # Corporate manifests hosted under /data/mods/<manifest>
+    base = base.rstrip("/")
+    return f"{base}/data/mods/{SM_CORP_PATCH_MANIFEST.lstrip('/')}"
+
+
+def _mods_manifest_url_github() -> Optional[str]:
+    if not SM_GITHUB_PATCH_REPO:
+        return None
+    repo = SM_GITHUB_PATCH_REPO.strip()
+    branch = (SM_GITHUB_PATCH_BRANCH or "main").strip()
+    manifest = (SM_GITHUB_PATCH_MANIFEST or "patches/manifest.json").lstrip("/")
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/{manifest}"
+
+
+def _mods_file_url_corporate(rel_path: str) -> str:
+    base = SM_CORP_PATCH_BASE_URL
+    if not base:
+        base = os.environ.get("PUBLIC_API_BASE", "").strip() or "https://api.sarahmemory.com"
+    base = base.rstrip("/")
+    rel = rel_path.lstrip("/")
+    return f"{base}/data/mods/{rel}"
+
+
+def _mods_file_url_github(rel_path: str) -> Optional[str]:
+    if not SM_GITHUB_PATCH_REPO:
+        return None
+    repo = SM_GITHUB_PATCH_REPO.strip()
+    branch = (SM_GITHUB_PATCH_BRANCH or "main").strip()
+    rel = rel_path.lstrip("/")
+    return f"https://raw.githubusercontent.com/{repo}/{branch}/{rel}"
+
+
+def _parse_manifest_bytes(b: bytes) -> Optional[dict]:
+    try:
+        return json.loads(b.decode("utf-8"))
+    except Exception as e:
+        logger.warning(f"[v8.0] Manifest JSON parse failed: {e}")
+        return None
+
+
+def _manifest_iter_files(manifest: dict) -> List[dict]:
+    """
+    Corporate/community manifest format (future-proof):
+    {
+      "channel": "community|corporate|enterprise",
+      "generated_at": "2025-12-21T00:00:00Z",
+      "min_app_version": "8.0.0",
+      "files": [
+        {"path": "v800/patches/SM_v800_patch_20251221_214953_rankings_fix.py",
+         "sha256": "<hex>",
+         "size": 1234,
+         "optional": false}
+      ]
+    }
+    """
+    files = manifest.get("files") or []
+    out = []
+    if isinstance(files, list):
+        for item in files:
+            if isinstance(item, dict) and item.get("path"):
+                out.append(item)
+    return out
+
+
+def _sync_mods_from_manifest(manifest: dict, source: str) -> Tuple[int, int, List[str]]:
+    """
+    Downloads missing/outdated files described by manifest into MODS_ROOT.
+    Returns (downloaded_count, skipped_count, notes)
+    """
+    downloaded = 0
+    skipped = 0
+    notes: List[str] = []
+    files = _manifest_iter_files(manifest)
+    if not files:
+        return 0, 0, ["manifest has no files"]
+
+    for item in files:
+        rel = str(item.get("path") or "").lstrip("/")
+        want_sha = str(item.get("sha256") or "").strip().lower()
+        if not rel:
+            skipped += 1
+            continue
+
+        local_path = os.path.join(MODS_ROOT, rel)
+        # If exists and sha matches, skip
+        try:
+            if os.path.isfile(local_path) and want_sha:
+                with open(local_path, "rb") as f:
+                    have = _sha256_bytes(f.read())
+                if have.lower() == want_sha:
+                    skipped += 1
+                    continue
+        except Exception:
+            # Fall through to re-download
+            pass
+
+        # Build URL per source
+        url = None
+        if source == "corporate":
+            url = _mods_file_url_corporate(rel)
+        elif source == "github":
+            url = _mods_file_url_github(rel)
+
+        if not url:
+            skipped += 1
+            notes.append(f"no URL for {rel}")
+            continue
+
+        headers = {}
+        # GitHub token support (optional)
+        if source == "github" and SM_GITHUB_READ_TOKEN:
+            headers["Authorization"] = f"token {SM_GITHUB_READ_TOKEN}"
+
+        data = _http_get(url, headers=headers)
+        if not data:
+            skipped += 1
+            notes.append(f"download failed: {rel}")
+            continue
+
+        # Verify sha if provided
+        if want_sha:
+            got_sha = _sha256_bytes(data)
+            if got_sha.lower() != want_sha:
+                skipped += 1
+                notes.append(f"sha mismatch: {rel}")
+                continue
+
+        if _write_file_atomic(local_path, data):
+            downloaded += 1
+        else:
+            skipped += 1
+            notes.append(f"write failed: {rel}")
+
+    return downloaded, skipped, notes
+
+
+def sync_patch_feeds() -> Tuple[bool, List[str]]:
+    """
+    Sync mods from the appropriate feed:
+    - If valid corporate license is present: pull from corporate (GoogieHost) feed
+    - Else: pull from GitHub feed (community)
+    Returns (ok, notes)
+    """
+    notes: List[str] = []
+    if not MODS_ENABLED:
+        return True, ["mods disabled via SM_MODS_ENABLED"]
+
+    os.makedirs(MODS_ROOT, exist_ok=True)
+
+    lic = _load_and_verify_license()
+    if lic:
+        url = _mods_manifest_url_corporate()
+        b = _http_get(url)
+        if not b:
+            return False, [f"corporate manifest download failed: {url}"]
+        manifest = _parse_manifest_bytes(b)
+        if not manifest:
+            return False, ["corporate manifest invalid JSON"]
+        d, s, n = _sync_mods_from_manifest(manifest, source="corporate")
+        notes.append(f"corporate sync: downloaded={d}, skipped={s}")
+        notes.extend(n[:20])
+        return True, notes
+
+    # Community feed fallback (GitHub)
+    url = _mods_manifest_url_github()
+    if not url:
+        return False, ["github patch repo not configured (SM_GITHUB_PATCH_REPO missing)"]
+    headers = {}
+    if SM_GITHUB_READ_TOKEN:
+        headers["Authorization"] = f"token {SM_GITHUB_READ_TOKEN}"
+    b = _http_get(url, headers=headers)
+    if not b:
+        return False, [f"github manifest download failed: {url}"]
+    manifest = _parse_manifest_bytes(b)
+    if not manifest:
+        return False, ["github manifest invalid JSON"]
+    d, s, n = _sync_mods_from_manifest(manifest, source="github")
+    notes.append(f"github sync: downloaded={d}, skipped={s}")
+    notes.extend(n[:20])
+    return True, notes
+
 
 # =============================================================================
 # UTILITY FUNCTIONS - v8.0 Enhanced
@@ -955,6 +1367,19 @@ def run_updater(
         _log("No internet connectivity detected – skipping updater and continuing normal boot.")
         logger.info("[v8.0] No internet, skipping updater")
         return True
+
+    # v8.0: Sync mods/patch feeds (corporate GoogieHost if licensed, else GitHub)
+    try:
+        ok, notes = sync_patch_feeds()
+        if ok:
+            for n in (notes or [])[:50]:
+                _log(f"PatchFeed: {n}")
+        else:
+            for n in (notes or [])[:50]:
+                _log(f"PatchFeed WARN: {n}")
+    except Exception as e:
+        _log(f"PatchFeed ERROR: {e}")
+        logger.warning(f"[v8.0] Patch feed sync error: {e}")
 
     # Build file set (ROOT-ONLY scan by default)
     includes = includes or [BASE_DIR]
