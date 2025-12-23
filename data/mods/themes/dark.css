@@ -1,0 +1,16 @@
+/* SarahMemory Unified Theme — DARK (v7.7.5) */
+:root{
+  --bg:#0f1117; --panel:#151a22; --text:#e8eef9; --muted:#a5b3c2;
+  --accent:#5aa1ff; --border:#202736; --btn:#1f2b3a; --btnText:#e8eef9;
+  --bubble-user:#1b2432; --bubble-sarah:#101826; --chip:#1b2a3b;
+}
+html,body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
+.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
+.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
+.small,.muted{color:var(--muted)}
+
+.TFrame { background-color:#151a22; }
+.TLabel { background-color:transparent; color:#e8eef9; foreground:#e8eef9; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; }
+.TButton{ background-color:#1f2b3a; color:#e8eef9; foreground:#e8eef9; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; bordercolor:#2b394b; }
+.ChatText{ background-color:#0f1117; color:#e8eef9; font-family:"Consolas","Lucida Console",monospace; font-size:10pt; }
