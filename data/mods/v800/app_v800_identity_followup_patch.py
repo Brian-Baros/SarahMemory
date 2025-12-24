@@ -3,10 +3,11 @@
 # Patch: v8.0.0 LOCAL Identity + Follow-up Repair (SarahMemoryReply)
 #
 # Fixes:
-# - Identity drift in LOCAL mode (prevents "developed by OpenAI" + generic assistant identity)
+# - Identity drift in LOCAL mode  + (generic assistant identity)
 # - Removes "• Should I dig deeper on that? []" and any trailing "[]"
 # - Provides better follow-up suggestions (no empty brackets)
-# - Makes yes/no followups work by caching last topic per-session (best effort)
+# - Makes yes/no followups work by caching last topic per-session.
+
 
 from __future__ import annotations
 

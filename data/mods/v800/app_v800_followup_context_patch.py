@@ -6,11 +6,8 @@
 # 1) Improve follow-up interaction (yes/no/ok refers to previous answer).
 # 2) Replace awkward "Should I dig deeper on that?" behavior with natural prompts.
 # 3) Identity safety: if local identity glitches, fall back to core app.py response.
-#
-# Notes:
-# - No edits to ../api/server/app.py
 # - Patches the live Flask endpoint for POST /api/chat.
-# - Uses in-memory per-session cache (process-local; OK for PythonAnywhere single worker).
+
 
 from __future__ import annotations
 

@@ -14,7 +14,7 @@ from flask import request, jsonify
 # ---------------------------------------------------------------------
 # Locate the SAME core module instance used by WSGI.
 # WSGI imports: from app import app as application
-# So we must patch THAT module, not api.server.app (which can be a second load).
+# Patch THAT module, not api.server.app (which can be a second load).
 # ---------------------------------------------------------------------
 core_mod = None
 

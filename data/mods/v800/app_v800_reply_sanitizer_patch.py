@@ -76,7 +76,7 @@ if not getattr(reply, _PATCH_GUARD, False):
 
         response = _sanitize_text(response)
 
-        # 🚫 Prevent math-only answers for non-math questions
+        # Prevent math-only answers for non-math questions
         if not _looks_like_math(user_text) and _looks_like_math(response):
             response = "I can explain that in words if you'd like — could you clarify what you'd like to know?"
 

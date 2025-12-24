@@ -6,11 +6,8 @@
 # - When /api/chat returns a reply, signal the Avatar system to "speak":
 #   - In LOCAL desktop mode: call SarahMemoryAvatar.simulate_lip_sync_async(duration)
 #   - In WebUI: attach meta.avatar_speech with duration + basic mouth cues so the front-end can animate
-#
-# Notes:
-# - No edits to ../api/server/app.py
-# - Safe to load multiple times (guarded)
-# - Headless/cloud environments won’t crash if avatar modules aren’t available.
+#   - Safe to load multiple times (guarded)
+#   - Headless/cloud environments won’t crash if avatar modules aren’t available.
 
 from __future__ import annotations
 
