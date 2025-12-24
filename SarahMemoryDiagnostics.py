@@ -99,6 +99,26 @@ REQUIRED_FILES = [
 # ============================
 # PHASE A: Identity & Device Awareness (v7.7.5–8)
 # ============================
+
+def _ensure_canvas_dirs():
+    """Ensure Canvas Studio workspace directories exist (non-fatal)."""
+    try:
+        from SarahMemoryGlobals import (
+            CANVAS_DIR, CANVAS_BRUSHES_DIR, CANVAS_CACHE_DIR, CANVAS_EXPORTS_DIR,
+            CANVAS_LYRICS_DIR, CANVAS_MUSIC_DIR, CANVAS_PROJECTS_DIR, CANVAS_TEMPLATES_DIR,
+            CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR
+        )
+        for _d in [
+            CANVAS_DIR, CANVAS_BRUSHES_DIR, CANVAS_CACHE_DIR, CANVAS_EXPORTS_DIR,
+            CANVAS_LYRICS_DIR, CANVAS_MUSIC_DIR, CANVAS_PROJECTS_DIR, CANVAS_TEMPLATES_DIR,
+            CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR
+        ]:
+            os.makedirs(_d, exist_ok=True)
+        return True
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[v8.0][DIAG] Canvas dirs check failed (non-critical): {e}")
+        return False
+
 def get_db_health_summary():
     """
     Phase B: Database / Mesh health summary helper.

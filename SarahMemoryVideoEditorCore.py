@@ -301,6 +301,30 @@ DEFAULT_AUDIO_BITRATE = 192000
 # ENUMERATIONS
 # ============================================================================
 
+
+# ---------------------------------------------------------------------
+# Canvas Studio directory routing (v8.0.0)
+# Exports consolidated under: DATA_DIR/canvas/exports
+# ---------------------------------------------------------------------
+try:
+    from SarahMemoryGlobals import (
+        DATA_DIR, CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_CACHE_DIR, CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR
+    )
+except Exception:
+    _base = os.getcwd()
+    DATA_DIR = os.path.join(_base, "data")
+    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
+    CANVAS_EXPORTS_DIR = CANVAS_EXPORTS_DIR
+    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
+    CANVAS_VIDEO_DIR = os.path.join(CANVAS_DIR, "video")
+    CANVAS_VIDEO_OUTPUTS_DIR = os.path.join(CANVAS_VIDEO_DIR, "outputs")
+
+for _d in [CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_CACHE_DIR, CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception:
+        pass
+
 class TimelineTrackType(Enum):
     """Types of timeline tracks"""
     VIDEO = "video"

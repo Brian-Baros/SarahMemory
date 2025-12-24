@@ -195,6 +195,29 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
+# ---------------------------------------------------------------------
+# Canvas Studio directory routing (v8.0.0)
+# Exports consolidated under: DATA_DIR/canvas/exports
+# ---------------------------------------------------------------------
+try:
+    from SarahMemoryGlobals import (
+        DATA_DIR, CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_LYRICS_DIR, CANVAS_CACHE_DIR
+    )
+except Exception:
+    _base = os.getcwd()
+    DATA_DIR = os.path.join(_base, "data")
+    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
+    CANVAS_EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
+    CANVAS_LYRICS_DIR = CANVAS_LYRICS_DIR
+    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
+
+for _d in [CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_LYRICS_DIR, CANVAS_CACHE_DIR]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception:
+        pass
+
+
 # ============================================================================
 # CONFIGURATION & IMPORTS
 # ============================================================================
@@ -300,14 +323,14 @@ LYRICS_TO_SONG_VERSION = "2.0.0"
 LYRICS_TO_SONG_BUILD = "20251204"
 
 # Directory structure
-LYRICS_DIR = os.path.join(DATASETS_DIR, "lyrics")
+LYRICS_DIR = CANVAS_LYRICS_DIR
 LYRICS_PROJECTS_DIR = os.path.join(LYRICS_DIR, "projects")
 LYRICS_SOURCE_DIR = os.path.join(LYRICS_DIR, "source")
 LYRICS_OUTPUTS_DIR = os.path.join(LYRICS_DIR, "outputs")
 LYRICS_CACHE_DIR = os.path.join(LYRICS_DIR, "cache")
 LYRICS_PROFILES_DIR = os.path.join(LYRICS_DIR, "profiles")
 LYRICS_HARMONIES_DIR = os.path.join(LYRICS_DIR, "harmonies")
-LYRICS_EXPORTS_DIR = os.path.join(LYRICS_DIR, "exports")
+LYRICS_EXPORTS_DIR = CANVAS_EXPORTS_DIR
 LYRICS_MIDI_DIR = os.path.join(LYRICS_DIR, "midi")
 LYRICS_LRC_DIR = os.path.join(LYRICS_DIR, "lrc")
 
@@ -456,6 +479,8 @@ PERFORMANCE_STYLES = {
 # ============================================================================
 
 @dataclass
+
+
 class LyricLine:
     """Represents a single line of lyrics with metadata"""
     text: str

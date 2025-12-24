@@ -720,6 +720,28 @@ MODS_DIR          = os.path.join(DATA_DIR, "mods")
 MODELS_DIR        = os.path.join(DATA_DIR, "models")
 THEMES_DIR        = os.path.join(MODS_DIR, "themes")
 SETTINGS_DIR      = os.path.join(DATA_DIR, "settings")
+
+# --- Canvas Studio (Multimedia Workspace) ---
+CANVAS_DIR           = os.path.join(DATA_DIR, "canvas")
+CANVAS_BRUSHES_DIR   = os.path.join(CANVAS_DIR, "brushes")
+CANVAS_CACHE_DIR     = os.path.join(CANVAS_DIR, "cache")
+CANVAS_EXPORTS_DIR   = os.path.join(CANVAS_DIR, "exports")
+CANVAS_LYRICS_DIR    = os.path.join(CANVAS_DIR, "lyrics")
+CANVAS_MUSIC_DIR     = os.path.join(CANVAS_DIR, "music")
+CANVAS_PROJECTS_DIR  = os.path.join(CANVAS_DIR, "projects")
+CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+CANVAS_VIDEO_DIR     = os.path.join(CANVAS_DIR, "video")
+
+# Optional structured subfolders (kept under CANVAS_* roots)
+CANVAS_VIDEO_OUTPUTS_DIR = os.path.join(CANVAS_VIDEO_DIR, "outputs")
+CANVAS_MUSIC_SAMPLES_DIR = os.path.join(CANVAS_MUSIC_DIR, "samples")
+CANVAS_MUSIC_PRESETS_DIR = os.path.join(CANVAS_MUSIC_DIR, "presets")
+CANVAS_MUSIC_LOOPS_DIR   = os.path.join(CANVAS_MUSIC_DIR, "loops")
+CANVAS_MUSIC_MIDI_DIR    = os.path.join(CANVAS_MUSIC_DIR, "midi")
+CANVAS_MUSIC_RECORDINGS_DIR = os.path.join(CANVAS_MUSIC_DIR, "recordings")
+
+# Backwards-compatible aliases (some modules used VOICES_DIR historically)
+#VOICES_DIR = VOICES_DIR
 SYNC_DIR          = os.path.join(DATA_DIR, "sync")
 VAULT_DIR         = os.path.join(DATA_DIR, "vault")
 WALLET_DIR        = os.path.join(DATA_DIR, "wallet")
@@ -925,7 +947,7 @@ SOUND_EFFECTS_DIR     = os.path.join(SOUND_DIR, "effects")
 SOUND_INSTRUMENTS_DIR = os.path.join(SOUND_DIR, "instruments")
 TOOLS_DIR             = os.path.join(RESOURCES_DIR, "tools")
 ANTIWORD_DIR          = os.path.join(TOOLS_DIR, "antiword") #Temp setup for the SarahMemorySystemLearn.py file
-VOICE_DIR             = os.path.join(RESOURCES_DIR, "voices")
+VOICES_DIR             = os.path.join(RESOURCES_DIR, "voice")
 
 # Mobile
 MOBILE_DIR = os.path.join(BASE_DIR, "mobile")
@@ -950,6 +972,8 @@ DIR_STRUCTURE = {
     "crypto":      CRYPTO_DIR,
     "cloud":       CLOUD_DIR,
     "exports":     EXPORTS_DIR,
+    "canvas":      CANVAS_DIR,
+    "canvas_exports": CANVAS_EXPORTS_DIR,
     "images":      IMAGES_DIR,
     "network":     NETWORK_DIR,
     "diagnostics": DIAGNOSTICS_DIR,
@@ -966,7 +990,7 @@ DIR_STRUCTURE = {
     "sound":       SOUND_DIR,
     "tools":       TOOLS_DIR,
     "antiword":    ANTIWORD_DIR, #Temp setup for the SarahMemorySystemLearn.py file
-    "voices":      VOICE_DIR,
+    "voice":      VOICES_DIR,
     "documents": DOCUMENTS_DIR,
     "downloads":     DOWNLOADS_DIR,
     "sandbox":       SANDBOX_DIR
@@ -1038,7 +1062,7 @@ def ensure_directories():
         SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR,
         AVATAR_DIR, AVATAR_MODELS_DIR, AVATAR_EXPRESSIONS_DIR, AVATAR_SHADERS_DIR,
         AVATAR_SKINS_DIR, SOUND_DIR, SOUND_EFFECTS_DIR, SOUND_INSTRUMENTS_DIR,
-        TOOLS_DIR, VOICE_DIR
+        TOOLS_DIR, VOICES_DIR
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
@@ -1145,6 +1169,20 @@ def get_global_config():
         "BASE_DIR":      BASE_DIR,
         "CONTACTS_DIR":  CONTACTS_DIR,
         "DATA_DIR":      DATA_DIR,
+        "CANVAS_DIR":     CANVAS_DIR,
+        "CANVAS_EXPORTS_DIR": CANVAS_EXPORTS_DIR,
+        "CANVAS_CACHE_DIR":   CANVAS_CACHE_DIR,
+        "CANVAS_PROJECTS_DIR": CANVAS_PROJECTS_DIR,
+        "CANVAS_TEMPLATES_DIR": CANVAS_TEMPLATES_DIR,
+        "CANVAS_BRUSHES_DIR": CANVAS_BRUSHES_DIR,
+        "CANVAS_LYRICS_DIR":  CANVAS_LYRICS_DIR,
+        "CANVAS_MUSIC_DIR":   CANVAS_MUSIC_DIR,
+        "CANVAS_VIDEO_DIR":   CANVAS_VIDEO_DIR,
+        "CANVAS_VIDEO_OUTPUTS_DIR": CANVAS_VIDEO_OUTPUTS_DIR,
+        "VOICES_DIR":     VOICES_DIR, 
+        "SOUND_DIR":     SOUND_DIR,
+        "SOUND_EFFECTS_DIR": SOUND_EFFECTS_DIR,
+        "SOUND_INSTRUMENTS_DIR": SOUND_INSTRUMENTS_DIR,
         "EXPORTS_DIR":   EXPORTS_DIR,
         "MOBILE_DIR":    MOBILE_DIR,
         "IMAGES_DIR":    IMAGES_DIR,
@@ -1162,7 +1200,7 @@ def get_global_config():
         "MODS_DIR":      MODS_DIR,
         "MODELS_DIR":    MODELS_DIR,
         "THEMES_DIR":    THEMES_DIR,
-        "VOICES_DIR":    VOICE_DIR,
+        "VOICES_DIR":    VOICES_DIR,
         "DOWNLOADS_DIR": DOWNLOADS_DIR,
         "PROJECTS_DIR":  os.path.join(BASE_DIR, "projects"),
         "PROJECT_IMAGES_DIR": os.path.join(BASE_DIR, "projects", "images"),
@@ -1282,7 +1320,7 @@ def import_other_data():
     MEMORY_DIR, MODS_DIR, MODELS_DIR, SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR,
     IMPORTS_DIR, DATASETS_DIR, AVATAR_DIR, AVATAR_MODELS_DIR, AVATAR_EXPRESSIONS_DIR,
     AVATAR_SHADERS_DIR, AVATAR_SKINS_DIR, THEMES_DIR, SOUND_DIR, SOUND_EFFECTS_DIR,
-    SOUND_INSTRUMENTS_DIR, VOICE_DIR, TOOLS_DIR}
+    SOUND_INSTRUMENTS_DIR, VOICES_DIR, TOOLS_DIR}
     for root, dirs, files in os.walk(DATA_DIR):
         if any(os.path.commonpath([root, ex]) == ex for ex in exclude_dirs):
             continue

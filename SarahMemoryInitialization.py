@@ -243,6 +243,7 @@ def run_initial_checks():
             config.get("SETTINGS_DIR"),
             config.get("LOGS_DIR"),
             config.get("BACKUP_DIR"),
+            config.get('CANVAS_DIR'),
             config.get("VAULT_DIR"),
             config.get("SYNC_DIR"),
             config.get("MEMORY_DIR"),
