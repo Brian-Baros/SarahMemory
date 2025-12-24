@@ -690,6 +690,50 @@ PUBLIC_DIR = BASE_DIR # the /api folder
 WEB_DIR = BASE_DIR # serve index.html etc. from /api
 DATA_DIR = os.path.join(BASE_DIR, "data")
 
+
+
+# =============================================================================
+# CANVAS STUDIO (Media Creators) - v8.0.0 Core Paths
+# -----------------------------------------------------------------------------
+# All Canvas Studio assets, projects, caches, and exports MUST live under:
+#   {BASE_DIR}/data/canvas/
+# And ALL final exports (PNG/WAV/MP4/etc.) MUST be written to:
+#   {BASE_DIR}/data/canvas/exports/
+# =============================================================================
+
+CANVAS_DIR           = os.path.join(DATA_DIR, "canvas")
+CANVAS_BRUSHES_DIR   = os.path.join(CANVAS_DIR, "brushes")
+CANVAS_CACHE_DIR     = os.path.join(CANVAS_DIR, "cache")
+CANVAS_EXPORTS_DIR   = os.path.join(CANVAS_DIR, "exports")
+CANVAS_LYRICS_DIR    = os.path.join(CANVAS_DIR, "lyrics")
+CANVAS_MUSIC_DIR     = os.path.join(CANVAS_DIR, "music")
+CANVAS_PROJECTS_DIR  = os.path.join(CANVAS_DIR, "projects")
+CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+CANVAS_VIDEO_DIR     = os.path.join(CANVAS_DIR, "video")
+
+# Optional sub-structure for video internals; final MP4 exports still go to CANVAS_EXPORTS_DIR
+CANVAS_VIDEO_INPUTS_DIR    = os.path.join(CANVAS_VIDEO_DIR, "inputs")
+CANVAS_VIDEO_OUTPUTS_DIR   = os.path.join(CANVAS_VIDEO_DIR, "outputs")
+CANVAS_VIDEO_CACHE_DIR     = os.path.join(CANVAS_VIDEO_DIR, "cache")
+CANVAS_VIDEO_THUMBS_DIR    = os.path.join(CANVAS_VIDEO_DIR, "thumbnails")
+CANVAS_VIDEO_AUDIO_DIR     = os.path.join(CANVAS_VIDEO_DIR, "audio")
+CANVAS_VIDEO_EFFECTS_DIR   = os.path.join(CANVAS_VIDEO_DIR, "effects")
+CANVAS_VIDEO_TEMPLATES_DIR = os.path.join(CANVAS_VIDEO_DIR, "templates")
+
+def ensure_canvas_dirs() -> None:
+    """Create Canvas Studio directory tree if missing."""
+    for _d in [
+        CANVAS_DIR, CANVAS_BRUSHES_DIR, CANVAS_CACHE_DIR, CANVAS_EXPORTS_DIR,
+        CANVAS_LYRICS_DIR, CANVAS_MUSIC_DIR, CANVAS_PROJECTS_DIR, CANVAS_TEMPLATES_DIR,
+        CANVAS_VIDEO_DIR, CANVAS_VIDEO_INPUTS_DIR, CANVAS_VIDEO_OUTPUTS_DIR,
+        CANVAS_VIDEO_CACHE_DIR, CANVAS_VIDEO_THUMBS_DIR, CANVAS_VIDEO_AUDIO_DIR,
+        CANVAS_VIDEO_EFFECTS_DIR, CANVAS_VIDEO_TEMPLATES_DIR,
+    ]:
+        try:
+            os.makedirs(_d, exist_ok=True)
+        except Exception:
+            pass
+
 # --- Local Frontend Pathing (for npm build and dist push) ---
 LOCAL_STORE_FRONT_DIR = os.path.join(BASE_DIR, "pshome")  # Local path to editable Vue/React frontend source code
 LOCAL_STORE_DIST_DIR = os.path.join(LOCAL_STORE_FRONT_DIR, "dist")  # Compiled web assets ready for upload via FTP
@@ -720,28 +764,6 @@ MODS_DIR          = os.path.join(DATA_DIR, "mods")
 MODELS_DIR        = os.path.join(DATA_DIR, "models")
 THEMES_DIR        = os.path.join(MODS_DIR, "themes")
 SETTINGS_DIR      = os.path.join(DATA_DIR, "settings")
-
-# --- Canvas Studio (Multimedia Workspace) ---
-CANVAS_DIR           = os.path.join(DATA_DIR, "canvas")
-CANVAS_BRUSHES_DIR   = os.path.join(CANVAS_DIR, "brushes")
-CANVAS_CACHE_DIR     = os.path.join(CANVAS_DIR, "cache")
-CANVAS_EXPORTS_DIR   = os.path.join(CANVAS_DIR, "exports")
-CANVAS_LYRICS_DIR    = os.path.join(CANVAS_DIR, "lyrics")
-CANVAS_MUSIC_DIR     = os.path.join(CANVAS_DIR, "music")
-CANVAS_PROJECTS_DIR  = os.path.join(CANVAS_DIR, "projects")
-CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
-CANVAS_VIDEO_DIR     = os.path.join(CANVAS_DIR, "video")
-
-# Optional structured subfolders (kept under CANVAS_* roots)
-CANVAS_VIDEO_OUTPUTS_DIR = os.path.join(CANVAS_VIDEO_DIR, "outputs")
-CANVAS_MUSIC_SAMPLES_DIR = os.path.join(CANVAS_MUSIC_DIR, "samples")
-CANVAS_MUSIC_PRESETS_DIR = os.path.join(CANVAS_MUSIC_DIR, "presets")
-CANVAS_MUSIC_LOOPS_DIR   = os.path.join(CANVAS_MUSIC_DIR, "loops")
-CANVAS_MUSIC_MIDI_DIR    = os.path.join(CANVAS_MUSIC_DIR, "midi")
-CANVAS_MUSIC_RECORDINGS_DIR = os.path.join(CANVAS_MUSIC_DIR, "recordings")
-
-# Backwards-compatible aliases (some modules used VOICES_DIR historically)
-#VOICES_DIR = VOICES_DIR
 SYNC_DIR          = os.path.join(DATA_DIR, "sync")
 VAULT_DIR         = os.path.join(DATA_DIR, "vault")
 WALLET_DIR        = os.path.join(DATA_DIR, "wallet")
@@ -947,7 +969,7 @@ SOUND_EFFECTS_DIR     = os.path.join(SOUND_DIR, "effects")
 SOUND_INSTRUMENTS_DIR = os.path.join(SOUND_DIR, "instruments")
 TOOLS_DIR             = os.path.join(RESOURCES_DIR, "tools")
 ANTIWORD_DIR          = os.path.join(TOOLS_DIR, "antiword") #Temp setup for the SarahMemorySystemLearn.py file
-VOICES_DIR             = os.path.join(RESOURCES_DIR, "voice")
+VOICE_DIR             = os.path.join(RESOURCES_DIR, "voices")
 
 # Mobile
 MOBILE_DIR = os.path.join(BASE_DIR, "mobile")
@@ -972,8 +994,6 @@ DIR_STRUCTURE = {
     "crypto":      CRYPTO_DIR,
     "cloud":       CLOUD_DIR,
     "exports":     EXPORTS_DIR,
-    "canvas":      CANVAS_DIR,
-    "canvas_exports": CANVAS_EXPORTS_DIR,
     "images":      IMAGES_DIR,
     "network":     NETWORK_DIR,
     "diagnostics": DIAGNOSTICS_DIR,
@@ -990,7 +1010,7 @@ DIR_STRUCTURE = {
     "sound":       SOUND_DIR,
     "tools":       TOOLS_DIR,
     "antiword":    ANTIWORD_DIR, #Temp setup for the SarahMemorySystemLearn.py file
-    "voice":      VOICES_DIR,
+    "voices":      VOICE_DIR,
     "documents": DOCUMENTS_DIR,
     "downloads":     DOWNLOADS_DIR,
     "sandbox":       SANDBOX_DIR
@@ -1062,7 +1082,7 @@ def ensure_directories():
         SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR,
         AVATAR_DIR, AVATAR_MODELS_DIR, AVATAR_EXPRESSIONS_DIR, AVATAR_SHADERS_DIR,
         AVATAR_SKINS_DIR, SOUND_DIR, SOUND_EFFECTS_DIR, SOUND_INSTRUMENTS_DIR,
-        TOOLS_DIR, VOICES_DIR
+        TOOLS_DIR, VOICE_DIR
     ]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
@@ -1169,20 +1189,6 @@ def get_global_config():
         "BASE_DIR":      BASE_DIR,
         "CONTACTS_DIR":  CONTACTS_DIR,
         "DATA_DIR":      DATA_DIR,
-        "CANVAS_DIR":     CANVAS_DIR,
-        "CANVAS_EXPORTS_DIR": CANVAS_EXPORTS_DIR,
-        "CANVAS_CACHE_DIR":   CANVAS_CACHE_DIR,
-        "CANVAS_PROJECTS_DIR": CANVAS_PROJECTS_DIR,
-        "CANVAS_TEMPLATES_DIR": CANVAS_TEMPLATES_DIR,
-        "CANVAS_BRUSHES_DIR": CANVAS_BRUSHES_DIR,
-        "CANVAS_LYRICS_DIR":  CANVAS_LYRICS_DIR,
-        "CANVAS_MUSIC_DIR":   CANVAS_MUSIC_DIR,
-        "CANVAS_VIDEO_DIR":   CANVAS_VIDEO_DIR,
-        "CANVAS_VIDEO_OUTPUTS_DIR": CANVAS_VIDEO_OUTPUTS_DIR,
-        "VOICES_DIR":     VOICES_DIR, 
-        "SOUND_DIR":     SOUND_DIR,
-        "SOUND_EFFECTS_DIR": SOUND_EFFECTS_DIR,
-        "SOUND_INSTRUMENTS_DIR": SOUND_INSTRUMENTS_DIR,
         "EXPORTS_DIR":   EXPORTS_DIR,
         "MOBILE_DIR":    MOBILE_DIR,
         "IMAGES_DIR":    IMAGES_DIR,
@@ -1194,13 +1200,22 @@ def get_global_config():
         "MEMORY_DIR":    MEMORY_DIR,
         "AVATAR_DIR":    AVATAR_DIR,
         "DATASETS_DIR":  DATASETS_DIR,
+        "CANVAS_DIR":    CANVAS_DIR,
+        "CANVAS_EXPORTS_DIR":   CANVAS_EXPORTS_DIR,
+        "CANVAS_PROJECTS_DIR":  CANVAS_PROJECTS_DIR,
+        "CANVAS_CACHE_DIR":     CANVAS_CACHE_DIR,
+        "CANVAS_TEMPLATES_DIR": CANVAS_TEMPLATES_DIR,
+        "CANVAS_BRUSHES_DIR":   CANVAS_BRUSHES_DIR,
+        "CANVAS_LYRICS_DIR":    CANVAS_LYRICS_DIR,
+        "CANVAS_MUSIC_DIR":     CANVAS_MUSIC_DIR,
+        "CANVAS_VIDEO_DIR":     CANVAS_VIDEO_DIR,
         "IMPORTS_DIR":   IMPORTS_DIR,
         "DOCUMENTS_DIR": DOCUMENTS_DIR,
         "ADDONS_DIR":    ADDONS_DIR,
         "MODS_DIR":      MODS_DIR,
         "MODELS_DIR":    MODELS_DIR,
         "THEMES_DIR":    THEMES_DIR,
-        "VOICES_DIR":    VOICES_DIR,
+        "VOICES_DIR":    VOICE_DIR,
         "DOWNLOADS_DIR": DOWNLOADS_DIR,
         "PROJECTS_DIR":  os.path.join(BASE_DIR, "projects"),
         "PROJECT_IMAGES_DIR": os.path.join(BASE_DIR, "projects", "images"),
@@ -1320,7 +1335,7 @@ def import_other_data():
     MEMORY_DIR, MODS_DIR, MODELS_DIR, SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR,
     IMPORTS_DIR, DATASETS_DIR, AVATAR_DIR, AVATAR_MODELS_DIR, AVATAR_EXPRESSIONS_DIR,
     AVATAR_SHADERS_DIR, AVATAR_SKINS_DIR, THEMES_DIR, SOUND_DIR, SOUND_EFFECTS_DIR,
-    SOUND_INSTRUMENTS_DIR, VOICES_DIR, TOOLS_DIR}
+    SOUND_INSTRUMENTS_DIR, VOICE_DIR, TOOLS_DIR}
     for root, dirs, files in os.walk(DATA_DIR):
         if any(os.path.commonpath([root, ex]) == ex for ex in exclude_dirs):
             continue

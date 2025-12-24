@@ -238,12 +238,18 @@ def run_initial_checks():
         # =====================================================================
         print_phase_banner(4, "DIRECTORY STRUCTURE VALIDATION")
         
+        # Ensure Canvas Studio directory tree exists
+        try:
+            if hasattr(SarahMemoryGlobals, "ensure_canvas_dirs"):
+                SarahMemoryGlobals.ensure_canvas_dirs()
+        except Exception:
+            pass
+
         # Essential directories
         raw_required = [
             config.get("SETTINGS_DIR"),
             config.get("LOGS_DIR"),
             config.get("BACKUP_DIR"),
-            config.get('CANVAS_DIR'),
             config.get("VAULT_DIR"),
             config.get("SYNC_DIR"),
             config.get("MEMORY_DIR"),
@@ -257,6 +263,11 @@ def run_initial_checks():
             config.get("VOICES_DIR"),
             config.get("AVATAR_DIR"),
             config.get("DATASETS_DIR"),
+            config.get("CANVAS_DIR"),
+            config.get("CANVAS_EXPORTS_DIR"),
+            config.get("CANVAS_PROJECTS_DIR"),
+            config.get("CANVAS_CACHE_DIR"),
+            config.get("CANVAS_TEMPLATES_DIR"),
             config.get("IMPORTS_DIR"),
             config.get("PROJECT_IMAGES_DIR"),
             config.get("PROJECT_UPDATES_DIR"),

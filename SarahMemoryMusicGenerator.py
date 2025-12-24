@@ -110,7 +110,7 @@ INTEGRATION POINTS:
 
 FILE STRUCTURE:
 --------------
-{DATASETS_DIR}/
+{DATA_DIR}/
     music/
         projects/          # Music project files (.smp format)
         exports/           # Rendered audio files
@@ -223,10 +223,8 @@ except ImportError:
 # Import SarahMemory modules
 try:
     import SarahMemoryGlobals as SMG
-    DATASETS_DIR = SMG.DATASETS_DIR
     DEBUG_MODE = SMG.DEBUG_MODE
 except ImportError:
-    DATASETS_DIR = os.path.join(os.getcwd(), "data")
     DEBUG_MODE = True
     logging.warning("[MusicStudio] Running in standalone mode without SarahMemoryGlobals")
 
@@ -240,14 +238,36 @@ MUSIC_STUDIO_VERSION = "2.0.0"
 MUSIC_STUDIO_BUILD = "20251204"
 
 # Directory structure
-MUSIC_DIR = os.path.join(DATASETS_DIR, "music")
-MUSIC_PROJECTS_DIR = os.path.join(MUSIC_DIR, "projects")
-MUSIC_EXPORTS_DIR = os.path.join(MUSIC_DIR, "exports")
+# Directory structure (Canvas Studio)
+try:
+    MUSIC_DIR = SMG.CANVAS_MUSIC_DIR
+    EXPORTS_DIR = SMG.CANVAS_EXPORTS_DIR
+    MUSIC_EXPORTS_DIR = EXPORTS_DIR  # unified export root for Canvas Studio media creators
+    _CANVAS_PROJECTS = SMG.CANVAS_PROJECTS_DIR
+    _CANVAS_CACHE = SMG.CANVAS_CACHE_DIR
+except Exception:
+    MUSIC_DIR = os.path.join(DATA_DIR, "canvas", "music")
+    EXPORTS_DIR = os.path.join(DATA_DIR, "canvas", "exports")
+    _CANVAS_PROJECTS = os.path.join(DATA_DIR, "canvas", "projects")
+    _CANVAS_CACHE = os.path.join(DATA_DIR, "canvas", "cache")
+
+MUSIC_PROJECTS_DIR = os.path.join(_CANVAS_PROJECTS, "music")
+MUSIC_CACHE_DIR = os.path.join(_CANVAS_CACHE, "music")
+
 MUSIC_SAMPLES_DIR = os.path.join(MUSIC_DIR, "samples")
 MUSIC_PRESETS_DIR = os.path.join(MUSIC_DIR, "presets")
 MUSIC_LOOPS_DIR = os.path.join(MUSIC_DIR, "loops")
 MUSIC_RECORDINGS_DIR = os.path.join(MUSIC_DIR, "recordings")
 MUSIC_MIDI_DIR = os.path.join(MUSIC_DIR, "midi")
+
+# Ensure directories exist
+for _d in [MUSIC_DIR, MUSIC_PROJECTS_DIR, MUSIC_CACHE_DIR, EXPORTS_DIR,
+           MUSIC_SAMPLES_DIR, MUSIC_PRESETS_DIR, MUSIC_LOOPS_DIR, MUSIC_RECORDINGS_DIR, MUSIC_MIDI_DIR]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception:
+        pass
+
 
 # Create directories
 for directory in [MUSIC_DIR, MUSIC_PROJECTS_DIR, MUSIC_EXPORTS_DIR, MUSIC_SAMPLES_DIR,

@@ -78,7 +78,7 @@ INTEGRATION POINTS:
 
 FILE STRUCTURE:
 --------------
-{DATASETS_DIR}/
+{DATA_DIR}/
     video/
         projects/          # Saved project files (.svp format)
         inputs/            # Source video files
@@ -203,10 +203,8 @@ except ImportError:
 # Import SarahMemory modules
 try:
     import SarahMemoryGlobals as SMG
-    DATASETS_DIR = SMG.DATASETS_DIR
     DEBUG_MODE = SMG.DEBUG_MODE
 except ImportError:
-    DATASETS_DIR = os.path.join(os.getcwd(), "data")
     DEBUG_MODE = True
     logging.warning("[VideoEditor] Running in standalone mode without SarahMemoryGlobals")
 
@@ -241,22 +239,60 @@ except ImportError:
 VIDEO_EDITOR_VERSION = "2.0.0"
 VIDEO_EDITOR_BUILD = "20251204"
 
-# Directory structure
-VIDEO_DIR = os.path.join(DATASETS_DIR, "video")
-VIDEO_PROJECTS_DIR = os.path.join(VIDEO_DIR, "projects")
+# Directory structure (Canvas Studio standard)
+# Rules:
+# - ALL final exports go to: {DATA_DIR}/canvas/exports
+# - ALL projects go to:      {DATA_DIR}/canvas/projects
+# - ALL templates go to:     {DATA_DIR}/canvas/templates
+# - ALL cache goes to:       {DATA_DIR}/canvas/cache
+# - Video workspace lives in:{DATA_DIR}/canvas/video (inputs/outputs/audio/effects/thumbnails)
+try:
+    BASE_DIR = getattr(SMG, "BASE_DIR", os.getcwd())
+    DATA_DIR = getattr(SMG, "DATA_DIR", os.path.join(BASE_DIR, "data"))
+    CANVAS_DIR = getattr(SMG, "CANVAS_DIR", os.path.join(DATA_DIR, "canvas"))
+
+    EXPORTS_DIR = getattr(SMG, "CANVAS_EXPORTS_DIR", os.path.join(CANVAS_DIR, "exports"))
+    VIDEO_PROJECTS_DIR = getattr(SMG, "CANVAS_PROJECTS_DIR", os.path.join(CANVAS_DIR, "projects"))
+    VIDEO_TEMPLATES_DIR = getattr(SMG, "CANVAS_TEMPLATES_DIR", os.path.join(CANVAS_DIR, "templates"))
+    VIDEO_CACHE_DIR = getattr(SMG, "CANVAS_CACHE_DIR", os.path.join(CANVAS_DIR, "cache"))
+    VIDEO_DIR = getattr(SMG, "CANVAS_VIDEO_DIR", os.path.join(CANVAS_DIR, "video"))
+except Exception:
+    BASE_DIR = os.getcwd()
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
+
+    EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
+    VIDEO_PROJECTS_DIR = os.path.join(CANVAS_DIR, "projects")
+    VIDEO_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+    VIDEO_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
+    VIDEO_DIR = os.path.join(CANVAS_DIR, "video")
+
+# Video workspace subdirectories
 VIDEO_INPUTS_DIR = os.path.join(VIDEO_DIR, "inputs")
-VIDEO_OUTPUTS_DIR = os.path.join(VIDEO_DIR, "outputs")
-VIDEO_CACHE_DIR = os.path.join(VIDEO_DIR, "cache")
+VIDEO_OUTPUTS_DIR = os.path.join(VIDEO_DIR, "outputs")          # intermediates OK
 VIDEO_THUMBNAILS_DIR = os.path.join(VIDEO_DIR, "thumbnails")
 VIDEO_AUDIO_DIR = os.path.join(VIDEO_DIR, "audio")
 VIDEO_EFFECTS_DIR = os.path.join(VIDEO_DIR, "effects")
-VIDEO_TEMPLATES_DIR = os.path.join(VIDEO_DIR, "templates")
 
-# Create directories
-for directory in [VIDEO_DIR, VIDEO_PROJECTS_DIR, VIDEO_INPUTS_DIR, VIDEO_OUTPUTS_DIR,
-                  VIDEO_CACHE_DIR, VIDEO_THUMBNAILS_DIR, VIDEO_AUDIO_DIR, 
-                  VIDEO_EFFECTS_DIR, VIDEO_TEMPLATES_DIR]:
-    os.makedirs(directory, exist_ok=True)
+# Ensure directories exist (safe for standalone execution)
+for _d in [
+    CANVAS_DIR,
+    EXPORTS_DIR,
+    VIDEO_PROJECTS_DIR,
+    VIDEO_TEMPLATES_DIR,
+    VIDEO_CACHE_DIR,
+    VIDEO_DIR,
+    VIDEO_INPUTS_DIR,
+    VIDEO_OUTPUTS_DIR,
+    VIDEO_THUMBNAILS_DIR,
+    VIDEO_AUDIO_DIR,
+    VIDEO_EFFECTS_DIR,
+]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception:
+        pass
+
 
 # Video specifications
 SUPPORTED_INPUT_FORMATS = ["mp4", "avi", "mov", "mkv", "webm", "flv", "wmv", "m4v"]
@@ -300,30 +336,6 @@ DEFAULT_AUDIO_BITRATE = 192000
 # ============================================================================
 # ENUMERATIONS
 # ============================================================================
-
-
-# ---------------------------------------------------------------------
-# Canvas Studio directory routing (v8.0.0)
-# Exports consolidated under: DATA_DIR/canvas/exports
-# ---------------------------------------------------------------------
-try:
-    from SarahMemoryGlobals import (
-        DATA_DIR, CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_CACHE_DIR, CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR
-    )
-except Exception:
-    _base = os.getcwd()
-    DATA_DIR = os.path.join(_base, "data")
-    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
-    CANVAS_EXPORTS_DIR = CANVAS_EXPORTS_DIR
-    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
-    CANVAS_VIDEO_DIR = os.path.join(CANVAS_DIR, "video")
-    CANVAS_VIDEO_OUTPUTS_DIR = os.path.join(CANVAS_VIDEO_DIR, "outputs")
-
-for _d in [CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_CACHE_DIR, CANVAS_VIDEO_DIR, CANVAS_VIDEO_OUTPUTS_DIR]:
-    try:
-        os.makedirs(_d, exist_ok=True)
-    except Exception:
-        pass
 
 class TimelineTrackType(Enum):
     """Types of timeline tracks"""
@@ -1278,7 +1290,7 @@ class VideoEditorCore:
             if output_path is None:
                 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
                 filename = f"{project.name.replace(' ', '_')}_{timestamp}.{project.render_format}"
-                output_path = os.path.join(VIDEO_OUTPUTS_DIR, filename)
+                output_path = os.path.join(EXPORTS_DIR, filename)
             
             # Get resolution
             if resolution and resolution in RESOLUTION_PRESETS:
@@ -1468,6 +1480,7 @@ class VideoEditorCore:
                 "projects": VIDEO_PROJECTS_DIR,
                 "inputs": VIDEO_INPUTS_DIR,
                 "outputs": VIDEO_OUTPUTS_DIR,
+                "exports": EXPORTS_DIR,
                 "cache": VIDEO_CACHE_DIR,
                 "audio": VIDEO_AUDIO_DIR
             }
@@ -1562,7 +1575,7 @@ def main():
     
     # Export project (optional - commented out for quick demo)
     # print("Exporting project...")
-    # output_path = os.path.join(VIDEO_OUTPUTS_DIR, "demo_output.mp4")
+    # output_path = os.path.join(EXPORTS_DIR, "demo_output.mp4")
     # if editor.export_project(project, output_path, quality="medium"):
     #     print(f"✓ Project exported: {output_path}")
     # else:

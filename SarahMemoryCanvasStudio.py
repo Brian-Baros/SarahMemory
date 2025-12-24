@@ -67,7 +67,7 @@ INTEGRATION POINTS:
 
 FILE STRUCTURE:
 --------------
-{DATASETS_DIR}/
+{DATA_DIR}/
     canvas/
         projects/          # Saved project files (.scp format)
         exports/           # Final rendered outputs
@@ -163,10 +163,8 @@ except ImportError:
 # Import SarahMemory globals
 try:
     import SarahMemoryGlobals as SMG
-    DATASETS_DIR = SMG.DATASETS_DIR
     DEBUG_MODE = SMG.DEBUG_MODE
 except ImportError:
-    DATASETS_DIR = os.path.join(os.getcwd(), "data")
     DEBUG_MODE = True
     logging.warning("[CanvasStudio] Running in standalone mode without SarahMemoryGlobals")
 
@@ -179,11 +177,28 @@ CANVAS_STUDIO_VERSION = "2.0.0"
 CANVAS_STUDIO_BUILD = "20251204"
 
 # Directory structure
-CANVAS_DIR = os.path.join(DATASETS_DIR, "canvas")
-CANVAS_PROJECTS_DIR = os.path.join(CANVAS_DIR, "projects")
-CANVAS_EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
-CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
-CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+try:
+    # Prefer centralized v8.0.0 paths
+    CANVAS_DIR = SMG.CANVAS_DIR
+    CANVAS_PROJECTS_DIR = SMG.CANVAS_PROJECTS_DIR
+    CANVAS_EXPORTS_DIR = SMG.CANVAS_EXPORTS_DIR
+    CANVAS_CACHE_DIR = SMG.CANVAS_CACHE_DIR
+    CANVAS_BRUSHES_DIR = getattr(SMG, "CANVAS_BRUSHES_DIR", os.path.join(CANVAS_DIR, "brushes"))
+    CANVAS_TEMPLATES_DIR = SMG.CANVAS_TEMPLATES_DIR
+except Exception:
+    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
+    CANVAS_PROJECTS_DIR = os.path.join(CANVAS_DIR, "projects")
+    CANVAS_EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
+    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
+    CANVAS_BRUSHES_DIR = os.path.join(CANVAS_DIR, "brushes")
+    CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+
+# Ensure directory tree exists
+for _d in [CANVAS_DIR, CANVAS_PROJECTS_DIR, CANVAS_EXPORTS_DIR, CANVAS_CACHE_DIR, CANVAS_BRUSHES_DIR, CANVAS_TEMPLATES_DIR]:
+    try:
+        os.makedirs(_d, exist_ok=True)
+    except Exception:
+        pass
 CANVAS_BRUSHES_DIR = os.path.join(CANVAS_DIR, "brushes")
 
 # Canvas limitations

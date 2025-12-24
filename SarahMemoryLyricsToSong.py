@@ -195,42 +195,53 @@ from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 
-# ---------------------------------------------------------------------
-# Canvas Studio directory routing (v8.0.0)
-# Exports consolidated under: DATA_DIR/canvas/exports
-# ---------------------------------------------------------------------
-try:
-    from SarahMemoryGlobals import (
-        DATA_DIR, CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_LYRICS_DIR, CANVAS_CACHE_DIR
-    )
-except Exception:
-    _base = os.getcwd()
-    DATA_DIR = os.path.join(_base, "data")
-    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
-    CANVAS_EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
-    CANVAS_LYRICS_DIR = CANVAS_LYRICS_DIR
-    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
-
-for _d in [CANVAS_DIR, CANVAS_EXPORTS_DIR, CANVAS_LYRICS_DIR, CANVAS_CACHE_DIR]:
-    try:
-        os.makedirs(_d, exist_ok=True)
-    except Exception:
-        pass
-
-
 # ============================================================================
 # CONFIGURATION & IMPORTS
 # ============================================================================
 
 # Import SarahMemory core modules
 try:
-    from SarahMemoryGlobals import DATASETS_DIR, SAFE_MODE, LOCAL_ONLY_MODE
+    import SarahMemoryGlobals as SMG
     GLOBALS_AVAILABLE = True
-except ImportError:
-    DATASETS_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+    BASE_DIR = getattr(SMG, "BASE_DIR", os.getcwd())
+    DATA_DIR = getattr(SMG, "DATA_DIR", os.path.join(BASE_DIR, "data"))
+
+    # Canvas Studio unified root
+    CANVAS_DIR = getattr(SMG, "CANVAS_DIR", os.path.join(DATA_DIR, "canvas"))
+    CANVAS_EXPORTS_DIR = getattr(SMG, "CANVAS_EXPORTS_DIR", os.path.join(CANVAS_DIR, "exports"))
+    CANVAS_PROJECTS_DIR = getattr(SMG, "CANVAS_PROJECTS_DIR", os.path.join(CANVAS_DIR, "projects"))
+    CANVAS_CACHE_DIR = getattr(SMG, "CANVAS_CACHE_DIR", os.path.join(CANVAS_DIR, "cache"))
+    CANVAS_TEMPLATES_DIR = getattr(SMG, "CANVAS_TEMPLATES_DIR", os.path.join(CANVAS_DIR, "templates"))
+
+    # Voice models directory (Global canonical is VOICE_DIR; accept legacy VOICES_DIR)
+    VOICE_DIR = getattr(SMG, "VOICE_DIR", None) or getattr(SMG, "VOICES_DIR", None)
+
+    SAFE_MODE = getattr(SMG, "SAFE_MODE", False)
+    LOCAL_ONLY_MODE = getattr(SMG, "LOCAL_ONLY_MODE", False)
+
+    # Back-compat: this module historically used DATASETS_DIR; map it to CANVAS_DIR
+    DATASETS_DIR = CANVAS_DIR
+except Exception:
+    SMG = None  # type: ignore
+    GLOBALS_AVAILABLE = False
+
+    BASE_DIR = os.getcwd()
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+
+    CANVAS_DIR = os.path.join(DATA_DIR, "canvas")
+    CANVAS_EXPORTS_DIR = os.path.join(CANVAS_DIR, "exports")
+    CANVAS_PROJECTS_DIR = os.path.join(CANVAS_DIR, "projects")
+    CANVAS_CACHE_DIR = os.path.join(CANVAS_DIR, "cache")
+    CANVAS_TEMPLATES_DIR = os.path.join(CANVAS_DIR, "templates")
+
+    VOICE_DIR = os.path.join(BASE_DIR, "resources", "voices")
+
     SAFE_MODE = False
     LOCAL_ONLY_MODE = False
-    GLOBALS_AVAILABLE = False
+
+    DATASETS_DIR = CANVAS_DIR
+    logging.warning("[LyricsToSong] SarahMemoryGlobals not available - using defaults")
     logging.warning("[LyricsToSong] SarahMemoryGlobals not available - using defaults")
 
 # Import optional multimedia modules
@@ -323,11 +334,11 @@ LYRICS_TO_SONG_VERSION = "2.0.0"
 LYRICS_TO_SONG_BUILD = "20251204"
 
 # Directory structure
-LYRICS_DIR = CANVAS_LYRICS_DIR
-LYRICS_PROJECTS_DIR = os.path.join(LYRICS_DIR, "projects")
+LYRICS_DIR = os.path.join(CANVAS_DIR, "lyrics")
+LYRICS_PROJECTS_DIR = CANVAS_PROJECTS_DIR
 LYRICS_SOURCE_DIR = os.path.join(LYRICS_DIR, "source")
 LYRICS_OUTPUTS_DIR = os.path.join(LYRICS_DIR, "outputs")
-LYRICS_CACHE_DIR = os.path.join(LYRICS_DIR, "cache")
+LYRICS_CACHE_DIR = CANVAS_CACHE_DIR
 LYRICS_PROFILES_DIR = os.path.join(LYRICS_DIR, "profiles")
 LYRICS_HARMONIES_DIR = os.path.join(LYRICS_DIR, "harmonies")
 LYRICS_EXPORTS_DIR = CANVAS_EXPORTS_DIR
@@ -479,8 +490,6 @@ PERFORMANCE_STYLES = {
 # ============================================================================
 
 @dataclass
-
-
 class LyricLine:
     """Represents a single line of lyrics with metadata"""
     text: str
@@ -850,7 +859,7 @@ class VocalSynthesizer:
         self.projects = {}  # project_id -> VocalProject
         self.voice_profiles = VOICE_PROFILES.copy()
         # Load custom .pt voices from ../resources/voices
-        from SarahMemoryGlobals import VOICES_DIR
+        from SarahMemoryGlobals import VOICE_DIR as VOICES_DIR
         self.custom_voice_models = {}  # filename → loaded torch model
 
         if CUSTOM_TTS_AVAILABLE and os.path.exists(VOICES_DIR):
