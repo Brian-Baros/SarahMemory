@@ -33,44 +33,61 @@ SarahMemory/
 
 ## Usage## Usage QUICKSTART INSTRUCTIONS SO EASY A N00B Can DO IT....
 1.  Clone or download the repository. 
-    ## it will want to save as 'sarahmemory-main.zip' okay or  Save as SarahMemory.zip
-    EXTRACT FILE CONTENTS, I suggest 7-ZIP to a seperate (256 gb minimum) 
-    HARDDRIVE, SSD, NVME M3, USB or a (256gb SD CARD) 
-    to
-    example S:\SarahMemory 
+     it will want to save as 'sarahmemory-main.zip' okay or  Save as SarahMemory.zip
+     EXTRACT FILE CONTENTS, I suggest 7-ZIP to a seperate (256 gb minimum) 
+     HARDDRIVE, SSD, NVME M3, USB or a (256gb SD CARD) 
+     to
+        example S:\SarahMemory 
     
-    ## Understand the More DRIVE SPACE you have The More MODELS you can USE. You can use any model you want, or even use MULTIPLE MODELS so the bigger the model you need some Models can be downloaded using the SarahMemoryLLM.py file.
+     Understand the More DRIVE SPACE you have The More MODELS you can USE. You can use any model you want, or even use MULTIPLE MODELS so the bigger the model you need some Models can be downloaded using the SarahMemoryLLM.py file.
     
 
 2.  RUN WINDOWS COMMAND PROMPT (CMD) as ADMINISTRATOR
-    ## Goto Installed Drive and Directory
+     Goto Installed Drive and Directory
+    
     S:\SarahMemory
-    ## If you don't know how to do this step, May GOD BLESS YOUR SOUL.
+    
+     If you don't know how to do this step, May GOD BLESS YOUR SOUL.
 
 3.  Install the Python Dependency
-    ## type the following commands
+     type the following commands
+    
     python -m venv venv
+    
     venv\Scripts\activate        
-    ## Windows
+     Windows
+    
     source venv/bin/activate     
-    ## Linux/macOS
+     Linux/macOS
+    
     pip install -r requirements.txt
-    # note depending what system Windows should complete okay or on Linux you might not be able to install every one This process will take sometime there are alot.
+    
+     note depending what system Windows should complete okay or on Linux you might not be able to install every one This process will take sometime there are alot.
 
 4. Create a local set of databases
-    ## Be sure you're now see the command prompt as (venv)SarahMemory
-    ## type the following
+    
+     Be sure you're now see the command prompt as (venv)SarahMemory
+     type the following
+    
     python SarahMemoryDBCreate.py
-    ## This will create a set of local SQLite3 databases
+    
+     This will create a set of local SQLite3 databases
+    
     python SarahMemorySystemIndexer.py
-    ## A GUI interface will allow you to select what type of files and registry (optional for Ai Bot Automation)
-    ## Then type
+    
+     A GUI interface will allow you to select what type of files and registry (optional for Ai Bot Automation)
+     Then type
+    
     python SarahMemoryMain.py
-    ## This will create additional Directories and update the Tables in the Databases you will not run the program after this it should close or show     a 404 webpage close it and it will shut down, now type
+    
+     This will create additional Directories and update the Tables in the Databases you will not run the program after this it should close or show     a 404 webpage close it and it will shut down, now type
     python SarahMemoryLLM.py
-    ## Menu options will appear if you wish to install OpenSource 3rd Party Models select the ones you desire upon exit you system should start           downloading and installing the Models, now type
+    
+     Menu options will appear if you wish to install OpenSource 3rd Party Models select the ones you desire upon exit you system should start           downloading and installing the Models, now type
+
     python SarahMemorySystemLearn.py
-    ## This will now display a GUI that take information from the SystemIndexer.db that was created when you ran SarahMemorySystemIndexer.py and here you can select what files you wish to have ingested into the the Databases that were created when you ran SarahMemoryDBCreate.py It will propergate your local database set. This Process could take a LONG LONG TIME maybe even days, depending on your system speed, and how many files and what you want this system to learn about your system. Now you have the basic setup, from you need a FRONTEND the BACKEND is now setup. You can Create your own REACT/FLASK/VITE FrontEnd using npm to build and tie it into this backend or you can use one of the 2 Built in GUI's. When you download this from GITHUB it is configured to use a Custom Custom Front-End. Option to change this is in the .env if your running this on a server, or in the SarahMemoryGlobals.py file if you are running locally your options are  local 'the generic TK GUI' which is built in SarahMemoryGUI.py+SarahMemoryGUI2.py | cloud 'a customized GUI' | hybrid 'a simple JaveScript GUI' which is located in the ../data/ui directory. Once you select your GUI style then type.
+    
+     This will now display a GUI that take information from the SystemIndexer.db that was created when you ran SarahMemorySystemIndexer.py and here you can select what files you wish to have ingested into the the Databases that were created when you ran SarahMemoryDBCreate.py It will propergate your local database set. This Process could take a LONG LONG TIME maybe even days, depending on your system speed, and how many files and what you want this system to learn about your system. Now you have the basic setup, from you need a FRONTEND the BACKEND is now setup. You can Create your own REACT/FLASK/VITE FrontEnd using npm to build and tie it into this backend or you can use one of the 2 Built in GUI's. When you download this from GITHUB it is configured to use a Custom Custom Front-End. Option to change this is in the .env if your running this on a server, or in the SarahMemoryGlobals.py file if you are running locally your options are  local 'the generic TK GUI' which is built in SarahMemoryGUI.py+SarahMemoryGUI2.py | cloud 'a customized GUI' | hybrid 'a simple JaveScript GUI' which is located in the ../data/ui directory. Once you select your GUI style then type.
 
 2. Launch with:
 python SarahMemoryMain.py
