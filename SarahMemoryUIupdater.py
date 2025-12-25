@@ -391,9 +391,10 @@ def deploy_build(build_dir: Path) -> None:
 
 def clear_src_dir() -> None:
     """
-    Delete all files and directories in SRC_DIR (V8_ui_src) to save space,
+    Optional option to delete all files and directories in SRC_DIR (V8_ui_src) to save space,
     but keep the SRC_DIR folder itself so future runs can re-clone as needed.
     This is especially helpful on constrained environments like PythonAnywhere.
+    Notice This OPTION is CURRENTLY DISABLED AND ENABLED USED a '#" on LINE 475
     """
     SRC_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Clearing source checkout in {SRC_DIR}...")
@@ -468,8 +469,11 @@ def main() -> int:
 
         # After a successful deployment, reclaim space by wiping the
         # source checkout (V8_ui_src). On the next run the repo will
-        # simply be cloned again if needed.
-        clear_src_dir()
+        # simply should be cloned again if needed but doesn't.
+        # 'OPTIONAL' just remove the '#' on Line 475 but if you do you have to manually download the SRC each time
+        # you update as of 12/24/2025
+        
+        #clear_src_dir()
 
         print("\n[OK] Web UI update finished successfully.")
         return 0

@@ -64,7 +64,6 @@ except Exception as e:
 BASE_DIR = Path(__file__).resolve().parent
 
 
-
 def resolve_static_target_dir() -> Path:
     """
     Resolve the Flask static directory for https://api.sarahmemory.com.
@@ -449,6 +448,7 @@ def clear_src_dir() -> None:
     Delete all files and directories in SRC_DIR (V8_ui_src) to save space,
     but keep the SRC_DIR folder itself so future runs can re-clone as needed.
     This is especially helpful on constrained environments like PythonAnywhere.
+    CURRENTLY DISABLED AS OF 12/24/2025 You can RE-ENABLE it on LINE 530 by removing the '#'
     """
     SRC_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[INFO] Clearing source checkout in {SRC_DIR}...")
@@ -523,8 +523,11 @@ def main() -> int:
 
         # After a successful deployment, reclaim space by wiping the
         # source checkout (V8_ui_src). On the next run the repo will
-        # simply be cloned again if needed.
-        clear_src_dir()
+        # simply be cloned again if needed. and Currently Malfunctions,
+        # if you use this OPTION you must redownload the GITHUB repo manually 
+        # as of 12/24/25 OPTIONAL 
+
+        # clear_src_dir() 
 
         print("\n[OK] API Network Hub Ranking Page update finished successfully.")
         return 0
@@ -535,7 +538,6 @@ def main() -> int:
     except Exception as e:
         print(f"\n[ERROR] Unexpected error: {e}")
         return 1
-
 
 if __name__ == "__main__":
     sys.exit(main())
