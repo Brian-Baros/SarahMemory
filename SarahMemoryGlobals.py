@@ -248,19 +248,19 @@ PATTERN_HISTORY_DAYS = 30
 MULTI_MODEL = True  # When True, allows multiple models to be enabled and used in logic checks. If False, only DEFAULT fallback model will load.
 
 # Model Enable Flags (Used across modules for routing queries or embeddings)
-ENABLE_MODEL_A = False   # ðŸ§  microsoft/phi-1_5 - Large reasoning/code model (6â€“8 GB+ RAM recommended)default=False
-ENABLE_MODEL_B = True   # âš¡ all-MiniLM-L6-v2 - Fast, accurate general-purpose embedding model (DEFAULT fallback)True
-ENABLE_MODEL_C = False  # ðŸ” multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search optimized, default False
-ENABLE_MODEL_D = True  # âš¡ paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
-ENABLE_MODEL_E = True  # ðŸŒ distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default True
-ENABLE_MODEL_F = True  # ðŸ“š allenai-specter - Scientific document embedding specialist,default True
-ENABLE_MODEL_G = True  # ðŸ”Ž intfloat/e5-base - Retrieval-focused high-recall embedding,default True
-ENABLE_MODEL_H = False  # ðŸ§  microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
-ENABLE_MODEL_I = False  # ðŸ¦ tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
-ENABLE_MODEL_J = False # ðŸ’¬ openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
-ENABLE_MODEL_K = False  # ðŸ§‘â€ðŸ« NousResearch/Nous-Capybara-7B - Helpful assistant-tuned model,default True
-ENABLE_MODEL_L = False  # ðŸš€ mistralai/Mistral-7B-Instruct-v0.2 - Reasoning & smart generalist <Errors>,default False
-ENABLE_MODEL_M = False  # ðŸœ TinyLlama/TinyLlama-1.1B-Chat-v1.0 - For low-resource machines <Errors>,default False
+ENABLE_MODEL_A = False   #microsoft/phi-1_5 - Large reasoning/code model (6â€“8 GB+ RAM recommended)default=False
+ENABLE_MODEL_B = True   #all-MiniLM-L6-v2 - Fast, accurate general-purpose embedding model (DEFAULT fallback)True
+ENABLE_MODEL_C = False  #multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search optimized, default False
+ENABLE_MODEL_D = True  #paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
+ENABLE_MODEL_E = True  #distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default True
+ENABLE_MODEL_F = True  #allenai-specter - Scientific document embedding specialist,default True
+ENABLE_MODEL_G = True  #intfloat/e5-base - Retrieval-focused high-recall embedding,default True
+ENABLE_MODEL_H = False  #microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
+ENABLE_MODEL_I = False  #tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
+ENABLE_MODEL_J = False # openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
+ENABLE_MODEL_K = False  # NousResearch/Nous-Capybara-7B - Helpful assistant-tuned model,default True
+ENABLE_MODEL_L = False  # mistralai/Mistral-7B-Instruct-v0.2 - Reasoning & smart generalist <Errors>,default False
+ENABLE_MODEL_M = False  # TinyLlama/TinyLlama-1.1B-Chat-v1.0 - For low-resource machines <Errors>,default False
 
 # Automatic model selector flag (v7.1.3). When True, the system picks the best available model based on enabled flags.
 AUTO_MODEL_SELECTOR = False
@@ -290,19 +290,19 @@ OBJECT_DETECTION_ENABLED = True # Enable object detection for images if
 #basic hardcode logic in SarahMemoryFacialRecognition.py and SarahMemorySOBJE.py
 # NOTICE----SOME MODELS ARE NOT COMPATIBLE WITH OTHERS - SOME CAN FUNCTION IN CONJUCTION OTHERS CAN NOT.-----
 # Object Detection Model Enable Flags
-ENABLE_YOLOV8 = True       # ðŸš€ YOLOv8 - Fast, accurate, with flexible API (Ultralytics) ,dev notes - WORKS default True all others are defaulted as False
-ENABLE_YOLOV7 = False       # ðŸŽ¯ YOLOv7 - High performance, popular for real-time apps ,dev notes - NOT TESTED
-ENABLE_YOLOV5 = False       # âš¡ YOLOv5 - Lightweight, versatile, and widely adopted ,dev notes - WORKS but isn't Forward Compatiable with YOLOv8
-ENABLE_YOLO_NAS = False     # ðŸ§  YOLO-NAS - Extremely fast and optimized for edge devices (Deci AI) ,dev notes - NOT TESTED
-ENABLE_YOLOX = False        # ðŸ” YOLOX - Anchor-free, accurate (Megvii) ,dev notes - NOT TESTED
-ENABLE_PP_YOLOV2 = False    # ðŸ² PP-YOLOv2 - Real-time accuracy from Baidu (PaddlePaddle) ,dev notes - NOT TESTED
-ENABLE_EFFICIENTDET = False # ðŸ“± EfficientDet - Scalable and lightweight, great for mobile (Google) ,dev notes - NOT TESTED
-ENABLE_DETR = False         # ðŸ”„ DETR - Transformer-based, complex scenes (Facebook AI) ,dev notes - WORKS
-ENABLE_DINO = False         # ðŸ§¬ DINOv2 - Improved DETR with better object recall (Facebook AI) ,dev notes - WORKS
-ENABLE_CENTERNET = False    # ðŸŽ¯ CenterNet - Keypoint-based detection (Microsoft) ,dev notes - NOT TESTED
-ENABLE_SSD = True          # ðŸ“¦ SSD - Single-shot, real-time on CPUs (Google) ,dev notes - WORKS
-ENABLE_FASTER_RCNN = False  # ðŸ”¬ Faster R-CNN - High accuracy, slower (Facebook AI) ,dev notes - NOT TESTED
-ENABLE_RETINANET = False    # ðŸ“· RetinaNet - Best for class imbalance and dense scenes (Facebook AI) ,dev notes - NOT TESTED
+ENABLE_YOLOV8 = True       # YOLOv8 - Fast, accurate, with flexible API (Ultralytics) ,dev notes - WORKS default True all others are defaulted as False
+ENABLE_YOLOV7 = False       # YOLOv7 - High performance, popular for real-time apps ,dev notes - NOT TESTED
+ENABLE_YOLOV5 = False       # YOLOv5 - Lightweight, versatile, and widely adopted ,dev notes - WORKS but isn't Forward Compatiable with YOLOv8
+ENABLE_YOLO_NAS = False     # YOLO-NAS - Extremely fast and optimized for edge devices (Deci AI) ,dev notes - NOT TESTED
+ENABLE_YOLOX = False        # YOLOX - Anchor-free, accurate (Megvii) ,dev notes - NOT TESTED
+ENABLE_PP_YOLOV2 = False    # PP-YOLOv2 - Real-time accuracy from Baidu (PaddlePaddle) ,dev notes - NOT TESTED
+ENABLE_EFFICIENTDET = False # EfficientDet - Scalable and lightweight, great for mobile (Google) ,dev notes - NOT TESTED
+ENABLE_DETR = False         # DETR - Transformer-based, complex scenes (Facebook AI) ,dev notes - WORKS
+ENABLE_DINO = False         # DINOv2 - Improved DETR with better object recall (Facebook AI) ,dev notes - WORKS
+ENABLE_CENTERNET = False    # CenterNet - Keypoint-based detection (Microsoft) ,dev notes - NOT TESTED
+ENABLE_SSD = True          #  SSD - Single-shot, real-time on CPUs (Google) ,dev notes - WORKS
+ENABLE_FASTER_RCNN = False  # Faster R-CNN - High accuracy, slower (Facebook AI) ,dev notes - NOT TESTED
+ENABLE_RETINANET = False    # RetinaNet - Best for class imbalance and dense scenes (Facebook AI) ,dev notes - NOT TESTED
 
 # Central object detection model dictionary for logic toggling
 # Updated object detection model config, NOTICE THIS AREA IS still being Researched as Models change
