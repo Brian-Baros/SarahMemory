@@ -1043,6 +1043,51 @@ class DatabaseDiagnosticsSuperTask:
 
     # --- Cloud MySQL (PythonAnywhere / GoogieHost) ---------------------------
 
+    def _determine_cloud_env_label(self):
+        """Helper: determine cloud environment label based on host/name."""
+        host = getattr(config, "CLOUD_DB_HOST", None)
+        name = getattr(config, "CLOUD_DB_NAME", None)
+        label_env = "cloud-mysql"
+        host_l = (host or "").lower()
+        name_l = (name or "").lower()
+        if "pythonanywhere" in host_l:
+            label_env = "pythonanywhere-mysql"
+        elif "googiehost" in host_l or "softdevc" in name_l:
+            label_env = "googiehost-mysql"
+        return label_env, host, name
+
+    def _check_cloud_tables_and_data(self, cursor, target):
+        """Helper: check SHOW TABLES and COUNT(*) on first table."""
+        try:
+            cursor.execute("SHOW TABLES")
+            rows = cursor.fetchall()
+            tables = [r[0] for r in rows] if rows else []
+            if not tables:
+                self._add("cloud-mysql", target, "tables", False,
+                          "SHOW TABLES returned 0 tables; schema may not be initialized.")
+                return
+            preview = ", ".join(str(t) for t in tables[:3])
+            self._add("cloud-mysql", target, "tables", True,
+                      f"{len(tables)} tables present (e.g., {preview}).")
+            self._check_first_table_data(cursor, target, tables[0])
+        except Exception as e:
+            self._add("cloud-mysql", target, "tables", False, f"SHOW TABLES failed: {e}")
+
+    def _check_first_table_data(self, cursor, target, first_table):
+        """Helper: COUNT(*) on first table."""
+        try:
+            cursor.execute(f"SELECT COUNT(*) FROM `{first_table}`")
+            count = cursor.fetchone()[0]
+            if count > 0:
+                self._add("cloud-mysql", target, "data", True,
+                          f"Table '{first_table}' has {count} rows (data present).")
+            else:
+                self._add("cloud-mysql", target, "data", False,
+                          f"Table '{first_table}' has 0 rows; data may not be written yet.")
+        except Exception as e:
+            self._add("cloud-mysql", target, "data", False,
+                      f"Row-count check on '{first_table}' failed (SELECT only): {e}")
+
     def _check_cloud_mysql(self):
         """
         Check the configured cloud MySQL database (CLOUD_DB_* in SarahMemoryGlobals).
@@ -1056,133 +1101,32 @@ class DatabaseDiagnosticsSuperTask:
           * data presence in at least one table (COUNT(*) only)
         """
         if SMDB is None:
-            self._add(
-                "cloud-mysql",
-                "CLOUD_DB_*",
-                "import",
-                False,
-                "SarahMemoryDatabase module is not available; cannot test cloud DB.",
-            )
+            self._add("cloud-mysql", "CLOUD_DB_*", "import", False,
+                      "SarahMemoryDatabase module is not available; cannot test cloud DB.")
             return
 
-        # Determine environment labeling based on host/name
-        host = getattr(config, "CLOUD_DB_HOST", None)
-        name = getattr(config, "CLOUD_DB_NAME", None)
-
-        label_env = "cloud-mysql"
-        host_l = (host or "").lower()
-        name_l = (name or "").lower()
-
-        if "pythonanywhere" in host_l:
-            label_env = "pythonanywhere-mysql"
-        elif "googiehost" in host_l or "softdevc" in name_l:
-            label_env = "googiehost-mysql"
-
+        label_env, host, name = self._determine_cloud_env_label()
         target = f"{label_env}@{host or 'unknown_host'}/{name or '?'}"
 
-        # Use the shared cloud-connection helper
         get_conn = getattr(SMDB, "_get_cloud_conn", None)
         if not callable(get_conn):
-            self._add(
-                "cloud-mysql",
-                target,
-                "config",
-                False,
-                "SarahMemoryDatabase._get_cloud_conn() not found; cannot open cloud DB.",
-            )
+            self._add("cloud-mysql", target, "config", False,
+                      "SarahMemoryDatabase._get_cloud_conn() not found; cannot open cloud DB.")
             return
 
         conn = None
         try:
             conn = get_conn()
             if conn is None:
-                self._add(
-                    "cloud-mysql",
-                    target,
-                    "connect",
-                    False,
-                    "Cloud DB disabled or connection failed (CLOUD_DB_ENABLED or credentials).",
-                )
+                self._add("cloud-mysql", target, "connect", False,
+                          "Cloud DB disabled or connection failed (CLOUD_DB_ENABLED or credentials).")
                 return
-
-            self._add(
-                "cloud-mysql",
-                target,
-                "connect",
-                True,
-                "Cloud MySQL connection established successfully.",
-            )
-
+            self._add("cloud-mysql", target, "connect", True,
+                      "Cloud MySQL connection established successfully.")
             cursor = conn.cursor()
-
-            # SHOW TABLES (non-destructive)
-            try:
-                cursor.execute("SHOW TABLES")
-                rows = cursor.fetchall()
-                tables = [r[0] for r in rows] if rows else []
-                if not tables:
-                    self._add(
-                        "cloud-mysql",
-                        target,
-                        "tables",
-                        False,
-                        "SHOW TABLES returned 0 tables; schema may not be initialized.",
-                    )
-                    return
-                preview = ", ".join(str(t) for t in tables[:3])
-                self._add(
-                    "cloud-mysql",
-                    target,
-                    "tables",
-                    True,
-                    f"{len(tables)} tables present (e.g., {preview}).",
-                )
-
-                # Simple COUNT(*) on the first table to verify data reads
-                first_table = tables[0]
-                try:
-                    cursor.execute(f"SELECT COUNT(*) FROM `{first_table}`")
-                    count = cursor.fetchone()[0]
-                    if count > 0:
-                        self._add(
-                            "cloud-mysql",
-                            target,
-                            "data",
-                            True,
-                            f"Table '{first_table}' has {count} rows (data present).",
-                        )
-                    else:
-                        self._add(
-                            "cloud-mysql",
-                            target,
-                            "data",
-                            False,
-                            f"Table '{first_table}' has 0 rows; data may not be written yet.",
-                        )
-                except Exception as e:
-                    self._add(
-                        "cloud-mysql",
-                        target,
-                        "data",
-                        False,
-                        f"Row-count check on '{first_table}' failed (SELECT only): {e}",
-                    )
-            except Exception as e:
-                self._add(
-                    "cloud-mysql",
-                    target,
-                    "tables",
-                    False,
-                    f"SHOW TABLES failed: {e}",
-                )
+            self._check_cloud_tables_and_data(cursor, target)
         except Exception as e:
-            self._add(
-                "cloud-mysql",
-                target,
-                "connect",
-                False,
-                f"Cloud MySQL connection error: {e}",
-            )
+            self._add("cloud-mysql", target, "connect", False, f"Cloud MySQL connection error: {e}")
         finally:
             try:
                 if conn is not None:

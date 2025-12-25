@@ -311,7 +311,7 @@ def get_active_sentence_model():
 
 # --- Initialization ---
 def init_database():
-    # NOTE: This initializes only ai_learning.db. Other databases are managed in DBCreate.py but accessed here.
+    # This initializes only ai_learning.db. Other databases are managed in DBCreate.py but accessed here.
     try:
         os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
