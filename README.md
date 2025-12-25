@@ -31,89 +31,61 @@ SarahMemory/
 
 ---
 
-## Usage
-1. Clone or download the repository.
+## Usage## Usage QUICKSTART INSTRUCTIONS SO EASY A N00B Can DO IT....
+1.  Clone or download the repository. 
+    # it will want to save as 'sarahmemory-main.zip' okay or  Save as SarahMemory.zip
+    EXTRACT FILE CONTENTS, I suggest 7-ZIP to a seperate (256 gb minimum) 
+    HARDDRIVE, SSD, NVME M3, USB or a (256gb SD CARD) 
+    to
+    example S:\SarahMemory 
+    
+    # Understand the More DRIVE SPACE you have The More MODELS you can USE. You can use any model you want, or even use MULTIPLE MODELS so the bigger the model you need some Models can be downloaded using the SarahMemoryLLM.py file.
+    
+
+2.  RUN WINDOWS COMMAND PROMPT (CMD) as ADMINISTRATOR
+    # Goto Installed Drive and Directory
+    S:\SarahMemory
+    # If you don't know how to do this step, May GOD BLESS YOUR SOUL.
+
+3.  Install the Python Dependency
+    # type the following commands
+    python -m venv venv
+    venv\Scripts\activate        
+    # Windows
+    source venv/bin/activate     
+    # Linux/macOS
+    pip install -r requirements.txt
+    # note depending what system Windows should complete okay or on Linux you might not be able to install every one This process will take sometime there are alot.
+
+4. Create a local set of databases
+    # Be sure you're now see the command prompt as (venv)SarahMemory
+    # type the following
+    python SarahMemoryDBCreate.py
+    # This will create a set of local SQLite3 databases
+    python SarahMemorySystemIndexer.py
+    # A GUI interface will allow you to select what type of files and registry (optional for Ai Bot Automation)
+    # Then type
+    python SarahMemoryMain.py
+    # This will create additional Directories and update the Tables in the Databases you will not run the program after this it should close or show     a 404 webpage close it and it will shut down, now type
+    python SarahMemoryLLM.py
+    # Menu options will appear if you wish to install OpenSource 3rd Party Models select the ones you desire upon exit you system should start           downloading and installing the Models, now type
+    python SarahMemorySystemLearn.py
+    # This will now display a GUI that take information from the SystemIndexer.db that was created when you ran SarahMemorySystemIndexer.py and here you can select what files you wish to have ingested into the the Databases that were created when you ran SarahMemoryDBCreate.py It will propergate your local database set. This Process could take a LONG LONG TIME maybe even days, depending on your system speed, and how many files and what you want this system to learn about your system. Now you have the basic setup, from you need a FRONTEND the BACKEND is now setup. You can Create your own REACT/FLASK/VITE FrontEnd using npm to build and tie it into this backend or you can use one of the 2 Built in GUI's. When you download this from GITHUB it is configured to use a Custom Custom Front-End. Option to change this is in the .env if your running this on a server, or in the SarahMemoryGlobals.py file if you are running locally your options are  local 'the generic TK GUI' which is built in SarahMemoryGUI.py+SarahMemoryGUI2.py | cloud 'a customized GUI' | hybrid 'a simple JaveScript GUI' which is located in the ../data/ui directory. Once you select your GUI style then type.
+
 2. Launch with:
-```bash
-python SarahMemoryMain.py
-```
-Launching the Application & Developer Operational Instructions
-
-Initial Launch
----------------
-Before running SarahMemory for regular use, the system must generate its internal directory structure and datasets.
-
-Run the following:
 python SarahMemoryMain.py
 
-On the first execution, the program will initialize required folders and system paths.
-It will then exit automatically once the structure is created.
-
-
-Dataset Initialization
------------------------
-Next, generate the default SarahMemory databases:
-
-python SarahMemoryDBCreate.py
-
-This script creates approximately 10 core databases and populates them with baseline values.
-Once complete, launch the program again:
-
-python SarahMemoryMain.py
-
-Optional Performance Enhancements & Personalization Tools
-----------------------------------------------------------
-The following components are optional. They are not required for normal operation but can improve performance and personalization.
-
-Optional: Install Additional Language Models / Object Models
-------------------------------------------------------------
-Run the model setup utility:
-
-python SarahMemoryLLM.py
-
-This tool allows you to:
-- Install 3rd-party language models
-- Install additional sentence-transformers
-- Install object-detection and vision models
-
-Model usage preferences can be configured in:
-SarahMemoryGlobals.py
-
-Advanced Personalization (Optional)
------------------------------------
-These tools enable deeper system integration and dataset expansion. Intended for advanced users.
-
-Step 1 — System Indexing
-Run:
-python SarahMemorySystemIndexer.py
-
-This tool indexes selected parts of your system, including:
-- Application paths
-- System data
-- Windows Registry entries
-- Custom folders and documents
-
-Indexing assists SarahMemory’s AI-Agent with automation and voice-triggered commands.
-
-Step 2 — System Learning
-Run:
-python SarahMemoryLearn.py
-
-This script processes the indexed dataset and integrates selected information into the databases
-created earlier via SarahMemoryDBCreate.py.
-
-Advanced Customization (Expert Users)
---------------------------------------
-As of version 7.7.5, the configuration menu inside SarahMemoryGUI.py is not finalized.
-
-You may run it:
-python SarahMemoryGUI.py
-
-However, settings cannot yet be reliably saved from the GUI. I will work on this in Version 8.0.0 
+---
 
 Advanced configuration must be performed manually in:
 SarahMemoryGlobals.py
 ---
+
+
+
+
+
+
 WHAT MAKES THE SARAHMEMORY PROJECT UNIQUE. 
 
 1. Multi-Device AI Agent OS The SarahMemory plan includes: · Legacy tablets (Galaxy Tab 4) · Phones · Laptops · Desktops · Browser UI · Cloud Web UI · Server backend · LAN offload nodes No other open-source project does this. SarahMemory is becoming universal. ---
