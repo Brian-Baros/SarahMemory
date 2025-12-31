@@ -1585,3 +1585,32 @@ __all__ = [
 # ====================================================================
 # END OF SarahMemoryResearch.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# __SM_EVOLUTION_HELPERS__
+# Helper for SarahMemoryEvolution: turn an issues payload into a research query
+# while remaining compatible with existing get_research_data().
+# =============================================================================
+
+from typing import Any, Dict, List
+
+def research_patch_suggestions_from_payload(payload: Dict[str, Any], max_chars: int = 6000) -> str:
+    """Generate a compact research query from an Evolution payload and call get_research_data()."""
+    try:
+        issues = payload.get("issues") or []
+        lines: List[str] = []
+        for it in issues[:10]:
+            lines.append(f"- {it.get('issue_id')}: {it.get('summary','')}")
+        query = (
+            "Python monkey patch strategy for the following issues. "
+            "Constraints: no core edits, headless-safe, no new deps.\n"
+            + "\n".join(lines)
+        )
+        query = query[:max_chars]
+        r = get_research_data(query)  # type: ignore
+        if isinstance(r, dict):
+            import json as _json
+            return _json.dumps(r, indent=2)[:15000]
+        return str(r)[:15000]
+    except Exception as e:
+        return f"Research helper failed: {type(e).__name__}: {e}"

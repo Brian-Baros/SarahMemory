@@ -1532,3 +1532,51 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemoryDL.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# __SM_EVOLUTION_HELPERS__
+# These helpers are intentionally lightweight and headless-safe.
+# They give SarahMemoryEvolution a consistent API to request DL-style hints
+# without introducing new dependencies or running heavy workloads by default.
+# =============================================================================
+
+from typing import Any, Dict, List, Optional
+
+def dl_patch_hints_from_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return heuristic patch hints derived from issue dicts.
+
+    This does NOT perform GPU/ML training. It's a safe, fast pattern matcher.
+    """
+    hints: List[Dict[str, Any]] = []
+    for it in (issues or []):
+        summary = str(it.get("summary", ""))
+        details = str(it.get("details", ""))
+        blob = (summary + "\n" + details).lower()
+        target: Optional[str] = None
+        component = "fix"
+        intent = "stability"
+
+        if "setvoicebyname" in blob or "pyttsx3" in blob or "tts" in blob:
+            target = "SarahMemoryVoice.py"; component = "voice"; intent = "tts"
+        elif "avatar" in blob or "lipsync" in blob:
+            target = "UnifiedAvatarController.py"; component = "avatar"; intent = "lipsync"
+        elif "flask" in blob or "/api/" in blob or "endpoint" in blob:
+            target = "app.py"; component = "api"; intent = "contract"
+        elif "sqlite" in blob or "database" in blob or "db" in blob:
+            target = "SarahMemoryDatabase.py"; component = "database"; intent = "stability"
+        elif "importerror" in blob or "modulenotfounderror" in blob:
+            component = "imports"; intent = "missing"
+
+        hints.append({
+            "issue_id": it.get("issue_id"),
+            "component": component,
+            "intent": intent,
+            "suggested_target_file": target,
+            "reason": summary[:200],
+        })
+    return {
+        "ok": True,
+        "ts": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "mode": "heuristic",
+        "hints": hints,
+    }

@@ -756,3 +756,55 @@ logger.info("[v8.0] SarahMemoryCompare module loaded successfully")
 # ====================================================================
 # END OF SarahMemoryCompare.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# __SM_EVOLUTION_HELPERS__
+# Helper for SarahMemoryEvolution: compare multiple candidate suggestions
+# and select the strongest one using existing compare_reply() scoring.
+# =============================================================================
+
+from typing import Any, Dict, Optional
+
+def select_best_suggestion(user_text: str, candidates: Dict[str, str], intent: str = "code") -> Dict[str, Any]:
+    """Compare candidate suggestion texts and choose the best.
+
+    candidates: { "api": "...", "research": "...", "dl": "..." }
+    Returns: {ok, best_key, best_score, scores{key:score}, best_text}
+    """
+    scores: Dict[str, float] = {}
+    best_key: Optional[str] = None
+    best_score: float = float("-inf")
+    best_text: str = ""
+
+    for k, txt in (candidates or {}).items():
+        if not txt:
+            continue
+        try:
+            result = compare_reply(user_text, txt, intent=intent)  # type: ignore
+            score = None
+            if isinstance(result, dict):
+                score = result.get("score")
+                if score is None:
+                    score = result.get("final_score")
+                if score is None:
+                    score = result.get("rating")
+            if score is None:
+                score = 0.0
+            score_f = float(score)
+        except Exception:
+            score_f = 0.0
+
+        scores[k] = score_f
+        if score_f > best_score:
+            best_score = score_f
+            best_key = k
+            best_text = txt
+
+    return {
+        "ok": True,
+        "intent": intent,
+        "best_key": best_key,
+        "best_score": (best_score if best_key is not None else 0.0),
+        "scores": scores,
+        "best_text": best_text,
+    }
