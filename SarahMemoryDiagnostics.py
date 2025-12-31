@@ -48,7 +48,7 @@ REQUIRED_FILES = [
     os.path.join(config.API_DIR, "server", "app.py"), #API LOCAL and CLOUD SERVER
     os.path.join(config.BASE_DIR, "SarahMemoryAdaptive.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAdvCU.py"),
-    os.path.join(config.BASE_DIR, "SarahMemoryAI.py") if hasattr(config, "HAS_AI_CORE") else os.path.join(config.BASE_DIR, "SarahMemoryAI.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py") if hasattr(config, "HAS_AI_CORE") else os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAPI.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py") if hasattr(config, "HAS_AVATAR") else os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryBrowser.py"),
@@ -78,7 +78,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryReminder.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReply.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryResearch.py"),
-    os.path.join(config.BASE_DIR, "SarahMemorySOJBE.py"),
+    os.path.join(config.BASE_DIR, "SarahMemorySOBJE.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySi.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySynapes.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySync.py"),
