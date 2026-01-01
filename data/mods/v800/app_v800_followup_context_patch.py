@@ -1,20 +1,24 @@
 # --==The SarahMemory Project==--
 # File: ../data/mods/v800/app_v800_followup_context_patch.py
-# Patch: v8.0.0 Follow-up Context + Identity Fallback Safety
+# Patch: v8.0.0 Follow-up Context + Identity Fallback Safety + Math Routing + Avatar Speech Cues
 #
 # Goals:
 # 1) Improve follow-up interaction (yes/no/ok refers to previous answer).
 # 2) Replace awkward "Should I dig deeper on that?" behavior with natural prompts.
-# 3) Identity safety: if local identity glitches, fall back to core app.py response.
+# 3) Identity safety: if local identity glitches, fall back to safe SarahMemory identity string.
+# 4) Math routing: detect calculator-style queries and answer locally via SarahMemoryWebSYM when possible.
+# 5) Avatar speech cues: attach meta.avatar_speech so WebUI can animate; trigger local python avatar lipsync best-effort.
+#
 # - Patches the live Flask endpoint for POST /api/chat.
-
+# - IMPORTANT: this patch intentionally becomes the SINGLE wrapper for /api/chat.
+#   Remove/disable other /api/chat wrappers (math_patch, avatar_lipsync_patch) to avoid collisions.
 
 from __future__ import annotations
 
 import re
 import sys
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 
 from flask import request, jsonify
 
@@ -39,7 +43,7 @@ app = core_mod.app
 _CONTEXT: Dict[str, Dict[str, Any]] = {}
 
 # ------------------------------
-# Helpers
+# Regex + constants
 # ------------------------------
 YES_RE = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|please|do it|go on|continue|tell me more)\b", re.I)
 NO_RE = re.compile(r"^(no|nope|nah|never mind|nevermind|stop|cancel|forget it|no thanks)\b", re.I)
@@ -51,6 +55,53 @@ IDENTITY_RE = re.compile(
 
 BAD_UI_TRAIL_RE = re.compile(r"(?:\s*,?\s*\[\s*\]\s*)+$")
 BAD_DIG_DEEPER_RE = re.compile(r"\n?\s*•\s*Should\s+I\s+dig\s+deeper\s+on\s+that\?\s*(?:\[\s*\])?\s*$", re.I)
+
+# ------------------------------
+# Helpers (existing + merged)
+# ------------------------------
+def _truthy(v: Any) -> bool:
+    if isinstance(v, bool):
+        return v
+    if v is None:
+        return False
+    s = str(v).strip().lower()
+    return s in ("1", "true", "yes", "y", "on", "local")
+
+
+def _detect_local_mode(payload: Dict[str, Any]) -> bool:
+    """
+    Matches existing conventions from earlier patches:
+    Accepts explicit local hints in request payload OR server config.LOCAL_ONLY_MODE.
+    """
+    candidates = [
+        payload.get("local"),
+        payload.get("LOCAL"),
+        payload.get("local_only"),
+        payload.get("LOCAL_ONLY"),
+        payload.get("use_local"),
+        payload.get("useLocal"),
+        payload.get("offline"),
+        payload.get("run_mode"),
+        payload.get("mode"),
+        payload.get("engine"),
+        payload.get("provider"),
+        payload.get("source"),
+    ]
+    for c in candidates:
+        if _truthy(c):
+            return True
+        if isinstance(c, str) and c.strip().lower() in ("local", "offline", "websym", "internal"):
+            return True
+
+    try:
+        cfg = getattr(core_mod, "config", None)
+        if cfg is not None and getattr(cfg, "LOCAL_ONLY_MODE", False):
+            return True
+    except Exception:
+        pass
+
+    return False
+
 
 def _extract_text(payload: Dict[str, Any]) -> str:
     for k in ("text", "message", "prompt", "query", "q", "input", "user_text", "user"):
@@ -66,6 +117,7 @@ def _extract_text(payload: Dict[str, Any]) -> str:
                     return c.strip()
     return ""
 
+
 def _session_key(payload: Dict[str, Any]) -> str:
     # Prefer explicit session ids if present
     for k in ("session_id", "sessionId", "sid", "chat_id", "chatId", "client_id", "clientId"):
@@ -78,6 +130,7 @@ def _session_key(payload: Dict[str, Any]) -> str:
     ip = request.headers.get("X-Forwarded-For") or request.remote_addr or "unknown"
     return f"{ip}|{ua}"
 
+
 def _clean_reply_text(s: str) -> str:
     if not isinstance(s, str):
         return ""
@@ -88,31 +141,26 @@ def _clean_reply_text(s: str) -> str:
     out = re.sub(r"^(The answer is\s+)+", "", out, flags=re.I)
     return out.strip()
 
+
 def _topic_from_exchange(q: str, a: str) -> str:
-    # Simple topic extraction: use question if short, else first sentence keywords
     qn = (q or "").strip()
     if qn and len(qn) <= 80:
         return qn
-    # fallback
     return (qn[:80] or "that topic").strip()
 
+
 def _should_fallback_identity(local_answer: str) -> bool:
-    """
-    If local identity is glitchy, prefer core app.py default (API or non-local path).
-    """
     a = (local_answer or "").strip().lower()
     if not a:
         return True
-    # "My name is Sarah, []" style / too-short / malformed
     if len(a) < 10:
         return True
-    # If local claims OpenAI in identity context, that’s a fail for SarahMemory identity
     if "openai" in a:
         return True
-    # obvious corruption artifacts
     if "[]" in a or "ðŸ" in a:
         return True
     return False
+
 
 def _find_api_chat_endpoint_name() -> Optional[str]:
     try:
@@ -123,8 +171,94 @@ def _find_api_chat_endpoint_name() -> Optional[str]:
         pass
     return None
 
+
 # ------------------------------
-# Patch /api/chat
+# Math routing (merged)
+# ------------------------------
+def _websym_math_answer(text: str) -> Optional[str]:
+    """
+    If SarahMemoryWebSYM can confidently treat the text as math, return calculator answer.
+    Otherwise return None and let the normal pipeline handle it.
+    """
+    try:
+        from SarahMemoryWebSYM import WebSemanticSynthesizer, is_math_expression  # type: ignore
+    except Exception:
+        return None
+
+    q = (text or "").strip()
+    if not q:
+        return None
+
+    try:
+        # check if math
+        try:
+            if hasattr(WebSemanticSynthesizer, "is_math_query"):
+                if not WebSemanticSynthesizer.is_math_query(q):
+                    if not (callable(is_math_expression) and is_math_expression(q)):
+                        return None
+            else:
+                if not (callable(is_math_expression) and is_math_expression(q)):
+                    return None
+        except Exception:
+            pass
+
+        if hasattr(WebSemanticSynthesizer, "sarah_calculator"):
+            ans = WebSemanticSynthesizer.sarah_calculator(q, original_query=q)
+            ans = str(ans or "").strip()
+            return ans or None
+        return None
+    except Exception:
+        return None
+
+
+# ------------------------------
+# Avatar speech cues (merged)
+# ------------------------------
+def _estimate_speech_duration_seconds(text: str) -> float:
+    t = (text or "").strip()
+    if not t:
+        return 0.8
+    words = max(1, len(t.split()))
+    secs = words / 2.2
+    if secs < 0.8:
+        secs = 0.8
+    if secs > 12.0:
+        secs = 12.0
+    return float(secs)
+
+
+def _basic_mouth_cues(text: str, duration_s: float) -> list:
+    steps = max(6, min(30, int(duration_s * 10)))  # ~10 updates/sec
+    cues = []
+    if steps <= 1:
+        return [{"t": 0, "v": 0.6}, {"t": int(duration_s * 1000), "v": 0.0}]
+    for i in range(steps):
+        t_ms = int((i / (steps - 1)) * duration_s * 1000)
+        v = 0.15 + (0.55 if (i % 2 == 0) else 0.30)
+        cues.append({"t": t_ms, "v": v})
+    cues.append({"t": int(duration_s * 1000), "v": 0.0})
+    return cues
+
+
+def _try_local_avatar_lipsync(duration_s: float) -> None:
+    try:
+        import SarahMemoryGlobals as config  # type: ignore
+        run_mode = getattr(config, "RUN_MODE", "cloud")
+        if str(run_mode).lower() not in ("local", "desktop"):
+            return
+    except Exception:
+        return
+
+    try:
+        import SarahMemoryAvatar as Avatar  # type: ignore
+        if hasattr(Avatar, "simulate_lip_sync_async"):
+            Avatar.simulate_lip_sync_async(duration=duration_s)
+    except Exception:
+        return
+
+
+# ------------------------------
+# Patch /api/chat (single wrapper)
 # ------------------------------
 _PATCH_GUARD = "_V800_FOLLOWUP_CONTEXT_PATCH_APPLIED"
 
@@ -137,16 +271,16 @@ if not getattr(core_mod, _PATCH_GUARD, False):
         user_text = _extract_text(payload)
         key = _session_key(payload)
 
-        # If user says yes/no/ok, treat as follow-up to last exchange if we have context
+        # --------------------------
+        # Follow-up: yes/no handling
+        # --------------------------
         prev = _CONTEXT.get(key)
         if prev and user_text:
             if YES_RE.match(user_text):
-                # Convert to an explicit "go deeper" request about the last topic
                 topic = prev.get("topic") or _topic_from_exchange(prev.get("q", ""), prev.get("a", ""))
                 user_text = f"Go deeper on this and explain more clearly: {topic}"
-                payload["text"] = user_text  # feed into local pipeline
+                payload["text"] = user_text
             elif NO_RE.match(user_text):
-                # Acknowledge and clear the follow-up expectation (don’t call API)
                 _CONTEXT.pop(key, None)
                 return jsonify({
                     "ok": True,
@@ -158,13 +292,57 @@ if not getattr(core_mod, _PATCH_GUARD, False):
                     }
                 }), 200
 
-        # Let the existing pipeline handle it (your local-first patch + Reply)
+        # --------------------------
+        # Math routing (early return)
+        # --------------------------
+        try:
+            local_mode = _detect_local_mode(payload)
+        except Exception:
+            local_mode = False
+
+        websym_ans = _websym_math_answer(user_text)
+        if websym_ans is not None:
+            # Store context for follow-ups too (so "yes" after a math answer can elaborate)
+            _CONTEXT[key] = {
+                "q": user_text,
+                "a": websym_ans,
+                "topic": _topic_from_exchange(user_text, websym_ans),
+                "ts": time.time(),
+            }
+
+            # Add avatar cues for Web UI even on math fast-path
+            dur_s = _estimate_speech_duration_seconds(websym_ans)
+            cues = _basic_mouth_cues(websym_ans, dur_s)
+            _try_local_avatar_lipsync(dur_s)
+
+            return jsonify({
+                "ok": True,
+                "reply": websym_ans,
+                "meta": {
+                    "source": "websym_math",
+                    "engine": "SarahMemoryWebSYM",
+                    "local_mode": bool(local_mode),
+                    "ts": time.time(),
+                    "patched_endpoint": endpoint_name or "unknown",
+                    "avatar_speech": {
+                        "speak": True,
+                        "duration_ms": int(dur_s * 1000),
+                        "cues": cues,
+                        "ts": time.time(),
+                    },
+                    "followup_hint": "If you want more detail, reply: “yes” or ask a specific angle (examples, pros/cons).",
+                },
+            }), 200
+
+        # --------------------------
+        # Normal pipeline
+        # --------------------------
         if callable(original_handler):
             resp = original_handler(*args, **kwargs)
         else:
             return jsonify({"ok": False, "error": "Core /api/chat handler missing"}), 500
 
-        # Try to normalize response object (Flask can return tuple)
+        # Normalize response object (Flask can return tuple)
         try:
             data = None
             status = 200
@@ -173,7 +351,6 @@ if not getattr(core_mod, _PATCH_GUARD, False):
                 r0 = resp[0]
                 if len(resp) >= 2 and isinstance(resp[1], int):
                     status = resp[1]
-                # Flask Response or dict/jsonify
                 if hasattr(r0, "get_json"):
                     data = r0.get_json(silent=True)
                 elif isinstance(r0, dict):
@@ -182,28 +359,15 @@ if not getattr(core_mod, _PATCH_GUARD, False):
                 if hasattr(resp, "get_json"):
                     data = resp.get_json(silent=True)
 
-            # If we can't inspect, just return as-is
             if not isinstance(data, dict):
                 return resp
 
-            # Clean reply text and improve follow-up phrasing (meta only)
             reply_text = _clean_reply_text(str(data.get("reply") or data.get("response") or ""))
 
-            # Identity fallback safety:
-            # If this was an identity question and local produced a glitchy answer,
-            # fall back to core default by re-calling original handler WITHOUT local forcing.
+            # Identity fallback safety
             if user_text and IDENTITY_RE.search(user_text):
                 if _should_fallback_identity(reply_text):
-                    # Clear local hint keys to allow core to answer normally
-                    for k in ("local", "LOCAL", "local_only", "LOCAL_ONLY", "offline", "mode", "engine", "provider", "source"):
-                        if k in payload:
-                            payload.pop(k, None)
-                    # Re-run original handler (core default behavior)
-                    if callable(original_handler):
-                        # monkey: temporarily swap request json is hard; instead, just return original resp
-                        # We can’t re-inject payload cleanly here without editing core.
-                        # So we do the safer thing: return a correct SarahMemory identity.
-                        reply_text = "My name is Sarah — your SarahMemory AI companion (SarahMemory AiOS)."
+                    reply_text = "My name is Sarah — your SarahMemory AI companion (SarahMemory AiOS)."
 
             # Store context for next turn
             if user_text and reply_text:
@@ -214,16 +378,28 @@ if not getattr(core_mod, _PATCH_GUARD, False):
                     "ts": time.time(),
                 }
 
-            # Replace output
+            # Attach avatar cues
+            if reply_text:
+                dur_s = _estimate_speech_duration_seconds(reply_text)
+                cues = _basic_mouth_cues(reply_text, dur_s)
+                _try_local_avatar_lipsync(dur_s)
+
+                meta = data.get("meta")
+                if not isinstance(meta, dict):
+                    meta = {}
+
+                meta["avatar_speech"] = {
+                    "speak": True,
+                    "duration_ms": int(dur_s * 1000),
+                    "cues": cues,
+                    "ts": time.time(),
+                }
+
+                meta["followup_hint"] = "If you want more detail, reply: “yes” or ask a specific angle (history, examples, pros/cons)."
+                data["meta"] = meta
+
             data["reply"] = reply_text
             data["response"] = reply_text
-
-            # Replace old awkward followup prompt behavior (don’t force it, just suggest)
-            meta = data.get("meta")
-            if not isinstance(meta, dict):
-                meta = {}
-            meta["followup_hint"] = "If you want more detail, reply: “yes” or ask a specific angle (history, examples, pros/cons)."
-            data["meta"] = meta
 
             return jsonify(data), status
 
@@ -240,7 +416,7 @@ if not getattr(core_mod, _PATCH_GUARD, False):
         return jsonify({
             "ok": True,
             "mod": "v800",
-            "patch": "followup_context",
+            "patch": "followup_context_combined",
             "applied": True,
             "endpoint_name": endpoint_name,
             "ts": time.time(),
