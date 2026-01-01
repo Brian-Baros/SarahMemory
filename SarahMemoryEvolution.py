@@ -59,8 +59,6 @@ NEW (CURRENT UPDATES DISCUSSED):
        - SarahMemoryAPI
      and optionally run SarahMemoryCompare against the candidate suggestion for validation.
 
-NOTE:
-- This file is OWNER-ONLY and is not intended for GitHub.
 """
 
 from __future__ import annotations
@@ -1789,7 +1787,7 @@ def main() -> None:
     _print_banner()
     _ensure_dirs()
 
-    print("Owner-only tool: This file is intended to be run ONLY by Brian Lee Baros.")
+    print("End-User only tool: This file is intended to be run ONLY by EndUsers Unless Set to Auto using the NEOSKYMATRIX Flag.")
     print("It will NOT modify any core files. It creates patch stubs only.\n")
 
     while True:
