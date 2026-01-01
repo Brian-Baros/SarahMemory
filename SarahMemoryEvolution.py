@@ -59,6 +59,8 @@ NEW (CURRENT UPDATES DISCUSSED):
        - SarahMemoryAPI
      and optionally run SarahMemoryCompare against the candidate suggestion for validation.
 
+NOTE:
+- This file is OWNER-ONLY and is not intended for GitHub.
 """
 
 from __future__ import annotations
@@ -166,6 +168,12 @@ MODS_DIR = MODS_ROOT_DIR / VERSION_TAG  # base staging folder (v800)
 
 REPAIR_OUTBOX_DIR = DATA_DIR / "repair_outbox" / VERSION_TAG
 REPORTS_DIR = DATA_DIR / "reports" / VERSION_TAG
+
+
+# Operator Bridge (Manual) — assists human-in-the-loop workflow with Claude/ChatGPT.
+# NOTE: This does NOT call external services. It only prepares flat upload packs and stores results.
+CLAUDE_PACK_DIR = DATA_DIR / "operator" / "claude_pack" / VERSION_TAG
+OPERATOR_RESULTS_DIR = DATA_DIR / "operator" / "results" / VERSION_TAG
 
 # NEW: log archive + processed index
 LOG_ARCHIVE_DIR = DATA_DIR / "logs" / "archive" / VERSION_TAG
@@ -301,6 +309,128 @@ def _ensure_dirs() -> None:
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     LOG_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
 
+
+
+def build_claude_operator_pack(pack_title: str, task_summary: str, rel_paths: List[str]) -> Tuple[Path, Path, Path]:
+    """
+    Build a flat-file "Claude upload pack" (since Claude file uploads do not preserve subdirectories),
+    plus a single prompt file that references the included files.
+
+    IMPORTANT:
+    - No network calls.
+    - No patch auto-apply.
+    - Output is deterministic and reviewable.
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_title = re.sub(r"[^a-zA-Z0-9._-]+", "_", pack_title.strip())[:64] or "pack"
+    pack_dir = CLAUDE_PACK_DIR / f"{safe_title}_{ts}"
+    pack_dir.mkdir(parents=True, exist_ok=True)
+
+    copied: List[Dict[str, Any]] = []
+    missing: List[str] = []
+
+    for rel in rel_paths:
+        rel = rel.strip().lstrip("/\\")
+        src = (BASE_DIR / rel).resolve()
+        try:
+            if not src.exists() or not src.is_file():
+                missing.append(rel)
+                continue
+
+            # flatten: sub/dir/file.py -> sub__dir__file.py
+            flat_name = "__".join(Path(rel).parts)
+            dst = pack_dir / flat_name
+
+            header = (
+                f"# === SarahMemory Operator Pack ===\n"
+                f"# ORIGINAL_RELATIVE_PATH: {rel}\n"
+                f"# ORIGINAL_ABSOLUTE_PATH: {src}\n"
+                f"# PACK_TITLE: {pack_title}\n"
+                f"# PACK_TS: {ts}\n"
+                f"# =========================\n\n"
+            )
+            try:
+                raw = src.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                raw = src.read_bytes().decode("utf-8", errors="ignore")
+
+            dst.write_text(header + raw, encoding="utf-8", errors="ignore")
+
+            copied.append({
+                "relative_path": rel,
+                "absolute_path": str(src),
+                "flat_filename": flat_name,
+                "bytes": dst.stat().st_size,
+                "sha256": hashlib.sha256((header + raw).encode("utf-8", errors="ignore")).hexdigest(),
+            })
+        except Exception:
+            missing.append(rel)
+
+    manifest = {
+        "ok": True,
+        "version": VERSION_STR,
+        "version_tag": VERSION_TAG,
+        "pack_title": pack_title,
+        "task_summary": task_summary,
+        "created_at": _now_iso(),
+        "base_dir": str(BASE_DIR),
+        "data_dir": str(DATA_DIR),
+        "pack_dir": str(pack_dir),
+        "files": copied,
+        "missing": missing,
+        "notes": [
+            "Upload all files in pack_dir to Claude.",
+            "Claude output should be pasted back via Menu option 7 (store only).",
+            "No automatic patching is performed by this tool.",
+        ],
+    }
+
+    manifest_path = pack_dir / "MANIFEST.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    prompt = textwrap.dedent(f"""\
+    You are reviewing the SarahMemory Project (v8.0.0 / {VERSION_TAG}).
+
+    GOAL (Operator Task):
+    {task_summary}
+
+    RULES (Non-negotiable):
+    - Do not truncate code in outputs.
+    - Do not rename existing defs or variables.
+    - Do not create new Python files unless explicitly instructed.
+    - Do not modify unrelated code.
+    - Prefer monkey patches under ../data/mods/{VERSION_TAG}/ instead of direct app.py edits (unless instructed).
+    - If a module/function is unverified from provided files, label it "unverified".
+
+    FILES PROVIDED (flat names map back to original paths — see MANIFEST.json headers):
+    {", ".join([f['flat_filename'] for f in copied])}
+
+    WHAT I NEED FROM YOU:
+    1) A surgical plan (file-by-file) for the requested task.
+    2) The exact code changes to apply (prefer unified diffs) — minimal and safe.
+    3) Notes about headless safety and cross-platform behavior.
+
+    IMPORTANT:
+    - Assume this repo has multiple UIs (Tk, app.js, Flask WebUI) and many modules rely on each other.
+    - Think through ripple effects step-by-step.
+    """).strip() + "\n"
+
+    prompt_path = pack_dir / "CLAUDE_PROMPT.txt"
+    prompt_path.write_text(prompt, encoding="utf-8")
+
+    return pack_dir, manifest_path, prompt_path
+
+
+def store_operator_result(text_blob: str) -> Path:
+    """
+    Store Claude/ChatGPT output into the operator results directory for later review.
+    This does NOT apply patches automatically.
+    """
+    OPERATOR_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = OPERATOR_RESULTS_DIR / f"operator_result_{ts}.txt"
+    out_path.write_text(text_blob.strip() + "\n", encoding="utf-8", errors="ignore")
+    return out_path
 
 def _hash_text(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8", errors="ignore")).hexdigest()[:16]
@@ -1548,6 +1678,156 @@ def submit_for_repair(
 
 
 # =============================================================================
+# RESPONSE QUALITY CORRECTIONS (Owner-approved helper)
+# =============================================================================
+# Purpose:
+# - Reads flagged answers from evolution_corrections.db (table: response_quality_flags)
+# - Uses SarahMemoryAPI.send_to_api (when available) to generate a better answer
+# - Stores improved answers into evolution_corrections.db (table: response_corrections)
+#
+# Notes:
+# - This helper is side-effect limited to evolution_corrections.db only.
+# - It does NOT modify core DBs (ai_learning.db, system_logs.db) directly.
+# - It is safe to run on headless systems; it will gracefully skip if SMAPI is unavailable.
+
+def _rc_now() -> str:
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _rc_get_db_path() -> Path:
+    # Prefer the already-resolved DATASETS_DIR constant if possible.
+    try:
+        base = DATASETS_DIR
+    except Exception:
+        base = None
+
+    if base is None:
+        # Fall back to config (if available) or local DATA_DIR
+        try:
+            if config is not None and hasattr(config, "DATASETS_DIR"):
+                base = Path(getattr(config, "DATASETS_DIR"))
+            else:
+                base = Path(getattr(config, "DATA_DIR", DATA_DIR)) / "memory" / "datasets"
+        except Exception:
+            base = Path(DATA_DIR) / "memory" / "datasets"
+
+    return Path(base) / "evolution_corrections.db"
+
+
+def _rc_ensure_tables(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS response_corrections (
+            question_norm TEXT PRIMARY KEY,
+            better_answer TEXT NOT NULL,
+            ts TEXT,
+            source TEXT,
+            confidence REAL,
+            notes TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS response_quality_flags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            question TEXT,
+            answer TEXT,
+            ts TEXT,
+            flags TEXT
+        )
+        """
+    )
+    conn.commit()
+
+
+def _rc_norm_q(q: str) -> str:
+    return (q or "").strip().lower()[:800]
+
+
+def _rc_write_correction(conn: sqlite3.Connection, q: str, better: str, notes: str) -> None:
+    conn.execute(
+        """
+        INSERT INTO response_corrections(question_norm, better_answer, ts, source, confidence, notes)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(question_norm) DO UPDATE SET
+            better_answer=excluded.better_answer,
+            ts=excluded.ts,
+            source=excluded.source,
+            confidence=excluded.confidence,
+            notes=excluded.notes
+        """,
+        (_rc_norm_q(q), (better or "").strip(), _rc_now(), "evolution_responder", 0.78, (notes or "")[:800]),
+    )
+    conn.commit()
+
+
+def run_response_corrections(limit: int = 25) -> None:
+    """Improve flagged answers and store corrections (best-effort)."""
+    dbp = _rc_get_db_path()
+    try:
+        dbp.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    conn = sqlite3.connect(str(dbp), timeout=5.0)
+    try:
+        _rc_ensure_tables(conn)
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, question, answer, flags FROM response_quality_flags ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            print("No flagged answers found in evolution_corrections.db (response_quality_flags).")
+            return
+
+        if SMAPI is None or not hasattr(SMAPI, "send_to_api"):
+            print("SarahMemoryAPI.send_to_api not available; cannot generate better answers automatically.")
+            return
+
+        for rid, q, a, flags in rows:
+            q = "" if q is None else str(q)
+            a = "" if a is None else str(a)
+            flags = "" if flags is None else str(flags)
+
+            prompt = (
+                "You are SarahMemory (Sarah). Improve the answer to be natural, human, and consistent with project identity.\n"
+                "Rules:\n"
+                "- Do not mention being a language model.\n"
+                "- Keep it helpful and direct.\n"
+                "- Preserve factual claims only if supported.\n\n"
+                f"QUESTION:\n{q}\n\n"
+                f"BAD_ANSWER:\n{a}\n\n"
+                "BETTER_ANSWER:"
+            )
+
+            try:
+                resp = SMAPI.send_to_api(prompt, intent="chat")  # type: ignore
+            except Exception:
+                resp = None
+
+            if isinstance(resp, dict):
+                better = resp.get("data") or resp.get("text") or resp.get("response") or ""
+            else:
+                better = str(resp or "")
+
+            better = (better or "").strip()
+            if better:
+                _rc_write_correction(conn, q, better, notes=f"flags={flags}")
+                print(f"[OK] corrected: id={rid} flags={flags}")
+            else:
+                print(f"[SKIP] empty response: id={rid}")
+
+        print("Done.")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+# =============================================================================
 # MAIN EVOLUTION FLOW
 # =============================================================================
 
@@ -1787,7 +2067,7 @@ def main() -> None:
     _print_banner()
     _ensure_dirs()
 
-    print("End-User only tool: This file is intended to be run ONLY by EndUsers Unless Set to Auto using the NEOSKYMATRIX Flag.")
+    print("Owner-only tool: This file is intended to be run ONLY by Brian Lee Baros.")
     print("It will NOT modify any core files. It creates patch stubs only.\n")
 
     while True:
@@ -1796,6 +2076,9 @@ def main() -> None:
         print("  2) Show Paths (BASE/DATA/DATASETS/MODS)")
         print("  3) Add SM_AGI key to .env (append-only, user supplies value)")
         print("  4) NEOSKYMATRIX: Run Autonomous Weekly Cycle (no prompts; gated to 7 days)")
+        print("  5) Response Corrections: Improve flagged answers (evolution_corrections.db)")
+        print("  6) Operator Bridge: Build Claude Upload Pack + Prompt")
+        print("  7) Operator Bridge: Store Claude Output to Repair Outbox")
         print("  0) Exit\n")
 
         choice = input("Select: ").strip()
@@ -1851,8 +2134,91 @@ def main() -> None:
                 evolve_once(autonomous=True, weekly_gate=True)
             except KeyboardInterrupt:
                 print("\nCancelled by user.\n")
+                # (message consolidated)
+                # (message consolidated)
             except Exception as e:
                 print(f"\nAutonomous evolution crashed (tool survived): {e}")
+                # (message consolidated)
+                print(traceback.format_exc())
+
+        elif choice == "5":
+            # Response Corrections: Improve flagged answers (evolution_corrections.db)
+            try:
+                lim = input("How many flagged answers to process? (default 25): ").strip()
+                limit = int(lim) if lim else 25
+            except Exception:
+                limit = 25
+            try:
+                run_response_corrections(limit=limit)
+            except KeyboardInterrupt:
+                print("\nCancelled by user.\n")
+                # (message consolidated)
+                # (message consolidated)
+            except Exception as e:
+                print(f"\nResponse correction run crashed (tool survived): {e}")
+                # (message consolidated)
+                print(traceback.format_exc())
+
+        elif choice == "6":
+            # Operator helper: build a flat-file Claude upload pack + a prompt file.
+            try:
+                title = input("Pack title (short): ").strip() or "Phase1_UI_Parity"
+                task = input("Task summary (1 line): ").strip() or "Sync UI parity + endpoints; propose monkey patches only."
+                files_csv = input("Files to include (comma-separated paths, relative to BASE_DIR): ").strip()
+                files = [f.strip() for f in files_csv.split(",") if f.strip()]
+                if not files:
+                    print("No files provided. Nothing to pack.\n")
+                    # (message consolidated)
+                    continue
+                pack_dir, manifest_path, prompt_path = build_claude_operator_pack(
+                    pack_title=title,
+                    task_summary=task,
+                    rel_paths=files,
+                )
+                print("\nClaude Pack Created:")
+                # (message consolidated)
+                print(f"  Pack Dir:   {pack_dir}")
+                print(f"  Manifest:   {manifest_path}")
+                print(f"  Prompt:     {prompt_path}\n")
+                # (message consolidated)
+            except KeyboardInterrupt:
+                print("\nCancelled by user.\n")
+                # (message consolidated)
+                # (message consolidated)
+            except Exception as e:
+                print(f"\nPack creation crashed (tool survived): {e}")
+                # (message consolidated)
+                print(traceback.format_exc())
+
+        elif choice == "7":
+            # Operator helper: store Claude output / patch suggestions into repair outbox (no auto-apply).
+            try:
+                print("\nPaste Claude output (end with a single line containing: EOF)\n")
+                # (message consolidated)
+                # (message consolidated)
+                lines = []
+                while True:
+                    ln = input()
+                    if ln.strip() == "EOF":
+                        break
+                    lines.append(ln)
+                blob = "\n".join(lines).strip()
+                # (join consolidated)
+                if not blob:
+                    print("No output captured.\n")
+                    # (message consolidated)
+                    continue
+                outp = store_operator_result(blob)
+                print(f"\nStored operator result in outbox: {outp}\n")
+                # (message consolidated)
+                # (message consolidated)
+            except KeyboardInterrupt:
+                print("\nCancelled by user.\n")
+                # (message consolidated)
+                # (message consolidated)
+            except Exception as e:
+                print(f"\nStoring operator result crashed (tool survived): {e}")
+                # (message consolidated)
                 print(traceback.format_exc())
 
         elif choice == "0":
