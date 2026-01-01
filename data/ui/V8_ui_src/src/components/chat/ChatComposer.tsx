@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { cn } from '@/lib/utils';
-import { api } from '@/lib/api';
+import { api, ChatResponse, AvatarSpeechCue } from '@/lib/api';
 import { toast } from 'sonner';
 
 // Web Speech API types
@@ -36,17 +36,81 @@ export function ChatComposer() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
+  const speakingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   
-  const { messages, addMessage, setTyping, mediaState, settings } = useSarahStore();
+  const { messages, addMessage, setTyping, mediaState, settings, setSpeechCues, setAvatarSpeaking, setSpeechStartTime } = useSarahStore();
 
-  // Cleanup speech recognition on unmount
+  // Cleanup speech recognition and speaking timeout on unmount
   useEffect(() => {
     return () => {
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
+      if (speakingTimeoutRef.current) {
+        clearTimeout(speakingTimeoutRef.current);
+      }
     };
   }, []);
+
+  /**
+   * Estimate speaking duration from text using word count
+   * Assumes ~2.2 words per second, clamped between 800ms and 12000ms
+   */
+  const estimateSpeakingDuration = (text: string): number => {
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const wordsPerSecond = 2.2;
+    const estimatedMs = (wordCount / wordsPerSecond) * 1000;
+    return Math.max(800, Math.min(12000, estimatedMs));
+  };
+
+  /**
+   * Start avatar speaking animation
+   * Uses duration_ms from backend if available, otherwise estimates from word count
+   */
+  const startAvatarSpeaking = (response: ChatResponse) => {
+    // Clear any existing timeout
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+    }
+
+    const avatarSpeech = response.meta?.avatar_speech;
+    
+    // Set speech cues if available
+    if (avatarSpeech?.cues && avatarSpeech.cues.length > 0) {
+      setSpeechCues(avatarSpeech.cues);
+    } else {
+      setSpeechCues([]);
+    }
+
+    // Determine duration
+    const durationMs = avatarSpeech?.duration_ms || estimateSpeakingDuration(response.content);
+
+    // Start speaking
+    setAvatarSpeaking(true);
+    setSpeechStartTime(Date.now());
+    
+    // Also notify backend (fire and forget)
+    api.avatar.setSpeaking(true).catch(() => {});
+
+    // Set timeout as fallback (will be cleared if audio ends first)
+    speakingTimeoutRef.current = setTimeout(() => {
+      stopAvatarSpeaking();
+    }, durationMs + 500); // Add 500ms buffer
+  };
+
+  /**
+   * Stop avatar speaking animation
+   */
+  const stopAvatarSpeaking = () => {
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
+    setAvatarSpeaking(false);
+    setSpeechStartTime(null);
+    setSpeechCues([]);
+    api.avatar.setSpeaking(false).catch(() => {});
+  };
 
   const handleSubmit = async () => {
     if (!message.trim() && selectedFiles.length === 0) return;
@@ -102,7 +166,10 @@ export function ChatComposer() {
           content: response.content,
         });
         
-        // If voice is enabled and we got audio, play it
+        // ALWAYS start avatar speaking animation (even if voice is off)
+        startAvatarSpeaking(response);
+        
+        // If voice is enabled, play audio (which will stop speaking on end)
         if (mediaState.voiceEnabled && settings.autoSpeak) {
           await speakResponse(response.content);
         }
@@ -129,9 +196,6 @@ export function ChatComposer() {
 
   const speakResponse = async (text: string) => {
     try {
-      // Notify avatar that speaking is starting
-      await api.avatar.setSpeaking(true);
-      
       // Use the selected voice from settings
       const response = await api.voice.speak(text, settings.selectedVoice);
       
@@ -142,20 +206,12 @@ export function ChatComposer() {
         if (audioSrc) {
           const audio = new Audio(audioSrc);
           
-          audio.onended = async () => {
-            try {
-              await api.avatar.setSpeaking(false);
-            } catch (e) {
-              // Silent
-            }
+          audio.onended = () => {
+            stopAvatarSpeaking();
           };
           
-          audio.onerror = async () => {
-            try {
-              await api.avatar.setSpeaking(false);
-            } catch (e) {
-              // Silent
-            }
+          audio.onerror = () => {
+            stopAvatarSpeaking();
           };
           
           await audio.play();
@@ -223,12 +279,8 @@ export function ChatComposer() {
     utterance.pitch = 1.1;
     utterance.rate = 0.95;
     
-    utterance.onend = async () => {
-      try {
-        await api.avatar.setSpeaking(false);
-      } catch (e) {
-        // Silent
-      }
+    utterance.onend = () => {
+      stopAvatarSpeaking();
     };
     
     speechSynthesis.speak(utterance);
@@ -332,6 +384,9 @@ export function ChatComposer() {
                     role: 'assistant',
                     content: response.content,
                   });
+                  
+                  // ALWAYS start avatar speaking (even if voice is off)
+                  startAvatarSpeaking(response);
                   
                   if (mediaState.voiceEnabled && settings.autoSpeak) {
                     await speakResponse(response.content);

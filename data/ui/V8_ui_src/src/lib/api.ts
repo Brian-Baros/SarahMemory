@@ -1,8 +1,8 @@
 /**
  * SarahMemory API Client
- * 
+ *
  * Unified API client for communicating with the SarahMemory Flask backend.
- * All endpoints are wired to match app.py definitions.
+ * All endpoints are wired to match app.py definitions (best-effort, with multi-endpoint fallback).
  * @see https://api.sarahmemory.com
  */
 
@@ -12,6 +12,28 @@ import { config, apiFetch } from "./config";
 // ============================================================================
 // Types for API responses
 // ============================================================================
+
+export interface AvatarSpeechCue {
+  t: number;
+  v: number;
+}
+
+export interface AvatarSpeechMeta {
+  speak: boolean;
+  duration_ms?: number;
+  cues?: AvatarSpeechCue[];
+}
+
+export interface MediaResult {
+  id: string;
+  type: "image" | "music" | "video";
+  url: string;
+  preview?: string;
+  title?: string;
+  duration?: number;
+  status: "pending" | "complete" | "error";
+  error?: string;
+}
 
 export interface ChatResponse {
   ok?: boolean;
@@ -26,7 +48,16 @@ export interface ChatResponse {
   meta?: {
     source?: string;
     engine?: string;
+    avatar_speech?: AvatarSpeechMeta;
   };
+}
+
+export interface VoiceOption {
+  id: string;
+  name: string;
+  language?: string;
+  gender?: "male" | "female" | "neutral";
+  preview_url?: string;
 }
 
 export interface VoiceResponse {
@@ -37,14 +68,6 @@ export interface VoiceResponse {
   voices?: VoiceOption[];
   fallback?: boolean;
   error?: string;
-}
-
-export interface VoiceOption {
-  id: string;
-  name: string;
-  language?: string;
-  gender?: "male" | "female" | "neutral";
-  preview_url?: string;
 }
 
 export interface AvatarState {
@@ -93,17 +116,6 @@ export interface ThemeOption {
   name: string;
   filename: string;
   preview?: string;
-}
-
-export interface MediaResult {
-  id: string;
-  type: "image" | "music" | "video";
-  url: string;
-  preview?: string;
-  title?: string;
-  duration?: number;
-  status: "pending" | "complete" | "error";
-  error?: string;
 }
 
 export interface MediaResponse {
@@ -186,75 +198,99 @@ export interface BootstrapResponse {
 }
 
 // ============================================================================
-// Core API Helpers
+// Core API Helpers (Hardened)
 // ============================================================================
 
-/**
- * Invoke a Supabase Edge Function
- */
-async function invokeEdgeFunction<T>(
-  functionName: string,
-  body: Record<string, unknown>
-): Promise<T> {
+function withJsonHeaders(options: RequestInit = {}): RequestInit {
+  const headers = new Headers(options.headers || {});
+  if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  return { ...options, headers };
+}
+
+async function invokeEdgeFunction<T>(functionName: string, body: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.functions.invoke(functionName, { body });
-  
   if (error) {
-    console.error(`[api] ${functionName} error:`, error);
+    console.error(`[api] edge:${functionName} error:`, error);
     throw new Error(error.message || "Edge function error");
   }
-  
   return data as T;
 }
 
-/**
- * Direct call to SarahMemory Flask backend
- * Used as fallback or for endpoints not proxied through edge functions
- */
-async function directCall<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
-  return apiFetch<T>(endpoint, options);
+async function directCall<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  return apiFetch<T>(endpoint, withJsonHeaders(options));
+}
+
+async function tryDirectEndpoints<T>(
+  endpoints: string[],
+  options: RequestInit,
+): Promise<{ endpoint: string; data: T }> {
+  let lastErr: unknown = null;
+  for (const ep of endpoints) {
+    try {
+      const data = await directCall<T>(ep, options);
+      return { endpoint: ep, data };
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error("All endpoints failed");
+}
+
+function normalizeVoices(input: any): VoiceOption[] {
+  if (!input) return [];
+  const arr = Array.isArray(input)
+    ? input
+    : Array.isArray(input.voices)
+      ? input.voices
+      : Array.isArray(input.data)
+        ? input.data
+        : [];
+  return arr
+    .map((item: any, idx: number) => {
+      if (typeof item === "string") return { id: item, name: item };
+      const id = String(item.id ?? item.name ?? idx);
+      const name = String(item.name ?? item.id ?? `Voice ${idx + 1}`);
+      const language = item.language ? String(item.language) : undefined;
+      const gender = item.gender as any;
+      const preview_url = item.preview_url ? String(item.preview_url) : undefined;
+      return { id, name, language, gender, preview_url };
+    })
+    .filter(Boolean);
+}
+
+function isTruthySuccess(obj: any): boolean {
+  if (!obj) return false;
+  if (typeof obj === "boolean") return obj;
+  return Boolean(obj.success ?? obj.ok);
 }
 
 // ============================================================================
-// BOOTSTRAP API - Called once on app load
+// BOOTSTRAP API
 // ============================================================================
 
 export const bootstrapApi = {
-  /**
-   * Initialize session with backend
-   * POST /api/session/bootstrap
-   */
   async init(): Promise<BootstrapResponse> {
     try {
-      return await apiFetch<BootstrapResponse>('/api/session/bootstrap', {
-        method: 'POST',
+      return await directCall<BootstrapResponse>("/api/session/bootstrap", {
+        method: "POST",
         body: JSON.stringify({
-          client_env: 'web',
-          platform: 'browser',
-          ui_version: 'v8',
-          agent_name: 'Sarah',
-          bridge: 'none',
+          client_env: "web",
+          platform: "browser",
+          ui_version: "v8",
+          agent_name: "Sarah",
+          bridge: "none",
         }),
       });
     } catch (error) {
-      console.warn('[Bootstrap] Failed:', error);
-      // Return fallback bootstrap response
+      console.warn("[Bootstrap] Failed:", error);
       return {
         ok: false,
         version: config.version,
         runtime: {},
         client: {},
-        features: {
-          camera: false,
-          microphone: false,
-          voice_output: false,
-        },
-        env: {
-          api_base: config.apiBaseUrl,
-          web_root: '/',
-        },
+        features: { camera: false, microphone: false, voice_output: false },
+        env: { api_base: config.apiBaseUrl, web_root: "/" },
         ts: Date.now() / 1000,
       };
     }
@@ -262,56 +298,57 @@ export const bootstrapApi = {
 };
 
 // ============================================================================
-// CHAT API - Wired to POST /api/chat
+// CHAT API (canonical: /api/chat)
 // ============================================================================
 
 export const chatApi = {
-  /**
-   * Send a chat message and get a response
-   * POST /api/chat with { text, intent, tone, complexity }
-   */
   async sendMessage(
     messages: Array<{ role: "user" | "assistant"; content: string }>,
-    options?: { 
+    options?: {
       useAI?: boolean;
       conversationId?: string;
       researchMode?: boolean;
       intent?: string;
       tone?: string;
       complexity?: string;
-    }
+    },
   ): Promise<ChatResponse> {
-    // Get the last user message text
-    const lastUserMessage = messages.filter(m => m.role === 'user').pop();
-    const text = lastUserMessage?.content || '';
-    
+    const lastUserMessage = messages.filter((m) => m.role === "user").pop();
+    const text = lastUserMessage?.content || "";
+
     try {
-      // Call Flask backend directly with the expected format
-      const response = await apiFetch<{ ok: boolean; reply: string; meta?: { source?: string; engine?: string } }>('/api/chat', {
-        method: 'POST',
+      const { data } = await tryDirectEndpoints<any>(["/api/chat", "/chat", "/api/v1/chat"], {
+        method: "POST",
         body: JSON.stringify({
           text,
-          intent: options?.intent || 'question',
-          tone: options?.tone || 'friendly',
-          complexity: options?.complexity || 'adult',
+          intent: options?.intent || "question",
+          tone: options?.tone || "friendly",
+          complexity: options?.complexity || "adult",
+          conversation_id: options?.conversationId,
+          research_mode: options?.researchMode || false,
         }),
       });
-      
-      if (response.ok && response.reply) {
+
+      const ok = isTruthySuccess(data) || Boolean(data.ok);
+      const reply = data.reply ?? data.content ?? "";
+
+      if (ok && typeof reply === "string" && reply.length) {
         return {
           ok: true,
-          reply: response.reply,
-          content: response.reply,
-          source: 'sarah_backend',
-          meta: response.meta,
+          reply,
+          content: reply,
+          source: "sarah_backend",
+          audio_url: data.audio_url ?? null,
+          images: data.images,
+          sources: data.sources,
+          web_augmented: data.web_augmented,
+          meta: data.meta,
         };
-      } else {
-        throw new Error('Invalid response from backend');
       }
+
+      throw new Error(data?.error || "Invalid response from backend chat");
     } catch (error) {
-      console.warn('[Chat] Direct call failed, trying edge function:', error);
-      
-      // Fallback to edge function
+      console.warn("[Chat] Direct call failed, trying edge function:", error);
       try {
         return await invokeEdgeFunction<ChatResponse>("chat", {
           messages,
@@ -320,11 +357,11 @@ export const chatApi = {
           research_mode: options?.researchMode || false,
         });
       } catch (edgeError) {
-        console.error('[Chat] Edge function also failed:', edgeError);
+        console.error("[Chat] Edge function also failed:", edgeError);
         return {
           ok: false,
           content: "I'm having trouble connecting to the backend. Please try again.",
-          source: 'lovable_ai',
+          source: "lovable_ai",
           error: String(error),
         };
       }
@@ -333,60 +370,67 @@ export const chatApi = {
 };
 
 // ============================================================================
-// VOICE API
+// VOICE API (canonical: /api/voice with {action:...})
 // ============================================================================
 
 export const voiceApi = {
-  /**
-   * Convert text to speech using the selected voice
-   */
   async speak(text: string, voice?: string): Promise<VoiceResponse> {
-    return invokeEdgeFunction<VoiceResponse>("voice", {
-      action: "speak",
-      text,
-      voice,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice", "/api/voice/speak", "/api/tts", "/tts"], {
+        method: "POST",
+        body: JSON.stringify({ action: "speak", text, voice }),
+      });
+
+      const success = isTruthySuccess(data) || Boolean(data.audio_url || data.audio_base64);
+      return {
+        success,
+        audio_url: data.audio_url,
+        audio_base64: data.audio_base64,
+        text: data.text ?? text,
+        fallback: false,
+        error: data.error,
+      };
+    } catch (err) {
+      try {
+        return await invokeEdgeFunction<VoiceResponse>("voice", { action: "speak", text, voice });
+      } catch (edgeErr) {
+        return { success: false, fallback: true, error: String(edgeErr || err) };
+      }
+    }
   },
 
-  /**
-   * Transcribe audio to text
-   */
   async transcribe(audioBase64: string): Promise<VoiceResponse> {
-    return invokeEdgeFunction<VoiceResponse>("voice", {
-      action: "transcribe",
-      audio: audioBase64,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice", "/api/voice/transcribe", "/api/stt", "/stt"], {
+        method: "POST",
+        body: JSON.stringify({ action: "transcribe", audio: audioBase64 }),
+      });
+
+      const success = isTruthySuccess(data) || Boolean(data.text);
+      return { success, text: data.text, fallback: false, error: data.error };
+    } catch (err) {
+      try {
+        return await invokeEdgeFunction<VoiceResponse>("voice", { action: "transcribe", audio: audioBase64 });
+      } catch (edgeErr) {
+        return { success: false, fallback: true, error: String(edgeErr || err) };
+      }
+    }
   },
 
-  /**
-   * List available voices from the backend
-   * GET /get_available_voices
-   */
   async listVoices(): Promise<VoiceOption[]> {
     try {
-      // Call Flask backend directly
-      const response = await apiFetch<Array<{ id: string; name: string } | string>>('/get_available_voices');
-      
-      // Handle both formats: [{id, name}] or ["Voice A", "Voice B"]
-      if (Array.isArray(response)) {
-        return response.map((item, idx) => {
-          if (typeof item === 'string') {
-            return { id: item, name: item };
-          }
-          return {
-            id: item.id || String(idx),
-            name: item.name || item.id || `Voice ${idx + 1}`,
-          };
-        });
-      }
-      return [];
+      const { data } = await tryDirectEndpoints<any>(
+        ["/get_available_voices", "/api/voice", "/api/voices", "/voices"],
+        {
+          method: "GET",
+        },
+      );
+      // /api/voice GET might not exist; normalize handles any shape
+      return normalizeVoices(data);
     } catch (error) {
-      console.warn('[Voice] Failed to get voices from backend:', error);
-      // Fallback to edge function
+      console.warn("[Voice] Failed to get voices from backend:", error);
       try {
-        const response = await invokeEdgeFunction<VoiceResponse>("voice", {
-          action: "list_voices",
-        });
+        const response = await invokeEdgeFunction<VoiceResponse>("voice", { action: "list_voices" });
         return response.voices || [];
       } catch {
         return [];
@@ -394,261 +438,262 @@ export const voiceApi = {
     }
   },
 
-  /**
-   * Set the active voice for the session
-   */
   async setActiveVoice(voiceId: string): Promise<VoiceResponse> {
-    return invokeEdgeFunction<VoiceResponse>("voice", {
-      action: "set_voice",
-      voice: voiceId,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice", "/api/voice/set", "/set_user_setting"], {
+        method: "POST",
+        body: JSON.stringify({ action: "set_voice", voice: voiceId, key: "voice_profile", value: voiceId }),
+      });
+      return { success: isTruthySuccess(data), fallback: false, error: data?.error };
+    } catch (err) {
+      try {
+        return await invokeEdgeFunction<VoiceResponse>("voice", { action: "set_voice", voice: voiceId });
+      } catch (edgeErr) {
+        return { success: false, fallback: true, error: String(edgeErr || err) };
+      }
+    }
   },
 
-  /**
-   * Preview a voice with sample text
-   */
   async previewVoice(voiceId: string): Promise<VoiceResponse> {
-    return invokeEdgeFunction<VoiceResponse>("voice", {
-      action: "preview",
-      voice: voiceId,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice", "/api/voice/preview", "/voice/preview"], {
+        method: "POST",
+        body: JSON.stringify({ action: "preview", voice: voiceId }),
+      });
+      return {
+        success: isTruthySuccess(data) || Boolean(data.audio_url || data.audio_base64),
+        audio_url: data.audio_url,
+        audio_base64: data.audio_base64,
+        fallback: false,
+        error: data.error,
+      };
+    } catch (err) {
+      try {
+        return await invokeEdgeFunction<VoiceResponse>("voice", { action: "preview", voice: voiceId });
+      } catch (edgeErr) {
+        return { success: false, fallback: true, error: String(edgeErr || err) };
+      }
+    }
   },
 };
 
 // ============================================================================
-// AVATAR API
+// AVATAR API (canonical: /api/avatar with {action:...})
 // ============================================================================
 
 export const avatarApi = {
-  /**
-   * Get current avatar state
-   */
   async getState(): Promise<AvatarState> {
-    const response = await invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "get_state",
-    });
-    return response.state || {
-      mode: "avatar_2d",
-      expression: "neutral",
-      speaking: false,
-      listening: false,
-    };
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/state", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "get_state" }),
+      });
+      return (
+        data?.state || {
+          mode: "avatar_2d",
+          expression: "neutral",
+          speaking: false,
+          listening: false,
+        }
+      );
+    } catch {
+      const response = await invokeEdgeFunction<AvatarResponse>("avatar", { action: "get_state" });
+      return (
+        response.state || {
+          mode: "avatar_2d",
+          expression: "neutral",
+          speaking: false,
+          listening: false,
+        }
+      );
+    }
   },
 
-  /**
-   * Set avatar mode (2D, 3D, etc.)
-   */
   async setMode(mode: AvatarState["mode"]): Promise<AvatarResponse> {
-    return invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "set_mode",
-      mode,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/mode", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "set_mode", mode }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<AvatarResponse>("avatar", { action: "set_mode", mode });
+    }
   },
 
-  /**
-   * Set avatar expression
-   */
   async setExpression(expression: string): Promise<AvatarResponse> {
-    return invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "set_expression",
-      expression,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/expression", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "set_expression", expression }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<AvatarResponse>("avatar", { action: "set_expression", expression });
+    }
   },
 
-  /**
-   * Trigger an animation/action
-   */
   async triggerAnimation(animation: string): Promise<AvatarResponse> {
-    return invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "trigger_animation",
-      animation,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/animate", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "trigger_animation", animation }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<AvatarResponse>("avatar", { action: "trigger_animation", animation });
+    }
   },
 
-  /**
-   * Update speaking state
-   */
   async setSpeaking(speaking: boolean): Promise<void> {
-    await invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "speaking",
-      speaking,
-    });
+    try {
+      await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/speaking", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "speaking", speaking }),
+      });
+    } catch {
+      await invokeEdgeFunction<AvatarResponse>("avatar", { action: "speaking", speaking });
+    }
   },
 
-  /**
-   * Update listening state
-   */
   async setListening(listening: boolean): Promise<void> {
-    await invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "listening",
-      listening,
-    });
+    try {
+      await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/listening", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "listening", listening }),
+      });
+    } catch {
+      await invokeEdgeFunction<AvatarResponse>("avatar", { action: "listening", listening });
+    }
   },
 
-  /**
-   * Change avatar appearance
-   */
   async setAppearance(description: string): Promise<AvatarResponse> {
-    return invokeEdgeFunction<AvatarResponse>("avatar", {
-      action: "set_appearance",
-      description,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/avatar", "/api/avatar/appearance", "/avatar"], {
+        method: "POST",
+        body: JSON.stringify({ action: "set_appearance", description }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<AvatarResponse>("avatar", { action: "set_appearance", description });
+    }
   },
 };
 
 // ============================================================================
-// DIALER API
+// DIALER API (canonical: /api/dialer with {action:...})
 // ============================================================================
 
 export const dialerApi = {
-  /**
-   * Check if VoIP is available
-   */
   async checkAvailability(): Promise<DialerResponse> {
-    return invokeEdgeFunction<DialerResponse>("dialer", {
-      action: "check_availability",
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/check", "/dialer"], {
+        method: "POST",
+        body: JSON.stringify({ action: "check_availability" }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<DialerResponse>("dialer", { action: "check_availability" });
+    }
   },
 
-  /**
-   * Initiate a call
-   */
-  async initiateCall(target: {
-    number?: string;
-    ip_address?: string;
-    room_id?: string;
-  }): Promise<DialerResponse> {
-    return invokeEdgeFunction<DialerResponse>("dialer", {
-      action: "initiate",
-      ...target,
-    });
+  async initiateCall(target: { number?: string; ip_address?: string; room_id?: string }): Promise<DialerResponse> {
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/initiate", "/dialer"], {
+        method: "POST",
+        body: JSON.stringify({ action: "initiate", ...target }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<DialerResponse>("dialer", { action: "initiate", ...target });
+    }
   },
 
-  /**
-   * End an active call
-   */
   async endCall(): Promise<DialerResponse> {
-    return invokeEdgeFunction<DialerResponse>("dialer", {
-      action: "end",
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/end", "/dialer"], {
+        method: "POST",
+        body: JSON.stringify({ action: "end" }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<DialerResponse>("dialer", { action: "end" });
+    }
   },
 };
 
 // ============================================================================
-// RANKING API
+// RANKING API (canonical: /api/ranking with {action:...})
 // ============================================================================
 
 export const rankingApi = {
-  /**
-   * Submit a session for ranking
-   */
-  async submitSession(
-    sessionId: string,
-    metrics: Record<string, unknown>,
-    userId?: string
-  ): Promise<RankingResponse> {
-    return invokeEdgeFunction<RankingResponse>("ranking", {
-      action: "submit_session",
-      session_id: sessionId,
-      metrics,
-      user_id: userId,
-    });
+  async submitSession(sessionId: string, metrics: Record<string, unknown>, userId?: string): Promise<RankingResponse> {
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/ranking", "/api/ranking/submit", "/ranking"], {
+        method: "POST",
+        body: JSON.stringify({ action: "submit_session", session_id: sessionId, metrics, user_id: userId }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<RankingResponse>("ranking", {
+        action: "submit_session",
+        session_id: sessionId,
+        metrics,
+        user_id: userId,
+      });
+    }
   },
 
-  /**
-   * Get user ranking stats
-   */
   async getStats(userId: string): Promise<RankingResponse> {
-    return invokeEdgeFunction<RankingResponse>("ranking", {
-      action: "get_stats",
-      user_id: userId,
-    });
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/ranking", "/api/ranking/stats", "/ranking"], {
+        method: "POST",
+        body: JSON.stringify({ action: "get_stats", user_id: userId }),
+      });
+      return { success: isTruthySuccess(data), ...data };
+    } catch {
+      return invokeEdgeFunction<RankingResponse>("ranking", { action: "get_stats", user_id: userId });
+    }
   },
 };
 
 // ============================================================================
-// MEDIA API (Creative Tools)
+// MEDIA API (edge proxied through sarah-api)
 // ============================================================================
 
 export const mediaApi = {
-  /**
-   * Generate images from a prompt
-   * Returns 4 variants by default
-   */
-  async generateImage(
-    prompt: string,
-    options?: { count?: number; style?: string }
-  ): Promise<MediaResponse> {
+  async generateImage(prompt: string, options?: { count?: number; style?: string }): Promise<MediaResponse> {
     return invokeEdgeFunction<MediaResponse>("sarah-api", {
       endpoint: "/api/media/generate/image",
       method: "POST",
-      payload: {
-        prompt,
-        count: options?.count || 4,
-        style: options?.style,
-      },
+      payload: { prompt, count: options?.count || 4, style: options?.style },
     });
   },
 
-  /**
-   * Generate music from a prompt
-   */
-  async generateMusic(
-    prompt: string,
-    options?: { duration?: number; genre?: string }
-  ): Promise<MediaResponse> {
+  async generateMusic(prompt: string, options?: { duration?: number; genre?: string }): Promise<MediaResponse> {
     return invokeEdgeFunction<MediaResponse>("sarah-api", {
       endpoint: "/api/media/generate/music",
       method: "POST",
-      payload: {
-        prompt,
-        duration: options?.duration || 30,
-        genre: options?.genre,
-      },
+      payload: { prompt, duration: options?.duration || 30, genre: options?.genre },
     });
   },
 
-  /**
-   * Generate video from a prompt
-   */
-  async generateVideo(
-    prompt: string,
-    options?: { duration?: number; style?: string }
-  ): Promise<MediaResponse> {
+  async generateVideo(prompt: string, options?: { duration?: number; style?: string }): Promise<MediaResponse> {
     return invokeEdgeFunction<MediaResponse>("sarah-api", {
       endpoint: "/api/media/generate/video",
       method: "POST",
-      payload: {
-        prompt,
-        duration: options?.duration || 5,
-        style: options?.style,
-      },
+      payload: { prompt, duration: options?.duration || 5, style: options?.style },
     });
   },
 
-  /**
-   * Get media generation job status
-   */
   async getJobStatus(jobId: string): Promise<MediaResponse> {
-    return invokeEdgeFunction<MediaResponse>("sarah-api", {
-      endpoint: `/api/media/status/${jobId}`,
-      method: "GET",
-    });
+    return invokeEdgeFunction<MediaResponse>("sarah-api", { endpoint: `/api/media/status/${jobId}`, method: "GET" });
   },
 
-  /**
-   * Download generated media
-   */
   async download(mediaId: string): Promise<{ url: string }> {
-    return invokeEdgeFunction("sarah-api", {
-      endpoint: `/api/media/download/${mediaId}`,
-      method: "GET",
-    });
+    return invokeEdgeFunction("sarah-api", { endpoint: `/api/media/download/${mediaId}`, method: "GET" });
   },
 
-  /**
-   * Save media to dataset
-   */
   async saveToDataset(mediaId: string, dataset?: string): Promise<{ success: boolean }> {
     return invokeEdgeFunction("sarah-api", {
       endpoint: "/api/media/save",
@@ -657,346 +702,223 @@ export const mediaApi = {
     });
   },
 
-  /**
-   * List recent generations
-   */
   async listRecent(type?: "image" | "music" | "video"): Promise<MediaResponse> {
     const params = type ? `?type=${type}` : "";
-    return invokeEdgeFunction("sarah-api", {
-      endpoint: `/api/media/recent${params}`,
-      method: "GET",
-    });
+    return invokeEdgeFunction("sarah-api", { endpoint: `/api/media/recent${params}`, method: "GET" });
   },
 };
 
 // ============================================================================
-// QA / CONVERSATIONS API - Wired to Flask endpoints
+// QA / CONVERSATIONS API (legacy endpoints)
 // ============================================================================
 
 export const qaApi = {
-  /**
-   * List conversations by date
-   * Endpoint: GET /get_chat_threads_by_date?date=YYYY-MM-DD
-   */
   async listConversations(date?: string): Promise<{ conversations: Conversation[]; total: number }> {
     try {
-      const query = date ? `?date=${date}` : '';
+      const query = date ? `?date=${date}` : "";
       const result = await directCall<{ threads: Array<{ id: string; timestamp: string; preview: string }> }>(
-        `/get_chat_threads_by_date${query}`
+        `/get_chat_threads_by_date${query}`,
       );
-      const conversations = (result.threads || []).map(t => ({
+      const conversations = (result.threads || []).map((t) => ({
         id: String(t.id),
-        title: t.preview?.slice(0, 40) || 'Conversation',
-        preview: t.preview || '',
+        title: t.preview?.slice(0, 40) || "Conversation",
+        preview: t.preview || "",
         timestamp: t.timestamp,
         message_count: 1,
       }));
       return { conversations, total: conversations.length };
     } catch (error) {
-      console.error('[API] List conversations failed:', error);
+      console.error("[API] List conversations failed:", error);
       return { conversations: [], total: 0 };
     }
   },
 
-  /**
-   * Get a specific conversation with messages
-   * Endpoint: GET /get_conversation_by_id?id=<id>
-   */
   async getConversation(id: string): Promise<Conversation | null> {
     try {
       const result = await directCall<Array<{ role: string; text: string; meta?: string }>>(
-        `/get_conversation_by_id?id=${id}`
+        `/get_conversation_by_id?id=${encodeURIComponent(id)}`,
       );
       return {
         id,
-        title: 'Conversation',
-        preview: result[0]?.text || '',
+        title: "Conversation",
+        preview: result[0]?.text || "",
         timestamp: new Date().toISOString(),
         message_count: result.length,
-        messages: result.map(m => ({
-          role: m.role || 'user',
-          content: m.text || '',
-        })),
+        messages: result.map((m) => ({ role: m.role || "user", content: m.text || "" })),
       };
     } catch (error) {
-      console.error('[API] Get conversation failed:', error);
+      console.error("[API] Get conversation failed:", error);
       return null;
     }
   },
 
-  /**
-   * Delete a conversation (if backend supports it)
-   */
-  async deleteConversation(id: string): Promise<{ success: boolean }> {
-    return { success: true }; // Backend doesn't have delete endpoint yet
+  async deleteConversation(_id: string): Promise<{ success: boolean }> {
+    return { success: true };
   },
 };
 
 // ============================================================================
-// REMINDERS API - Wired to Flask endpoints
+// REMINDERS / CONTACTS / SETTINGS (legacy endpoints)
 // ============================================================================
 
 export const remindersApi = {
-  /**
-   * List all reminders
-   * Endpoint: GET /get_reminders
-   */
   async list(): Promise<{ reminders: Reminder[] }> {
     try {
       const result = await directCall<{ reminders: Array<{ id: number; title: string; time: string; note?: string }> }>(
-        '/get_reminders'
+        "/get_reminders",
       );
-      const reminders = (result.reminders || []).map(r => ({
+      const reminders = (result.reminders || []).map((r) => ({
         id: String(r.id),
         title: r.title,
-        description: r.note || '',
+        description: r.note || "",
         time: r.time,
         due_date: r.time,
         completed: false,
-        priority: 'medium',
+        priority: "medium",
       }));
       return { reminders };
     } catch (error) {
-      console.error('[API] Get reminders failed:', error);
+      console.error("[API] Get reminders failed:", error);
       return { reminders: [] };
     }
   },
 
-  /**
-   * Create a new reminder
-   * Endpoint: POST /save_reminder
-   */
   async create(reminder: Omit<Reminder, "id">): Promise<{ reminder: Reminder }> {
-    try {
-      const result = await directCall<{ status: string; id?: number }>(
-        '/save_reminder',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            title: reminder.title,
-            time: reminder.time || reminder.due_date,
-            note: reminder.description || reminder.note || '',
-          }),
-        }
-      );
-      return {
-        reminder: {
-          ...reminder,
-          id: String(result.id || Date.now()),
-          completed: false,
-        },
-      };
-    } catch (error) {
-      console.error('[API] Create reminder failed:', error);
-      throw error;
-    }
+    const result = await directCall<{ status: string; id?: number }>("/save_reminder", {
+      method: "POST",
+      body: JSON.stringify({
+        title: reminder.title,
+        time: reminder.time || reminder.due_date,
+        note: reminder.description || reminder.note || "",
+      }),
+    });
+
+    return { reminder: { ...reminder, id: String(result.id || Date.now()), completed: false } };
   },
 
-  /**
-   * Update a reminder (re-save)
-   */
-  async update(id: string, updates: Partial<Reminder>): Promise<{ reminder: Reminder }> {
-    // Backend doesn't have update, so we create new
+  async update(_id: string, updates: Partial<Reminder>): Promise<{ reminder: Reminder }> {
     return this.create(updates as Omit<Reminder, "id">);
   },
 
-  /**
-   * Delete a reminder
-   * Endpoint: POST /delete_reminder
-   */
   async delete(id: string): Promise<{ success: boolean }> {
     try {
-      await directCall('/delete_reminder', {
-        method: 'POST',
-        body: JSON.stringify({ id: Number(id) }),
-      });
+      await directCall("/delete_reminder", { method: "POST", body: JSON.stringify({ id: Number(id) }) });
       return { success: true };
     } catch (error) {
-      console.error('[API] Delete reminder failed:', error);
+      console.error("[API] Delete reminder failed:", error);
       return { success: false };
     }
   },
 
-  /**
-   * Mark reminder as complete (local only)
-   */
-  async complete(id: string): Promise<{ success: boolean }> {
+  async complete(_id: string): Promise<{ success: boolean }> {
     return { success: true };
   },
 
-  /**
-   * Snooze a reminder (local only)
-   */
-  async snooze(id: string, minutes?: number): Promise<{ success: boolean }> {
+  async snooze(_id: string, _minutes?: number): Promise<{ success: boolean }> {
     return { success: true };
   },
 };
 
-// ============================================================================
-// CONTACTS API - Wired to Flask endpoints
-// ============================================================================
-
 export const contactsApi = {
-  /**
-   * List all contacts
-   * Endpoint: GET /get_all_contacts
-   */
   async list(): Promise<{ contacts: Contact[] }> {
     try {
       const result = await directCall<{ contacts: Array<{ id: number; name: string; number?: string }> }>(
-        '/get_all_contacts'
+        "/get_all_contacts",
       );
-      const contacts = (result.contacts || []).map(c => ({
+      const contacts = (result.contacts || []).map((c) => ({
         id: String(c.id),
         name: c.name,
         phone: c.number,
         number: c.number,
-        status: 'offline',
+        status: "offline",
       }));
       return { contacts };
     } catch (error) {
-      console.error('[API] Get contacts failed:', error);
+      console.error("[API] Get contacts failed:", error);
       return { contacts: [] };
     }
   },
 
-  /**
-   * Create a new contact
-   * Endpoint: POST /add_contact
-   */
   async create(contact: Omit<Contact, "id">): Promise<{ contact: Contact }> {
-    try {
-      await directCall('/add_contact', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: contact.name,
-          number: contact.phone || contact.number || contact.email || '',
-        }),
-      });
-      return {
-        contact: {
-          ...contact,
-          id: String(Date.now()),
-        },
-      };
-    } catch (error) {
-      console.error('[API] Create contact failed:', error);
-      throw error;
-    }
+    await directCall("/add_contact", {
+      method: "POST",
+      body: JSON.stringify({ name: contact.name, number: contact.phone || contact.number || contact.email || "" }),
+    });
+    return { contact: { ...contact, id: String(Date.now()) } };
   },
 
-  /**
-   * Update a contact
-   */
   async update(id: string, updates: Partial<Contact>): Promise<{ contact: Contact }> {
-    // Backend doesn't have update endpoint
-    return { contact: { id, name: updates.name || '', ...updates } };
+    return { contact: { id, name: updates.name || "", ...updates } };
   },
 
-  /**
-   * Delete a contact
-   * Endpoint: POST /delete_contact
-   */
   async delete(id: string): Promise<{ success: boolean }> {
     try {
-      await directCall('/delete_contact', {
-        method: 'POST',
-        body: JSON.stringify({ id: Number(id) }),
-      });
+      await directCall("/delete_contact", { method: "POST", body: JSON.stringify({ id: Number(id) }) });
       return { success: true };
     } catch (error) {
-      console.error('[API] Delete contact failed:', error);
+      console.error("[API] Delete contact failed:", error);
       return { success: false };
     }
   },
 };
 
-// ============================================================================
-// SETTINGS API - Wired to Flask endpoints
-// ============================================================================
-
 export const settingsApi = {
-  /**
-   * Get available voices from backend
-   * Endpoint: GET /get_available_voices
-   */
   async getVoices(): Promise<VoiceOption[]> {
     try {
-      const result = await directCall<Array<{ id: string; name: string }>>('/get_available_voices');
-      return Array.isArray(result) ? result.map(v => ({
-        id: v.id || v.name?.toLowerCase().replace(/\s+/g, '_') || 'unknown',
-        name: v.name || v.id || 'Unknown',
-        language: 'en-US',
-        gender: 'female' as const,
-      })) : [];
+      const result = await directCall<any>("/get_available_voices");
+      const voices = normalizeVoices(result);
+      if (voices.length) return voices;
+      if (result?.voices) return normalizeVoices(result.voices);
+      return [];
     } catch (error) {
-      console.error('[API] Get voices failed:', error);
+      console.error("[API] Get voices failed:", error);
       return [
-        { id: 'sarah', name: 'Sarah (Default)', language: 'en-US', gender: 'female' },
-        { id: 'emma', name: 'Emma', language: 'en-GB', gender: 'female' },
+        { id: "sarah", name: "Sarah (Default)", language: "en-US", gender: "female" },
+        { id: "emma", name: "Emma", language: "en-GB", gender: "female" },
       ];
     }
   },
 
-  /**
-   * Set the active voice
-   * Endpoint: POST /set_user_setting
-   */
   async setVoice(voiceId: string): Promise<{ success: boolean }> {
     try {
-      await directCall('/set_user_setting', {
-        method: 'POST',
-        body: JSON.stringify({ key: 'voice_profile', value: voiceId }),
+      await directCall("/set_user_setting", {
+        method: "POST",
+        body: JSON.stringify({ key: "voice_profile", value: voiceId }),
       });
       return { success: true };
     } catch (error) {
-      console.error('[API] Set voice failed:', error);
+      console.error("[API] Set voice failed:", error);
       return { success: false };
     }
   },
 
-  /**
-   * Get a user setting
-   * Endpoint: GET /get_user_setting?key=...
-   */
   async getSetting(key: string): Promise<string> {
     try {
       const result = await directCall<{ value: string }>(`/get_user_setting?key=${encodeURIComponent(key)}`);
-      return result.value || '';
-    } catch (error) {
-      return '';
+      return result.value || "";
+    } catch {
+      return "";
     }
   },
 
-  /**
-   * Set a user setting
-   * Endpoint: POST /set_user_setting
-   */
   async setSetting(key: string, value: string): Promise<boolean> {
     try {
-      await directCall('/set_user_setting', {
-        method: 'POST',
-        body: JSON.stringify({ key, value }),
-      });
+      await directCall("/set_user_setting", { method: "POST", body: JSON.stringify({ key, value }) });
       return true;
-    } catch (error) {
+    } catch {
       return false;
     }
   },
 
-  /**
-   * Get available themes
-   * Endpoint: GET /get_theme_files
-   */
   async getThemes(): Promise<ThemeOption[]> {
     try {
-      const result = await directCall<{ root: string; files: string[]; count: number }>('/get_theme_files');
+      const result = await directCall<{ root: string; files: string[]; count: number }>("/get_theme_files");
       if (result.files && result.files.length > 0) {
         return result.files
-          .filter(f => f.endsWith('.css'))
-          .map((f, i) => ({
-            id: f.replace('.css', '').replace(/\//g, '_'),
-            name: f.replace('.css', '').replace(/[-_]/g, ' ').replace(/\//g, ' - '),
+          .filter((f) => f.endsWith(".css"))
+          .map((f) => ({
+            id: f.replace(".css", "").replace(/\//g, "_"),
+            name: f.replace(".css", "").replace(/[-_]/g, " ").replace(/\//g, " - "),
             filename: f,
           }));
       }
@@ -1005,52 +927,34 @@ export const settingsApi = {
         { id: "midnight", name: "Midnight Blue", filename: "midnight.css" },
       ];
     } catch (error) {
-      console.error('[API] Get themes failed:', error);
-      return [
-        { id: "default", name: "Default Dark", filename: "default.css" },
-      ];
+      console.error("[API] Get themes failed:", error);
+      return [{ id: "default", name: "Default Dark", filename: "default.css" }];
     }
   },
 
-  /**
-   * Set the active theme
-   * Endpoint: POST /set_user_setting
-   */
   async setTheme(themeId: string): Promise<{ success: boolean }> {
     try {
-      await directCall('/set_user_setting', {
-        method: 'POST',
-        body: JSON.stringify({ key: 'theme', value: themeId }),
-      });
+      await directCall("/set_user_setting", { method: "POST", body: JSON.stringify({ key: "theme", value: themeId }) });
       return { success: true };
-    } catch (error) {
+    } catch {
       return { success: false };
     }
   },
 
-  /**
-   * Get theme file URL
-   */
   getThemeUrl(filename: string): string {
     return `${config.apiBaseUrl}/api/data/mods/themes/${filename}`;
   },
 };
 
-// (Settings API already defined above - removed duplicate)
-
 // ============================================================================
-// FILES API
+// FILES / RESEARCH / META (edge-proxy + direct health)
 // ============================================================================
 
 export const filesApi = {
-  /**
-   * Upload and analyze a file
-   */
   async uploadAndAnalyze(
     file: File,
-    options?: { analyze?: boolean; extractText?: boolean }
+    options?: { analyze?: boolean; extractText?: boolean },
   ): Promise<{ success: boolean; analysis?: string; content?: string; media_url?: string }> {
-    // Convert file to base64
     const base64 = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onloadend = () => resolve((reader.result as string).split(",")[1]);
@@ -1072,92 +976,49 @@ export const filesApi = {
   },
 };
 
-// ============================================================================
-// RESEARCH API
-// ============================================================================
-
 export const researchApi = {
-  /**
-   * Perform a research search
-   */
   async search(
     query: string,
-    options?: { depth?: "shallow" | "deep"; sources?: string[] }
+    options?: { depth?: "shallow" | "deep"; sources?: string[] },
   ): Promise<{ results: any[]; summary?: string; sources?: string[] }> {
     return invokeEdgeFunction("sarah-api", {
       endpoint: "/api/research/search",
       method: "POST",
-      payload: {
-        query,
-        depth: options?.depth || "shallow",
-        sources: options?.sources,
-      },
+      payload: { query, depth: options?.depth || "shallow", sources: options?.sources },
     });
   },
 };
 
-// ============================================================================
-// META API (Capabilities Discovery)
-// ============================================================================
-
 export const metaApi = {
-  /**
-   * Get backend capabilities
-   * Used for dynamic feature discovery
-   */
   async getCapabilities(): Promise<BackendCapabilities> {
     try {
-      const result = await invokeEdgeFunction<any>("sarah-api", {
-        endpoint: "/api/meta/capabilities",
-        method: "GET",
-      });
-      
-      if (result.fallback) {
-        // Return default capabilities if backend is unavailable
-        return getDefaultCapabilities();
-      }
-      
+      const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/meta/capabilities", method: "GET" });
+      if (result?.fallback) return getDefaultCapabilities();
       return result as BackendCapabilities;
     } catch {
       return getDefaultCapabilities();
     }
   },
 
-  /**
-   * Get backend version info
-   */
   async getVersion(): Promise<{ version: string; updated_at?: string }> {
     try {
-      const result = await invokeEdgeFunction<any>("sarah-api", {
-        endpoint: "/api/version",
-        method: "GET",
-      });
+      const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/version", method: "GET" });
       return result;
     } catch {
       return { version: "unknown" };
     }
   },
 
-  /**
-   * Health check - calls /api/health directly
-   */
   async healthCheck(): Promise<{ status: string; ok?: boolean; services?: Record<string, boolean> }> {
     try {
-      // Try direct call first
-      const result = await apiFetch<{ ok: boolean; status?: string; version?: string }>('/api/health');
-      return { 
-        status: result.ok ? 'ok' : 'error',
-        ok: result.ok,
-      };
+      const result = await directCall<{ ok: boolean; status?: string; version?: string }>("/api/health", {
+        method: "GET",
+      });
+      return { status: result.ok ? "ok" : "error", ok: result.ok };
     } catch (error) {
-      console.warn('[Health] Direct call failed:', error);
-      // Fallback to edge function
+      console.warn("[Health] Direct call failed:", error);
       try {
-        const result = await invokeEdgeFunction<any>("sarah-api", {
-          endpoint: "/api/health",
-          method: "GET",
-        });
-        return result;
+        return await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/health", method: "GET" });
       } catch {
         return { status: "unavailable" };
       }
@@ -1182,34 +1043,22 @@ function getDefaultCapabilities(): BackendCapabilities {
 }
 
 // ============================================================================
-// PROXY API (Legacy/Direct backend access)
+// PROXY API (legacy)
 // ============================================================================
 
 export const proxyApi = {
-  /**
-   * Make a direct call to the SarahMemory backend via the sarah-api edge function
-   */
   async call(
     endpoint: string,
-    options?: {
-      method?: "GET" | "POST" | "PUT" | "DELETE";
-      body?: Record<string, unknown>;
-    }
+    options?: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: Record<string, unknown> },
   ): Promise<unknown> {
     try {
       const { data, error } = await supabase.functions.invoke("sarah-api", {
-        body: {
-          endpoint,
-          method: options?.method || "GET",
-          payload: options?.body,
-        },
+        body: { endpoint, method: options?.method || "GET", payload: options?.body },
       });
-      
       if (error) {
         console.error("[proxyApi] Error:", error);
         throw new Error(error.message || "Proxy API error");
       }
-      
       return data;
     } catch (err) {
       console.error("[proxyApi] Call failed:", err);
@@ -1220,17 +1069,14 @@ export const proxyApi = {
   async getContacts() {
     return contactsApi.list();
   },
-
   async getReminders() {
     return remindersApi.list();
   },
-
   async getConversations() {
     return qaApi.listConversations();
   },
-
   async getThemes() {
-    return settingsApi.getThemes().then(themes => ({ themes }));
+    return settingsApi.getThemes().then((themes) => ({ themes }));
   },
 };
 

@@ -1,19 +1,25 @@
-import { Mic, Volume2, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { useState } from 'react';
+import { Mic, Volume2, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { cn } from '@/lib/utils';
-import { ContactsPanel } from '@/components/panels/ContactsPanel';
-import { RemindersPanel } from '@/components/panels/RemindersPanel';
-import { DialerPanel } from '@/components/panels/DialerPanel';
-import { CreativeToolsPanel } from '@/components/panels/CreativeToolsPanel';
 import { AvatarPanel } from '@/components/avatar/AvatarPanel';
-import { RightPanelTabs } from './RightPanelTabs';
 import { config } from '@/lib/config';
+import { useIsMobile } from '@/hooks/use-mobile';
+
+// Modules
+import { CommunicationModule } from '@/components/modules/CommunicationModule';
+import { ImageGenerationModule } from '@/components/modules/ImageGenerationModule';
+import { MusicSynthModule } from '@/components/modules/MusicSynthModule';
+import { VoiceLyricsModule } from '@/components/modules/VoiceLyricsModule';
+import { VideoStudioModule } from '@/components/modules/VideoStudioModule';
+import { StudioModuleTabs, type StudioModuleId } from '@/components/modules/StudioModuleTabs';
+import { StudioAccordion } from '@/components/modules/StudioAccordion';
 
 /**
  * Right sidebar content - Tools, settings, and utilities
- * Organized into tabbed pages: Contacts, Keypad, Tools, Settings
+ * AvatarPanel pinned at top as preview surface
+ * Modules below in tabbed (Option A) or accordion (Option B) mode
  * Used by both desktop sidebar and mobile drawer
  */
 export function RightSidebarContent() {
@@ -22,14 +28,20 @@ export function RightSidebarContent() {
     toggleWebcam, 
     toggleMicrophone, 
     toggleVoice,
-    rightPanelPage,
+    settings,
     setSettingsOpen,
     setRightDrawerOpen,
   } = useSarahStore();
 
+  const isMobile = useIsMobile();
+  const [activeModule, setActiveModule] = useState<StudioModuleId>('communication');
+
   const [isTogglingCam, setIsTogglingCam] = useState(false);
   const [isTogglingMic, setIsTogglingMic] = useState(false);
   const [isTogglingVoice, setIsTogglingVoice] = useState(false);
+
+  // Force tabbed mode on mobile, otherwise use setting
+  const useAccordionMode = !isMobile && (settings.advancedStudioMode ?? false);
 
   // Toggle camera with backend call
   const handleToggleCam = async () => {
@@ -87,12 +99,30 @@ export function RightSidebarContent() {
 
   const handleOpenSettings = () => {
     setSettingsOpen(true);
-    setRightDrawerOpen(false); // Close drawer on mobile when opening settings
+    setRightDrawerOpen(false);
+  };
+
+  // Render the active module content for tabbed mode
+  const renderActiveModule = () => {
+    switch (activeModule) {
+      case 'communication':
+        return <CommunicationModule />;
+      case 'image':
+        return <ImageGenerationModule />;
+      case 'music':
+        return <MusicSynthModule />;
+      case 'voice':
+        return <VoiceLyricsModule />;
+      case 'video':
+        return <VideoStudioModule />;
+      default:
+        return <CommunicationModule />;
+    }
   };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Avatar Panel - Always visible at top */}
+      {/* Avatar Panel - Always visible at top as preview surface */}
       <AvatarPanel />
 
       {/* Media Controls */}
@@ -154,45 +184,35 @@ export function RightSidebarContent() {
         </div>
       </div>
 
-      {/* Tab Navigation for Pages */}
-      <RightPanelTabs />
-
-      {/* Page Content - Swipeable pages */}
-      <div className="flex-1 overflow-y-auto">
-        {/* Page 1: Contacts */}
-        {rightPanelPage === 'contacts' && (
-          <div className="animate-fade-in">
-            <ContactsPanel />
+      {/* Module Content Area */}
+      {useAccordionMode ? (
+        // Option B: Accordion/Studio mode (desktop only when enabled)
+        <StudioAccordion />
+      ) : (
+        // Option A: Tabbed mode (default, always on mobile)
+        <>
+          <StudioModuleTabs 
+            activeModule={activeModule} 
+            onModuleChange={setActiveModule} 
+          />
+          <div className="flex-1 overflow-y-auto">
+            <div className="animate-fade-in">
+              {renderActiveModule()}
+            </div>
           </div>
-        )}
+        </>
+      )}
 
-        {/* Page 2: Keypad / Dialer */}
-        {rightPanelPage === 'keypad' && (
-          <div className="animate-fade-in">
-            <DialerPanel />
-          </div>
-        )}
-
-        {/* Page 3: Tools / Creative */}
-        {rightPanelPage === 'tools' && (
-          <div className="animate-fade-in">
-            <CreativeToolsPanel />
-            <RemindersPanel />
-          </div>
-        )}
-
-        {/* Page 4: Settings */}
-        {rightPanelPage === 'settings' && (
-          <div className="animate-fade-in p-4">
-            <Button 
-              variant="outline" 
-              className="w-full"
-              onClick={handleOpenSettings}
-            >
-              Open Full Settings
-            </Button>
-          </div>
-        )}
+      {/* Settings Button at bottom */}
+      <div className="p-3 border-t border-sidebar-border mt-auto">
+        <Button 
+          variant="outline" 
+          size="sm"
+          className="w-full text-xs"
+          onClick={handleOpenSettings}
+        >
+          Open Settings
+        </Button>
       </div>
     </div>
   );
