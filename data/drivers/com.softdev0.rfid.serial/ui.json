@@ -1,0 +1,59 @@
+{
+  "title": "RFID Reader/Writer Serial Driver",
+  "sections": [
+    {
+      "id": "connection",
+      "title": "Serial Connection",
+      "fields": [
+        {
+          "key": "port",
+          "label": "Port (COMx or /dev/tty*)",
+          "type": "string",
+          "placeholder": "COM6"
+        },
+        {
+          "key": "baud",
+          "label": "Baud Rate",
+          "type": "int",
+          "min": 1200,
+          "max": 2000000
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "read_only",
+          "label": "Read-only mode",
+          "type": "bool"
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan_ports",
+      "label": "Scan Ports"
+    },
+    {
+      "id": "read_tag",
+      "label": "Read Tag"
+    },
+    {
+      "id": "write_tag",
+      "label": "Write Tag"
+    }
+  ]
+}

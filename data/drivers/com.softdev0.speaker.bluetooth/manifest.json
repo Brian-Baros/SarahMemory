@@ -1,0 +1,28 @@
+{
+  "id": "com.softdev0.speaker.bluetooth",
+  "name": "Bluetooth Speaker/Soundbar Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton Bluetooth audio driver; real control uses OS audio stack.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "bluetooth",
+  "category": "audio",
+  "permissions": [
+    "hardware.bluetooth",
+    "media.audio",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

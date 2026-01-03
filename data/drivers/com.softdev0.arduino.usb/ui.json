@@ -1,0 +1,109 @@
+{
+  "title": "Arduino USB Driver (Uno R3 / AVR)",
+  "sections": [
+    {
+      "id": "connection",
+      "title": "Connection",
+      "fields": [
+        {
+          "key": "auto_detect_port",
+          "label": "Auto-detect port",
+          "type": "bool"
+        },
+        {
+          "key": "port",
+          "label": "Port (COMx or /dev/tty*)",
+          "type": "string",
+          "placeholder": "COM4"
+        },
+        {
+          "key": "baud",
+          "label": "Baud Rate",
+          "type": "int",
+          "min": 1200,
+          "max": 2000000
+        }
+      ]
+    },
+    {
+      "id": "board",
+      "title": "Board / Toolchain",
+      "fields": [
+        {
+          "key": "fqbn",
+          "label": "FQBN (board target)",
+          "type": "string",
+          "placeholder": "arduino:avr:uno"
+        },
+        {
+          "key": "arduino_cli_path",
+          "label": "arduino-cli path (optional)",
+          "type": "string",
+          "placeholder": "arduino-cli"
+        },
+        {
+          "key": "sketch_dir",
+          "label": "Sketch working folder",
+          "type": "string",
+          "placeholder": "../data/sandbox/arduino"
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "require_confirm_upload",
+          "label": "Require confirm before upload",
+          "type": "bool"
+        },
+        {
+          "key": "upload_rate_limit_sec",
+          "label": "Min seconds between uploads",
+          "type": "int",
+          "min": 0,
+          "max": 600
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan_ports",
+      "label": "Scan Ports"
+    },
+    {
+      "id": "dry_run_compile",
+      "label": "Dry Run Compile"
+    },
+    {
+      "id": "upload",
+      "label": "Upload Sketch"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    },
+    {
+      "id": "reset_defaults",
+      "label": "Reset to Defaults"
+    }
+  ]
+}

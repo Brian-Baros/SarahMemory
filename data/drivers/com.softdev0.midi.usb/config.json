@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "auto_detect": true,
+  "input_name": "",
+  "output_name": "",
+  "throttle_ms": 0
+}

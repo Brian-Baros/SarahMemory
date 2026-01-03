@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "port": "",
+  "baud": 115200,
+  "read_only": true
+}

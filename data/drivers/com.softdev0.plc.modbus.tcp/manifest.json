@@ -1,0 +1,29 @@
+{
+  "id": "com.softdev0.plc.modbus.tcp",
+  "name": "PLC Modbus/TCP Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton PLC Modbus/TCP driver (optional 'pymodbus'). Writes should require explicit confirmation.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "tcp",
+  "category": "plc",
+  "permissions": [
+    "network.outbound",
+    "network.inbound",
+    "hardware.plc",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

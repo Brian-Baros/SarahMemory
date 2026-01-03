@@ -1,0 +1,65 @@
+{
+  "title": "Barcode Scanner HID Driver",
+  "sections": [
+    {
+      "id": "device",
+      "title": "HID Device",
+      "fields": [
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID (hex)",
+          "type": "string",
+          "placeholder": "0x05E0"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID (hex)",
+          "type": "string",
+          "placeholder": "0x1200"
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "parser",
+      "title": "Parser",
+      "fields": [
+        {
+          "key": "suffix",
+          "label": "Line suffix",
+          "type": "string",
+          "placeholder": "\\n"
+        },
+        {
+          "key": "charset",
+          "label": "Charset",
+          "type": "string",
+          "placeholder": "utf-8"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "list_hid",
+      "label": "List HID Devices"
+    },
+    {
+      "id": "start_listen",
+      "label": "Start Listening"
+    },
+    {
+      "id": "stop_listen",
+      "label": "Stop Listening"
+    }
+  ]
+}

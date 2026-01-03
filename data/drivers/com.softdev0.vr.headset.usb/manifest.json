@@ -1,0 +1,29 @@
+{
+  "id": "com.softdev0.vr.headset.usb",
+  "name": "VR Headset USB Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton VR driver; real integration via OpenXR runtime/SDK.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "usb",
+  "category": "vr",
+  "permissions": [
+    "hardware.usb",
+    "media.video",
+    "os.input_control",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

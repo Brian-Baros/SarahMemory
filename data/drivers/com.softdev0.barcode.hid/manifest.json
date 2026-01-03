@@ -1,0 +1,28 @@
+{
+  "id": "com.softdev0.barcode.hid",
+  "name": "Barcode Scanner HID Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton HID barcode scanner driver (optional hidapi bindings).",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "hid",
+  "category": "barcode",
+  "permissions": [
+    "hardware.usb",
+    "os.input_control",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

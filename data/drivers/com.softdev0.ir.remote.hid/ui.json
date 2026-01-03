@@ -1,0 +1,59 @@
+{
+  "title": "IR Remote Receiver HID Driver",
+  "sections": [
+    {
+      "id": "device",
+      "title": "Receiver",
+      "fields": [
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID (hex)",
+          "type": "string",
+          "placeholder": "0xXXXX"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID (hex)",
+          "type": "string",
+          "placeholder": "0xXXXX"
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "mapping",
+      "title": "Button Mapping",
+      "fields": [
+        {
+          "key": "map_file",
+          "label": "Mapping JSON path",
+          "type": "string",
+          "placeholder": "../data/drivers/.../keymap.json"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "list_hid",
+      "label": "List HID Devices"
+    },
+    {
+      "id": "start_listen",
+      "label": "Start Listening"
+    },
+    {
+      "id": "stop_listen",
+      "label": "Stop Listening"
+    }
+  ]
+}

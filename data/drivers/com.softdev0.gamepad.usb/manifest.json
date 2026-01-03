@@ -1,0 +1,28 @@
+{
+  "id": "com.softdev0.gamepad.usb",
+  "name": "Game Controller USB Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton gamepad driver.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "usb",
+  "category": "gamepad",
+  "permissions": [
+    "hardware.usb",
+    "os.input_control",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

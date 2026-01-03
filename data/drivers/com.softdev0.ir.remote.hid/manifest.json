@@ -1,0 +1,27 @@
+{
+  "id": "com.softdev0.ir.remote.hid",
+  "name": "IR Remote Receiver HID Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton IR remote via HID; many receivers emulate keyboards.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "hid",
+  "category": "ir",
+  "permissions": [
+    "hardware.usb",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

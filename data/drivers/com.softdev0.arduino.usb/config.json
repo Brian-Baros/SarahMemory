@@ -1,0 +1,12 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "auto_detect_port": true,
+  "port": "",
+  "baud": 115200,
+  "fqbn": "arduino:avr:uno",
+  "arduino_cli_path": "arduino-cli",
+  "sketch_dir": "../data/sandbox/arduino",
+  "require_confirm_upload": true,
+  "upload_rate_limit_sec": 10
+}

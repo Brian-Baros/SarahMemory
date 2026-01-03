@@ -1,0 +1,65 @@
+{
+  "title": "MIDI USB Driver",
+  "sections": [
+    {
+      "id": "device",
+      "title": "Device",
+      "fields": [
+        {
+          "key": "auto_detect",
+          "label": "Auto-detect MIDI device",
+          "type": "bool"
+        },
+        {
+          "key": "input_name",
+          "label": "MIDI Input Name",
+          "type": "string",
+          "placeholder": "Your MIDI Keyboard"
+        },
+        {
+          "key": "output_name",
+          "label": "MIDI Output Name",
+          "type": "string",
+          "placeholder": "Your Synth/Device"
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "throttle_ms",
+          "label": "Event throttle (ms)",
+          "type": "int",
+          "min": 0,
+          "max": 2000
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "list_devices",
+      "label": "List MIDI Devices"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    }
+  ]
+}

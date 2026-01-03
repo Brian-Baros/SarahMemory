@@ -1,0 +1,28 @@
+{
+  "id": "com.softdev0.rfid.serial",
+  "name": "RFID Reader/Writer Serial Driver",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Skeleton serial RFID driver; protocol is reader-specific.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "serial",
+  "category": "rfid",
+  "permissions": [
+    "hardware.serial",
+    "hardware.usb",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

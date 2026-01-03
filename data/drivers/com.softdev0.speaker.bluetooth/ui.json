@@ -1,0 +1,66 @@
+{
+  "title": "Bluetooth Speaker/Soundbar Driver",
+  "sections": [
+    {
+      "id": "connection",
+      "title": "Bluetooth Audio",
+      "fields": [
+        {
+          "key": "device_name",
+          "label": "Device name",
+          "type": "string",
+          "placeholder": "Soundbar"
+        },
+        {
+          "key": "device_mac",
+          "label": "MAC (optional)",
+          "type": "string",
+          "placeholder": "AA:BB:CC:DD:EE:FF"
+        }
+      ]
+    },
+    {
+      "id": "controls",
+      "title": "Controls",
+      "fields": [
+        {
+          "key": "volume_step",
+          "label": "Volume step (%)",
+          "type": "int",
+          "min": 1,
+          "max": 20
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan_bt",
+      "label": "Scan Bluetooth"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "set_volume",
+      "label": "Set Volume"
+    }
+  ]
+}

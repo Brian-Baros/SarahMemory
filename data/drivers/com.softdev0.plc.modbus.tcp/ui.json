@@ -1,0 +1,73 @@
+{
+  "title": "PLC Modbus/TCP Driver",
+  "sections": [
+    {
+      "id": "target",
+      "title": "PLC Target",
+      "fields": [
+        {
+          "key": "host",
+          "label": "Host/IP",
+          "type": "string",
+          "placeholder": "192.168.1.50"
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "int",
+          "min": 1,
+          "max": 65535
+        },
+        {
+          "key": "unit_id",
+          "label": "Unit ID",
+          "type": "int",
+          "min": 0,
+          "max": 255
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "read_only",
+          "label": "Read-only mode",
+          "type": "bool"
+        },
+        {
+          "key": "timeout_sec",
+          "label": "Timeout (sec)",
+          "type": "int",
+          "min": 1,
+          "max": 60
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "read_registers",
+      "label": "Read Registers"
+    },
+    {
+      "id": "write_register",
+      "label": "Write Register"
+    }
+  ]
+}

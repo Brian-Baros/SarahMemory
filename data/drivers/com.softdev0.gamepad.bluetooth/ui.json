@@ -1,0 +1,53 @@
+{
+  "title": "Game Controller Bluetooth Driver",
+  "sections": [
+    {
+      "id": "connection",
+      "title": "Bluetooth",
+      "fields": [
+        {
+          "key": "device_name",
+          "label": "Device name",
+          "type": "string",
+          "placeholder": "DualShock 4"
+        },
+        {
+          "key": "device_mac",
+          "label": "MAC (optional)",
+          "type": "string",
+          "placeholder": "AA:BB:CC:DD:EE:FF"
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "scan_bt",
+      "label": "Scan Bluetooth"
+    },
+    {
+      "id": "pair_connect",
+      "label": "Pair/Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    }
+  ]
+}

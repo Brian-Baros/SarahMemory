@@ -1,0 +1,29 @@
+{
+  "id": "com.softdev0.arduino.usb",
+  "name": "Arduino USB Driver (Uno R3 / AVR)",
+  "type": "driver",
+  "version": "0.1.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Compile/upload Arduino sketches over USB using arduino-cli.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "windows",
+    "linux",
+    "mac"
+  ],
+  "transport": "usb/serial",
+  "category": "microcontroller",
+  "permissions": [
+    "hardware.usb",
+    "hardware.serial",
+    "filesystem.write_local",
+    "os.process_control"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

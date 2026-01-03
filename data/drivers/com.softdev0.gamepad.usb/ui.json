@@ -1,0 +1,53 @@
+{
+  "title": "Game Controller USB Driver",
+  "sections": [
+    {
+      "id": "device",
+      "title": "Controller",
+      "fields": [
+        {
+          "key": "backend",
+          "label": "Backend",
+          "type": "string",
+          "placeholder": "inputs/pygame"
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "mapping",
+      "title": "Mapping",
+      "fields": [
+        {
+          "key": "profile",
+          "label": "Profile name",
+          "type": "string",
+          "placeholder": "default"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "list_controllers",
+      "label": "List Controllers"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    }
+  ]
+}

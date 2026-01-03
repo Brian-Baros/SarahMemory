@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "host": "",
+  "port": 502,
+  "unit_id": 1,
+  "read_only": true,
+  "timeout_sec": 5
+}

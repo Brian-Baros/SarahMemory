@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "runtime": "OpenXR",
+  "allow_pose_tracking": true
+}

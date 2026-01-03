@@ -1,0 +1,52 @@
+{
+  "title": "VR Headset USB Driver",
+  "sections": [
+    {
+      "id": "device",
+      "title": "VR Headset",
+      "fields": [
+        {
+          "key": "runtime",
+          "label": "Runtime",
+          "type": "string",
+          "placeholder": "OpenXR"
+        },
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "safety",
+      "title": "Safety",
+      "fields": [
+        {
+          "key": "allow_pose_tracking",
+          "label": "Allow pose tracking",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "detect",
+      "label": "Detect Headset"
+    },
+    {
+      "id": "start",
+      "label": "Start Runtime"
+    },
+    {
+      "id": "stop",
+      "label": "Stop Runtime"
+    }
+  ]
+}
