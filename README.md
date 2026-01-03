@@ -4,11 +4,13 @@
 **Author:** Brian Lee Baros  
 **License:** © 2025 Brian Lee Baros. All Rights Reserved.
 ---
-#SarahMemory is a decentralized AI operating system
-#that can connect to, compete with, or replace
-#any decentralized AI network — at the user’s choice.
+# SarahMemory is a decentralized AI operating system
+# that can connect to, compete with, or replace
+# any decentralized AI network — at the user’s choice.
+---
 
-**Author Random Thoughts...The Thinking outloud Manifesto...
+** Author Random Thoughts...The Thinking outloud Manifesto...
+
 ?In a Jimmy Neutron Voice ---"Think , Think... , Think.... BRAIN BLAST!", and Spongebob ---"IMAGINATION".
 ?Can a Machine Dream?
 ?All this talk about AI everywhere, Where Do I fit in at?
