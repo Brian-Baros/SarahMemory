@@ -1,0 +1,42 @@
+{
+  "id": "sm_ai_os_default_softpack",
+  "name": "SarahMemory AiOS Default SoftPack",
+  "type": "addon_bundle",
+  "version": "0.1.0",
+  "description": "Baseline cross-platform software integrations: OS-default open/reveal, light software scanner, and capability router. Designed to work even when SystemLearn/registry ingest has not been run.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "includes": [
+    {
+      "path": "providers/os_default",
+      "kind": "provider",
+      "capabilities": [
+        "web.open_url",
+        "file.open",
+        "file.open_folder",
+        "file.reveal",
+        "mail.open"
+      ]
+    },
+    {
+      "path": "scanners/software_scanner_light",
+      "kind": "scanner",
+      "capabilities": [
+        "software.scan"
+      ]
+    },
+    {
+      "path": "router/capability_router",
+      "kind": "router",
+      "capabilities": [
+        "capability.route"
+      ]
+    }
+  ],
+  "notes": [
+    "All sub-addons live inside this bundle directory (no com.softdev0.* naming) to avoid confusion with Drivers.",
+    "Addon loader should support bundles by scanning subfolders for manifest.json + addon.py and registering each as a callable unit."
+  ]
+}

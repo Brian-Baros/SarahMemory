@@ -1,0 +1,18 @@
+{
+  "id": "softpack.provider.os_default",
+  "name": "OS Default Provider",
+  "type": "addon",
+  "version": "1.0.0",
+  "description": "Cross-platform baseline provider that opens URLs/files with the user's OS default application.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "permissions": [
+    "os.open_default_app"
+  ],
+  "entry": {
+    "module": "addon",
+    "callable": "addon_init"
+  }
+}

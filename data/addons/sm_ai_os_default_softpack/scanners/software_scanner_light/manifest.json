@@ -1,0 +1,19 @@
+{
+  "id": "softpack.scanner.software_light",
+  "name": "Light Software Scanner",
+  "type": "addon",
+  "version": "1.0.0",
+  "description": "Detects common browsers/media/office apps without full registry ingestion; writes a small cache to data/registry/software_index.json.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "permissions": [
+    "filesystem.write_local",
+    "os.process_control"
+  ],
+  "entry": {
+    "module": "addon",
+    "callable": "addon_init"
+  }
+}

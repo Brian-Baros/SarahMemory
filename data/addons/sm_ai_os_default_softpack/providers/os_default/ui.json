@@ -1,0 +1,43 @@
+{
+  "title": "OS Default Provider",
+  "sections": [
+    {
+      "id": "about",
+      "title": "About",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "web.open_url",
+      "label": "Open URL (default browser)"
+    },
+    {
+      "id": "file.open",
+      "label": "Open File (default app)"
+    },
+    {
+      "id": "file.reveal",
+      "label": "Reveal File"
+    },
+    {
+      "id": "mail.open",
+      "label": "Open Mail Composer"
+    }
+  ]
+}

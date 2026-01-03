@@ -1,0 +1,18 @@
+{
+  "id": "softpack.router.capability",
+  "name": "Capability Router",
+  "type": "addon",
+  "version": "1.0.0",
+  "description": "DB-first then cache then OS-default routing decisions for common capabilities.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "permissions": [
+    "filesystem.read_local"
+  ],
+  "entry": {
+    "module": "addon",
+    "callable": "addon_init"
+  }
+}

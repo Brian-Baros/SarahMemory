@@ -1,0 +1,31 @@
+{
+  "title": "Light Software Scanner",
+  "sections": [
+    {
+      "id": "scan",
+      "title": "Scan Options",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "software.scan",
+      "label": "Run Scan"
+    },
+    {
+      "id": "ping",
+      "label": "Ping"
+    }
+  ]
+}

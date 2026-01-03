@@ -1,0 +1,31 @@
+{
+  "title": "Capability Router",
+  "sections": [
+    {
+      "id": "router",
+      "title": "Router",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "capability.route",
+      "label": "Route Capability"
+    },
+    {
+      "id": "ping",
+      "label": "Ping"
+    }
+  ]
+}
