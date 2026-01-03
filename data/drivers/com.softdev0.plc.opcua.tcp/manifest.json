@@ -1,0 +1,108 @@
+{
+  "id": "com.softdev0.plc.opcua.tcp",
+  "name": "PLC OPC UA Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "connection",
+      "title": "OPC UA Connection",
+      "fields": [
+        {
+          "key": "endpoint",
+          "label": "Endpoint URL",
+          "type": "string",
+          "placeholder": "opc.tcp://192.168.1.10:4840"
+        },
+        {
+          "key": "security_mode",
+          "label": "Security Mode",
+          "type": "string",
+          "placeholder": "None|Sign|SignAndEncrypt"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "P",
+    "L",
+    "C",
+    " ",
+    "c",
+    "o",
+    "n",
+    "n",
+    "e",
+    "c",
+    "t",
+    "i",
+    "v",
+    "i",
+    "t",
+    "y",
+    " ",
+    "o",
+    "v",
+    "e",
+    "r",
+    " ",
+    "O",
+    "P",
+    "C",
+    " ",
+    "U",
+    "A",
+    " ",
+    "(",
+    "c",
+    "l",
+    "i",
+    "e",
+    "n",
+    "t",
+    ")",
+    "."
+  ],
+  "permissions": [
+    "network.outbound",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

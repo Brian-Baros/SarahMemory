@@ -1,0 +1,146 @@
+{
+  "id": "com.softdev0.smartdevice.mqtt.tcp",
+  "name": "Smart Device MQTT Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "broker",
+      "title": "Broker",
+      "fields": [
+        {
+          "key": "host",
+          "label": "MQTT Host",
+          "type": "string",
+          "placeholder": "192.168.1.2"
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "int",
+          "min": 1,
+          "max": 65535
+        },
+        {
+          "key": "username",
+          "label": "Username",
+          "type": "string"
+        },
+        {
+          "key": "password",
+          "label": "Password",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "topics",
+      "title": "Topics",
+      "fields": [
+        {
+          "key": "base_topic",
+          "label": "Base Topic",
+          "type": "string",
+          "placeholder": "home/sarahmemory"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "M",
+    "Q",
+    "T",
+    "T",
+    "-",
+    "b",
+    "a",
+    "s",
+    "e",
+    "d",
+    " ",
+    "s",
+    "m",
+    "a",
+    "r",
+    "t",
+    " ",
+    "d",
+    "e",
+    "v",
+    "i",
+    "c",
+    "e",
+    "s",
+    " ",
+    "(",
+    "l",
+    "i",
+    "g",
+    "h",
+    "t",
+    "s",
+    ",",
+    " ",
+    "s",
+    "e",
+    "n",
+    "s",
+    "o",
+    "r",
+    "s",
+    ",",
+    " ",
+    "s",
+    "w",
+    "i",
+    "t",
+    "c",
+    "h",
+    "e",
+    "s",
+    ")",
+    "."
+  ],
+  "permissions": [
+    "network.outbound",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

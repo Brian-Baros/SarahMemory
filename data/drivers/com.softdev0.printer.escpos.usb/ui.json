@@ -1,0 +1,24 @@
+{
+  "title": "ESC/POS Receipt Printer Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "print_test",
+      "label": "Print Test Page"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "vendor_id": "",
+    "product_id": "",
+    "interface": 0
+  }
+}

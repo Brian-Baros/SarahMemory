@@ -1,0 +1,128 @@
+{
+  "id": "com.softdev0.printer.escpos.usb",
+  "name": "ESC/POS Receipt Printer Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "device",
+      "title": "Device",
+      "fields": [
+        {
+          "key": "vendor_id",
+          "label": "USB Vendor ID (hex)",
+          "type": "string",
+          "placeholder": "0x0416"
+        },
+        {
+          "key": "product_id",
+          "label": "USB Product ID (hex)",
+          "type": "string",
+          "placeholder": "0x5011"
+        },
+        {
+          "key": "interface",
+          "label": "Interface #",
+          "type": "int",
+          "min": 0,
+          "max": 5
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "E",
+    "S",
+    "C",
+    "/",
+    "P",
+    "O",
+    "S",
+    " ",
+    "c",
+    "o",
+    "m",
+    "p",
+    "a",
+    "t",
+    "i",
+    "b",
+    "l",
+    "e",
+    " ",
+    "U",
+    "S",
+    "B",
+    " ",
+    "r",
+    "e",
+    "c",
+    "e",
+    "i",
+    "p",
+    "t",
+    " ",
+    "p",
+    "r",
+    "i",
+    "n",
+    "t",
+    "e",
+    "r",
+    "s",
+    " ",
+    "(",
+    "t",
+    "h",
+    "e",
+    "r",
+    "m",
+    "a",
+    "l",
+    ")",
+    "."
+  ],
+  "permissions": [
+    "hardware.usb",
+    "filesystem.write_local",
+    "os.process_control"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

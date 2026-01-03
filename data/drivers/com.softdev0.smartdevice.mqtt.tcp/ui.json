@@ -1,0 +1,26 @@
+{
+  "title": "Smart Device MQTT Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "publish_test",
+      "label": "Publish Test"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "host": "",
+    "port": 1883,
+    "username": "",
+    "password": "",
+    "base_topic": "home/sarahmemory"
+  }
+}

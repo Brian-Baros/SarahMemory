@@ -1,0 +1,19 @@
+{
+  "title": "Z-Wave USB Controller Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "port": "",
+    "baud": 115200
+  }
+}

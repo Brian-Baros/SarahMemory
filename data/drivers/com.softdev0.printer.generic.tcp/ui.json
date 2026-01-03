@@ -1,0 +1,20 @@
+{
+  "title": "Generic Network Printer Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "host": "",
+    "port": 9100,
+    "mode": "raw_tcp"
+  }
+}

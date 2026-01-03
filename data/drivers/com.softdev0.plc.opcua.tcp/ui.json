@@ -1,0 +1,23 @@
+{
+  "title": "PLC OPC UA Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "browse",
+      "label": "Browse Nodes"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "endpoint": "",
+    "security_mode": "None"
+  }
+}

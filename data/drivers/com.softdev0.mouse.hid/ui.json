@@ -1,0 +1,19 @@
+{
+  "title": "Mouse HID Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": false,
+    "autoload": false,
+    "capture_mode": "listen",
+    "device_filter": ""
+  }
+}

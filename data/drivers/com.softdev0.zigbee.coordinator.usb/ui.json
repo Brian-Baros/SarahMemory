@@ -1,0 +1,20 @@
+{
+  "title": "Zigbee Coordinator Driver",
+  "sections": [
+    {
+      "id": "ping",
+      "label": "Ping"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "port": "",
+    "baud": 115200,
+    "stack": "zigbee2mqtt"
+  }
+}

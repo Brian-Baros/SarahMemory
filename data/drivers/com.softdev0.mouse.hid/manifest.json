@@ -1,0 +1,135 @@
+{
+  "id": "com.softdev0.mouse.hid",
+  "name": "Mouse HID Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "device",
+      "title": "Device",
+      "fields": [
+        {
+          "key": "capture_mode",
+          "label": "Capture Mode",
+          "type": "string",
+          "placeholder": "listen|exclusive"
+        },
+        {
+          "key": "device_filter",
+          "label": "Device Filter (optional)",
+          "type": "string",
+          "placeholder": "VID:PID or name"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "H",
+    "I",
+    "D",
+    " ",
+    "m",
+    "o",
+    "u",
+    "s",
+    "e",
+    " ",
+    "m",
+    "o",
+    "n",
+    "i",
+    "t",
+    "o",
+    "r",
+    "i",
+    "n",
+    "g",
+    "/",
+    "m",
+    "a",
+    "p",
+    "p",
+    "i",
+    "n",
+    "g",
+    " ",
+    "(",
+    "r",
+    "e",
+    "q",
+    "u",
+    "i",
+    "r",
+    "e",
+    "s",
+    " ",
+    "s",
+    "t",
+    "r",
+    "i",
+    "c",
+    "t",
+    " ",
+    "p",
+    "e",
+    "r",
+    "m",
+    "i",
+    "s",
+    "s",
+    "i",
+    "o",
+    "n",
+    " ",
+    "g",
+    "a",
+    "t",
+    "i",
+    "n",
+    "g",
+    ")",
+    "."
+  ],
+  "permissions": [
+    "hardware.hid",
+    "os.input_control"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "id": "com.softdev0.printer.generic.tcp",
+  "name": "Generic Network Printer Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "connection",
+      "title": "Connection",
+      "fields": [
+        {
+          "key": "host",
+          "label": "Printer Host/IP",
+          "type": "string",
+          "placeholder": "192.168.1.50"
+        },
+        {
+          "key": "port",
+          "label": "Port",
+          "type": "int",
+          "min": 1,
+          "max": 65535
+        },
+        {
+          "key": "mode",
+          "label": "Mode",
+          "type": "string",
+          "placeholder": "raw_tcp|ipp|lpr"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "r",
+    "a",
+    "w",
+    " ",
+    "T",
+    "C",
+    "P",
+    "/",
+    "I",
+    "P",
+    "P",
+    "/",
+    "L",
+    "P",
+    "R",
+    " ",
+    "n",
+    "e",
+    "t",
+    "w",
+    "o",
+    "r",
+    "k",
+    " ",
+    "p",
+    "r",
+    "i",
+    "n",
+    "t",
+    "e",
+    "r",
+    "s",
+    ";",
+    " ",
+    "c",
+    "h",
+    "o",
+    "o",
+    "s",
+    "e",
+    " ",
+    "m",
+    "o",
+    "d",
+    "e",
+    " ",
+    "p",
+    "e",
+    "r",
+    " ",
+    "d",
+    "e",
+    "v",
+    "i",
+    "c",
+    "e",
+    "."
+  ],
+  "permissions": [
+    "network.outbound",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}

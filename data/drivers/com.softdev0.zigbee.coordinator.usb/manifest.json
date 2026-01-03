@@ -1,0 +1,136 @@
+{
+  "id": "com.softdev0.zigbee.coordinator.usb",
+  "name": "Zigbee Coordinator Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": [
+    {
+      "id": "connection",
+      "title": "Connection",
+      "fields": [
+        {
+          "key": "port",
+          "label": "Serial Port",
+          "type": "string",
+          "placeholder": "COM6"
+        },
+        {
+          "key": "baud",
+          "label": "Baud",
+          "type": "int",
+          "min": 1200,
+          "max": 2000000
+        },
+        {
+          "key": "stack",
+          "label": "Stack",
+          "type": "string",
+          "placeholder": "zigbee2mqtt|deconz"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "title": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": [
+    "S",
+    "k",
+    "e",
+    "l",
+    "e",
+    "t",
+    "o",
+    "n",
+    " ",
+    "f",
+    "o",
+    "r",
+    " ",
+    "Z",
+    "i",
+    "g",
+    "b",
+    "e",
+    "e",
+    " ",
+    "c",
+    "o",
+    "o",
+    "r",
+    "d",
+    "i",
+    "n",
+    "a",
+    "t",
+    "o",
+    "r",
+    "s",
+    " ",
+    "(",
+    "e",
+    ".",
+    "g",
+    ".",
+    ",",
+    " ",
+    "C",
+    "C",
+    "2",
+    "6",
+    "5",
+    "2",
+    "/",
+    "C",
+    "o",
+    "n",
+    "B",
+    "e",
+    "e",
+    ")",
+    " ",
+    "o",
+    "v",
+    "e",
+    "r",
+    " ",
+    "U",
+    "S",
+    "B",
+    " ",
+    "s",
+    "e",
+    "r",
+    "i",
+    "a",
+    "l",
+    "."
+  ],
+  "permissions": [
+    "hardware.usb",
+    "hardware.serial",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  }
+}
