@@ -2,7 +2,7 @@
 File: SarahMemoryADDONLCHR.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2026-01-03
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -64,7 +64,22 @@ class AddonLauncher:
         self.addon3_button = ttk.Button(self.addons_window, text="Shutdown all Add-ons", command=self.addon3_SHUTDOWNADDONS)
         self.addon3_button.pack(pady=10)
 
+
+    def close_addons(self):
+        # Close any open add-on windows safely
+        try:
+            if self.launch_window:
+                self.launch_window.destroy()
+        except Exception:
+            pass
+        try:
+            if self.addons_window:
+                self.addons_window.destroy()
+        except Exception:
+            pass
+
     def refresh_addon_list(self):
+
         addon_base = ADDONS_DIR
         os.makedirs(addon_base, exist_ok=True)
 
@@ -263,11 +278,17 @@ class AddonLauncher:
             if not os.path.isfile(path):
                 return None
             with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                return json.load(f)
+                man = json.load(f)
+            # Normalize: accept both old schema (addon_id/entrypoint) and new schema (id/entry)
+            if isinstance(man, dict):
+                if "addon_id" not in man and "id" in man:
+                    man["addon_id"] = man.get("id")
+                if "entrypoint" not in man and "entry" in man:
+                    man["entrypoint"] = man.get("entry")
+            return man
         except Exception as e:
             log_gui_event("Addon Manifest Read Failed", str(e))
             return None
-
     def _addon_exec_mode_from_manifest(self, manifest: dict) -> str:
         """
         Decide execution mode.
@@ -351,11 +372,67 @@ class AddonLauncher:
         if not manifest:
             raise ValueError("manifest.json missing or invalid.")
 
+        mtype = (manifest.get("type") or "").strip().lower()
+        if mtype == "addon_bundle":
+            self._launch_manifest_bundle(addon_root, manifest)
+            return
+
         mode = self._addon_exec_mode_from_manifest(manifest)
         if mode == "inprocess":
             self._launch_manifest_inprocess(addon_root, manifest)
         else:
             self._launch_manifest_subprocess(addon_root, manifest)
+
+    def _launch_manifest_bundle(self, bundle_root: str, manifest: dict):
+        """Load an addon bundle (e.g., sm_ai_os_default_softpack) by loading each included sub-addon."""
+        bundle_id = (manifest.get("addon_id") or os.path.basename(bundle_root)).strip()
+        includes = (manifest.get("includes") or [])
+        loaded_children = []
+
+        if not isinstance(includes, list) or not includes:
+            raise ValueError("Bundle manifest has no 'includes' entries.")
+
+        # Record the bundle itself as loaded so the UI can tag it as Loaded
+        self.loaded_manifest_addons[bundle_id] = {
+            "manifest": manifest,
+            "hooks": {},
+            "context": {
+                "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
+                "addon_path": bundle_root,
+                "run_mode": getattr(config, "RUN_MODE", "local"),
+                "device_mode": getattr(config, "DEVICE_MODE", "local_agent"),
+            },
+            "mode": "bundle",
+            "children": [],
+        }
+
+        for inc in includes:
+            try:
+                rel = (inc or {}).get("path") or ""
+                sub_root = os.path.join(bundle_root, rel)
+                sub_man = self._read_manifest(sub_root)
+                if not sub_man:
+                    continue
+
+                mode = self._addon_exec_mode_from_manifest(sub_man)
+                if mode == "inprocess":
+                    self._launch_manifest_inprocess(sub_root, sub_man)
+                else:
+                    self._launch_manifest_subprocess(sub_root, sub_man)
+
+                sub_id = (sub_man.get("addon_id") or os.path.basename(sub_root)).strip()
+                loaded_children.append(sub_id)
+            except Exception as e:
+                log_gui_event("Addon Bundle Child Load Failed", f"{bundle_id}: {e}")
+                continue
+
+        try:
+            self.loaded_manifest_addons[bundle_id]["children"] = loaded_children
+        except Exception:
+            pass
+
+        log_gui_event("Addon Bundle Loaded", f"{manifest.get('name', bundle_id)} ({len(loaded_children)} included)")
+        messagebox.showinfo("Add-on Bundle Loaded", f"{manifest.get('name', bundle_id)}\nLoaded {len(loaded_children)} included add-ons.")
 
     def _launch_manifest_inprocess(self, addon_root: str, manifest: dict):
         entry = (manifest or {}).get("entrypoint") or {}
@@ -377,9 +454,10 @@ class AddonLauncher:
         context = {
             "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
             "addon_path": addon_root,
-            "permissions": (manifest.get("permissions") or {}),
+            "permissions": (manifest.get("permissions") or manifest.get("permission") or manifest.get("capabilities") or []),
             "run_mode": getattr(config, "RUN_MODE", "local"),
             "device_mode": getattr(config, "DEVICE_MODE", "local_agent"),
+            "data_dir": getattr(config, "DATA_DIR", os.path.join(BASE_DIR, "data")),
         }
 
         hooks = fn(context) or {}
@@ -392,7 +470,6 @@ class AddonLauncher:
 
         log_gui_event("Addon Loaded", f"{manifest.get('name', addon_id)} v{manifest.get('version','')}")
         messagebox.showinfo("Add-on Loaded", f"{manifest.get('name', addon_id)} is now active (in-process).")
-
     def _launch_manifest_subprocess(self, addon_root: str, manifest: dict):
         entry = (manifest or {}).get("entrypoint") or {}
         module_name = (entry.get("module") or "").strip()
@@ -410,21 +487,25 @@ class AddonLauncher:
         ctx = {
             "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
             "addon_path": addon_root,
-            "permissions": (manifest.get("permissions") or {}),
+            "permissions": (manifest.get("permissions") or manifest.get("permission") or manifest.get("capabilities") or []),
             "run_mode": getattr(config, "RUN_MODE", "local"),
             "device_mode": getattr(config, "DEVICE_MODE", "local_agent"),
+            "data_dir": getattr(config, "DATA_DIR", os.path.join(BASE_DIR, "data")),
         }
         import json
         ctx_json = json.dumps(ctx)
 
+
+        safe_root = addon_root.replace("\\", "\\\\")
         code = (
             "import json,sys; "
-            "sys.path.insert(0, r\"%s\"); " % addon_root.replace('\\', '\\\\') +
+            f"sys.path.insert(0, r\"{safe_root}\"); "
             f"m=__import__('{module_name}'); "
             f"fn=getattr(m,'{callable_name}',None); "
             "ctx=json.loads(sys.argv[1]); "
             "fn(ctx) if callable(fn) else None"
         )
+
 
         proc = subprocess.Popen(
             [python_executable, "-c", code, ctx_json],
@@ -437,12 +518,6 @@ class AddonLauncher:
 
         log_gui_event("Addon Launch", f"{manifest.get('name', addon_id)} launched (subprocess)")
         messagebox.showinfo("Add-on Launched", f"{manifest.get('name', addon_id)} is now running (subprocess).")
-def close_addons(self):
-        if self.launch_window:
-            self.launch_window.destroy()
-        if self.addons_window:
-            self.addons_window.destroy()
-
 # ====================================================================
-# END OF SarahMemoryADDONLCHR.py v8.0.0
+# END OF SarahMemoryAdvCU.py v8.0.0
 # ====================================================================
