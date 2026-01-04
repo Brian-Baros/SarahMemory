@@ -1,0 +1,24 @@
+{
+  "mode": "CLOUD_LAN",
+  "cloud": {
+    "enabled": true,
+    "rendezvous_base": "https://api.sarahmemory.com",
+    "health_path": "/api/health",
+    "timeout_ms": 2500,
+    "presence_ttl_sec": 600
+  },
+  "lan": {
+    "enabled": true,
+    "auto_discovery": true
+  },
+  "fallback": {
+    "on_no_internet": true,
+    "fallback_to_lan": true,
+    "fallback_to_off": true
+  },
+  "last_resolved": {
+    "effective_mode": "OFF",
+    "reason": "not_resolved_yet",
+    "ts": null
+  }
+}

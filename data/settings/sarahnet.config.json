@@ -1,0 +1,13 @@
+{
+  "node_id": "node-A",
+  "bind_host": "0.0.0.0",
+  "bind_port": 9876,
+  "peers": {
+    "node-B": ["192.168.1.42", 9876],
+    "node-C": ["10.0.0.8",  9876]
+  },
+  "rps": 30,
+  "burst": 60,
+  "prefer_tcp": true,
+  "allow_udp": true
+}

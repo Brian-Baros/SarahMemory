@@ -7,5 +7,9 @@
     "avatar_file": "avatar.jpg",
     "engine_selection": "Microsoft3DViewer",
     "theme": "Light_Theme.css",
-    "speech_rate": "Normal"
+    "speech_rate": "Normal",
+    "custom_voices": {
+        "Carter (man)": "en-Carter_man.pt",
+        "Emma (woman)": "en-Emma_woman.pt"
+    }
 }
