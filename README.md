@@ -1,4 +1,4 @@
-** SarahMemory AI Platform**
+## ** SarahMemory AI Platform**
 * Version:** 8.0.0  
 * Release Date:** December 05, 2025  
 * Last Updated:** January 04, 2026  
@@ -7,7 +7,7 @@
 
 ---
 
-## 🚀 Vision: Decentralized Intelligence, Owned by the User
+ 🚀 Vision: Decentralized Intelligence, Owned by the User
 
 **SarahMemory** is a **local-first, decentralized AI Operating System** designed to return ownership, control, and autonomy to the individual.
 
@@ -26,7 +26,7 @@ https://github.com/Brian-Baros/SarahMemory
 
 ---
 
-## ❓ Why SarahMemory Exists
+ ❓ Why SarahMemory Exists
 
 Modern AI systems share common problems:
 
@@ -39,7 +39,7 @@ Modern AI systems share common problems:
 
 **SarahMemory was built to solve all of these.**
 
-### Core Principles
+ Core Principles
 - **User Sovereignty** — You own your data, memory, models, and logic  
 - **Persistent Memory** — Local databases that evolve over time  
 - **Transparency** — Inspectable, modifiable, open architecture  
@@ -48,7 +48,7 @@ Modern AI systems share common problems:
 
 ---
 
-## 🧠 The Thinking-Out-Loud Manifesto
+ 🧠 The Thinking-Out-Loud Manifesto
 
 > *“I wanted something like Jarvis or Tron — an AI that helps rather than controls.”*
 
@@ -66,7 +66,7 @@ SarahMemory is my answer to centralized AI dominance — a system that respects 
 
 ---
 
-## 🛠️ What SarahMemory Is
+ 🛠️ What SarahMemory Is
 
 SarahMemory is a **next-generation AI Companion & Operating System Platform** capable of:
 
@@ -76,7 +76,7 @@ SarahMemory is a **next-generation AI Companion & Operating System Platform** ca
 - Operating offline or online
 - Integrating voice, vision, automation, and media
 
-### Included Capabilities
+ Included Capabilities
 - AI Avatar UI (2D / 3D)
 - Built-in voice recognition & TTS
 - Smart system commands (`"show me"`, automation triggers)
@@ -89,7 +89,7 @@ SarahMemory is a **next-generation AI Companion & Operating System Platform** ca
 
 ---
 
-## ⚖️ Feature Comparison
+ ⚖️ Feature Comparison
 
 | Capability | SarahMemory | Big Tech AI |
 |---------|-------------|------------|
@@ -102,11 +102,11 @@ SarahMemory is a **next-generation AI Companion & Operating System Platform** ca
 
 ---
 
-## 📁 Project Structure
+ 📁 Project Structure
 
 ---
 
-## Structure
+ Structure
 ```
 SarahMemory/
 ├── /                     # Main AI files and tools to be placed in C:\SarahMemory>
@@ -117,7 +117,7 @@ SarahMemory/
 
 ---
 
-## ⚡ Quickstart (Beginner-Friendly)
+ ⚡ Quickstart (Beginner-Friendly)
 1.  Clone or download the repository. 
      it will want to save as 'sarahmemory-main.zip' okay or  Save as SarahMemory.zip
      EXTRACT FILE CONTENTS, I suggest 7-ZIP to a seperate (256 gb minimum) 
@@ -185,11 +185,7 @@ SarahMemoryGlobals.py
 ---
 
 
-
-
-
-
-WHAT MAKES THE SARAHMEMORY PROJECT UNIQUE. 
+ WHAT MAKES THE SARAHMEMORY PROJECT UNIQUE. 
 
 1. Multi-Device AI Agent OS The SarahMemory plan includes: · Legacy tablets (Galaxy Tab 4) · Phones · Laptops · Desktops · Browser UI · Cloud Web UI · Server backend · LAN offload nodes No other open-source project does this. SarahMemory is becoming universal. ---
 2. Full Communications Stack (Telephony + SIP + WebRTC) SarahMemory merging: · Phone dialer · SIP/IP calling · WebRTC video · Messenger · Contacts · Reminders · Redial + call history · Missed call badge logic That’s literally an AI-powered communication suite. ---
