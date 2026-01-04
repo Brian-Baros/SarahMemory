@@ -1,9 +1,9 @@
 # SarahMemory AI Platform
 ** Version:** 8.0.0
-** Release Date:** December 05, 2025
-** Last Updated:** January 04, 2026
-** Author:** Brian Lee Baros
-** License:** © 2025 Brian Lee Baros. All Rights Reserved.
+** Release Date: ** December 05, 2025
+** Last Updated: ** January 04, 2026
+** Author: ** Brian Lee Baros
+** License: ** © 2025 Brian Lee Baros. All Rights Reserved.
 
 ---
 
