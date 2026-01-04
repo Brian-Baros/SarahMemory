@@ -1,4 +1,4 @@
-## ** SarahMemory AI Platform**
+## ** SarahMemory AI Operating System (AiOS) Platform**
 * Version:** 8.0.0  
 * Release Date:** December 05, 2025  
 * Last Updated:** January 04, 2026  
