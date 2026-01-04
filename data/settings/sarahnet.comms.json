@@ -20,5 +20,13 @@
     "effective_mode": "OFF",
     "reason": "not_resolved_yet",
     "ts": null
+  },
+  "persona": {
+    "screen_name": "USERNAME",
+    "avatar_name": "YOUR AVATAR NAME",
+    "status": "Online",
+    "discoverable": true,
+    "allow_inbound_from": "TRUSTED_ONLY"
   }
 }
+
