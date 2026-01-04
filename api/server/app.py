@@ -23,6 +23,7 @@
 
 from __future__ import annotations
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
+from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, session
 # --- Flask CORS (safe import for CLI testing & WSGI) ---
@@ -334,7 +335,7 @@ def _globals_paths():
         return _cached_globals_paths
 
     # Defaults (work on PythonAnywhere / headless Linux too)
-    root_dir = os.path.abspath(os.getcwd())
+    root_dir = os.path.abspath(Path(__file__).resolve().parents[2])  # v800 patch: stable BASE_DIR
     data_dir = os.path.join(root_dir, "data")
     sandbox_dir = os.path.join(root_dir, "sandbox")
     addons_dir = os.path.join(data_dir, "addons")
@@ -915,48 +916,61 @@ def api_leaderboard():
 
 def _perform_health_checks():
     """
-    Quick, safe checks for: DB availability, core modules importability, and basic config sanity.
-    Designed to run fast at boot and via /api/health.
+    Fast + safe health checks.
+
+    Returns: (ok: bool, notes: list[str], main_running: bool)
+
+    Notes are short machine-readable strings so the UI / SarahNet rendezvous can decide
+    whether to fall back (CLOUD/LAN/OFF) without crashing the API.
     """
-    results = {
-        "ok": True,
-        "checks": [],
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "version": APP_VERSION,
+    import json as _json  # local import to avoid boot-time surprises
 
+    notes = []
+    ok = True
 
-    }
-
-    def _add(name: str, ok: bool, detail: str = ""):
-        results["checks"].append({"name": name, "ok": bool(ok), "detail": detail})
-        if not ok:
-            results["ok"] = False
-
-    # Core module imports (best-effort)
+    # 1) Core modules importability (best-effort)
     for mod_name in ("SarahMemoryGlobals", "SarahMemoryVoice", "SarahMemoryDatabase", "SarahMemoryAPI"):
         try:
             __import__(mod_name)
-            _add(f"import:{mod_name}", True, "ok")
         except Exception as e:
-            _add(f"import:{mod_name}", False, str(e))
+            ok = False
+            notes.append(f"import_failed:{mod_name}:{e}")
 
-    # SQLite DB reachable?
+    # 2) server_state.json readable (STATE_DB is JSON, not sqlite)
     try:
-        con = _connect_sqlite(STATE_DB)
+        if os.path.exists(STATE_DB):
+            try:
+                with open(STATE_DB, "r", encoding="utf-8") as f:
+                    _json.load(f)
+            except Exception as e:
+                ok = False
+                notes.append(f"state_json_invalid:{e}")
+        else:
+            notes.append("state_json_missing")
+    except Exception as e:
+        ok = False
+        notes.append(f"state_json_check_failed:{e}")
+
+    # 3) meta.db reachable (sqlite)
+    try:
+        con = _connect_sqlite(META_DB)
         con.execute("CREATE TABLE IF NOT EXISTS _health_ping (id INTEGER PRIMARY KEY, ts TEXT)")
         con.close()
-        _add("sqlite:state_db", True, os.path.abspath(STATE_DB))
     except Exception as e:
-        _add("sqlite:state_db", False, str(e))
+        ok = False
+        notes.append(f"sqlite_meta_db_failed:{e}")
 
-    # Basic flags
+    # 4) Main process running flag (desktop installs). Safe on cloud.
+    main_running = False
     try:
-        running = bool(globals().get("_is_running", True))
-        _add("flag:is_running", True, str(running))
+        fn = globals().get("_is_running")
+        if callable(fn):
+            main_running = bool(fn())
     except Exception as e:
-        _add("flag:is_running", False, str(e))
+        notes.append(f"main_running_check_failed:{e}")
 
-    return results
+    return bool(ok), (notes if isinstance(notes, list) else []), bool(main_running)
+
 
 @app.get("/api/health")
 def api_health():
@@ -3048,7 +3062,6 @@ def api_ping():
         "running": True,
         "main_running": main_running,
     })
-
 @app.route("/api/ledger/top-nodes")
 def api_top_nodes():
     limit_str = request.args.get("limit", "10")
