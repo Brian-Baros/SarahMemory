@@ -10,7 +10,6 @@
 # https://www.sarahmemory.com
 # https://api.sarahmemory.com
 # https://ai.sarahmemory.com
-
 # - Serves Web UI
 # - Hub (HMAC) endpoints
 # - Node registration / embeddings / context / jobs
@@ -3105,6 +3104,17 @@ def api_download(filename):
     except TypeError:
         # Flask <2.0 compatibility: download_name not supported
         return send_file(full_path, as_attachment=True)
+
+# --- v8 MCP broker endpoints (SarahNet one-way broker) ---
+try:
+    import appnet
+    appnet.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+except Exception as _e:
+    try:
+        app_logger.error(f"appnet init failed: {_e}")
+    except Exception:
+        pass
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
