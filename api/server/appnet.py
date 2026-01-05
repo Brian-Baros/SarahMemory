@@ -163,9 +163,10 @@ def _verify_broker_auth(body_bytes: bytes) -> bool:
 
 def _body_bytes() -> bytes:
     try:
-        return request.get_data(cache=False) or b""
+        return request.get_data(cache=True) or b""   # <-- cache=True (or just request.get_data())
     except Exception:
         return b""
+
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
