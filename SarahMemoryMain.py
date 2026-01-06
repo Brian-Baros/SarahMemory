@@ -2,9 +2,9 @@
 File: SarahMemoryMain.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
-Time: 16:30:00
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Date: 2026-01-06
+Time: 10:11:54
+Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -60,6 +60,46 @@ import warnings
 import requests
 import platform
 import SarahMemoryGlobals as config
+
+# =============================================================================
+# [v8.0] MAIN PROCESS HEARTBEAT / PID MARKER
+# -----------------------------------------------------------------------------
+# The local WebUI checks /api/health -> main_running by reading DATA_DIR/sarahmemory.pid.
+# When SarahMemoryMain is launched directly (python SarahMemoryMain.py), we must write
+# our PID so app.py can detect that the full desktop stack is alive.
+# Also refresh server_state.json with a lightweight heartbeat so the file timestamp moves.
+# =============================================================================
+try:
+    _data_dir = getattr(config, "DATA_DIR", None) or os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")
+    os.makedirs(_data_dir, exist_ok=True)
+
+    _pid_file = os.path.join(_data_dir, "sarahmemory.pid")
+    with open(_pid_file, "w", encoding="utf-8") as _f:
+        _f.write(str(os.getpid()))
+
+    _state_file = os.path.join(_data_dir, "server_state.json")
+    _state = {}
+    try:
+        if os.path.exists(_state_file):
+            with open(_state_file, "r", encoding="utf-8") as _f:
+                _state = json.load(_f) if _f.readable() else {}
+            if not isinstance(_state, dict):
+                _state = {}
+    except Exception:
+        _state = {}
+
+    _state["MAIN_RUNNING"] = True
+    _state["MAIN_PID"] = int(os.getpid())
+    _state["MAIN_LAST_SEEN_TS"] = float(time.time())
+
+    _tmp = _state_file + ".tmp"
+    with open(_tmp, "w", encoding="utf-8") as _f:
+        json.dump(_state, _f, indent=2, sort_keys=True)
+    os.replace(_tmp, _state_file)
+except Exception:
+    # Never block boot if filesystem permissions are weird.
+    pass
+
 
 # =============================================================================
 # CROSS-PLATFORM COMPATIBILITY
