@@ -358,6 +358,36 @@ def _ensure_tables() -> None:
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_net_signals_to_delivered ON net_signals(to_node, delivered, ts)")
+        # -----------------------------------------------------------------
+        # Privacy / safety controls (spam protection, DND/away/invisible, blocks)
+        # -----------------------------------------------------------------
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS net_privacy (
+                node_id TEXT PRIMARY KEY,
+                allow_messages INTEGER DEFAULT 1,
+                allow_calls INTEGER DEFAULT 1,
+                allow_files INTEGER DEFAULT 1,
+                require_file_accept INTEGER DEFAULT 1,
+                auto_accept_calls INTEGER DEFAULT 0,
+                invisible INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'online',
+                status_msg TEXT DEFAULT '',
+                updated_ts REAL
+            )
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS net_blocks (
+                node_id TEXT,
+                blocked_node TEXT,
+                kind TEXT DEFAULT 'all',
+                created_ts REAL,
+                PRIMARY KEY (node_id, blocked_node, kind)
+            )
+        """)
+
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net_blocks_node ON net_blocks(node_id)")
+
 
         # SMALL brokered attachments (single-shot)
         cur.execute("""
