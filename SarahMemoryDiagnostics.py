@@ -2,9 +2,9 @@
 File: SarahMemoryDiagnostics.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2026-01-06
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -2461,6 +2461,137 @@ def run_full_diagnostics_suite(write_aggregate_log: bool = False) -> dict:
 
     return reports
 
+
+# ============================
+# PHASE X: SarahNet / MCP Diagnostics + Self-Repair (v8.0.0)
+# ============================
+
+def run_sarahnet_mcp_diagnostics(
+    base_url: str | None = None,
+    from_node: str | None = None,
+    to_node: str | None = None,
+    send_file: str | None = None,
+    timeout_s: float = 15.0,
+) -> dict:
+    """
+    Run the unified SarahNet diagnostics suite (ping/rendezvous/message/file/signal/telecom-signaling).
+    This is *signaling only* for telecom. Real media is P2P (WebRTC), broker relays envelopes.
+
+    Returns a report dict.
+    """
+    report: dict = {"ok": False, "steps": [], "errors": []}
+
+    try:
+        import SarahMemoryGlobals as config  # source of truth
+        default_base = getattr(config, "NETWORK_HUB_BASE", "https://api.sarahmemory.com")
+        default_from = getattr(config, "NODE_ID", getattr(config, "LOCAL_NODE_ID", "LocalNode"))
+    except Exception:
+        default_base = "https://api.sarahmemory.com"
+        default_from = "LocalNode"
+
+    base = (base_url or default_base).strip().rstrip("/")
+    a = (from_node or default_from).strip()
+    b = (to_node or "CloudServerNode").strip()
+
+    try:
+        import SarahNetMCP_Diagnostics as SND  # unified test module
+        report = SND.run_all(base=base, a=a, b=b, send_file=send_file, timeout=timeout_s)
+        return report
+    except Exception as e:
+        report["ok"] = False
+        report["errors"].append(f"import_or_run_failed:{e}")
+        try:
+            logger.exception("SarahNet MCP diagnostics failed")
+        except Exception:
+            pass
+        return report
+
+
+def run_sarahnet_api_self_repair() -> dict:
+    """
+    Lightweight SarahNet / API self-repair:
+
+    - Ensures key directories exist under DATA_DIR (reports, network)
+    - Writes a timestamped self-repair report for later harvesting
+    - Attempts a safe import of api/server/app.py to surface tracebacks early
+    """
+    report: dict = {"ok": True, "ts": time.time(), "steps": [], "errors": []}
+
+    try:
+        import SarahMemoryGlobals as config
+        base_dir = Path(getattr(config, "BASE_DIR", Path.cwd()))
+        data_dir = Path(getattr(config, "DATA_DIR", base_dir / "data"))
+        api_dir = Path(getattr(config, "API_DIR", base_dir / "api"))
+        report["base_dir"] = os.fspath(base_dir)
+        report["data_dir"] = os.fspath(data_dir)
+        report["api_dir"] = os.fspath(api_dir)
+    except Exception as e:
+        report["ok"] = False
+        report["errors"].append(f"globals_import_failed:{e}")
+        return report
+
+    # Ensure directories
+    try:
+        (data_dir / "network").mkdir(parents=True, exist_ok=True)
+        (data_dir / "reports" / "v800").mkdir(parents=True, exist_ok=True)
+        report["steps"].append("dirs_ok")
+    except Exception as e:
+        report["ok"] = False
+        report["errors"].append(f"mkdir_failed:{e}")
+
+    # Verify appnet privacy tables exist (best-effort hint only; broker owns schema)
+    try:
+        meta_db = data_dir / "meta.db"
+        if meta_db.exists():
+            con = sqlite3.connect(os.fspath(meta_db))
+            cur = con.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = {r[0] for r in cur.fetchall()}
+            needed = {"net_privacy", "net_blocks"}
+            missing = sorted(list(needed - tables))
+            con.close()
+            if missing:
+                report["steps"].append(f"missing_tables:{','.join(missing)}")
+            else:
+                report["steps"].append("privacy_tables_ok")
+        else:
+            report["steps"].append("meta_db_missing")
+    except Exception as e:
+        report["steps"].append("privacy_tables_check_failed")
+        report["errors"].append(str(e))
+
+    # Safe import of api/server/app.py (to expose path issues)
+    try:
+        app_py = api_dir / "server" / "app.py"
+        if app_py.exists():
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("_sm_api_app_import_probe", os.fspath(app_py))
+            if spec and spec.loader:
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)  # type: ignore
+            report["steps"].append("app_py_import_probe_ok")
+        else:
+            report["steps"].append("app_py_missing")
+            report["ok"] = False
+    except Exception as e:
+        report["ok"] = False
+        report["errors"].append(f"app_py_import_probe_failed:{e}")
+        try:
+            logger.exception("app.py import probe failed")
+        except Exception:
+            pass
+
+    # Persist report
+    try:
+        out = data_dir / "reports" / "v800" / "selfrepair_last.json"
+        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        report["steps"].append(f"wrote_report:{out}")
+    except Exception:
+        pass
+
+    return report
+
+
 def diagnostics_menu() -> None:
     """
     Text-based diagnostics UI.
@@ -2482,6 +2613,8 @@ def diagnostics_menu() -> None:
         print("7) Cloud Sync Diagnostics")
         print("8) Security Diagnostics")
         print("9) Run & Log FULL Diagnostics")
+        print("10) SarahNet / API Self-Repair (paths + broker sanity)")
+        print("11) SarahNet MCP Diagnostics (IM + file + signaling + telecom stub)")
         print("0) Exit")
         choice = input("Select option: ").strip()
         if choice == "0":
@@ -2528,11 +2661,32 @@ def diagnostics_menu() -> None:
             print("\n[SEC] Running security diagnostics...")
             sec_report = run_security_diagnostics()
             _print_security_report(sec_report)
+        elif choice == "10":
+            print("\n[SarahNet] Running SarahNet / API self-repair...")
+            rep = run_sarahnet_api_self_repair()
+            print(json.dumps(rep, indent=2))
+        elif choice == "11":
+            print("\n[SarahNet] Running unified SarahNet MCP diagnostics...")
+            try:
+                import SarahMemoryGlobals as config
+                default_base = getattr(config, "NETWORK_HUB_BASE", "https://api.sarahmemory.com")
+                default_from = getattr(config, "NODE_ID", getattr(config, "LOCAL_NODE_ID", "LocalNode"))
+            except Exception:
+                default_base = "https://api.sarahmemory.com"
+                default_from = "LocalNode"
+
+            base = input(f"Broker base URL [{default_base}]: ").strip() or default_base
+            a = input(f"FROM node_id [{default_from}]: ").strip() or default_from
+            b = input("TO node_id [CloudServerNode]: ").strip() or "CloudServerNode"
+            fpath = input("Optional file path to send (blank=none): ").strip() or None
+            rep = run_sarahnet_mcp_diagnostics(base_url=base, from_node=a, to_node=b, send_file=fpath)
+            print(json.dumps(rep, indent=2))
+
         elif choice == "9":
             print("\n[FULL+LOG] Running full diagnostics and logging summary...")
             _ = run_full_diagnostics_suite(write_aggregate_log=True)
         else:
-            print("Invalid choice, please select 0-9.")
+            print("Invalid choice, please select 0-11.")
 
 # [PATCH v7.7.2] Embedding pipeline diagnostic
 def run_embedding_pipeline_check(sample_text: str = "What is your name?") -> dict:
