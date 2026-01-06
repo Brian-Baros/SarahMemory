@@ -1,6 +1,17 @@
 # --==The SarahMemory Project==--
 # File: /app/server/appnet.py
 # Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
+# Part of the SarahMemory Companion AI-bot Platform
+# Author: © 2025 Brian Lee Baros. All Rights Reserved.
+# www.linkedin.com/in/brian-baros-29962a176
+# https://www.facebook.com/bbaros
+# brian.baros@sarahmemory.com
+# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+# https://www.sarahmemory.com
+# https://api.sarahmemory.com
+# https://ai.sarahmemory.com
+
+# Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
 # Design goals:
 # - NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
 # - Everything is namespaced under /api/net/*
@@ -54,6 +65,21 @@ _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 MAX_BROKER_FILE_BYTES = int(os.environ.get("SARAHNET_MAX_BROKER_FILE_BYTES", "2000000"))  # 2 MB default (single-shot)
 MAX_GROUP_MEMBERS = int(os.environ.get("SARAHNET_MAX_GROUP_MEMBERS", "200"))
 
+# File-offer security controls
+REQUIRE_FILE_ACCEPT = os.environ.get("SARAHNET_REQUIRE_FILE_ACCEPT", "true").strip().lower() in ("1","true","yes","on")
+# Optional server-side "disk dump" for audit/debug (disabled unless enabled AND key matches)
+SERVER_DUMP_ENABLED = os.environ.get("SARAHNET_SERVER_DUMP_ENABLED", "false").strip().lower() in ("1","true","yes","on")
+SERVER_DUMP_KEY = os.environ.get("SARAHNET_SERVER_DUMP_KEY", "").strip()  # shared secret for debug dumping
+SERVER_DUMP_SUBDIR = os.environ.get("SARAHNET_SERVER_DUMP_SUBDIR", "broker_downloads").strip()
+
+# Optional broker-side AV scan (best-effort; typically off on PA unless you install tools)
+BROKER_AV_SCAN = os.environ.get("SARAHNET_BROKER_AV_SCAN", "false").strip().lower() in ("1","true","yes","on")
+BROKER_AV_TOOL = os.environ.get("SARAHNET_BROKER_AV_TOOL", "clamscan").strip()
+
+# Client hint (nodes can ignore / override); local SarahMemory uses SarahMemoryGlobals.DOWNLOADS_DIR
+SUGGESTED_CLIENT_DOWNLOAD_DIR = os.environ.get("SARAHNET_SUGGESTED_CLIENT_DOWNLOAD_DIR", "C:\\SarahMemory\\downloads")
+
+
 # Chunked transfer limits
 MAX_CHUNK_BYTES = int(os.environ.get("SARAHNET_MAX_CHUNK_BYTES", str(512 * 1024)))  # 512KB default
 MAX_TRANSFER_BYTES = int(os.environ.get("SARAHNET_MAX_TRANSFER_BYTES", str(25 * 1024 * 1024)))  # 25MB default
@@ -64,6 +90,81 @@ MAX_POLL_CHUNKS = int(os.environ.get("SARAHNET_MAX_POLL_CHUNKS", "10"))  # per p
 
 def _now() -> float:
     return time.time()
+
+
+def _sanitize_filename(name: str) -> str:
+    # Prevent path traversal / weird chars
+    name = (name or "").replace("\\", "/").split("/")[-1]
+    name = name.strip().replace("..", "_")
+    if not name:
+        return "file.bin"
+    return name[:255]
+
+
+def _broker_dump_root() -> Optional[str]:
+    """Best-effort: where broker writes debug/audit copies of inbound files."""
+    try:
+        if not _META_DB:
+            return None
+        base = os.path.dirname(_META_DB)
+        # Prefer a 'network' subdir next to meta.db if present, else use base directly.
+        candidate = os.path.join(base, "network", SERVER_DUMP_SUBDIR)
+        if os.path.isdir(os.path.join(base, "network")) or "network" in candidate:
+            return candidate
+        return os.path.join(base, SERVER_DUMP_SUBDIR)
+    except Exception:
+        return None
+
+
+def _maybe_dump_file_bytes(to_node: str, file_id: str, filename: str, blob: bytes) -> Tuple[Optional[str], Optional[str]]:
+    """Write a copy to disk ONLY when SERVER_DUMP_ENABLED + correct key header is present."""
+    if not SERVER_DUMP_ENABLED:
+        return (None, "disabled")
+    try:
+        key = (request.headers.get("X-SarahNet-Dump-Key") or "").strip()
+        if SERVER_DUMP_KEY and key != SERVER_DUMP_KEY:
+            return (None, "bad_key")
+        root = _broker_dump_root()
+        if not root:
+            return (None, "no_root")
+        safe_node = (to_node or "unknown").replace("/", "_")[:128]
+        os.makedirs(os.path.join(root, safe_node), exist_ok=True)
+        safe_name = _sanitize_filename(filename)
+        out_path = os.path.join(root, safe_node, f"{file_id}__{safe_name}")
+        with open(out_path, "wb") as f:
+            f.write(blob)
+        return (out_path, None)
+    except Exception as e:
+        return (None, f"error:{e}")
+
+
+def _scan_blob_best_effort(blob: bytes, filename: str) -> Tuple[str, str]:
+    """Broker-side AV scan hook. Defaults to unscanned unless BROKER_AV_SCAN is enabled."""
+    if not BROKER_AV_SCAN:
+        return ("unscanned", "broker_av_disabled")
+    # Best-effort: try clamscan if available. If not, return error.
+    try:
+        import subprocess
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix="__" + _sanitize_filename(filename)) as tf:
+            tf.write(blob)
+            tmp_path = tf.name
+        try:
+            res = subprocess.run([BROKER_AV_TOOL, "--no-summary", tmp_path], capture_output=True, text=True, timeout=30)
+            out = (res.stdout or "") + (res.stderr or "")
+            # clamscan returns 0 = clean, 1 = infected
+            if res.returncode == 0:
+                return ("clean", out.strip()[:500])
+            if res.returncode == 1:
+                return ("infected", out.strip()[:500])
+            return ("error", out.strip()[:500] or f"returncode={res.returncode}")
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        return ("error", str(e)[:500])
 
 
 def _j() -> Dict[str, Any]:
@@ -270,6 +371,22 @@ def _ensure_tables() -> None:
                 size_bytes INTEGER,
                 sha256 TEXT,
                 data_b64 TEXT,
+
+                -- security / user-consent gate
+                status TEXT DEFAULT 'offered',      -- offered|accepted|rejected|delivered
+                accepted INTEGER DEFAULT 0,
+                rejected INTEGER DEFAULT 0,
+                decision_ts REAL,
+                save_to TEXT,                        -- user-chosen save directory/path (client hint)
+
+                -- optional broker-side scan
+                scan_status TEXT,                    -- unscanned|clean|infected|error
+                scan_detail TEXT,
+
+                -- optional broker disk dump (debug / audit)
+                server_saved_path TEXT,
+                server_saved_ts REAL,
+
                 delivered INTEGER DEFAULT 0,
                 delivered_ts REAL
             )
@@ -325,6 +442,54 @@ def _ensure_tables() -> None:
         if not _table_has_column(cur, "net_file_transfers", "total_bytes"):
             try:
                 cur.execute("ALTER TABLE net_file_transfers ADD COLUMN total_bytes INTEGER")
+            except Exception:
+                pass
+
+
+        # net_files: security + accept/reject workflow columns (safe file offers)
+        if not _table_has_column(cur, "net_files", "status"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN status TEXT")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "accepted"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN accepted INTEGER DEFAULT 0")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "rejected"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN rejected INTEGER DEFAULT 0")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "decision_ts"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN decision_ts REAL")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "save_to"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN save_to TEXT")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "scan_status"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN scan_status TEXT")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "scan_detail"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN scan_detail TEXT")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "server_saved_path"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN server_saved_path TEXT")
+            except Exception:
+                pass
+        if not _table_has_column(cur, "net_files", "server_saved_ts"):
+            try:
+                cur.execute("ALTER TABLE net_files ADD COLUMN server_saved_ts REAL")
             except Exception:
                 pass
 
@@ -1095,19 +1260,39 @@ def net_file_send_small():
     if sha256_in and sha256_in.lower() != sha256.lower():
         return _err("sha256 mismatch", 400)
 
+    # Security: broker can optionally scan inbound bytes; client still must scan on download.
+    scan_status, scan_detail = _scan_blob_best_effort(blob, filename)
+
     fid = _new_id("file")
+    # Optional: broker disk dump for audit/debug (requires SERVER_DUMP_ENABLED and correct X-SarahNet-Dump-Key)
+    server_saved_path = None
+    server_saved_ts = None
+    if SERVER_DUMP_ENABLED:
+        pth, note = _maybe_dump_file_bytes(to_node, fid, filename, blob)
+        if pth:
+            server_saved_path = pth
+            server_saved_ts = _now()
+
     _ensure_tables()
     con = None
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
         cur.execute(
-            "INSERT INTO net_files(id,to_node,from_node,ts,filename,mime,size_bytes,sha256,data_b64,delivered) "
-            "VALUES(?,?,?,?,?,?,?,?,?,0)",
-            (fid, to_node, from_node, _now(), filename, mime, size_bytes, sha256, data_b64),
+            "INSERT INTO net_files(id,to_node,from_node,ts,filename,mime,size_bytes,sha256,data_b64,"
+            "status,accepted,rejected,decision_ts,save_to,scan_status,scan_detail,server_saved_path,server_saved_ts,delivered) "
+            "VALUES(?,?,?,?,?,?,?,?,?, ?,0,0,NULL,NULL,?,?,?, ?,0)",
+            (
+                fid, to_node, from_node, _now(),
+                filename, mime, size_bytes, sha256, data_b64,
+                "offered",
+                scan_status, scan_detail,
+                server_saved_path, server_saved_ts,
+            ),
         )
+
         con.commit()
-        return _ok(id=fid, queued=True, size_bytes=size_bytes, sha256=sha256)
+        return _ok(id=fid, queued=True, size_bytes=size_bytes, sha256=sha256, requires_accept=bool(REQUIRE_FILE_ACCEPT), scan_status=scan_status)
     except Exception as e:
         return _err("DB error queueing file", 500, detail=str(e))
     finally:
@@ -1139,23 +1324,46 @@ def net_file_poll_small():
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
         cur.execute(
-            "SELECT id,from_node,ts,filename,mime,size_bytes,sha256,data_b64 FROM net_files "
-            "WHERE to_node=? AND delivered=0 ORDER BY ts ASC LIMIT ?",
+            "SELECT id,from_node,ts,filename,mime,size_bytes,sha256,data_b64,"
+            "status,accepted,rejected,decision_ts,save_to,scan_status,scan_detail "
+            "FROM net_files "
+            "WHERE to_node=? AND delivered=0 AND rejected=0 ORDER BY ts ASC LIMIT ?",
             (to_node, lim),
         )
         rows = cur.fetchall() or []
+
+        # If REQUIRE_FILE_ACCEPT is enabled, we ONLY include file bytes after the receiver has accepted it.
+        include_data = (request.args.get("include_data") or "").strip().lower() in ("1","true","yes","on")
+        if not REQUIRE_FILE_ACCEPT:
+            include_data = True
+
         out = []
         for r in rows:
-            out.append({
-                "id": r[0],
+            file_id = r[0]
+            accepted = int(r[9] or 0)
+            payload = {
+                "id": file_id,
                 "from_node": r[1],
                 "ts": r[2],
                 "filename": r[3],
                 "mime": r[4],
                 "size_bytes": r[5],
                 "sha256": r[6],
-                "data_b64": r[7],
-            })
+                "status": r[8] or "offered",
+                "accepted": accepted,
+                "rejected": int(r[10] or 0),
+                "decision_ts": r[11],
+                "save_to": r[12],
+                "scan_status": r[13],
+                "scan_detail": r[14],
+                "requires_accept": bool(REQUIRE_FILE_ACCEPT),
+                "suggested_download_dir": SUGGESTED_CLIENT_DOWNLOAD_DIR,
+            }
+            if include_data and (not REQUIRE_FILE_ACCEPT or accepted == 1):
+                payload["data_b64"] = r[7]
+            else:
+                payload["data_b64"] = None
+            out.append(payload)
         return _ok(files=out, count=len(out))
     except Exception as e:
         return _err("DB error polling files", 500, detail=str(e))
@@ -1165,6 +1373,76 @@ def net_file_poll_small():
                 con.close()
         except Exception:
             pass
+
+
+@bp.post("/api/net/file/decision")
+def net_file_decision():
+    """
+    Receiver-side consent gate:
+      - decision=accept => broker will allow bytes to be returned via /api/net/file/poll?include_data=1
+      - decision=reject => broker will never return bytes; sender still gets an ack of offer delivery
+    Body JSON:
+      { "to_node": "...", "id": "file_...", "decision": "accept|reject", "save_to": "optional path hint" }
+    """
+    if not _require_injected():
+        return _err("Broker storage not configured (META_DB).", 500)
+
+    raw = _body_bytes()
+    if not _verify_broker_auth(raw):
+        return _err("Unauthorized", 401)
+
+    try:
+        payload = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        payload = {}
+
+    to_node = (payload.get("to_node") or "").strip()
+    file_id = (payload.get("id") or "").strip()
+    decision = (payload.get("decision") or "").strip().lower()
+    save_to = (payload.get("save_to") or "").strip() or None
+
+    if not to_node or not file_id:
+        return _err("Missing to_node or id", 400)
+    if decision not in ("accept", "reject"):
+        return _err("Invalid decision (accept|reject)", 400)
+
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+
+        # Ensure the file exists and belongs to the receiver
+        cur.execute("SELECT id, accepted, rejected FROM net_files WHERE id=? AND to_node=? LIMIT 1", (file_id, to_node))
+        row = cur.fetchone()
+        if not row:
+            return _err("File not found for this to_node", 404)
+
+        now_ts = _now()
+        if decision == "accept":
+            cur.execute(
+                "UPDATE net_files SET accepted=1, rejected=0, status='accepted', decision_ts=?, save_to=? "
+                "WHERE id=? AND to_node=?",
+                (now_ts, save_to, file_id, to_node),
+            )
+        else:
+            cur.execute(
+                "UPDATE net_files SET rejected=1, accepted=0, status='rejected', decision_ts=?, save_to=? "
+                "WHERE id=? AND to_node=?",
+                (now_ts, save_to, file_id, to_node),
+            )
+
+        con.commit()
+        return _ok(id=file_id, decision=decision, to_node=to_node, save_to=save_to)
+    except Exception as e:
+        return _err("DB error saving decision", 500, detail=str(e))
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
 
 
 @bp.post("/api/net/file/ack")
@@ -1186,7 +1464,7 @@ def net_file_ack_small():
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
-        cur.execute("UPDATE net_files SET delivered=1, delivered_ts=? WHERE id=? AND to_node=?", (_now(), fid, to_node))
+        cur.execute("UPDATE net_files SET delivered=1, delivered_ts=?, status='delivered' WHERE id=? AND to_node=?", (_now(), fid, to_node))
         con.commit()
         return _ok(acked=True, id=fid)
     except Exception as e:
