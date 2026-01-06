@@ -54,9 +54,49 @@ import logging # Explicitly import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 app_logger = logging.getLogger(__name__)
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+
+# ------------------OLD V8 Root-----------------------
+#ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+#if ROOT not in sys.path:
+#    sys.path.insert(0, ROOT)
+#-------------------------------------------------------
+# ---------------------------------------------------------------------------
+# NEW V8 Root/Path resolution (prefer SarahMemoryGlobals; fallback to local server layout)
+# ---------------------------------------------------------------------------
+
+def _find_project_root(start_dir: str, max_up: int = 6) -> str:
+    """
+    Walk upward from start_dir to locate SarahMemoryGlobals.py (project root marker).
+    This fixes cases where app.py runs from /api/server and only adds /api to sys.path.
+    """
+    cur = os.path.abspath(start_dir)
+    for _ in range(max_up):
+        marker = os.path.join(cur, "SarahMemoryGlobals.py")
+        if os.path.exists(marker):
+            return cur
+        parent = os.path.abspath(os.path.join(cur, ".."))
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.abspath(start_dir)
+
+# Start from app.py directory
+_THIS_DIR = os.path.abspath(os.path.dirname(__file__))
+
+# Candidate roots:
+# 1) parent (existing behavior)
+# 2) grandparent (common: api/server -> api -> project)
+# 3) auto-discovered marker walk
+ROOT_PARENT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
+ROOT_GRANDPARENT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
+ROOT_DISCOVERED = _find_project_root(_THIS_DIR)
+
+# Insert best root first
+for p in (ROOT_DISCOVERED, ROOT_GRANDPARENT, ROOT_PARENT):
+    if p and p not in sys.path:
+        sys.path.insert(0, p)
+
+
 
 # Attempt to load SarahMemoryGlobals for consistent pathing and versions
 try:
