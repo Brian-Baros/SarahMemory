@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useCreativeCacheStore } from '@/stores/useCreativeCacheStore';
+import { usePreviewStore } from '@/stores/usePreviewStore';
 
 export function MusicSynthModule() {
   const [prompt, setPrompt] = useState('');
@@ -16,6 +17,7 @@ export function MusicSynthModule() {
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
+  const { showAudio } = usePreviewStore();
   const musicItems = items.music;
 
   const handleGenerate = async () => {
@@ -48,11 +50,16 @@ export function MusicSynthModule() {
 
       const resultUrl = (response as any)?.url || (response as any)?.audio_url;
 
-      addItem('music', {
+      const itemId = addItem('music', {
         type: 'music',
         prompt: prompt.trim(),
         url: resultUrl,
       });
+
+      // Show in preview surface
+      if (resultUrl) {
+        showAudio(itemId, resultUrl);
+      }
 
       addMessage({
         role: 'assistant',

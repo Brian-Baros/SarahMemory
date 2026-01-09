@@ -5,60 +5,59 @@
 /* SarahMemory Design System - Dark Enterprise Theme */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
+/* =========================================================
+   BASE LAYER – CSS VARIABLES + GLOBAL RESETS
+   ========================================================= */
 @layer base {
   :root {
-    /* Core colors - Deep space dark theme */
+    /* Core colors */
     --background: 220 20% 7%;
     --foreground: 210 20% 90%;
-    
-    /* Surface layers */
+
+    /* Surfaces */
     --card: 220 18% 10%;
     --card-foreground: 210 20% 90%;
-    
     --popover: 220 20% 9%;
     --popover-foreground: 210 20% 90%;
-    
-    /* Primary - Cyan/Teal accent */
+
+    /* Brand */
     --primary: 210 100% 60%;
     --primary-foreground: 220 20% 5%;
-    
-    /* Secondary surface */
-    --secondary: 220 15% 14%;
-    --secondary-foreground: 210 15% 75%;
-    
-    /* Muted elements */
-    --muted: 220 15% 16%;
-    --muted-foreground: 215 15% 55%;
-    
-    /* Accent - Electric blue */
     --accent: 200 100% 50%;
     --accent-foreground: 220 20% 5%;
-    
+
+    /* Secondary */
+    --secondary: 220 15% 14%;
+    --secondary-foreground: 210 15% 75%;
+
+    /* Muted */
+    --muted: 220 15% 16%;
+    --muted-foreground: 215 15% 55%;
+
     /* Destructive */
     --destructive: 0 72% 51%;
     --destructive-foreground: 210 40% 98%;
-    
-    /* Borders */
+
+    /* Borders & inputs */
     --border: 220 15% 18%;
     --input: 220 15% 15%;
     --ring: 210 100% 60%;
-    
     --radius: 0.625rem;
-    
-    /* Chat bubbles */
+
+    /* Chat */
     --bubble-user: 215 50% 15%;
     --bubble-assistant: 220 15% 12%;
-    
-    /* Status colors */
+
+    /* Status */
     --status-online: 142 76% 36%;
     --status-warning: 45 93% 47%;
     --status-error: 0 72% 51%;
     --status-info: 200 100% 50%;
-    
-    /* Glow effects */
+
+    /* Glow */
     --glow-primary: 210 100% 60%;
     --glow-accent: 200 100% 50%;
-    
+
     /* Sidebar */
     --sidebar-background: 220 18% 8%;
     --sidebar-foreground: 210 15% 75%;
@@ -69,148 +68,168 @@
     --sidebar-border: 220 15% 15%;
     --sidebar-ring: 210 100% 60%;
   }
-}
 
-@layer base {
   * {
     @apply border-border;
   }
-  
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
-  
-  /* Custom scrollbar */
+}
+
+/* =========================================================
+   DESKTOP-ONLY SCROLLBARS (SAFE FOR MOBILE)
+   ========================================================= */
+@media (hover: hover) and (pointer: fine) {
   ::-webkit-scrollbar {
     width: 8px;
     height: 8px;
   }
-  
+
   ::-webkit-scrollbar-track {
     background: hsl(var(--background));
   }
-  
+
   ::-webkit-scrollbar-thumb {
     background: hsl(var(--border));
     border-radius: 4px;
   }
-  
+
   ::-webkit-scrollbar-thumb:hover {
     background: hsl(var(--muted-foreground) / 0.5);
   }
 }
 
+/* =========================================================
+   COMPONENTS LAYER
+   ========================================================= */
 @layer components {
-  /* Glass morphism effect */
+  /* Glass */
   .glass {
     @apply bg-card/80 backdrop-blur-xl border border-border/50;
   }
-  
+
   .glass-strong {
     @apply bg-card/90 backdrop-blur-2xl border border-border/60;
   }
-  
-  /* Glow effects */
+
+  /* Glow */
   .glow-primary {
-    box-shadow: 0 0 20px hsl(var(--glow-primary) / 0.3),
-                0 0 40px hsl(var(--glow-primary) / 0.1);
+    box-shadow:
+      0 0 20px hsl(var(--glow-primary) / 0.3),
+      0 0 40px hsl(var(--glow-primary) / 0.1);
   }
-  
+
   .glow-accent {
-    box-shadow: 0 0 20px hsl(var(--glow-accent) / 0.3),
-                0 0 40px hsl(var(--glow-accent) / 0.1);
+    box-shadow:
+      0 0 20px hsl(var(--glow-accent) / 0.3),
+      0 0 40px hsl(var(--glow-accent) / 0.1);
   }
-  
-  /* Status LED indicator */
+
+  /* Status LED */
   .led {
     @apply w-2.5 h-2.5 rounded-full;
     box-shadow: 0 0 6px currentColor;
   }
-  
+
   .led-pulse {
     animation: led-pulse 2s ease-in-out infinite;
   }
-  
+
   @keyframes led-pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
-  
-  /* Chat message bubbles */
+
+  /* Chat bubbles */
   .bubble-user {
-    @apply bg-[hsl(var(--bubble-user))] border border-primary/20 rounded-2xl rounded-br-md;
+    background: hsl(var(--bubble-user));
+    @apply border border-primary/20 rounded-2xl rounded-br-md;
   }
-  
+
   .bubble-assistant {
-    @apply bg-[hsl(var(--bubble-assistant))] border border-border rounded-2xl rounded-bl-md;
+    background: hsl(var(--bubble-assistant));
+    @apply border border-border rounded-2xl rounded-bl-md;
   }
-  
-  /* Panel animations */
+
+  /* Panels */
   .panel-slide-in {
     animation: panel-slide-in 0.3s ease-out;
   }
-  
+
   @keyframes panel-slide-in {
-    from {
-      opacity: 0;
-      transform: translateX(20px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
+    from { opacity: 0; transform: translateX(20px); }
+    to   { opacity: 1; transform: translateX(0); }
   }
-  
-  /* Fade in animation */
-  .fade-in {
-    animation: fade-in 0.2s ease-out;
-  }
-  
-  @keyframes fade-in {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-  
-  /* Subtle hover lift */
+
+  /* Hover lift */
   .hover-lift {
     @apply transition-all duration-200;
   }
-  
+
   .hover-lift:hover {
     @apply -translate-y-0.5;
     box-shadow: 0 4px 12px hsl(var(--background) / 0.5);
   }
-  
+
   /* Typing indicator */
   .typing-dot {
     @apply w-2 h-2 rounded-full bg-muted-foreground;
     animation: typing-bounce 1.4s infinite ease-in-out both;
   }
-  
+
   .typing-dot:nth-child(1) { animation-delay: -0.32s; }
   .typing-dot:nth-child(2) { animation-delay: -0.16s; }
   .typing-dot:nth-child(3) { animation-delay: 0s; }
-  
+
   @keyframes typing-bounce {
     0%, 80%, 100% { transform: scale(0.6); opacity: 0.5; }
     40% { transform: scale(1); opacity: 1; }
   }
 }
 
+/* =========================================================
+   UTILITIES
+   ========================================================= */
 @layer utilities {
+  /* Fade animation alias (fixes Tailwind mismatch) */
+  .animate-fade-in {
+    animation: fade-in 0.2s ease-out;
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
   /* Text gradient */
   .text-gradient-primary {
     @apply bg-gradient-to-r from-primary to-accent bg-clip-text text-transparent;
   }
-  
+
   /* Border gradient */
   .border-gradient {
-    border-image: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent))) 1;
+    border-image: linear-gradient(
+      135deg,
+      hsl(var(--primary)),
+      hsl(var(--accent))
+    ) 1;
   }
-  
-  /* Monospace font for code/data */
+
+  /* Monospace */
   .font-mono {
     font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+}
+
+/* =========================================================
+   ACCESSIBILITY
+   ========================================================= */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
   }
 }

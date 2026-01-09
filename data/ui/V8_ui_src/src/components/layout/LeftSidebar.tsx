@@ -6,17 +6,20 @@ import { cn } from '@/lib/utils';
 import { LeftSidebarContent } from './LeftSidebarContent';
 
 /**
- * Left Sidebar - Desktop only
+ * Left Sidebar - Desktop shell surface
  * Contains chat history/navigation
- * Hidden on mobile (replaced by drawer)
+ *
+ * NOTE:
+ * Desktop vs Mobile is now controlled by orientation in Index.tsx.
+ * So this component should not hard-hide itself using lg: breakpoints.
  */
 export function LeftSidebar() {
   const { leftSidebarCollapsed, toggleLeftSidebar } = useSarahStore();
 
   return (
-    <aside 
+    <aside
       className={cn(
-        "hidden lg:flex bg-sidebar border-r border-sidebar-border flex-col transition-all duration-300",
+        "flex bg-sidebar border-r border-sidebar-border flex-col transition-all duration-300",
         leftSidebarCollapsed ? "w-14" : "w-72"
       )}
     >
@@ -28,9 +31,9 @@ export function LeftSidebar() {
             Chats
           </h2>
         )}
-        <Button 
-          variant="ghost" 
-          size="icon" 
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={toggleLeftSidebar}
           className="text-sidebar-foreground hover:text-foreground hover:bg-sidebar-accent shrink-0 ml-auto"
         >

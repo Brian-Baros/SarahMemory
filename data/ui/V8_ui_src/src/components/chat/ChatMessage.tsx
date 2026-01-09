@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { User, Download, Play, Pause, Square, X, Image as ImageIcon, Video as VideoIcon } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { User, Download, X } from 'lucide-react';
 import sarahIcon from '@/assets/sarah-icon.ico';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -10,19 +10,19 @@ interface ChatMessageProps {
   onSendFollowUp?: (text: string) => void;
 }
 
-// Parse follow-up suggestions like "Should I dig deeper? [Yes] [No]"
 function parseFollowUpSuggestions(content: string): { text: string; suggestions: string[] } {
-  const suggestionRegex = /\[([^\]]+)\]/g;
+  // Only match bracket tokens that are standalone (preceded by start/whitespace and followed by whitespace/end)
+  const suggestionRegex = /(^|\s)\[([^\]\n]+)\](?=\s|$)/g;
+
   const suggestions: string[] = [];
-  let match;
-  
+  let match: RegExpExecArray | null;
+
   while ((match = suggestionRegex.exec(content)) !== null) {
-    suggestions.push(match[1]);
+    suggestions.push(match[2].trim());
   }
-  
-  // Remove the suggestion brackets from the text
-  const text = content.replace(suggestionRegex, '').trim();
-  
+
+  // Remove only those standalone tokens (preserves markdown links like [docs](url))
+  const text = content.replace(suggestionRegex, '$1').trim();
   return { text, suggestions };
 }
 
@@ -30,75 +30,98 @@ function parseFollowUpSuggestions(content: string): { text: string; suggestions:
 function parseMedia(content: string): { text: string; images: string[]; videos: string[] } {
   const images: string[] = [];
   const videos: string[] = [];
-  
-  // Match image URLs
-  const imageRegex = /(?:!\[.*?\]\(([^)]+)\)|(?:https?:\/\/[^\s]+\.(?:jpg|jpeg|png|gif|webp)))/gi;
-  let imageMatch;
-  while ((imageMatch = imageRegex.exec(content)) !== null) {
-    const url = imageMatch[1] || imageMatch[0];
-    if (url && !images.includes(url)) {
-      images.push(url);
-    }
+
+  // Markdown images: ![alt](url)
+  const mdImageRegex = /!\[[^\]]*?\]\(([^)]+)\)/gi;
+  let m: RegExpExecArray | null;
+
+  while ((m = mdImageRegex.exec(content)) !== null) {
+    const url = (m[1] || '').trim();
+    if (url && !images.includes(url)) images.push(url);
   }
-  
-  // Match video URLs
-  const videoRegex = /(?:https?:\/\/[^\s]+\.(?:mp4|webm|mov|avi))/gi;
-  let videoMatch;
-  while ((videoMatch = videoRegex.exec(content)) !== null) {
-    if (!videos.includes(videoMatch[0])) {
-      videos.push(videoMatch[0]);
-    }
+
+  // Raw image URLs
+  const rawImageRegex = /https?:\/\/[^\s)]+\.(?:jpg|jpeg|png|gif|webp)(?:\?[^\s)]*)?/gi;
+  let im: RegExpExecArray | null;
+
+  while ((im = rawImageRegex.exec(content)) !== null) {
+    const url = (im[0] || '').trim();
+    if (url && !images.includes(url)) images.push(url);
   }
-  
-  // Clean up text by removing raw URLs that we've extracted
+
+  // Raw video URLs
+  const rawVideoRegex = /https?:\/\/[^\s)]+\.(?:mp4|webm|mov|avi)(?:\?[^\s)]*)?/gi;
+  let vm: RegExpExecArray | null;
+
+  while ((vm = rawVideoRegex.exec(content)) !== null) {
+    const url = (vm[0] || '').trim();
+    if (url && !videos.includes(url)) videos.push(url);
+  }
+
+  // Clean up text: remove markdown image blocks + extracted URLs
   let text = content;
-  images.forEach(img => {
-    text = text.replace(img, '').replace(/!\[.*?\]\(\)/g, '');
+
+  // Remove markdown image tokens entirely
+  text = text.replace(mdImageRegex, '').trim();
+
+  // Remove raw URLs we extracted (images/videos)
+  [...images, ...videos].forEach((u) => {
+    // escape for regex
+    const escaped = u.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(escaped, 'g'), '').trim();
   });
-  videos.forEach(vid => {
-    text = text.replace(vid, '');
-  });
-  
-  return { text: text.trim(), images, videos };
+
+  // Normalize extra whitespace left behind
+  text = text.replace(/\n{3,}/g, '\n\n').replace(/[ \t]{2,}/g, ' ').trim();
+
+  return { text, images, videos };
 }
 
 export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [playingVideo, setPlayingVideo] = useState<string | null>(null);
-  const [videoPlaying, setVideoPlaying] = useState(false);
 
-  const formatTime = (date: Date) => {
+  const formatTime = (ts: any) => {
+    const date = ts instanceof Date ? ts : new Date(ts ?? Date.now());
+    if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // Parse content for follow-ups and media
-  const { text: textWithoutSuggestions, suggestions } = parseFollowUpSuggestions(message.content);
-  const { text: finalText, images, videos } = parseMedia(textWithoutSuggestions);
+  const { finalText, suggestions, images, videos } = useMemo(() => {
+    const { text: withoutSuggestions, suggestions } = parseFollowUpSuggestions(message.content || '');
+    const { text: finalText, images, videos } = parseMedia(withoutSuggestions);
+    return { finalText, suggestions, images, videos };
+  }, [message.content]);
 
   const handleFollowUp = (suggestion: string) => {
-    if (onSendFollowUp) {
-      // Convert suggestion to a follow-up message
-      const followUpMessage = suggestion.toLowerCase().includes('yes') || 
-                             suggestion.toLowerCase().includes('more') ||
-                             suggestion.toLowerCase().includes('deeper')
-        ? `Yes, please ${suggestion.toLowerCase()}`
-        : suggestion;
-      onSendFollowUp(followUpMessage);
-    }
+    if (!onSendFollowUp) return;
+
+    const s = suggestion.trim();
+    const lower = s.toLowerCase();
+
+    const followUpMessage =
+      lower.includes('yes') || lower.includes('more') || lower.includes('deeper')
+        ? `Yes, please ${lower}`
+        : s;
+
+    onSendFollowUp(followUpMessage);
   };
 
   const handleDownload = async (url: string, filename?: string) => {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, { mode: 'cors' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
+
       const a = document.createElement('a');
       a.href = blobUrl;
       a.download = filename || 'download';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+
       URL.revokeObjectURL(blobUrl);
     } catch (error) {
       console.error('Download failed:', error);
@@ -106,10 +129,7 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
   };
 
   return (
-    <div className={cn(
-      "flex gap-3 animate-fade-in",
-      isUser ? "justify-end" : "justify-start"
-    )}>
+    <div className={cn('flex gap-3 animate-fade-in', isUser ? 'justify-end' : 'justify-start')}>
       {/* Avatar for assistant */}
       {!isUser && (
         <div className="w-8 h-8 rounded-full overflow-hidden shrink-0 mt-1 ring-2 ring-primary/40 shadow-[0_0_10px_rgba(var(--primary-rgb),0.3)]">
@@ -117,34 +137,28 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
         </div>
       )}
 
-      <div className={cn(
-        "max-w-[85%] sm:max-w-[75%] space-y-2",
-        isUser && "items-end"
-      )}>
+      <div className={cn('max-w-[85%] sm:max-w-[75%] space-y-2', isUser && 'items-end')}>
         {/* Message Bubble */}
-        <div className={cn(
-          "px-4 py-2.5 whitespace-pre-wrap",
-          isUser ? "bubble-user" : "bubble-assistant"
-        )}>
+        <div className={cn('px-4 py-2.5 whitespace-pre-wrap', isUser ? 'bubble-user' : 'bubble-assistant')}>
           <p className="text-sm leading-relaxed">{finalText || message.content}</p>
         </div>
 
         {/* Media Display - Images */}
         {images.length > 0 && (
-          <div className={cn(
-            "grid gap-2",
-            images.length === 1 ? "grid-cols-1" : 
-            images.length === 2 ? "grid-cols-2" :
-            images.length <= 4 ? "grid-cols-2" : "grid-cols-3"
-          )}>
+          <div
+            className={cn(
+              'grid gap-2',
+              images.length === 1 ? 'grid-cols-1' : images.length === 2 ? 'grid-cols-2' : images.length <= 4 ? 'grid-cols-2' : 'grid-cols-3',
+            )}
+          >
             {images.slice(0, 4).map((img, idx) => (
-              <div 
-                key={idx} 
+              <div
+                key={`${img}-${idx}`}
                 className="relative group rounded-lg overflow-hidden cursor-pointer bg-secondary"
                 onClick={() => setSelectedImage(img)}
               >
-                <img 
-                  src={img} 
+                <img
+                  src={img}
                   alt={`Generated image ${idx + 1}`}
                   className="w-full h-auto max-h-48 object-cover"
                   loading="lazy"
@@ -171,13 +185,8 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
         {videos.length > 0 && (
           <div className="space-y-2">
             {videos.map((vid, idx) => (
-              <div key={idx} className="relative rounded-lg overflow-hidden bg-secondary">
-                <video 
-                  src={vid}
-                  className="w-full max-h-64"
-                  controls
-                  playsInline
-                />
+              <div key={`${vid}-${idx}`} className="relative rounded-lg overflow-hidden bg-secondary">
+                <video src={vid} className="w-full max-h-64" controls playsInline />
                 <div className="absolute top-2 right-2 flex gap-1">
                   <Button
                     size="icon"
@@ -198,7 +207,7 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
           <div className="flex flex-wrap gap-2 mt-2">
             {suggestions.map((suggestion, idx) => (
               <Button
-                key={idx}
+                key={`${suggestion}-${idx}`}
                 variant="outline"
                 size="sm"
                 className="h-7 text-xs bg-secondary/50 hover:bg-primary/20 border-border hover:border-primary/50"
@@ -211,10 +220,7 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
         )}
 
         {/* Timestamp */}
-        <div className={cn(
-          "text-xs text-muted-foreground px-1",
-          isUser ? "text-right" : "text-left"
-        )}>
+        <div className={cn('text-xs text-muted-foreground px-1', isUser ? 'text-right' : 'text-left')}>
           {formatTime(message.timestamp)}
         </div>
       </div>
@@ -228,25 +234,15 @@ export function ChatMessage({ message, onSendFollowUp }: ChatMessageProps) {
 
       {/* Image Lightbox */}
       {selectedImage && (
-        <div 
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setSelectedImage(null)}
-        >
-          <div className="relative max-w-4xl max-h-[90vh]">
-            <img 
-              src={selectedImage} 
-              alt="Full size"
-              className="max-w-full max-h-[90vh] object-contain rounded-lg"
-            />
+        <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={() => setSelectedImage(null)}>
+          <div className="relative max-w-4xl max-h-[90vh]" onClick={(e) => e.stopPropagation()}>
+            <img src={selectedImage} alt="Full size" className="max-w-full max-h-[90vh] object-contain rounded-lg" />
             <div className="absolute top-2 right-2 flex gap-2">
               <Button
                 size="icon"
                 variant="ghost"
                 className="h-8 w-8 bg-background/80 hover:bg-background text-foreground"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDownload(selectedImage, 'image.png');
-                }}
+                onClick={() => handleDownload(selectedImage, 'image.png')}
               >
                 <Download className="h-4 w-4" />
               </Button>

@@ -1,36 +1,52 @@
-import React, { useEffect } from "react";
-import { Toaster } from "./components/ui/toaster";
-import { Toaster as Sonner } from "./components/ui/sonner";
-import { TooltipProvider } from "./components/ui/tooltip";
+import React, { useEffect, useRef } from "react";
+import type { ErrorInfo } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
-import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
-import { api } from "./lib/api";
-import { useSarahStore } from "./stores/useSarahStore"; // ✅ THIS MUST MATCH YOUR FILE NAME
+import Index from "@/pages/Index";
+import NotFound from "@/pages/NotFound";
+
+import { api } from "@/lib/api";
+import { useSarahStore } from "@/stores/useSarahStore";
 
 const queryClient = new QueryClient();
 
-// Simple error boundary so we DON'T get a blank white screen on crash
-class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean; error?: any }> {
-  constructor(props: any) {
+class AppErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean; error?: unknown }
+> {
+  constructor(props: { children: React.ReactNode }) {
     super(props);
-    this.state = { hasError: false, error: null };
+    this.state = { hasError: false, error: undefined };
   }
 
-  static getDerivedStateFromError(error: any) {
+  static getDerivedStateFromError(error: unknown) {
     return { hasError: true, error };
   }
 
-  componentDidCatch(error: any, info: any) {
+  componentDidCatch(error: unknown, info: ErrorInfo) {
     // eslint-disable-next-line no-console
     console.error("[AppErrorBoundary] Crash:", error, info);
   }
 
   render() {
     if (this.state.hasError) {
+      let message = "Unknown error";
+
+      if (this.state.error instanceof Error) message = this.state.error.message;
+      else if (typeof this.state.error === "string") message = this.state.error;
+      else if (this.state.error) {
+        try {
+          message = JSON.stringify(this.state.error, null, 2);
+        } catch {
+          message = String(this.state.error);
+        }
+      }
+
       return (
         <div style={{ padding: 16, fontFamily: "ui-sans-serif, system-ui" }}>
           <h1 style={{ fontSize: 18, fontWeight: 700 }}>SarahMemory UI crashed</h1>
@@ -42,9 +58,11 @@ class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, { 
               background: "rgba(0,0,0,0.08)",
               borderRadius: 8,
               overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
             }}
           >
-            {String(this.state.error?.message || this.state.error || "Unknown error")}
+            {message}
           </pre>
         </div>
       );
@@ -54,49 +72,40 @@ class AppErrorBoundary extends React.Component<{ children: React.ReactNode }, { 
   }
 }
 
-const App = () => {
+export default function App() {
   const setBootstrapData = useSarahStore((s) => s.setBootstrapData);
   const setBackendReady = useSarahStore((s) => s.setBackendReady);
-  const playWelcomeIfNeeded = useSarahStore((s) => s.playWelcomeIfNeeded);
+
+  // StrictMode guard
+  const didBootRef = useRef(false);
 
   useEffect(() => {
+    if (didBootRef.current) return;
+    didBootRef.current = true;
+
     let cancelled = false;
 
-    const boot = async () => {
+    (async () => {
       try {
         const res = await api.bootstrap.init();
         if (cancelled) return;
 
-        // Store bootstrap (even if ok=false)
-        setBootstrapData(res as any);
-
-        // Mark backend ready (this is what your greeting checks)
-        setBackendReady(true);
-
-        // Fire greeting after state is set
-        setTimeout(() => {
-          if (!cancelled) playWelcomeIfNeeded();
-        }, 0);
+        // Your store will set backendReady and fire welcome (if ok)
+        setBootstrapData(res);
       } catch (err) {
         // eslint-disable-next-line no-console
         console.warn("[App] bootstrap failed, continuing:", err);
-
         if (cancelled) return;
 
-        // Still allow greeting text even if backend is down
+        // Allow UI to continue even if backend is down
         setBackendReady(true);
-
-        setTimeout(() => {
-          if (!cancelled) playWelcomeIfNeeded();
-        }, 0);
       }
-    };
+    })();
 
-    boot();
     return () => {
       cancelled = true;
     };
-  }, [setBootstrapData, setBackendReady, playWelcomeIfNeeded]);
+  }, [setBootstrapData, setBackendReady]);
 
   return (
     <AppErrorBoundary>
@@ -114,6 +123,4 @@ const App = () => {
       </QueryClientProvider>
     </AppErrorBoundary>
   );
-};
-
-export default App;
+}

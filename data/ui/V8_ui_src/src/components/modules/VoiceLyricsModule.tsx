@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useCreativeCacheStore } from '@/stores/useCreativeCacheStore';
+import { usePreviewStore } from '@/stores/usePreviewStore';
 
 type VoiceMode = 'tts' | 'lyrics';
 
@@ -22,6 +23,7 @@ export function VoiceLyricsModule() {
   const voices = useSarahStore((s) => s.voices);
   const settings = useSarahStore((s) => s.settings);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
+  const { showAudio } = usePreviewStore();
   const voiceItems = items.voice;
 
   const handleGenerate = async () => {
@@ -60,12 +62,17 @@ export function VoiceLyricsModule() {
 
       const audioUrl = (response as any)?.audio_url || (response as any)?.url;
 
-      addItem('voice', {
+      const itemId = addItem('voice', {
         type: 'voice',
         prompt: text.trim(),
         url: audioUrl,
         metadata: { mode },
       });
+
+      // Show in preview surface
+      if (audioUrl) {
+        showAudio(itemId, audioUrl);
+      }
 
       addMessage({
         role: 'assistant',

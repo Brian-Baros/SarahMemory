@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useCreativeCacheStore, type CachedItem } from '@/stores/useCreativeCacheStore';
+import { usePreviewStore } from '@/stores/usePreviewStore';
 import { cn } from '@/lib/utils';
 
 export function VideoStudioModule() {
@@ -17,6 +18,7 @@ export function VideoStudioModule() {
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
+  const { showVideo } = usePreviewStore();
   const videoItems = items.video;
   
   // Available items from other modules for stacking
@@ -74,12 +76,17 @@ export function VideoStudioModule() {
 
       const resultUrl = (response as any)?.url || (response as any)?.video_url;
 
-      addItem('video', {
+      const itemId = addItem('video', {
         type: 'video',
         prompt: prompt.trim() || 'Stacked composition',
         url: resultUrl,
         metadata: { sourceItems: selectedItems },
       });
+
+      // Show in preview surface
+      if (resultUrl) {
+        showVideo(itemId, resultUrl);
+      }
 
       addMessage({
         role: 'assistant',

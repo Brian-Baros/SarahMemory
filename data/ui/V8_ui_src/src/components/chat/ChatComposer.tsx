@@ -1,21 +1,19 @@
-import { useState, useRef, useEffect, KeyboardEvent } from 'react';
-import { Send, Mic, Paperclip, Loader2 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { useSarahStore } from '@/stores/useSarahStore';
-import { cn } from '@/lib/utils';
-import { api, ChatResponse, AvatarSpeechCue } from '@/lib/api';
-import { toast } from 'sonner';
+import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { Send, Mic, Paperclip, Loader2 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { toast } from "sonner";
+
+import { useChatSend } from "@/hooks/useChatSend";
 
 // Web Speech API types
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
 }
-
 interface SpeechRecognitionErrorEvent extends Event {
   error: string;
 }
-
 interface SpeechRecognitionInstance extends EventTarget {
   continuous: boolean;
   interimResults: boolean;
@@ -30,425 +28,127 @@ interface SpeechRecognitionInstance extends EventTarget {
 }
 
 export function ChatComposer() {
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState("");
   const [isRecording, setIsRecording] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
-  const speakingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
-  const { messages, addMessage, setTyping, mediaState, settings, setSpeechCues, setAvatarSpeaking, setSpeechStartTime } = useSarahStore();
 
-  // Cleanup speech recognition and speaking timeout on unmount
+  const { send, stopAvatarSpeaking } = useChatSend();
+
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
-      if (speakingTimeoutRef.current) {
-        clearTimeout(speakingTimeoutRef.current);
-      }
+      if (recognitionRef.current) recognitionRef.current.abort();
     };
+    // Cleanup only - no dependencies needed
   }, []);
 
-  /**
-   * Estimate speaking duration from text using word count
-   * Assumes ~2.2 words per second, clamped between 800ms and 12000ms
-   */
-  const estimateSpeakingDuration = (text: string): number => {
-    const wordCount = text.split(/\s+/).filter(Boolean).length;
-    const wordsPerSecond = 2.2;
-    const estimatedMs = (wordCount / wordsPerSecond) * 1000;
-    return Math.max(800, Math.min(12000, estimatedMs));
-  };
+  const handleSubmit = async (overrideText?: string) => {
+    const textToSend = (overrideText ?? message).trim();
+    if (!textToSend && selectedFiles.length === 0) return;
+    if (isSending) return;
 
-  /**
-   * Start avatar speaking animation
-   * Uses duration_ms from backend if available, otherwise estimates from word count
-   */
-  const startAvatarSpeaking = (response: ChatResponse) => {
-    // Clear any existing timeout
-    if (speakingTimeoutRef.current) {
-      clearTimeout(speakingTimeoutRef.current);
-    }
-
-    const avatarSpeech = response.meta?.avatar_speech;
-    
-    // Set speech cues if available
-    if (avatarSpeech?.cues && avatarSpeech.cues.length > 0) {
-      setSpeechCues(avatarSpeech.cues);
-    } else {
-      setSpeechCues([]);
-    }
-
-    // Determine duration
-    const durationMs = avatarSpeech?.duration_ms || estimateSpeakingDuration(response.content);
-
-    // Start speaking
-    setAvatarSpeaking(true);
-    setSpeechStartTime(Date.now());
-    
-    // Also notify backend (fire and forget)
-    api.avatar.setSpeaking(true).catch(() => {});
-
-    // Set timeout as fallback (will be cleared if audio ends first)
-    speakingTimeoutRef.current = setTimeout(() => {
-      stopAvatarSpeaking();
-    }, durationMs + 500); // Add 500ms buffer
-  };
-
-  /**
-   * Stop avatar speaking animation
-   */
-  const stopAvatarSpeaking = () => {
-    if (speakingTimeoutRef.current) {
-      clearTimeout(speakingTimeoutRef.current);
-      speakingTimeoutRef.current = null;
-    }
-    setAvatarSpeaking(false);
-    setSpeechStartTime(null);
-    setSpeechCues([]);
-    api.avatar.setSpeaking(false).catch(() => {});
-  };
-
-  const handleSubmit = async () => {
-    if (!message.trim() && selectedFiles.length === 0) return;
-    if (isLoading) return;
-
-    const userMessage = message.trim();
-    
-    // Add user message
-    addMessage({
-      role: 'user',
-      content: userMessage,
-    });
-
-    setMessage('');
-    setSelectedFiles([]);
-    setTyping(true);
-    setIsLoading(true);
-
-    // Notify avatar that user is sending
+    setIsSending(true);
     try {
-      await api.avatar.setListening(true);
-    } catch (e) {
-      // Silent - avatar state is not critical
-    }
-
-    try {
-      // Build message history for context
-      const messageHistory = messages.map(m => ({
-        role: m.role,
-        content: m.content,
-      }));
-      
-      // Add the new user message
-      messageHistory.push({
-        role: 'user' as const,
-        content: userMessage,
-      });
-
-      // Send to backend
-      const response = await api.chat.sendMessage(messageHistory);
-      
-      setTyping(false);
-      
-      if (response.error) {
-        toast.error(response.error);
-        addMessage({
-          role: 'assistant',
-          content: "I'm sorry, I encountered an error. Please try again.",
-        });
-      } else {
-        addMessage({
-          role: 'assistant',
-          content: response.content,
-        });
-        
-        // ALWAYS start avatar speaking animation (even if voice is off)
-        startAvatarSpeaking(response);
-        
-        // If voice is enabled, play audio (which will stop speaking on end)
-        if (mediaState.voiceEnabled && settings.autoSpeak) {
-          await speakResponse(response.content);
-        }
+      // NOTE: files are not wired yet, but keep UX intact
+      if (selectedFiles.length > 0) {
+        toast.info(`${selectedFiles.length} file(s) attached (upload pipeline not wired yet).`);
       }
-    } catch (error) {
-      console.error('Chat error:', error);
-      setTyping(false);
-      
-      toast.error('Failed to send message. Please try again.');
-      addMessage({
-        role: 'assistant',
-        content: "I'm having trouble connecting right now. Please try again in a moment.",
-      });
+
+      await send(textToSend);
+      setMessage("");
+      setSelectedFiles([]);
     } finally {
-      setIsLoading(false);
-      // Reset avatar state
-      try {
-        await api.avatar.setListening(false);
-      } catch (e) {
-        // Silent
-      }
+      setIsSending(false);
     }
-  };
-
-  const speakResponse = async (text: string) => {
-    try {
-      // Use the selected voice from settings
-      const response = await api.voice.speak(text, settings.selectedVoice);
-      
-      if (response.success && (response.audio_url || response.audio_base64)) {
-        const audioSrc = response.audio_url || 
-          (response.audio_base64 ? `data:audio/mp3;base64,${response.audio_base64}` : null);
-        
-        if (audioSrc) {
-          const audio = new Audio(audioSrc);
-          
-          audio.onended = () => {
-            stopAvatarSpeaking();
-          };
-          
-          audio.onerror = () => {
-            stopAvatarSpeaking();
-          };
-          
-          await audio.play();
-          return;
-        }
-      }
-      
-      // Fallback to browser TTS
-      if (response.fallback || !response.success) {
-        useBrowserTTS(text);
-      }
-    } catch (error) {
-      console.error('TTS error:', error);
-      useBrowserTTS(text);
-    }
-  };
-
-  const useBrowserTTS = (text: string) => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      
-      // Get voices (may need to wait for them to load)
-      let voices = speechSynthesis.getVoices();
-      
-      // If voices aren't loaded yet, wait for them
-      if (voices.length === 0) {
-        speechSynthesis.onvoiceschanged = () => {
-          voices = speechSynthesis.getVoices();
-          setVoiceAndSpeak(utterance, voices);
-        };
-      } else {
-        setVoiceAndSpeak(utterance, voices);
-      }
-    }
-  };
-
-  const setVoiceAndSpeak = (utterance: SpeechSynthesisUtterance, voices: SpeechSynthesisVoice[]) => {
-    // Default to female voice for Sarah AI
-    const femaleKeywords = ['female', 'samantha', 'victoria', 'karen', 'zira', 'susan', 'hazel', 'fiona', 'moira', 'tessa', 'kate'];
-    const englishVoices = voices.filter(v => v.lang.startsWith('en'));
-    
-    // Find a female voice
-    let selectedVoice = englishVoices.find(v => 
-      femaleKeywords.some(keyword => v.name.toLowerCase().includes(keyword))
-    );
-    
-    // If no obvious female voice, try to avoid obvious male voices
-    if (!selectedVoice) {
-      const maleKeywords = ['male', 'david', 'daniel', 'james', 'alex', 'tom', 'mark', 'fred', 'ralph'];
-      selectedVoice = englishVoices.find(v => 
-        !maleKeywords.some(keyword => v.name.toLowerCase().includes(keyword))
-      );
-    }
-    
-    // Fall back to first English voice
-    if (!selectedVoice && englishVoices.length > 0) {
-      selectedVoice = englishVoices[0];
-    }
-    
-    if (selectedVoice) {
-      utterance.voice = selectedVoice;
-    }
-    
-    // Set slightly higher pitch for more feminine sound
-    utterance.pitch = 1.1;
-    utterance.rate = 0.95;
-    
-    utterance.onend = () => {
-      stopAvatarSpeaking();
-    };
-    
-    speechSynthesis.speak(utterance);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();
     }
   };
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     setSelectedFiles(files);
-    
-    // Optionally analyze files immediately
-    if (files.length > 0) {
-      toast.info(`${files.length} file(s) selected. They will be analyzed when you send.`);
-    }
+    if (files.length > 0) toast.info(`${files.length} file(s) selected. They will be analyzed when you send.`);
   };
 
   const toggleRecording = async () => {
     if (isRecording) {
-      // Stop recording
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
+      if (recognitionRef.current) recognitionRef.current.stop();
       setIsRecording(false);
-    } else {
-      // Check for Web Speech API support
-      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      
-      if (!SpeechRecognition) {
-        toast.error('Speech recognition is not supported in this browser. Please use Chrome or Edge.');
-        return;
-      }
+      return;
+    }
 
-      try {
-        const recognition = new SpeechRecognition();
-        recognitionRef.current = recognition;
-        
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-US';
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      toast.error("Speech recognition is not supported in this browser. Please use Chrome or Edge.");
+      return;
+    }
 
-        recognition.onstart = () => {
-          setIsRecording(true);
-          toast.info('Listening... Speak now');
-        };
+    try {
+      const recognition: SpeechRecognitionInstance = new SpeechRecognition();
+      recognitionRef.current = recognition;
 
-        recognition.onresult = async (event: any) => {
-          const transcript = event.results[0][0].transcript;
-          
-          if (transcript.trim()) {
-            // Set the message and auto-send
-            setMessage(transcript);
-            setIsRecording(false);
-            
-            // Auto-submit after a brief delay to show the text
-            setTimeout(async () => {
-              // Directly add and send the message
-              addMessage({
-                role: 'user',
-                content: transcript,
-              });
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = "en-US";
 
-              setMessage('');
-              setTyping(true);
-              setIsLoading(true);
+      recognition.onstart = () => {
+        setIsRecording(true);
+        toast.info("Listening... Speak now");
+      };
 
-              try {
-                await api.avatar.setListening(true);
-              } catch (e) {
-                // Silent
-              }
-
-              try {
-                const messageHistory = messages.map(m => ({
-                  role: m.role,
-                  content: m.content,
-                }));
-                
-                messageHistory.push({
-                  role: 'user' as const,
-                  content: transcript,
-                });
-
-                const response = await api.chat.sendMessage(messageHistory);
-                
-                setTyping(false);
-                
-                if (response.error) {
-                  toast.error(response.error);
-                  addMessage({
-                    role: 'assistant',
-                    content: "I'm sorry, I encountered an error. Please try again.",
-                  });
-                } else {
-                  addMessage({
-                    role: 'assistant',
-                    content: response.content,
-                  });
-                  
-                  // ALWAYS start avatar speaking (even if voice is off)
-                  startAvatarSpeaking(response);
-                  
-                  if (mediaState.voiceEnabled && settings.autoSpeak) {
-                    await speakResponse(response.content);
-                  }
-                }
-              } catch (error) {
-                console.error('Chat error:', error);
-                setTyping(false);
-                toast.error('Failed to send message');
-              } finally {
-                setIsLoading(false);
-                try {
-                  await api.avatar.setListening(false);
-                } catch (e) {
-                  // Silent
-                }
-              }
-            }, 200);
-          }
-        };
-
-        recognition.onerror = (event: any) => {
-          console.error('Speech recognition error:', event.error);
-          setIsRecording(false);
-          
-          if (event.error === 'not-allowed') {
-            toast.error('Microphone access denied. Please allow microphone access.');
-          } else if (event.error === 'no-speech') {
-            toast.info('No speech detected. Try again.');
-          } else {
-            toast.error(`Speech recognition error: ${event.error}`);
-          }
-        };
-
-        recognition.onend = () => {
-          setIsRecording(false);
-        };
-
-        recognition.start();
-      } catch (error) {
-        console.error('Speech recognition error:', error);
-        toast.error('Could not start speech recognition');
+      recognition.onresult = async (event: any) => {
+        const transcript = event?.results?.[0]?.[0]?.transcript ?? "";
+        const cleaned = String(transcript).trim();
         setIsRecording(false);
-      }
+        if (!cleaned) return;
+
+        setMessage(cleaned);
+
+        setTimeout(async () => {
+          await handleSubmit(cleaned);
+        }, 200);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        setIsRecording(false);
+
+        if (event.error === "not-allowed") toast.error("Microphone access denied. Please allow microphone access.");
+        else if (event.error === "no-speech") toast.info("No speech detected. Try again.");
+        else toast.error(`Speech recognition error: ${event.error}`);
+      };
+
+      recognition.onend = () => setIsRecording(false);
+
+      recognition.start();
+    } catch (error) {
+      console.error("Speech recognition error:", error);
+      toast.error("Could not start speech recognition");
+      setIsRecording(false);
     }
   };
 
   return (
     <div className="shrink-0 border-t border-border bg-card/50 backdrop-blur-sm p-2 sm:p-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] sm:pb-3">
       <div className="max-w-3xl mx-auto">
-        {/* Selected Files Preview */}
         {selectedFiles.length > 0 && (
           <div className="flex gap-2 mb-3 flex-wrap">
             {selectedFiles.map((file, idx) => (
-              <div 
+              <div
                 key={idx}
                 className="px-3 py-1.5 bg-secondary rounded-full text-xs text-secondary-foreground flex items-center gap-2"
               >
                 <Paperclip className="h-3 w-3" />
                 {file.name}
-                <button 
-                  onClick={() => setSelectedFiles(files => files.filter((_, i) => i !== idx))}
+                <button
+                  onClick={() => setSelectedFiles((files) => files.filter((_, i) => i !== idx))}
                   className="hover:text-destructive"
                 >
                   ×
@@ -458,17 +158,16 @@ export function ChatComposer() {
           </div>
         )}
 
-        {/* Composer Row */}
         <div className="flex items-center gap-2 sm:gap-3">
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
             size="icon"
             onClick={toggleRecording}
-            disabled={isLoading}
+            disabled={isSending}
             className={cn(
               "shrink-0 h-9 w-9 sm:h-10 sm:w-10",
-              isRecording 
-                ? "text-destructive animate-pulse ring-2 ring-destructive bg-destructive/10" 
+              isRecording
+                ? "text-destructive animate-pulse ring-2 ring-destructive bg-destructive/10"
                 : "text-muted-foreground hover:text-foreground"
             )}
             title={isRecording ? "Stop recording" : "Start voice input"}
@@ -481,41 +180,31 @@ export function ChatComposer() {
             onChange={(e) => setMessage(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder="Ask anything..."
-            disabled={isLoading || isRecording}
+            disabled={isSending || isRecording}
             className="flex-1 bg-secondary border-border text-foreground placeholder:text-muted-foreground h-9 sm:h-10"
           />
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-          
-          <Button 
+          <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileSelect} />
+
+          <Button
             variant="ghost"
             size="icon"
             onClick={() => fileInputRef.current?.click()}
-            disabled={isLoading}
+            disabled={isSending}
             className="shrink-0 text-muted-foreground hover:text-foreground h-9 w-9 sm:h-10 sm:w-10"
             title="Attach files"
           >
             <Paperclip className="h-5 w-5" />
           </Button>
 
-          <Button 
-            onClick={handleSubmit}
-            disabled={(!message.trim() && selectedFiles.length === 0) || isLoading}
+          <Button
+            onClick={() => handleSubmit()}
+            disabled={(!message.trim() && selectedFiles.length === 0) || isSending}
             size="icon"
             className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 h-9 w-9 sm:h-10 sm:w-10"
             title="Send message"
           >
-            {isLoading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
+            {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>
       </div>

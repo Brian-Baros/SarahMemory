@@ -1,12 +1,15 @@
 import { useState } from 'react';
-import { ChevronDown, MessageSquare, Image, Music, Mic, Video } from 'lucide-react';
+import { ChevronDown, MessageSquare, Image, Music, Mic, Video, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Button } from '@/components/ui/button';
 import { CommunicationModule } from './CommunicationModule';
 import { ImageGenerationModule } from './ImageGenerationModule';
 import { MusicSynthModule } from './MusicSynthModule';
 import { VoiceLyricsModule } from './VoiceLyricsModule';
 import { VideoStudioModule } from './VideoStudioModule';
+import { useCreativeCacheStore } from '@/stores/useCreativeCacheStore';
+import { toast } from 'sonner';
 
 interface AccordionModule {
   id: string;
@@ -25,6 +28,7 @@ const modules: AccordionModule[] = [
 
 export function StudioAccordion() {
   const [openModules, setOpenModules] = useState<string[]>(['communication']);
+  const resetStack = useCreativeCacheStore((s) => s.resetStack);
 
   const toggleModule = (id: string) => {
     setOpenModules((prev) =>
@@ -32,8 +36,26 @@ export function StudioAccordion() {
     );
   };
 
+  const handleResetStack = () => {
+    resetStack();
+    toast.success('Session cache cleared');
+  };
+
   return (
     <div className="flex-1 overflow-y-auto">
+      {/* Reset Stack Button */}
+      <div className="flex items-center justify-end p-2 border-b border-sidebar-border bg-sidebar-accent/30">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 text-xs"
+          onClick={handleResetStack}
+          title="Reset Stack (clear all cached items)"
+        >
+          <RotateCcw className="h-3 w-3 mr-1" />
+          Reset Stack
+        </Button>
+      </div>
       {modules.map((mod) => {
         const Icon = mod.icon;
         const isOpen = openModules.includes(mod.id);

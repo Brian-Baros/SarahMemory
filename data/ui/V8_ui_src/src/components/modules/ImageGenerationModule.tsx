@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { toast } from 'sonner';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useCreativeCacheStore } from '@/stores/useCreativeCacheStore';
+import { usePreviewStore } from '@/stores/usePreviewStore';
 import { cn } from '@/lib/utils';
 
 export function ImageGenerationModule() {
@@ -18,6 +19,7 @@ export function ImageGenerationModule() {
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
+  const { showImage } = usePreviewStore();
   const imageItems = items.image;
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -82,12 +84,17 @@ export function ImageGenerationModule() {
       const resultUrl = (response as any)?.url || (response as any)?.result_url;
       const preview = (response as any)?.preview || (response as any)?.thumbnail || resultUrl;
 
-      addItem('image', {
+      const itemId = addItem('image', {
         type: 'image',
         prompt: prompt.trim(),
         url: resultUrl,
         preview: preview,
       });
+
+      // Show in preview surface
+      if (resultUrl || preview) {
+        showImage(itemId, resultUrl || preview);
+      }
 
       addMessage({
         role: 'assistant',
@@ -101,11 +108,14 @@ export function ImageGenerationModule() {
       clearInterval(progressInterval);
       
       // Demo placeholder
-      addItem('image', {
+      const itemId = addItem('image', {
         type: 'image',
         prompt: prompt.trim(),
         preview: 'https://via.placeholder.com/256x256?text=Generated+Image',
       });
+
+      // Show demo in preview
+      showImage(itemId, 'https://via.placeholder.com/256x256?text=Generated+Image');
 
       addMessage({
         role: 'assistant',

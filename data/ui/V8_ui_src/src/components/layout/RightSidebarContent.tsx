@@ -3,7 +3,7 @@ import { Mic, Volume2, Eye, EyeOff, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { cn } from '@/lib/utils';
-import { AvatarPanel } from '@/components/avatar/AvatarPanel';
+import { PreviewSurface } from '@/components/avatar/PreviewSurface';
 import { config } from '@/lib/config';
 import { useIsMobile } from '@/hooks/use-mobile';
 
@@ -18,12 +18,12 @@ import { StudioAccordion } from '@/components/modules/StudioAccordion';
 
 /**
  * Right sidebar content - Tools, settings, and utilities
- * AvatarPanel pinned at top as preview surface
+ * PreviewSurface pinned at top (unified display router for avatar, media, calls)
  * Modules below in tabbed (Option A) or accordion (Option B) mode
  * Used by both desktop sidebar and mobile drawer
  */
 export function RightSidebarContent() {
-  const { 
+  const {
     mediaState, 
     toggleWebcam, 
     toggleMicrophone, 
@@ -99,7 +99,7 @@ export function RightSidebarContent() {
 
   const handleOpenSettings = () => {
     setSettingsOpen(true);
-    setRightDrawerOpen(false);
+    if (isMobile) setRightDrawerOpen(false); // ✅ only close drawer on mobile
   };
 
   // Render the active module content for tabbed mode
@@ -122,8 +122,8 @@ export function RightSidebarContent() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Avatar Panel - Always visible at top as preview surface */}
-      <AvatarPanel />
+      {/* Preview Surface - Pinned at top, shows avatar/media/call based on router state */}
+      <PreviewSurface />
 
       {/* Media Controls */}
       <div className="p-3 border-b border-sidebar-border">
@@ -186,10 +186,8 @@ export function RightSidebarContent() {
 
       {/* Module Content Area */}
       {useAccordionMode ? (
-        // Option B: Accordion/Studio mode (desktop only when enabled)
         <StudioAccordion />
       ) : (
-        // Option A: Tabbed mode (default, always on mobile)
         <>
           <StudioModuleTabs 
             activeModule={activeModule} 

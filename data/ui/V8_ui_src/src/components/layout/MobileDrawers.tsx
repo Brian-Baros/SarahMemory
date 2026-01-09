@@ -4,6 +4,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { LeftSidebarContent } from './LeftSidebarContent';
 import { RightSidebarContent } from './RightSidebarContent';
 import { useSwipeGesture } from '@/hooks/useSwipeGesture';
+import { useIsMobile } from '@/hooks/use-mobile';
 
 /**
  * Mobile off-canvas drawers for left (chat history) and right (tools) panels.
@@ -11,6 +12,9 @@ import { useSwipeGesture } from '@/hooks/useSwipeGesture';
  * Supports swipe gestures: swipe left to close left drawer, swipe right to close right drawer.
  */
 export function MobileDrawers() {
+  const isMobile = useIsMobile();
+  if (!isMobile) return null; // ✅ critical: never render drawers in desktop shell
+
   const { 
     leftDrawerOpen, 
     setLeftDrawerOpen,
@@ -66,4 +70,3 @@ export function MobileDrawers() {
     </>
   );
 }
-

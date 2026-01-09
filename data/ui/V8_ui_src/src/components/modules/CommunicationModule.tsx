@@ -4,6 +4,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ContactsPanel } from '@/components/panels/ContactsPanel';
 import { DialerPanel } from '@/components/panels/DialerPanel';
 import { useSarahStore } from '@/stores/useSarahStore';
+import { usePreviewStore } from '@/stores/usePreviewStore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
@@ -13,9 +14,10 @@ type CommTab = 'messaging' | 'contacts' | 'dialer';
 export function CommunicationModule() {
   const [activeTab, setActiveTab] = useState<CommTab>('messaging');
   const [messageText, setMessageText] = useState('');
-  const [isInCall, setIsInCall] = useState(false);
   
   const addMessage = useSarahStore((s) => s.addMessage);
+  const { current, showCall, endCall } = usePreviewStore();
+  const isInCall = current.type === 'call';
 
   const handleSendMessage = () => {
     if (!messageText.trim()) {
@@ -33,8 +35,17 @@ export function CommunicationModule() {
     setMessageText('');
   };
 
+  const handleStartCall = (callId: string) => {
+    showCall(callId);
+    addMessage({
+      role: 'assistant',
+      content: '[Call Started] Video call connected',
+    });
+    toast.success('Call started');
+  };
+
   const handleEndCall = () => {
-    setIsInCall(false);
+    endCall();
     toast.info('Call ended');
     addMessage({
       role: 'assistant',

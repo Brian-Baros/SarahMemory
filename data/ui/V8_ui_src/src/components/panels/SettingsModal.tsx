@@ -255,13 +255,16 @@ export function SettingsModal() {
 
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-      <DialogContent className="sm:max-w-md bg-card border-border">
+      <DialogContent className="sm:max-w-md bg-card border-border" aria-describedby="settings-dialog-description">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Sparkles className="h-5 w-5 text-primary" />
             Settings
           </DialogTitle>
         </DialogHeader>
+        <p id="settings-dialog-description" className="sr-only">
+          Configure application settings including voice, theme, and preferences
+        </p>
 
         <div className="space-y-6 py-4">
           {/* Mode Selection */}

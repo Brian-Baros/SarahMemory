@@ -6,25 +6,28 @@ import { cn } from '@/lib/utils';
 import { RightSidebarContent } from './RightSidebarContent';
 
 /**
- * Right Sidebar - Desktop only
+ * Right Sidebar - Desktop shell surface
  * Contains preview, tools, and utilities organized into tabbed pages
- * Hidden on mobile (replaced by drawer)
+ *
+ * NOTE:
+ * Desktop vs Mobile is controlled by orientation in Index.tsx,
+ * so this component should not hard-hide itself using lg: breakpoints.
  */
 export function RightSidebar() {
   const { rightSidebarCollapsed, toggleRightSidebar } = useSarahStore();
 
   return (
-    <aside 
+    <aside
       className={cn(
-        "hidden lg:flex bg-sidebar border-l border-sidebar-border flex-col transition-all duration-300",
+        "flex bg-sidebar border-l border-sidebar-border flex-col transition-all duration-300",
         rightSidebarCollapsed ? "w-14" : "w-80"
       )}
     >
       {/* Header */}
       <div className="h-14 flex items-center justify-between px-3 border-b border-sidebar-border shrink-0">
-        <Button 
-          variant="ghost" 
-          size="icon" 
+        <Button
+          variant="ghost"
+          size="icon"
           onClick={toggleRightSidebar}
           className="text-sidebar-foreground hover:text-foreground hover:bg-sidebar-accent shrink-0"
         >
