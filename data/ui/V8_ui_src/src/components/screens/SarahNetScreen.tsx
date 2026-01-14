@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { 
-  Network, 
-  Users, 
-  MessageSquare, 
-  Phone, 
+import {
+  Network,
+  Users,
+  MessageSquare,
+  Phone,
   FileText,
   Loader2,
   AlertCircle,
@@ -13,8 +13,11 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSarahStore } from '@/stores/useSarahStore';
-import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
+
+// ✅ Add these imports
+import { DialerPanel } from '@/components/panels/DialerPanel';
+import { ContactsPanel } from '@/components/panels/ContactsPanel';
 
 interface NodeInfo {
   id: string;
@@ -40,18 +43,15 @@ export function SarahNetScreen() {
   const checkAvailability = async () => {
     setIsLoading(true);
     try {
-      // Try to hit SarahNet endpoint
       const response = await fetch('https://api.sarahmemory.com/api/sarahnet/status', {
         method: 'GET',
         credentials: 'include',
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         setIsAvailable(true);
-        if (data.nodes) {
-          setNodes(data.nodes);
-        }
+        if (data.nodes) setNodes(data.nodes);
       } else {
         setIsAvailable(false);
       }
@@ -64,13 +64,14 @@ export function SarahNetScreen() {
   };
 
   // Convert contacts to nodes for display
-  const displayNodes: NodeInfo[] = nodes.length > 0 
-    ? nodes 
-    : contacts.map(c => ({
-        id: c.id,
-        name: c.name,
-        status: c.status === 'online' ? 'online' : 'offline',
-      }));
+  const displayNodes: NodeInfo[] =
+    nodes.length > 0
+      ? nodes
+      : contacts.map((c) => ({
+          id: c.id,
+          name: c.name,
+          status: c.status === 'online' ? 'online' : 'offline',
+        }));
 
   if (isLoading) {
     return (
@@ -95,9 +96,7 @@ export function SarahNetScreen() {
             </span>
           )}
         </div>
-        <p className="text-xs text-muted-foreground mt-1">
-          Network presence and communication
-        </p>
+        <p className="text-xs text-muted-foreground mt-1">Network presence and communication</p>
       </div>
 
       {/* Not available notice */}
@@ -108,7 +107,7 @@ export function SarahNetScreen() {
             <div>
               <p className="text-sm font-medium">Not available (server configuration)</p>
               <p className="text-xs text-muted-foreground mt-1">
-                SarahNet features require server-side support. Contact your administrator.
+                SarahNet features require server-side support. Local tools still work below.
               </p>
             </div>
           </div>
@@ -148,16 +147,18 @@ export function SarahNetScreen() {
                 </div>
               ) : (
                 displayNodes.map((node) => (
-                  <div 
+                  <div
                     key={node.id}
                     className="p-3 rounded-xl bg-card border border-border flex items-center gap-3"
                   >
-                    <div className={cn(
-                      "w-2.5 h-2.5 rounded-full",
-                      node.status === 'online' && "bg-green-500",
-                      node.status === 'busy' && "bg-yellow-500",
-                      node.status === 'offline' && "bg-muted-foreground"
-                    )} />
+                    <div
+                      className={cn(
+                        'w-2.5 h-2.5 rounded-full',
+                        node.status === 'online' && 'bg-green-500',
+                        node.status === 'busy' && 'bg-yellow-500',
+                        node.status === 'offline' && 'bg-muted-foreground'
+                      )}
+                    />
                     <div className="flex-1 min-w-0">
                       <p className="font-medium text-sm truncate">{node.name}</p>
                       <p className="text-xs text-muted-foreground capitalize">{node.status}</p>
@@ -178,25 +179,35 @@ export function SarahNetScreen() {
             <div className="text-center py-8">
               <MessageSquare className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {isAvailable ? "No messages" : "Not available (server configuration)"}
+                {isAvailable ? 'No messages' : 'Not available (server configuration)'}
               </p>
             </div>
           </TabsContent>
 
-          <TabsContent value="calls" className="m-0 p-4">
-            <div className="text-center py-8">
-              <Phone className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
-              <p className="text-sm text-muted-foreground">
-                {isAvailable ? "No call history" : "Not available (server configuration)"}
-              </p>
+          {/* ✅ Calls tab now contains the dialer + contacts (local tools) */}
+          <TabsContent value="calls" className="m-0 p-0">
+            <div className="border-b border-border">
+              <DialerPanel />
             </div>
+            <div className="p-0">
+              <ContactsPanel />
+            </div>
+
+            {/* Optional hint when server is offline */}
+            {isAvailable === false && (
+              <div className="px-4 pb-4">
+                <p className="text-xs text-muted-foreground">
+                  SarahNet calling (P2P/VoIP) requires backend support. The dialer UI is available for testing.
+                </p>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="files" className="m-0 p-4">
             <div className="text-center py-8">
               <FileText className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
               <p className="text-sm text-muted-foreground">
-                {isAvailable ? "No shared files" : "Not available (server configuration)"}
+                {isAvailable ? 'No shared files' : 'Not available (server configuration)'}
               </p>
             </div>
           </TabsContent>

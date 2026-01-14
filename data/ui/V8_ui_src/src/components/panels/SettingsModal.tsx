@@ -18,8 +18,9 @@ const MODES = [
 ] as const;
 
 // Default themes that ship with the app
+// NOTE: keep ids aligned with store defaults (useSarahStore.ts)
 const DEFAULT_THEMES = [
-  { id: 'dark', name: 'Default Dark', filename: 'Dark_Theme.css' },
+  { id: 'default', name: 'Default Dark', filename: 'Dark_Theme.css' },
   { id: 'light', name: 'Light', filename: 'Light_Theme.css' },
   { id: 'matrix', name: 'Matrix', filename: 'Matrix_Theme.css' },
   { id: 'tron', name: 'Tron', filename: 'Tron.css' },
@@ -29,10 +30,10 @@ const DEFAULT_THEMES = [
 ];
 
 export function SettingsModal() {
-  const { 
-    settingsOpen, 
-    setSettingsOpen, 
-    settings, 
+  const {
+    settingsOpen,
+    setSettingsOpen,
+    settings,
     updateSettings,
     voices,
     themes,
@@ -74,12 +75,30 @@ export function SettingsModal() {
   const loadThemes = async () => {
     try {
       const backendThemes = await api.settings.getThemes();
-      if (backendThemes.length > 0) {
-        setThemes(backendThemes);
-      } else {
-        // Use default themes if backend doesn't return any
-        setThemes(DEFAULT_THEMES);
+
+      // If backend returns a partial list (common), always merge with shipped defaults
+      // so the user can still pick built-in themes.
+      const merged = [...(backendThemes || [])];
+
+      for (const def of DEFAULT_THEMES) {
+        const existing = merged.find((t: any) => t?.id === def.id);
+        if (!existing) merged.push(def as any);
+        // If backend theme exists but doesn't include filename/name, fill from default.
+        if (existing && !existing.filename) (existing as any).filename = def.filename;
+        if (existing && !existing.name) (existing as any).name = def.name;
       }
+
+      // De-dupe by id (backend sometimes duplicates)
+      const uniq: any[] = [];
+      const seen = new Set<string>();
+      for (const t of merged) {
+        const id = String((t as any)?.id || '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        uniq.push(t);
+      }
+
+      setThemes(uniq.length > 0 ? (uniq as any) : (DEFAULT_THEMES as any));
     } catch (error) {
       console.error('Failed to load themes from backend:', error);
       // Fallback to default themes
@@ -111,7 +130,7 @@ export function SettingsModal() {
         // Fallback to 'mode' key
         mode = await api.settings.getSetting('mode');
       }
-      if (mode && MODES.some(m => m.id === mode)) {
+      if (mode && MODES.some((m) => m.id === mode)) {
         setSelectedMode(mode);
         updateSettings({ mode });
       }
@@ -134,10 +153,10 @@ export function SettingsModal() {
   const handlePreviewVoice = async () => {
     const voiceId = pendingVoice || settings.selectedVoice;
     setIsPreviewingVoice(true);
-    
+
     try {
       const response = await api.voice.previewVoice(voiceId);
-      
+
       if (response.success && response.audio_url) {
         const audio = new Audio(response.audio_url);
         await audio.play();
@@ -148,22 +167,23 @@ export function SettingsModal() {
         // Use browser TTS as fallback for preview
         if ('speechSynthesis' in window) {
           const utterance = new SpeechSynthesisUtterance("Hello! This is how I sound. I'm ready to assist you.");
-          
+
           // Try to find a matching voice in browser
           const browserVoices = speechSynthesis.getVoices();
-          const selectedVoice = voices.find(v => v.id === voiceId);
-          
+          const selectedVoice = voices.find((v) => v.id === voiceId);
+
           if (selectedVoice) {
-            const matchingBrowserVoice = browserVoices.find(v => 
-              v.name.toLowerCase().includes(selectedVoice.name.toLowerCase()) ||
-              (selectedVoice.gender === 'female' && v.name.toLowerCase().includes('female')) ||
-              (selectedVoice.gender === 'male' && v.name.toLowerCase().includes('male'))
+            const matchingBrowserVoice = browserVoices.find(
+              (v) =>
+                v.name.toLowerCase().includes(selectedVoice.name.toLowerCase()) ||
+                (selectedVoice.gender === 'female' && v.name.toLowerCase().includes('female')) ||
+                (selectedVoice.gender === 'male' && v.name.toLowerCase().includes('male')),
             );
             if (matchingBrowserVoice) {
               utterance.voice = matchingBrowserVoice;
             }
           }
-          
+
           speechSynthesis.speak(utterance);
           toast.info('Using browser voice preview');
         }
@@ -178,27 +198,27 @@ export function SettingsModal() {
 
   const handleSave = async () => {
     setIsSaving(true);
-    
+
     try {
       // Save voice to backend
       if (pendingVoice) {
         await api.settings.setVoice(pendingVoice);
       }
-      
+
       // Save theme to backend
       await api.settings.setTheme(settings.selectedTheme);
-      
+
       // Save mode to backend using api_mode key (app.py convention)
       await api.settings.setSetting('api_mode', selectedMode);
       // Also save under 'mode' for compatibility
       await api.settings.setSetting('mode', selectedMode);
-      
+
       // Update store with final mode
       updateSettings({ mode: selectedMode });
-      
+
       // Apply theme CSS
       applyTheme(settings.selectedTheme);
-      
+
       toast.success('Settings saved');
       setSettingsOpen(false);
     } catch (error) {
@@ -220,32 +240,32 @@ export function SettingsModal() {
   const applyTheme = (themeId: string) => {
     // Find theme info
     const availableThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
-    const theme = availableThemes.find(t => t.id === themeId);
-    
+    const theme = availableThemes.find((t: any) => t.id === themeId);
+
     if (theme) {
       // Set data-theme attribute
       document.documentElement.setAttribute('data-theme', themeId);
-      
+
       // Try to load the CSS file dynamically
       const existingLink = document.getElementById('sarah-theme-css');
       if (existingLink) {
         existingLink.remove();
       }
-      
+
       // Create new link for theme CSS
       // Try backend path first, then local public folder
       const link = document.createElement('link');
       link.id = 'sarah-theme-css';
       link.rel = 'stylesheet';
-      
+
       // Use the API base URL for backend themes, or local for defaults
       const apiBase = import.meta.env.VITE_API_BASE_URL || '';
-      if (apiBase && !DEFAULT_THEMES.some(t => t.id === themeId)) {
+      if (apiBase && !DEFAULT_THEMES.some((t) => t.id === themeId)) {
         link.href = `${apiBase}/api/data/mods/themes/${theme.filename}`;
       } else {
         link.href = `/themes/${theme.filename}`;
       }
-      
+
       document.head.appendChild(link);
     }
   };
@@ -280,10 +300,10 @@ export function SettingsModal() {
                 return (
                   <Button
                     key={mode.id}
-                    variant={isSelected ? "default" : "outline"}
+                    variant={isSelected ? 'default' : 'outline'}
                     size="sm"
                     className={`flex flex-col items-center gap-1 h-auto py-2 ${
-                      isSelected ? "bg-primary text-primary-foreground" : ""
+                      isSelected ? 'bg-primary text-primary-foreground' : ''
                     }`}
                     onClick={() => handleModeChange(mode.id)}
                     title={mode.description}
@@ -294,9 +314,7 @@ export function SettingsModal() {
                 );
               })}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {MODES.find(m => m.id === selectedMode)?.description}
-            </p>
+            <p className="text-xs text-muted-foreground">{MODES.find((m) => m.id === selectedMode)?.description}</p>
           </div>
 
           {/* Voice Selection */}
@@ -306,11 +324,7 @@ export function SettingsModal() {
               Voice
             </Label>
             <div className="flex gap-2">
-              <Select 
-                value={pendingVoice || settings.selectedVoice} 
-                onValueChange={handleVoiceChange}
-                disabled={isLoadingVoices}
-              >
+              <Select value={pendingVoice || settings.selectedVoice} onValueChange={handleVoiceChange} disabled={isLoadingVoices}>
                 <SelectTrigger className="bg-secondary border-border flex-1">
                   {isLoadingVoices ? (
                     <div className="flex items-center gap-2">
@@ -321,35 +335,27 @@ export function SettingsModal() {
                     <SelectValue placeholder="Select a voice" />
                   )}
                 </SelectTrigger>
-                <SelectContent>
+                <SelectContent className="z-[100000]">
                   {voices.map((voice) => (
                     <SelectItem key={voice.id} value={voice.id}>
                       <div className="flex items-center gap-2">
                         <span>{voice.name}</span>
-                        {voice.language && (
-                          <span className="text-xs text-muted-foreground">({voice.language})</span>
-                        )}
-                        {voice.gender && (
-                          <span className="text-xs text-muted-foreground capitalize">• {voice.gender}</span>
-                        )}
+                        {voice.language && <span className="text-xs text-muted-foreground">({voice.language})</span>}
+                        {voice.gender && <span className="text-xs text-muted-foreground capitalize">• {voice.gender}</span>}
                       </div>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              
-              <Button 
-                variant="outline" 
+
+              <Button
+                variant="outline"
                 size="icon"
                 onClick={handlePreviewVoice}
                 disabled={isPreviewingVoice}
                 title="Preview voice"
               >
-                {isPreviewingVoice ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Play className="h-4 w-4" />
-                )}
+                {isPreviewingVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
@@ -363,15 +369,12 @@ export function SettingsModal() {
               <Palette className="h-4 w-4 text-muted-foreground" />
               Theme
             </Label>
-            <Select 
-              value={settings.selectedTheme} 
-              onValueChange={handleThemeChange}
-            >
+            <Select value={settings.selectedTheme} onValueChange={handleThemeChange}>
               <SelectTrigger className="bg-secondary border-border">
                 <SelectValue placeholder="Select a theme" />
               </SelectTrigger>
-              <SelectContent>
-                {displayThemes.map((theme) => (
+              <SelectContent className="z-[100000]">
+                {displayThemes.map((theme: any) => (
                   <SelectItem key={theme.id} value={theme.id}>
                     {theme.name}
                   </SelectItem>
@@ -387,11 +390,7 @@ export function SettingsModal() {
                 <Volume2 className="h-4 w-4 text-muted-foreground" />
                 Auto-speak responses
               </Label>
-              <Switch
-                id="auto-speak"
-                checked={settings.autoSpeak}
-                onCheckedChange={(checked) => updateSettings({ autoSpeak: checked })}
-              />
+              <Switch id="auto-speak" checked={settings.autoSpeak} onCheckedChange={(checked) => updateSettings({ autoSpeak: checked })} />
             </div>
 
             <div className="flex items-center justify-between">
@@ -399,11 +398,7 @@ export function SettingsModal() {
                 <Sparkles className="h-4 w-4 text-muted-foreground" />
                 Sound effects
               </Label>
-              <Switch
-                id="sound-effects"
-                checked={settings.soundEffects}
-                onCheckedChange={(checked) => updateSettings({ soundEffects: checked })}
-              />
+              <Switch id="sound-effects" checked={settings.soundEffects} onCheckedChange={(checked) => updateSettings({ soundEffects: checked })} />
             </div>
 
             <div className="flex items-center justify-between">
@@ -411,11 +406,7 @@ export function SettingsModal() {
                 <Bell className="h-4 w-4 text-muted-foreground" />
                 Notifications
               </Label>
-              <Switch
-                id="notifications"
-                checked={settings.notifications}
-                onCheckedChange={(checked) => updateSettings({ notifications: checked })}
-              />
+              <Switch id="notifications" checked={settings.notifications} onCheckedChange={(checked) => updateSettings({ notifications: checked })} />
             </div>
 
             {/* Advanced Studio Mode - hidden on mobile */}
@@ -425,9 +416,7 @@ export function SettingsModal() {
                   <Sparkles className="h-4 w-4 text-muted-foreground" />
                   Advanced Studio Mode
                 </Label>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Show modules in accordion layout (desktop)
-                </p>
+                <p className="text-xs text-muted-foreground mt-0.5">Show modules in accordion layout (desktop)</p>
               </div>
               <Switch
                 id="advanced-studio"
