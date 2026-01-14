@@ -10,32 +10,50 @@ export const isProduction = import.meta.env.PROD;
 export const isDevelopment = import.meta.env.DEV;
 
 /**
- * Get API base URL - supports window.SARAH_API_BASE override for cross-domain setups
+ * Get API base URL - supports window.SARAH_API_BASE override
  */
 export const getApiBase = (): string => {
-  // Priority 1: Window override (for cross-domain deployments)
-  if (typeof window !== 'undefined' && (window as any).SARAH_API_BASE) {
-    return (window as any).SARAH_API_BASE;
+  const isProduction = import.meta.env.PROD;
+
+  // Priority 1: Explicit runtime override
+  if (typeof window !== "undefined" && (window as any).SARAH_API_BASE) {
+    return String((window as any).SARAH_API_BASE);
   }
-  
-  // Priority 2: Environment variable
+
+  if (typeof window !== "undefined") {
+    const { hostname, origin } = window.location;
+
+    // Priority 2: Hosted WebUI → API subdomain
+    if (hostname === "ai.sarahmemory.com") {
+      return "https://api.sarahmemory.com";
+    }
+
+    // Priority 3: Local same-origin (Flask serving UI + API)
+    if (hostname === "127.0.0.1" || hostname === "localhost") {
+      return origin;
+    }
+  }
+
+  // Priority 4: Environment variable
   if (import.meta.env.VITE_SARAH_API_URL) {
-    return import.meta.env.VITE_SARAH_API_URL;
+    return String(import.meta.env.VITE_SARAH_API_URL);
   }
-  
-  // Priority 3: Public API base from .env
+
+  // Priority 5: Public API base
   if (import.meta.env.VITE_PUBLIC_API_BASE) {
-    return import.meta.env.VITE_PUBLIC_API_BASE;
+    return String(import.meta.env.VITE_PUBLIC_API_BASE);
   }
-  
-  // Priority 4: Production default
+
+  // Priority 6: Production default
   if (isProduction) {
-    return 'https://api.sarahmemory.com';
+    return "https://api.sarahmemory.com";
   }
-  
-  // Priority 5: Local dev fallback
-  return 'http://127.0.0.1:5055';
+
+  // Priority 7: Absolute fallback
+  return "http://127.0.0.1:8000";
 };
+
+
 
 /**
  * Robust fetch helper with proper error handling
