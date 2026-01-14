@@ -46,6 +46,21 @@ from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from datetime import datetime, timedelta
 import logging # Explicitly import logging
+# --- SarahMemoryGITtalk (TEMP ADMIN TOOL) ---
+
+try:
+    # Only enable when you explicitly turn it on
+    if os.environ.get("SARAH_GITTALK_ENABLED", "0").strip() in ("1", "true", "yes", "on"):
+        mod_path = Path(__file__).resolve().parent / "data" / "mods" / "v800"
+        if mod_path.exists() and str(mod_path) not in sys.path:
+            sys.path.insert(0, str(mod_path))
+
+        from SarahMemoryGITtalk import create_gittalk_blueprint  # noqa
+        app.register_blueprint(create_gittalk_blueprint(url_prefix="/api/gittalk"))
+        print("[OK] SarahMemoryGITtalk blueprint mounted at /api/gittalk")
+except Exception as e:
+    print("[WARN] SarahMemoryGITtalk not mounted:", e)
+# --- end SarahMemoryGITtalk ---
 
 # ---------------------------------------------------------------------------
 # Path resolution (prefer SarahMemoryGlobals; fallback to local server layout)
