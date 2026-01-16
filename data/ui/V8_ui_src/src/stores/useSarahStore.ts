@@ -18,6 +18,65 @@ export type AvatarPose = "stand" | "sit" | "wave";
 // Right panel page types
 export type RightPanelPage = "contacts" | "keypad" | "tools" | "settings";
 
+// ------------------------------------------------------------
+// Taskbar settings (kept inside Settings for now)
+// We do NOT modify @/types/sarah in this patch; we safely extend at runtime.
+// ------------------------------------------------------------
+type TaskbarDock = "bottom" | "top" | "left" | "right";
+
+const DEFAULT_TASKBAR_ITEMS = [
+  "chat",
+  "history",
+  "files",
+  "research",
+  "studio",
+  "avatar",
+  "sarahnet",
+  "media",
+  "dlengine",
+  "addons",
+  "settings",
+];
+
+const DEFAULT_TASKBAR = {
+  dock: "bottom" as TaskbarDock,
+  rows: 1,
+  items: DEFAULT_TASKBAR_ITEMS,
+};
+
+function ensureTaskbarSettings(s: any): any {
+  // s is Settings-like
+  const next = { ...(s || {}) };
+
+  if (!next.taskbar || typeof next.taskbar !== "object") {
+    next.taskbar = { ...DEFAULT_TASKBAR };
+    return next;
+  }
+
+  // Merge missing pieces only
+  next.taskbar = {
+    ...DEFAULT_TASKBAR,
+    ...next.taskbar,
+  };
+
+  // Sanitize known fields (defensive)
+  const dock = String(next.taskbar.dock || "bottom") as TaskbarDock;
+  if (!["bottom", "top", "left", "right"].includes(dock)) {
+    next.taskbar.dock = "bottom";
+  }
+
+  const rowsNum = Number(next.taskbar.rows);
+  next.taskbar.rows = Number.isFinite(rowsNum) && rowsNum >= 1 ? Math.floor(rowsNum) : 1;
+
+  if (!Array.isArray(next.taskbar.items)) {
+    next.taskbar.items = [...DEFAULT_TASKBAR_ITEMS];
+  } else {
+    next.taskbar.items = next.taskbar.items.map((x: any) => String(x));
+  }
+
+  return next;
+}
+
 interface SarahState {
   // Messages
   messages: Message[];
@@ -171,7 +230,9 @@ function pickGreeting(): string {
     if (!Array.isArray(shownIndices)) shownIndices = [];
     if (shownIndices.length >= GREETINGS.length) shownIndices = [];
 
-    const availableIndices = GREETINGS.map((_, idx) => idx).filter((idx) => !shownIndices.includes(idx));
+    const availableIndices = GREETINGS
+      .map((_, idx) => idx)
+      .filter((idx) => !shownIndices.includes(idx));
     const chosenIdx = availableIndices[Math.floor(Math.random() * availableIndices.length)];
 
     shownIndices.push(chosenIdx);
@@ -248,7 +309,9 @@ export const useSarahStore = create<SarahState>()(
       },
       updateContact: (id, updates) =>
         set((state) => ({
-          contacts: state.contacts.map((c) => (c.id === id ? { ...c, ...updates } : c)),
+          contacts: state.contacts.map((c) =>
+            c.id === id ? { ...c, ...updates } : c,
+          ),
         })),
       deleteContact: (id) =>
         set((state) => ({
@@ -265,7 +328,9 @@ export const useSarahStore = create<SarahState>()(
       },
       updateReminder: (id, updates) =>
         set((state) => ({
-          reminders: state.reminders.map((r) => (r.id === id ? { ...r, ...updates } : r)),
+          reminders: state.reminders.map((r) =>
+            r.id === id ? { ...r, ...updates } : r,
+          ),
         })),
       deleteReminder: (id) =>
         set((state) => ({
@@ -273,7 +338,9 @@ export const useSarahStore = create<SarahState>()(
         })),
       toggleReminderComplete: (id) =>
         set((state) => ({
-          reminders: state.reminders.map((r) => (r.id === id ? { ...r, completed: !r.completed } : r)),
+          reminders: state.reminders.map((r) =>
+            r.id === id ? { ...r, completed: !r.completed } : r,
+          ),
         })),
       setReminders: (reminders) => set({ reminders }),
 
@@ -286,15 +353,24 @@ export const useSarahStore = create<SarahState>()(
       },
       toggleWebcam: () =>
         set((state) => ({
-          mediaState: { ...state.mediaState, webcamEnabled: !state.mediaState.webcamEnabled },
+          mediaState: {
+            ...state.mediaState,
+            webcamEnabled: !state.mediaState.webcamEnabled,
+          },
         })),
       toggleMicrophone: () =>
         set((state) => ({
-          mediaState: { ...state.mediaState, microphoneEnabled: !state.mediaState.microphoneEnabled },
+          mediaState: {
+            ...state.mediaState,
+            microphoneEnabled: !state.mediaState.microphoneEnabled,
+          },
         })),
       toggleVoice: () =>
         set((state) => ({
-          mediaState: { ...state.mediaState, voiceEnabled: !state.mediaState.voiceEnabled },
+          mediaState: {
+            ...state.mediaState,
+            voiceEnabled: !state.mediaState.voiceEnabled,
+          },
         })),
       setScreenMode: (mode) =>
         set((state) => ({
@@ -302,7 +378,7 @@ export const useSarahStore = create<SarahState>()(
         })),
 
       // Settings
-      settings: {
+      settings: ensureTaskbarSettings({
         selectedVoice: "sarah",
         selectedTheme: "default",
         autoSpeak: true,
@@ -310,10 +386,10 @@ export const useSarahStore = create<SarahState>()(
         notifications: true,
         mode: "any",
         advancedStudioMode: false,
-      },
+      }),
       updateSettings: (updates) =>
         set((state) => ({
-          settings: { ...state.settings, ...updates },
+          settings: ensureTaskbarSettings({ ...state.settings, ...updates }),
         })),
 
       // Fallback options
@@ -363,8 +439,10 @@ export const useSarahStore = create<SarahState>()(
       hasPlayedWelcome: false,
       backendReady: false,
 
-      toggleLeftSidebar: () => set((state) => ({ leftSidebarCollapsed: !state.leftSidebarCollapsed })),
-      toggleRightSidebar: () => set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed })),
+      toggleLeftSidebar: () =>
+        set((state) => ({ leftSidebarCollapsed: !state.leftSidebarCollapsed })),
+      toggleRightSidebar: () =>
+        set((state) => ({ rightSidebarCollapsed: !state.rightSidebarCollapsed })),
       setLeftDrawerOpen: (open) => set({ leftDrawerOpen: open }),
       setRightDrawerOpen: (open) => set({ rightDrawerOpen: open }),
       setSettingsOpen: (open) => set({ settingsOpen: open }),
@@ -449,6 +527,20 @@ export const useSarahStore = create<SarahState>()(
       // ✅ If store rehydrates and backend is already ready, try to welcome.
       onRehydrateStorage: () => (state, error) => {
         if (error) return;
+
+        // Ensure settings has taskbar defaults after rehydrate
+        try {
+          const s: any = (state as any)?.settings;
+          if (state && (state as any).updateSettings) {
+            const ensured = ensureTaskbarSettings(s);
+            if (JSON.stringify(ensured?.taskbar) !== JSON.stringify(s?.taskbar)) {
+              (state as any).updateSettings({ taskbar: ensured.taskbar } as any);
+            }
+          }
+        } catch {
+          // ignore
+        }
+
         queueMicrotask(() => {
           state?.playWelcomeIfNeeded?.().catch(() => {});
         });
