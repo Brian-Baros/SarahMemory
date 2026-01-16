@@ -1,55 +1,243 @@
-import {
-  Settings as SettingsIcon,
-  Palette,
-  Volume2,
-  Bell,
-  Shield,
-  Wrench,
-  Heart,
-  ExternalLink,
-} from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, Cpu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSarahStore } from '@/stores/useSarahStore';
-import { useNavigationStore } from '@/stores/useNavigationStore';
+import { api } from '@/lib/api';
+import { toast } from 'sonner';
 
-/**
- * Settings Screen - App configuration
- * Themes, voice, notifications, privacy controls
- */
-export function SettingsScreen() {
+// Mode options for data source - matches app.py api_mode setting
+const MODES = [
+  { id: 'any', name: 'Any', description: 'Use all available sources', icon: Zap },
+  { id: 'local', name: 'Local', description: 'Local knowledge only', icon: Database },
+  { id: 'web', name: 'Web', description: 'Web search augmented', icon: Globe },
+  { id: 'api', name: 'API', description: 'AI API fallback only', icon: Cpu },
+] as const;
+
+// Default themes that ship with the app
+// NOTE: keep ids aligned with store defaults (useSarahStore.ts)
+const DEFAULT_THEMES = [
+  { id: 'default', name: 'Default Dark', filename: 'Dark_Theme.css' },
+  { id: 'light', name: 'Light', filename: 'Light_Theme.css' },
+  { id: 'matrix', name: 'Matrix', filename: 'Matrix_Theme.css' },
+  { id: 'tron', name: 'Tron', filename: 'Tron.css' },
+  { id: 'hal2000', name: 'HAL 2000', filename: 'HAL2000_Theme.css' },
+  { id: 'skynet', name: 'Skynet', filename: 'Skynet_Theme.css' },
+  { id: 'vibrant', name: 'Vibrant', filename: 'Vibrant_Theme.css' },
+];
+
+type SettingsPanelProps = {
+  /** When true, renders as a regular screen (no Dialog wrapper) */
+  embedded?: boolean;
+  /** Optional close handler (used by modal close button). */
+  onRequestClose?: () => void;
+};
+
+function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelProps) {
   const {
     settings,
     updateSettings,
-    themes,
     voices,
-    setSettingsOpen,
+    themes,
+    setVoices,
+    setThemes,
   } = useSarahStore();
 
-  const { connectionStatus } = useNavigationStore();
+  const [isLoadingVoices, setIsLoadingVoices] = useState(false);
+  const [isPreviewingVoice, setIsPreviewingVoice] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [pendingVoice, setPendingVoice] = useState<string | null>(null);
+  const [selectedMode, setSelectedMode] = useState(settings.mode || 'any');
+
+  // Load voices/themes/mode on mount (screen) OR when modal opens (handled by SettingsModal)
+  useEffect(() => {
+    if (!embedded) return;
+    loadVoices();
+    loadThemes();
+    loadMode();
+    setSelectedMode(settings.mode || 'any');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded]);
+
+  // ✅ Keep local selectedMode in sync with global store mode (StatusBar cycles, etc.)
+  useEffect(() => {
+    const m = (settings.mode || 'any') as string;
+    if (m !== selectedMode) {
+      setSelectedMode(m);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.mode]);
+
+  const loadVoices = async () => {
+    setIsLoadingVoices(true);
+    try {
+      const backendVoices = await api.voice.listVoices();
+      if (backendVoices.length > 0) {
+        setVoices(backendVoices);
+      }
+    } catch (error) {
+      console.error('Failed to load voices from backend:', error);
+    } finally {
+      setIsLoadingVoices(false);
+    }
+  };
+
+  const loadThemes = async () => {
+    try {
+      const backendThemes = await api.settings.getThemes();
+
+      // If backend returns a partial list (common), always merge with shipped defaults
+      // so the user can still pick built-in themes.
+      const merged = [...(backendThemes || [])];
+
+      for (const def of DEFAULT_THEMES) {
+        const existing = merged.find((t: any) => t?.id === def.id);
+        if (!existing) merged.push(def as any);
+        // If backend theme exists but doesn't include filename/name, fill from default.
+        if (existing && !existing.filename) (existing as any).filename = def.filename;
+        if (existing && !existing.name) (existing as any).name = def.name;
+      }
+
+      // De-dupe by id (backend sometimes duplicates)
+      const uniq: any[] = [];
+      const seen = new Set<string>();
+      for (const t of merged) {
+        const id = String((t as any)?.id || '');
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        uniq.push(t);
+      }
+
+      setThemes(uniq.length > 0 ? (uniq as any) : (DEFAULT_THEMES as any));
+    } catch (error) {
+      console.error('Failed to load themes from backend:', error);
+      // Fallback to default themes
+      setThemes(DEFAULT_THEMES);
+    }
+  };
+
+  // Load saved theme on mount
+  useEffect(() => {
+    const loadSavedTheme = async () => {
+      try {
+        const savedTheme = await api.settings.getSetting('theme');
+        if (savedTheme) {
+          updateSettings({ selectedTheme: savedTheme });
+          applyTheme(savedTheme);
+        }
+      } catch (error) {
+        console.error('Failed to load saved theme:', error);
+      }
+    };
+    loadSavedTheme();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const loadMode = async () => {
+    try {
+      // Try api_mode first (as used by app.py settings.json)
+      let mode = await api.settings.getSetting('api_mode');
+      if (!mode) {
+        // Fallback to 'mode' key
+        mode = await api.settings.getSetting('mode');
+      }
+      if (mode && MODES.some((m) => m.id === mode)) {
+        setSelectedMode(mode);
+        updateSettings({ mode });
+      }
+    } catch (error) {
+      console.error('Failed to load mode from backend:', error);
+    }
+  };
+
+  const handleVoiceChange = async (voiceId: string) => {
+    setPendingVoice(voiceId);
+    updateSettings({ selectedVoice: voiceId });
+  };
+
+  const handleModeChange = (modeId: string) => {
+    setSelectedMode(modeId);
+    // Immediately update store so StatusBar reflects the change
+    updateSettings({ mode: modeId });
+  };
+
+  const handlePreviewVoice = async () => {
+    const voiceId = pendingVoice || settings.selectedVoice;
+    setIsPreviewingVoice(true);
+
+    try {
+      const response = await api.voice.previewVoice(voiceId);
+
+      if (response.success && response.audio_url) {
+        const audio = new Audio(response.audio_url);
+        await audio.play();
+      } else if (response.audio_base64) {
+        const audio = new Audio(`data:audio/mp3;base64,${response.audio_base64}`);
+        await audio.play();
+      } else if (response.fallback) {
+        // Use browser TTS as fallback for preview
+        if ('speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance("Hello! This is how I sound. I'm ready to assist you.");
+
+          // Try to find a matching voice in browser
+          const browserVoices = speechSynthesis.getVoices();
+          const selectedVoice = voices.find((v) => v.id === voiceId);
+
+          if (selectedVoice) {
+            const matchingBrowserVoice = browserVoices.find(
+              (v) =>
+                v.name.toLowerCase().includes(selectedVoice.name.toLowerCase()) ||
+                (selectedVoice.gender === 'female' && v.name.toLowerCase().includes('female')) ||
+                (selectedVoice.gender === 'male' && v.name.toLowerCase().includes('male')),
+            );
+            if (matchingBrowserVoice) {
+              utterance.voice = matchingBrowserVoice;
+            }
+          }
+
+          speechSynthesis.speak(utterance);
+          toast.info('Using browser voice preview');
+        }
+      }
+    } catch (error) {
+      console.error('Failed to preview voice:', error);
+      toast.error('Could not preview voice');
+    } finally {
+      setIsPreviewingVoice(false);
+    }
+  };
 
   const handleThemeChange = (themeId: string) => {
     updateSettings({ selectedTheme: themeId });
+    // Apply theme immediately for preview
+    applyTheme(themeId);
+  };
 
-    // Apply theme
-    const theme = themes.find(t => t.id === themeId);
+  const applyTheme = (themeId: string) => {
+    // Find theme info
+    const availableThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
+    const theme = availableThemes.find((t: any) => t.id === themeId);
+
     if (theme) {
-      // Keep consistent with SettingsModal (so we don't end up with multiple theme <link> tags)
+      // Set data-theme attribute
       document.documentElement.setAttribute('data-theme', themeId);
 
-      const existingLink = document.getElementById('sarah-theme-css') as HTMLLinkElement | null;
-      if (existingLink) existingLink.remove();
+      // Try to load the CSS file dynamically
+      const existingLink = document.getElementById('sarah-theme-css');
+      if (existingLink) {
+        existingLink.remove();
+      }
 
       const link = document.createElement('link');
       link.id = 'sarah-theme-css';
       link.rel = 'stylesheet';
 
+      // Use the API base URL for backend themes, or local for defaults
       const apiBase = import.meta.env.VITE_API_BASE_URL || '';
-      const isBuiltIn = ['default', 'light', 'matrix', 'tron', 'hal2000', 'skynet', 'vibrant'].includes(themeId);
-      if (apiBase && !isBuiltIn) {
+      if (apiBase && !DEFAULT_THEMES.some((t) => t.id === themeId)) {
         link.href = `${apiBase}/api/data/mods/themes/${theme.filename}`;
       } else {
         link.href = `/themes/${theme.filename}`;
@@ -59,160 +247,275 @@ export function SettingsScreen() {
     }
   };
 
+  const handleSave = async () => {
+    setIsSaving(true);
+
+    try {
+      // Save voice to backend
+      if (pendingVoice) {
+        await api.settings.setVoice(pendingVoice);
+      }
+
+      // Save theme to backend
+      await api.settings.setTheme(settings.selectedTheme);
+
+      // Save mode to backend using api_mode key (app.py convention)
+      await api.settings.setSetting('api_mode', selectedMode);
+      // Also save under 'mode' for compatibility
+      await api.settings.setSetting('mode', selectedMode);
+
+      // Update store with final mode
+      updateSettings({ mode: selectedMode });
+
+      // Apply theme CSS
+      applyTheme(settings.selectedTheme);
+
+      toast.success('Settings saved');
+
+      // If in modal, close it; if embedded, do nothing.
+      onRequestClose?.();
+    } catch (error) {
+      console.error('Failed to save settings:', error);
+      toast.error('Settings saved locally (backend unavailable)');
+      onRequestClose?.();
+    } finally {
+      setIsSaving(false);
+      setPendingVoice(null);
+    }
+  };
+
+  // Display themes - prefer loaded themes, fallback to defaults
+  const displayThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
+
   return (
-    <div className="flex flex-col h-full bg-background">
-      {/* Header */}
-      <div className="shrink-0 p-4 border-b border-border bg-card/50">
-        <div className="flex items-center gap-2">
-          <SettingsIcon className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">Settings</h1>
+    <div className={embedded ? "p-4" : "space-y-6 py-4"}>
+      {/* Mode Selection */}
+      <div className="space-y-3">
+        <Label className="flex items-center gap-2 text-sm font-medium">
+          <Zap className="h-4 w-4 text-muted-foreground" />
+          Mode
+        </Label>
+        <div className="grid grid-cols-4 gap-2">
+          {MODES.map((mode) => {
+            const Icon = mode.icon;
+            const isSelected = selectedMode === mode.id;
+            return (
+              <Button
+                key={mode.id}
+                variant={isSelected ? 'default' : 'outline'}
+                size="sm"
+                className={`flex flex-col items-center gap-1 h-auto py-2 ${isSelected ? 'bg-primary text-primary-foreground' : ''}`}
+                onClick={() => handleModeChange(mode.id)}
+                title={mode.description}
+              >
+                <Icon className="h-4 w-4" />
+                <span className="text-xs">{mode.name}</span>
+              </Button>
+            );
+          })}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {MODES.find((m) => m.id === selectedMode)?.description}
+        </p>
+      </div>
+
+      {/* Voice Selection */}
+      <div className="space-y-3">
+        <Label className="flex items-center gap-2 text-sm font-medium">
+          <Volume2 className="h-4 w-4 text-muted-foreground" />
+          Voice
+        </Label>
+        <div className="flex gap-2">
+          <Select
+            value={pendingVoice || settings.selectedVoice}
+            onValueChange={handleVoiceChange}
+            disabled={isLoadingVoices}
+          >
+            <SelectTrigger className="bg-secondary border-border flex-1">
+              {isLoadingVoices ? (
+                <div className="flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading voices...
+                </div>
+              ) : (
+                <SelectValue placeholder="Select a voice" />
+              )}
+            </SelectTrigger>
+            <SelectContent className="z-[100000]">
+              {voices.map((voice) => (
+                <SelectItem key={voice.id} value={voice.id}>
+                  <div className="flex items-center gap-2">
+                    <span>{voice.name}</span>
+                    {voice.language && <span className="text-xs text-muted-foreground">({voice.language})</span>}
+                    {voice.gender && <span className="text-xs text-muted-foreground capitalize">• {voice.gender}</span>}
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant="outline"
+            size="icon"
+            onClick={handlePreviewVoice}
+            disabled={isPreviewingVoice}
+            title="Preview voice"
+          >
+            {isPreviewingVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          This voice will be used for all spoken responses when auto-speak is enabled.
+        </p>
+      </div>
+
+      {/* Theme Selection */}
+      <div className="space-y-3">
+        <Label className="flex items-center gap-2 text-sm font-medium">
+          <Palette className="h-4 w-4 text-muted-foreground" />
+          Theme
+        </Label>
+        <Select value={settings.selectedTheme} onValueChange={handleThemeChange}>
+          <SelectTrigger className="bg-secondary border-border">
+            <SelectValue placeholder="Select a theme" />
+          </SelectTrigger>
+          <SelectContent className="z-[100000]">
+            {displayThemes.map((theme: any) => (
+              <SelectItem key={theme.id} value={theme.id}>
+                {theme.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {/* Toggle Settings */}
+      <div className="space-y-4 pt-2">
+        <div className="flex items-center justify-between">
+          <Label htmlFor="auto-speak" className="flex items-center gap-2 text-sm">
+            <Volume2 className="h-4 w-4 text-muted-foreground" />
+            Auto-speak responses
+          </Label>
+          <Switch
+            id="auto-speak"
+            checked={settings.autoSpeak}
+            onCheckedChange={(checked) => updateSettings({ autoSpeak: checked })}
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <Label htmlFor="sound-effects" className="flex items-center gap-2 text-sm">
+            <Sparkles className="h-4 w-4 text-muted-foreground" />
+            Sound effects
+          </Label>
+          <Switch
+            id="sound-effects"
+            checked={settings.soundEffects}
+            onCheckedChange={(checked) => updateSettings({ soundEffects: checked })}
+          />
+        </div>
+
+        <div className="flex items-center justify-between">
+          <Label htmlFor="notifications" className="flex items-center gap-2 text-sm">
+            <Bell className="h-4 w-4 text-muted-foreground" />
+            Notifications
+          </Label>
+          <Switch
+            id="notifications"
+            checked={settings.notifications}
+            onCheckedChange={(checked) => updateSettings({ notifications: checked })}
+          />
+        </div>
+
+        {/* Advanced Studio Mode - hidden on mobile */}
+        <div className="hidden sm:flex items-center justify-between">
+          <div>
+            <Label htmlFor="advanced-studio" className="flex items-center gap-2 text-sm">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              Advanced Studio Mode
+            </Label>
+            <p className="text-xs text-muted-foreground mt-0.5">Show modules in accordion layout (desktop)</p>
+          </div>
+          <Switch
+            id="advanced-studio"
+            checked={settings.advancedStudioMode ?? false}
+            onCheckedChange={(checked) => updateSettings({ advancedStudioMode: checked })}
+          />
         </div>
       </div>
 
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-6">
-          {/* Connection Status */}
-          <div className="p-3 rounded-xl bg-card border border-border">
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Connection Status</span>
-              <span
-                className={`text-sm font-medium capitalize ${
-                  connectionStatus === 'connected'
-                    ? 'text-green-500'
-                    : connectionStatus === 'degraded'
-                      ? 'text-yellow-500'
-                      : 'text-red-500'
-                }`}
-              >
-                {connectionStatus}
-              </span>
-            </div>
-          </div>
-
-          {/* Theme */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Palette className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Theme</Label>
-            </div>
-            <Select value={settings.selectedTheme} onValueChange={handleThemeChange}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select theme" />
-              </SelectTrigger>
-              <SelectContent className="z-[100000]">
-                {themes.map((theme) => (
-                  <SelectItem key={theme.id} value={theme.id}>
-                    {theme.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Voice */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Volume2 className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Voice</Label>
-            </div>
-            <Select value={settings.selectedVoice} onValueChange={(v) => updateSettings({ selectedVoice: v })}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select voice" />
-              </SelectTrigger>
-              <SelectContent className="z-[100000]">
-                {voices.map((voice) => (
-                  <SelectItem key={voice.id} value={voice.id}>
-                    {voice.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Toggles */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Bell className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Preferences</Label>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <Label htmlFor="auto-speak" className="text-sm">
-                Auto-speak responses
-              </Label>
-              <Switch id="auto-speak" checked={settings.autoSpeak} onCheckedChange={(v) => updateSettings({ autoSpeak: v })} />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <Label htmlFor="sound-effects" className="text-sm">
-                Sound effects
-              </Label>
-              <Switch id="sound-effects" checked={settings.soundEffects} onCheckedChange={(v) => updateSettings({ soundEffects: v })} />
-            </div>
-
-            <div className="flex items-center justify-between">
-              <Label htmlFor="notifications" className="text-sm">
-                Notifications
-              </Label>
-              <Switch id="notifications" checked={settings.notifications} onCheckedChange={(v) => updateSettings({ notifications: v })} />
-            </div>
-          </div>
-
-          {/* Advanced */}
-          <div className="space-y-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Wrench className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Advanced</Label>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <div>
-                <Label htmlFor="studio-mode" className="text-sm">
-                  Studio Layout (Option B)
-                </Label>
-                <p className="text-xs text-muted-foreground mt-0.5">Accordion mode for power users</p>
-              </div>
-              <Switch
-                id="studio-mode"
-                checked={settings.advancedStudioMode ?? false}
-                onCheckedChange={(v) => updateSettings({ advancedStudioMode: v })}
-              />
-            </div>
-          </div>
-
-          {/* Privacy */}
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Shield className="h-4 w-4 text-muted-foreground" />
-              <Label className="text-sm font-medium">Privacy</Label>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Your data stays on your device and the SarahMemory server. No third-party analytics or tracking.
-            </p>
-          </div>
-
-          {/* Full Settings Modal */}
-          <Button variant="outline" className="w-full" onClick={() => setSettingsOpen(true)}>
-            Open Full Settings
+      {/* Actions */}
+      <div className={embedded ? "flex justify-end gap-2 pt-4 border-t border-border mt-6" : "flex justify-end gap-2 pt-4 border-t border-border"}>
+        {!embedded && (
+          <Button variant="outline" onClick={() => onRequestClose?.()}>
+            Close
           </Button>
-
-          {/* Donate */}
-          <div className="p-4 rounded-xl bg-gradient-to-r from-primary/10 to-accent/10 border border-primary/20">
-            <div className="flex items-center gap-2 mb-2">
-              <Heart className="h-4 w-4 text-primary" />
-              <span className="font-medium text-sm">Support SarahMemory</span>
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">Help keep SarahMemory free and open source</p>
-            <a href="https://github.com/sponsors/Brian-Baros" target="_blank" rel="noopener noreferrer">
-              <Button variant="default" size="sm" className="w-full gap-2">
-                <Heart className="h-4 w-4" />
-                Donate / Sponsor
-                <ExternalLink className="h-3 w-3" />
-              </Button>
-            </a>
-          </div>
-        </div>
-      </ScrollArea>
+        )}
+        <Button onClick={handleSave} disabled={isSaving}>
+          {isSaving ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Saving...
+            </>
+          ) : (
+            'Save Changes'
+          )}
+        </Button>
+      </div>
     </div>
+  );
+}
+
+/**
+ * ✅ Desktop Window version (always visible, no Dialog wrapper)
+ */
+export function SettingsScreen() {
+  return (
+    <div className="h-full w-full overflow-auto">
+      <div className="px-4 pt-4">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-5 w-5 text-primary" />
+          <h2 className="text-lg font-semibold">Settings</h2>
+        </div>
+        <p className="text-sm text-muted-foreground mt-1">
+          Configure voice, themes, mode, and preferences.
+        </p>
+      </div>
+
+      <SettingsPanelBody embedded />
+    </div>
+  );
+}
+
+/**
+ * ✅ Modal version (kept for mobile / legacy triggers)
+ */
+export function SettingsModal() {
+  const {
+    settingsOpen,
+    setSettingsOpen,
+  } = useSarahStore();
+
+  return (
+    <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+      <DialogContent className="sm:max-w-md bg-card border-border" aria-describedby="settings-dialog-description">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Sparkles className="h-5 w-5 text-primary" />
+            Settings
+          </DialogTitle>
+        </DialogHeader>
+        <p id="settings-dialog-description" className="sr-only">
+          Configure application settings including voice, theme, and preferences
+        </p>
+
+        {/* Re-mount body when modal opens so it refreshes */}
+        <SettingsPanelBody
+          key={settingsOpen ? "open" : "closed"}
+          embedded={false}
+          onRequestClose={() => setSettingsOpen(false)}
+        />
+      </DialogContent>
+    </Dialog>
   );
 }
