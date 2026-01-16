@@ -3,7 +3,7 @@
 * Version:** 8.0.0  
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** January 06, 2026  
+* Last Update Date:** January 15, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 
@@ -669,3 +669,5 @@ This spec is name-agnostic: the shell contract survives branding changes.
 
 **SarahMemoryAiOS is a sovereign, local-first intelligence platform where every node is its own AGI centerpoint, the internet is a public library, and the shell UI remains consistent whether running as an app, portable environment, or a true bootable OS.**
 
+---
+Jan 6th-15th, 2026 -Updates - Development of AiOS Front-End Shell, has begun, Additional development for Drivers has begun, Web UI shell source code is under the ../data/ui/V8_ui_src folder, npm build is in the ../data/ui/V8 folder, Drivers will be located in ../data/drivers , Additional Addon/ Application Programs to Run in the system may be placed in the ../data/addons folder and should be detected by the Front-End, Full Arduino USB driver has been Created so far, Adjustable FrontEnd Taskbar is currently being developed. Reduced Settings Front-End Settings Windows to 1 instead of 2 different windows, Clicking on the MODE on the Status/Taskbar now changes the MODES from ANY, Local (Local only Sqlite3 database), Web (Web searching/scraping), API (API key researching) and is sync with Settings Controls. 
