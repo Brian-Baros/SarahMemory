@@ -3169,7 +3169,15 @@ except Exception as _e:
         app_logger.error(f"appnet init failed: {_e}")
     except Exception:
         pass
-
+# --- v8 System endpoints (Files/OS) ---
+try:
+    import appsys
+    appsys.init_app(app)
+except Exception as _e:
+    try:
+        app_logger.error(f"appsys init failed: {_e}")
+    except Exception:
+        pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
