@@ -1,10 +1,11 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { ChatMessage } from "./ChatMessage";
 import { ChatComposer } from "./ChatComposer";
 import { TypingIndicator } from "./TypingIndicator";
 import { api, type ChatResponse } from "@/lib/api";
 import { toast } from "sonner";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 export function ChatPanel() {
   const {
@@ -19,15 +20,57 @@ export function ChatPanel() {
     setSpeechStartTime,
   } = useSarahStore();
 
+  const isMobile = useIsMobile();
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Auto-scroll to bottom when new messages arrive
-  useEffect(() => {
-    if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+  // Track whether user is near bottom, so we don't fight manual scrolling
+  const shouldAutoScrollRef = useRef(true);
+
+  const computeNearBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    const threshold = 160; // px
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    return distance < threshold;
+  }, []);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+    // Prefer sentinel for better reliability with dynamic heights (images, fonts, etc.)
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior, block: "end" });
+      return;
     }
-  }, [messages, isTyping]);
+    const el = scrollContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  // Update auto-scroll intent on user scroll
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const onScroll = () => {
+      shouldAutoScrollRef.current = computeNearBottom();
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll as any);
+  }, [computeNearBottom]);
+
+  // Auto-scroll when messages / typing changes IF user is near bottom
+  useLayoutEffect(() => {
+    if (!shouldAutoScrollRef.current) return;
+
+    // Two RAFs helps when layout changes (especially mobile + fixed composer + new text)
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        scrollToBottom("auto");
+      });
+    });
+  }, [messages, isTyping, scrollToBottom]);
 
   // Cleanup speaking timeout on unmount
   useEffect(() => {
@@ -36,10 +79,6 @@ export function ChatPanel() {
     };
   }, []);
 
-  /**
-   * Estimate speaking duration from text using word count
-   * Assumes ~2.2 words per second, clamped between 800ms and 12000ms
-   */
   const estimateSpeakingDuration = (text: string): number => {
     const wordCount = text.split(/\s+/).filter(Boolean).length;
     const wordsPerSecond = 2.2;
@@ -73,7 +112,6 @@ export function ChatPanel() {
 
     setAvatarSpeaking(true);
     setSpeechStartTime(Date.now());
-
     api.avatar.setSpeaking(true).catch(() => {});
 
     speakingTimeoutRef.current = setTimeout(() => {
@@ -160,10 +198,14 @@ export function ChatPanel() {
     }
   };
 
-  // Unified send (used by follow-up buttons)
+  // Unified send (used by composer + follow-ups + regenerate)
   const sendText = async (text: string) => {
     const clean = (text || "").trim();
     if (!clean) return;
+    if (isTyping) return;
+
+    // If user is near bottom, keep it pinned there as new content comes in
+    shouldAutoScrollRef.current = true;
 
     addMessage({ role: "user", content: clean });
     setTyping(true);
@@ -188,14 +230,14 @@ export function ChatPanel() {
 
       addMessage({ role: "assistant", content: response.content });
 
-      // Make follow-ups behave like normal replies: avatar speaks + optional TTS
       startAvatarSpeaking(response);
 
+      // IMPORTANT: this is now hit for *normal sends* and *follow-ups/regenerate*
       if (mediaState.voiceEnabled && settings.autoSpeak) {
         await speakResponse(response.content);
       }
     } catch (error) {
-      console.error("Follow-up error:", error);
+      console.error("Chat send error:", error);
       setTyping(false);
       toast.error("Failed to send message");
       addMessage({
@@ -209,20 +251,32 @@ export function ChatPanel() {
     }
   };
 
+  // Dynamic padding so bottom never hides behind composer/dock
+  const messagesPaddingBottom = isMobile
+    ? "calc(var(--composer-h,72px) + var(--dock-h,56px) + env(safe-area-inset-bottom) + 12px)"
+    : "calc(var(--composer-h,72px) + 12px)";
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="h-full w-full flex flex-col min-h-0 overflow-hidden">
       {/* Messages Area - ONLY scrollable element */}
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto px-3 sm:px-4 py-2 sm:py-4">
+      <div
+        ref={scrollContainerRef}
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 py-2 sm:py-4"
+        style={{ paddingBottom: messagesPaddingBottom }}
+      >
         <div className="max-w-3xl mx-auto space-y-3 sm:space-y-4">
           {messages.map((message) => (
-            <ChatMessage key={message.id} message={message} onSendFollowUp={sendText} />
+            <ChatMessage key={(message as any).id} message={message} onSendFollowUp={sendText} />
           ))}
           {isTyping && <TypingIndicator />}
+
+          {/* Sentinel for reliable scroll-to-bottom */}
+          <div ref={bottomRef} />
         </div>
       </div>
 
-      {/* Composer - Fixed at bottom, never scrolls */}
-      <ChatComposer />
+      {/* Composer */}
+      <ChatComposer onSendText={sendText} isSending={isTyping} />
     </div>
   );
 }

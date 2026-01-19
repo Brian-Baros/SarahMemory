@@ -27,52 +27,80 @@ export function ResearchScreen() {
   const [isSearching, setIsSearching] = useState(false);
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
 
+  const formatResultsForChat = (q: string, res: SearchResult[]) => {
+    const safeQ = (q || "").trim();
+    if (!res || res.length === 0) {
+      return `No results returned for: ${safeQ}`;
+    }
+
+    // Keep chat output compact so we don't spam the thread
+    const top = res.slice(0, 6);
+    const lines = top.map((r, i) => {
+      const title = (r.title || "Result").trim();
+      const snippet = (r.snippet || "").trim();
+      const url = (r.url || "").trim();
+      const oneLineSnippet = snippet.replace(/\s+/g, " ").slice(0, 180);
+      return url
+        ? `${i + 1}. ${title}\n   ${oneLineSnippet}\n   Source: ${url}`
+        : `${i + 1}. ${title}\n   ${oneLineSnippet}`;
+    });
+
+    return `Research results for: ${safeQ}\n\n${lines.join("\n\n")}`;
+  };
+
   const handleSearch = async () => {
     if (!query.trim()) return;
 
     setIsSearching(true);
     try {
+      const clean = query.trim();
+      let finalResults: SearchResult[] = [];
+
       // Try research endpoint
       const response = await api.proxy.call("/api/research/search", {
         method: "POST",
-        body: { query: query.trim() },
+        body: { query: clean },
       });
 
       if (response && (response as any).results) {
-        setResults((response as any).results);
+        finalResults = (response as any).results as SearchResult[];
+        setResults(finalResults);
         setIsAvailable(true);
       } else {
         // Fallback: use chat with research mode
-        const chatResponse = await api.chat.sendMessage([{ role: "user", content: query.trim() }], {
+        const chatResponse = await api.chat.sendMessage([{ role: "user", content: clean }], {
           researchMode: true,
         });
 
         if (chatResponse.sources && chatResponse.sources.length > 0) {
-          setResults(
-            chatResponse.sources.map((src, idx) => ({
-              id: String(idx),
-              title: src,
-              snippet: chatResponse.content.substring(0, 200),
-              url: src,
-            })),
-          );
+          finalResults = chatResponse.sources.map((src, idx) => ({
+            id: String(idx),
+            title: src,
+            snippet: chatResponse.content.substring(0, 200),
+            url: src,
+          }));
+          setResults(finalResults);
           setIsAvailable(true);
         } else {
-          setResults([
+          finalResults = [
             {
               id: "0",
               title: "AI Response",
               snippet: chatResponse.content,
             },
-          ]);
+          ];
+          setResults(finalResults);
           setIsAvailable(true);
         }
       }
 
-      // Log to chat
+      // Log to chat (both the query + the returned results)
+      addMessage({ role: "user", content: `[Research] ${clean}` });
+
+      // Mirror the research output into chat so it becomes part of History / threads
       addMessage({
-        role: "user",
-        content: `[Research] ${query.trim()}`,
+        role: "assistant",
+        content: `[Research Results]\n${formatResultsForChat(clean, finalResults)}`,
       });
     } catch (error) {
       console.warn("[Research] Search failed:", error);

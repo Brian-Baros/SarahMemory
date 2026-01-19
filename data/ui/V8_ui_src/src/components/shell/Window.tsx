@@ -205,7 +205,7 @@ export function Window({ window: win, children }: WindowProps) {
       {/* Resize Handle (bottom-right corner) */}
       {!win.isMaximized && (
         <div
-          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize"
+          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50"
           onMouseDown={handleResizeStart}
           aria-label="Resize"
           title="Resize"
