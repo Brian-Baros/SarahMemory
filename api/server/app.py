@@ -24,7 +24,7 @@ from __future__ import annotations
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
 from pathlib import Path
 from decimal import Decimal
-from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, session
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session
 # --- Flask CORS (safe import for CLI testing & WSGI) ---
 try:
     from flask_cors import CORS
@@ -46,21 +46,6 @@ from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from datetime import datetime, timedelta
 import logging # Explicitly import logging
-# --- SarahMemoryGITtalk (TEMP ADMIN TOOL) ---
-
-try:
-    # Only enable when you explicitly turn it on
-    if os.environ.get("SARAH_GITTALK_ENABLED", "0").strip() in ("1", "true", "yes", "on"):
-        mod_path = Path(__file__).resolve().parent / "data" / "mods" / "v800"
-        if mod_path.exists() and str(mod_path) not in sys.path:
-            sys.path.insert(0, str(mod_path))
-
-        from SarahMemoryGITtalk import create_gittalk_blueprint  # noqa
-        app.register_blueprint(create_gittalk_blueprint(url_prefix="/api/gittalk"))
-        print("[OK] SarahMemoryGITtalk blueprint mounted at /api/gittalk")
-except Exception as e:
-    print("[WARN] SarahMemoryGITtalk not mounted:", e)
-# --- end SarahMemoryGITtalk ---
 
 # ---------------------------------------------------------------------------
 # Path resolution (prefer SarahMemoryGlobals; fallback to local server layout)
@@ -68,6 +53,8 @@ except Exception as e:
 # Configure basic logging for the app.py directly
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 app_logger = logging.getLogger(__name__)
+logger = app_logger  # consistent alias
+
 
 
 # ------------------OLD V8 Root-----------------------
@@ -140,7 +127,7 @@ def _identity_payload():
     return {
         "name": BRAND_NAME,
         "platform": PLATFORM_NAME,
-        "version": APP_VERSION,
+        "version": PROJECT_VERSION,
         "creator": CREATOR_NAME,
         "organization": ORG_NAME,
         "build": "webui-server",
@@ -318,24 +305,45 @@ except Exception:
     pass
 
 # Apply CORS *after* app is created
-# Allow all your public frontends to call this API (GoogieHost + PythonAnywhere + local dev)
+# Tighten CORS based on env config
+ALLOWED_ORIGINS = [o.strip() for o in (os.getenv("CORS_ORIGINS", "") or "").split(",") if o.strip()]
+if not ALLOWED_ORIGINS:
+    # Dev + known frontends fallback
+    ALLOWED_ORIGINS = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5055",
+        "http://127.0.0.1:5055",
+        "https://ai.sarahmemory.com",
+        "https://api.sarahmemory.com",
+    ]
+
 if _CORS_AVAILABLE:
     try:
-        CORS(  # Use the imported CORS directly
+        CORS(
             app,
-            resources={
-                r"/api/*": {
-                    "origins": "*"
-                }
-            },
-            supports_credentials=True,  # ⭐ THIS is critical for credentials:'include'
+            resources={r"/api/*": {"origins": ALLOWED_ORIGINS}},
+            supports_credentials=True,
         )
     except Exception as e:
-        app_logger.error(f"Failed to configure Flask-CORS: {e}... only work on same-origin calls or if CORS handled externally.")
-        # If flask-cors is installed but misconfigured, API still works on same-origin calls.
-        pass
+        app_logger.error(f"CORS config failed: {e}")
 else:
     app_logger.warning("Flask-CORS not installed; CORS disabled (same-origin still works).")
+
+# --- SarahMemoryGITtalk (TEMP ADMIN TOOL) ---
+try:
+    # Only enable when you explicitly turn it on
+    if os.environ.get("SARAH_GITTALK_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on"):
+        mod_path = Path(__file__).resolve().parent / "data" / "mods" / "v800"
+        if mod_path.exists() and str(mod_path) not in sys.path:
+            sys.path.insert(0, str(mod_path))
+
+        from SarahMemoryGITtalk import create_gittalk_blueprint  # noqa
+        app.register_blueprint(create_gittalk_blueprint(url_prefix="/api/gittalk"))
+        app_logger.info("SarahMemoryGITtalk blueprint mounted at /api/gittalk")
+except Exception as e:
+    app_logger.warning(f"SarahMemoryGITtalk not mounted: {e}")
+# --- end SarahMemoryGITtalk ---
 
 try:
     from SarahMemoryDatabase import init_database
@@ -736,6 +744,41 @@ def _get_runtime_meta_safe():
             "local_only": False,
             "node_name": "SarahMemoryNode",
         }
+try:
+    import SarahMemoryCognitiveServices as cog
+    COG_AVAILABLE = True
+except Exception as e:
+    app_logger.warning(f"CognitiveServices not available: {e}")
+    cog = None
+    COG_AVAILABLE = True
+
+@app.before_request
+def _cognitive_guard():
+    if not COG_AVAILABLE:
+        return None
+
+    # Only guard API endpoints (avoid slowing static/template hits)
+    p = (request.path or "")
+    if not p.startswith("/api/"):
+        return None
+
+    # Pull a small amount of text to analyze (don’t log secrets)
+    data = request.get_json(silent=True) if request.method in ("POST","PUT","PATCH") else None
+    msg = ""
+    if isinstance(data, dict):
+        # common fields
+        msg = str(data.get("message") or data.get("text") or data.get("q") or "")[:4000]
+
+    # Example: call a lightweight analyzer (sentiment/risk tagging/etc.)
+    # Store result for the endpoint to use (no blocking by default)
+    try:
+        g.cognitive = {"ok": True, "sentiment": cog.analyze_text(msg) if msg else None}
+    except Exception as e:
+        g.cognitive = {"ok": False, "error": str(e)}
+
+    return None
+
+
 
 @app.route("/api/session/bootstrap", methods=['POST'])
 def api_session_bootstrap():
@@ -1615,7 +1658,30 @@ def add_security_headers(resp):
                 "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:;"
             )
     except Exception as e:
-        app_logger.error(f"Failed to add security headers: {e}")
+        try:
+            app_logger.error(f"Failed to add security headers: {e}")
+        except Exception:
+            pass
+
+    # Optional FE speech script injection (gated)
+    if os.getenv("SARAH_FE_SPEECH", "0") == "1":
+        try:
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            if "text/html" in ct:
+                data = resp.get_data(as_text=True)
+                if data and "<html" in data.lower() and 'id="sm-fe-speech"' not in data:
+                    tag = "\n<script id=\"sm-fe-speech\" src=\"/api/fe/v800/speech.js\" defer></script>\n"
+                    lower = data.lower()
+                    i = lower.rfind("</head>")
+                    if i != -1:
+                        resp.set_data(data[:i] + tag + data[i:])
+                        resp.headers.pop("Content-Length", None)
+        except Exception as e:
+            try:
+                app_logger.warning(f"Speech script injection failed: {e}")
+            except Exception:
+                pass
+
     return resp
 
 # Centralized settings file path (robust for headless/WSGI environments)
@@ -3132,7 +3198,6 @@ def api_top_nodes():
 # --------------------------- SIMPLE SETTINGS SNAPSHOT ---------------------
 
 @app.route("/api/download/<path:filename>")
-@app.route("/api/download/<path:filename>")
 def api_download(filename):
     """Download a file that lives under DATA_DIR (safe path enforced)."""
     if not filename:
@@ -3160,6 +3225,16 @@ def api_download(filename):
         # Flask <2.0 compatibility: download_name not supported
         return send_file(full_path, as_attachment=True)
 
+# --- v8 local system endpoints (Files / OS utilities) ---
+try:
+    import appsys
+    appsys.init_app(app)
+except Exception as _e:
+    try:
+        app_logger.error(f"appsys init failed: {_e}")
+    except Exception:
+        pass
+
 # --- v8 MCP broker endpoints (SarahNet one-way broker) ---
 try:
     import appnet
@@ -3169,15 +3244,58 @@ except Exception as _e:
         app_logger.error(f"appnet init failed: {_e}")
     except Exception:
         pass
-# --- v8 System endpoints (Files/OS) ---
-try:
-    import appsys
-    appsys.init_app(app)
-except Exception as _e:
+
+
+
+# ============================================================================
+# UI Event Speech Support (Opt-in)
+# ============================================================================
+
+@app.post("/api/ui/event")
+def api_ui_event():
+    """
+    Programmatic UI event trigger for speech/notifications.
+    Body: {"event": "panel_open", "detail": "Files", "speak": "Opening File Manager"}
+    """
     try:
-        app_logger.error(f"appsys init failed: {_e}")
-    except Exception:
-        pass
+        data = request.get_json(silent=True) or {}
+        event = (data.get("event") or "unknown").strip() or "unknown"
+        detail = (data.get("detail") or "").strip()
+        speak = (data.get("speak") or "").strip()
+
+        app_logger.info(f"UI event: {event} | {detail}")
+
+        if speak and os.getenv("SARAH_UI_SPEECH_LOCAL", "0") == "1":
+            try:
+                from SarahMemoryVoice import speak_text  # type: ignore
+                speak_text(speak, blocking=False)
+            except Exception:
+                pass
+
+        return jsonify({"ok": True, "event": event}), 200
+    except Exception as e:
+        app_logger.error(f"UI event failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get("/api/fe/v800/speech.js")
+def serve_fe_speech_js():
+    """Serve FE speech layer JS if present."""
+    try:
+        js_path = Path(DATA_DIR) / "mods" / "v800" / "FE_v800_app_speech.js"
+        # Compatibility: allow .py file to be served as JS if user dropped it in incorrectly
+        if not js_path.exists():
+            alt = Path(DATA_DIR) / "mods" / "v800" / "FE_v800_app_speech.py"
+            if alt.exists():
+                js_path = alt
+
+        if not js_path.exists():
+            return jsonify({"ok": False, "error": "Speech JS not found"}), 404
+
+        return send_file(str(js_path), mimetype="application/javascript")
+    except Exception as e:
+        app_logger.error(f"Failed to serve speech.js: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
