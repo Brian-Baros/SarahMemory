@@ -75,7 +75,7 @@ logger.addHandler(_null)
 # Safety defaults (offline-first)
 # -----------------------------------------------------------------------------
 if not hasattr(config, "COGNITIVE_ONLINE_ENABLED"):
-    config.COGNITIVE_ONLINE_ENABLED = False  # default OFF for safety
+    config.COGNITIVE_ONLINE_ENABLED = True  # default OFF for safety
 
 # Local cognitive fallback data path (owner-controlled, optional)
 LOCAL_COGNITIVE_DATA_PATH = os.path.join(getattr(config, "DATA_DIR", os.getcwd()), "local_cognitive.json")
