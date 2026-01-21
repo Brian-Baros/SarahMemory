@@ -305,8 +305,15 @@ try:
     # ==========================================================================
     print("[v8.0][PHASE 2] Initializing core modules...")
     import SarahMemoryInitialization as initialization
+    import SarahMemoryCognitiveServices as cognitive
     import SarahMemoryIntegration as integration
     
+    # optional safe warmup (no network, no execution)
+    try:
+        cognitive.ensure_response_table()   # optional legacy table
+        cognitive._ensure_tables()          # governor event table
+    except Exception:
+        pass
     logger.info("[v8.0][PHASE 2] Core modules loaded successfully")
 
     # ==========================================================================
