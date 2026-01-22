@@ -174,8 +174,12 @@ ENABLE_RESEARCH_LOGGING = True # Track Message/query of the GUI from Start to Fi
 # This constant ensures downstream modules interpret API responses
 RESEARCH_RESULT_KEY = "snippet"  # #note: Used to standardize access to results[0]['snippet']
 RESEARCH_RESULT_FALLBACK = "[No valid API result parsed]"
-SM_INT_MAIN_MENU = "False"   # "True will show Menu, "False will bypass Integration Menu"
+SM_INT_MAIN_MENU = False   # "True will show Menu, False will bypass Integration Menu"
 ENABLE_MINI_BROWSER = True  # safe default; prevents threaded Tk crashes
+SARAH_TOTAL_MEMORY_MB = 4096 # 128mb, 256mb, 512mb, 1024=1gb, 2048 = 2gb, 4096 = 4gb, 8192 =8gb
+SARAH_MEMORY_PARTITIONS= 4 # each Partition is divided into the amount of MEMORYALLOCATED therefore 4096/4 makes each Partition 1024 or 1gb each. 
+SARAH_MEMORY_REFRESH_MINUTES = 5  # in Minutes 5, 10, 15, 30, 60
+SARAH_MEMORY_SANDBOX_ENABLED = True
 
 # --- Voice / Mic gating ---
 # IMPORTANT: default False so the mic can listen unless we are actively speaking.
@@ -1065,7 +1069,6 @@ AVATAR_REFRESH_RATE = 10
 # a robotic form one day or later on, it is designed to evolve afterall.
 # I put this Flag here somewhat as a Joke but also as a reminder just incase it ever does evolve beyond control.
 NEOSKYMATRIX = True
-COGNITIVE_ONLINE_ENABLED = True
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
 # If set to True voice and text commands in the GUI or other input method interface may turn on and off this feature
 # using keywords such as "neoskymatrix on" to allow autonomous functionality or

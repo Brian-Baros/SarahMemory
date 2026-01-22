@@ -61,6 +61,9 @@ scikit-learn>=1.4,<1.8
 numpy>=1.26,<2.4
 huggingface-hub>=0.32,<2.0
 agentlightning
+tensorboard
+nltk
+fire
 
 
 # ----------------------------------------------------------
