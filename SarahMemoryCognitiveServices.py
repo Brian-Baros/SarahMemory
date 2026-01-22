@@ -2,7 +2,7 @@
 File: SarahMemoryCognitiveServices.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-01-19
+Date: 2026-01-21
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -75,7 +75,7 @@ logger.addHandler(_null)
 # Safety defaults (offline-first)
 # -----------------------------------------------------------------------------
 if not hasattr(config, "COGNITIVE_ONLINE_ENABLED"):
-    config.COGNITIVE_ONLINE_ENABLED = True  # default OFF for safety
+    config.COGNITIVE_ONLINE_ENABLED = False  # default OFF for safety
 
 # Local cognitive fallback data path (owner-controlled, optional)
 LOCAL_COGNITIVE_DATA_PATH = os.path.join(getattr(config, "DATA_DIR", os.getcwd()), "local_cognitive.json")
@@ -175,6 +175,51 @@ def log_cognitive_event(event: str, details: str, severity: str = "INFO", meta: 
     except Exception as e:
         logger.debug("Failed to log cognitive event: %s", e)
 
+# -----------------------------------------------------------------------------
+# Cognitive -> Optimization partition publish (bounded scratch arenas)
+# -----------------------------------------------------------------------------
+def _publish_to_optimization_partition(role: str, record: Dict[str, Any]) -> None:
+    """
+    Best-effort bridge:
+    - Writes small governance traces into SarahMemoryOptimization's cognitive partitions.
+    - No hard dependency: safe for headless/cloud or when Optimization isn't initialized.
+    """
+    try:
+        import SarahMemoryOptimization as opt  # local import avoids circular boot issues
+        fn = getattr(opt, "publish_cognitive_record", None)
+        if callable(fn):
+            fn(role, record)
+    except Exception:
+        # Silent by design: governance must never crash the runtime.
+        return
+
+
+def _route_role_for_decision(dec: Dict[str, Any], caller_context: Optional[Dict[str, Any]] = None) -> str:
+    """Deterministic mapping of decision -> cognitive partition role."""
+    intent = str(dec.get("intent") or "")
+    decision = str(dec.get("decision") or "")
+    ctx = caller_context or {}
+
+    # If caller indicates sandbox results are verified, move to deploy stage.
+    if bool(ctx.get("sandbox_verified")) or bool(ctx.get("sandbox_complete")):
+        return "deploy"
+
+    if intent in ("DIAGNOSTICS", "CHAT", "NETWORK_ACCESS"):
+        return "monitor"
+
+    if intent == "PATCH_OR_UPDATE":
+        if decision == "ALLOW":
+            return "test"   # approved changes go into sandbox test lane next
+        return "improve"    # denied/deferred require improvement/clarification lane
+
+    if intent == "FILESYSTEM_WRITE":
+        if decision == "ALLOW":
+            return "deploy"
+        return "improve"
+
+    # Default: monitoring lane
+    return "monitor"
+
 
 # -----------------------------------------------------------------------------
 # Self-model / policy snapshot
@@ -231,16 +276,7 @@ def classify_intent(text: str) -> str:
 # Cognitive Interrogation Helpers (no execution; deterministic)
 # -----------------------------------------------------------------------------
 def _bool(v: Any) -> bool:
-    return bool(v) is True
-
-
-def _safe_str(v: Any, limit: int = 400) -> str:
-    s = "" if v is None else str(v)
-    s = s.strip()
-    if len(s) > limit:
-        s = s[:limit] + "..."
-    return s
-
+    return bool(v)
 
 def _normalize_proposed_action(pa: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(pa, dict):
@@ -252,7 +288,9 @@ def _normalize_proposed_action(pa: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if "subsystems" in out and not isinstance(out["subsystems"], list):
         out["subsystems"] = [out["subsystems"]]
     return out
-
+# -----------------------------------------------------------------------------
+# Risk scoring helpers
+# -----------------------------------------------------------------------------
 
 def _risk_add(risk: Dict[str, Any], points: int, factor: str) -> None:
     risk["risk_score"] = max(0, min(100, int(risk.get("risk_score", 0)) + int(points)))
@@ -268,6 +306,13 @@ def _answer_missing(ans: Dict[str, Any], key: str, why: str) -> None:
     ans["missing"] = missing
 
 
+def _safe_str(v: Any, limit: int = 400) -> str:
+    s = "" if v is None else str(v)
+    s = s.strip()
+    if len(s) > limit:
+        s = s[:limit] + "..."
+    return s
+
 # -----------------------------------------------------------------------------
 # Governance engine (THE HEART)
 # -----------------------------------------------------------------------------
@@ -275,6 +320,7 @@ def govern_request(
     request_text: str,
     *,
     caller: str = "unknown",
+    caller_context: Optional[Dict[str, Any]] = None,
     user_present: Optional[bool] = None,
     user_consented: bool = False,
     proposed_action: Optional[Dict[str, Any]] = None,
@@ -285,18 +331,20 @@ def govern_request(
     snap = get_cognitive_policy_snapshot()
     intent = classify_intent(request_text)
     pa = _normalize_proposed_action(proposed_action)
+    ctx = caller_context or {}
 
     risk = {"risk_score": 0, "risk_factors": []}
     questions = []
     answers: Dict[str, Any] = {}
 
     decision: Dict[str, Any] = {
+        "ok": True,
         "ts": snap["ts"],
         "intent": intent,
         "caller": caller,
-        "allow": False,
         "require_user": True,
         "decision": "DEFER",
+        "allow": False,
         "risk": "unknown",
         "risk_score": 0,
         "risk_factors": [],
@@ -312,7 +360,12 @@ def govern_request(
     }
 
     def _finalize(dec: Dict[str, Any]) -> Dict[str, Any]:
-        score = int(dec.get("risk_score") or 0)
+        # Risk banding
+        try:
+            score = int(dec.get("risk_score") or 0)
+        except Exception:
+            score = 0
+
         if score <= 15:
             dec["risk"] = "low"
         elif score <= 45:
@@ -320,14 +373,17 @@ def govern_request(
         else:
             dec["risk"] = "high"
 
+        _caller = _safe_str(caller) if caller else "unknown"
+
+        # Event log (best-effort)
         try:
             log_cognitive_event(
                 "CognitiveDecision",
-                f"{dec.get('decision')} intent={dec.get('intent')} caller={caller}",
+                f"{dec.get('decision')} intent={dec.get('intent')} caller={_caller}",
                 severity="INFO",
                 meta={
                     "intent": dec.get("intent"),
-                    "caller": caller,
+                    "caller": _caller,
                     "allow": dec.get("allow"),
                     "require_user": dec.get("require_user"),
                     "risk": dec.get("risk"),
@@ -341,6 +397,27 @@ def govern_request(
             )
         except Exception:
             pass
+
+        # Optimization partition publish (best-effort)
+        try:
+            role = _route_role_for_decision(dec, ctx)
+            _publish_to_optimization_partition(
+                role,
+                {
+                    "ts": datetime.now().isoformat(),
+                    "role": role,
+                    "decision": dec.get("decision"),
+                    "intent": dec.get("intent"),
+                    "risk": dec.get("risk"),
+                    "risk_score": dec.get("risk_score"),
+                    "reasons": dec.get("reasons"),
+                    "recommended_next": dec.get("recommended_next"),
+                    "caller": _caller,
+                },
+            )
+        except Exception:
+            pass
+
         return dec
 
     # -------------------------------------------------------------------------
@@ -391,6 +468,7 @@ def govern_request(
     # -------------------------------------------------------------------------
     # Intent-specific interrogation
     # -------------------------------------------------------------------------
+
     if intent == "PATCH_OR_UPDATE":
         questions.extend(
             [
@@ -771,12 +849,12 @@ def process_online_cognitive_request(request_text: str) -> Optional[Any]:
     return None  # Provider not implemented here by design (governor only).
 
 
-def process_cognitive_request(request_text: str) -> Any:
+def process_cognitive_request_text(request_text: str) -> Any:
     """
     Adaptive processing of cognitive requests (legacy compatibility).
     Local suggestions first; online only if enabled + consent provided externally.
     """
-    _ = govern_request(request_text, caller="SarahMemoryCognitiveServices.process_cognitive_request")
+    _ = govern_request(request_text, caller="SarahMemoryCognitiveServices.process_cognitive_request_text")
 
     local_result = process_local_cognitive_request(request_text)
     if local_result is not None:
@@ -853,6 +931,31 @@ def ensure_response_table(db_path: Optional[str] = None) -> bool:
     except Exception as e:
         logger.debug("ensure_response_table failed: %s", e)
         return False
+
+def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Legacy wrapper for the web/UI calling pattern.
+    """
+    payload = payload or {}
+
+    text = payload.get("text") or payload.get("message") or ""
+    caller = payload.get("caller") or "process_cognitive_request"
+    ctx = payload.get("caller_context") or {}
+    pa = payload.get("proposed_action") or None
+    user_present = payload.get("user_present", True)
+    user_consented = payload.get("user_consented", False)
+
+    dec = govern_request(
+        text,
+        caller=caller,
+        caller_context=ctx,
+        user_present=user_present,
+        user_consented=user_consented,
+        proposed_action=pa,
+    )
+
+    # Optional: include a minimal echo for debugging (do not leak secrets)
+    return {"ok": True, "governance": dec, "version": "8.0.0"}
 
 
 # -----------------------------------------------------------------------------
