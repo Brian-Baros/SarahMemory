@@ -776,6 +776,7 @@ except Exception:
 # =============================================================================
 if __name__ == "__main__":
     logger.info("[v8.0] Starting SarahMemory AI Bot.")
+    
     run_self_check()
     sync_dataset_bidirectional()
     main_menu()

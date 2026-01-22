@@ -1065,6 +1065,7 @@ AVATAR_REFRESH_RATE = 10
 # a robotic form one day or later on, it is designed to evolve afterall.
 # I put this Flag here somewhat as a Joke but also as a reminder just incase it ever does evolve beyond control.
 NEOSKYMATRIX = True
+COGNITIVE_ONLINE_ENABLED = True
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
 # If set to True voice and text commands in the GUI or other input method interface may turn on and off this feature
 # using keywords such as "neoskymatrix on" to allow autonomous functionality or

@@ -54,6 +54,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py") if hasattr(config, "HAS_AVATAR") else os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryBrowser.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryCanvasStudio.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryCognitiveServices.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryCompare.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryDatabase.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryDiagnostics.py"),
