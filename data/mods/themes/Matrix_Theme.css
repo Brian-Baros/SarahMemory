@@ -1,16 +1,139 @@
-/* SarahMemory Unified Theme — MATRIX (v7.7.5) */
+/* =======================================================================
+   SarahMemory WebUI Theme Pack (v8.0.0)
+   - Hot-swap ready (CSS vars only)
+   - Optional background image + lightweight FX overlays
+   - Desktop + Mobile shell compatible
+   ======================================================================= */
+
 :root{
-  --bg:#000; --panel:#050805; --text:#c6ffd1; --muted:#59bf73;
-  --accent:#00ff6a; --border:#103e1c; --btn:#0a1a0f; --btnText:#c6ffd1;
-  --bubble-user:#082b13; --bubble-sarah:#061f0e; --chip:#0b1f12;
+  /* Runtime background controls (can be overridden live from Settings) */
+  --sm-bg-image: none;                    /* e.g. url('/assets/bg/hal-eye.png') */
+  --sm-bg-image-opacity: 0.18;            /* 0.0 - 1.0 */
+  --sm-effect-bg: none;                   /* set per theme */
+  --sm-effect-opacity: 0;                 /* 0.0 - 1.0 */
+  --sm-effect-animation: none;            /* e.g. matrixRain 14s linear infinite */
+  --sm-radius: 14px;
+  --sm-shadow: 0 10px 28px rgba(0,0,0,.22);
+  --sm-focus: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
 }
-html,body{background:var(--bg);color:var(--text);font-family:"JetBrains Mono","Consolas","Lucida Console",monospace}
-.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
-.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
-.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
+
+/* Base document */
+html,body{
+  height:100%;
+  background:var(--bg);
+  color:var(--text);
+  font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif;
+}
+
+/* Background image layer */
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background-image:var(--sm-bg-image);
+  background-size:cover;
+  background-position:center;
+  background-repeat:no-repeat;
+  opacity:var(--sm-bg-image-opacity);
+  z-index:0;
+}
+
+/* Theme FX layer (Matrix rain / HAL pulse / etc.) */
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  background:var(--sm-effect-bg);
+  opacity:var(--sm-effect-opacity);
+  mix-blend-mode:screen;
+  animation:var(--sm-effect-animation);
+  z-index:0;
+}
+
+/* Ensure app content is above overlays */
+#root, .sm-app, .App, main{
+  position:relative;
+  z-index:1;
+}
+
+/* Common UI primitives */
+a{color:var(--accent); text-decoration:none}
+a:hover{text-decoration:underline}
+
+.btn, button{
+  background:var(--btn);
+  color:var(--btnText);
+  border:1px solid var(--border);
+  border-radius:calc(var(--sm-radius) - 6px);
+}
+.btn:hover, button:hover{filter:brightness(1.05)}
+.btn:focus-visible, button:focus-visible{outline:none; box-shadow:var(--sm-focus)}
+
+input, textarea, select{
+  background:color-mix(in srgb, var(--panel) 92%, transparent);
+  color:var(--text);
+  border:1px solid var(--border);
+  border-radius:calc(var(--sm-radius) - 6px);
+}
+input:focus, textarea:focus, select:focus{outline:none; box-shadow:var(--sm-focus); border-color:color-mix(in srgb, var(--accent) 50%, var(--border))}
+
 .small,.muted{color:var(--muted)}
 
-.TFrame { background-color:#050805; }
-.TLabel { background-color:transparent; color:#00ff6a; foreground:#00ff6a; font-family:"Lucida Console","Consolas",monospace; font-size:11pt; }
-.TButton{ background-color:#0a1a0f; color:#00ff6a; foreground:#00ff6a; font-family:"Lucida Console","Consolas",monospace; font-size:10pt; bordercolor:#103e1c; }
-.ChatText{ background-color:#000000; color:#00ff6a; font-family:"Consolas","Lucida Console",monospace; font-size:11pt; }
+/* Chat bubbles (legacy selectors kept) */
+.bubble.user{background:var(--bubble-user);border:1px solid var(--border);border-radius:var(--sm-radius)}
+.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border);border-radius:var(--sm-radius)}
+
+/* Legacy Tk-style classes (kept as-is, now variable-driven) */
+.TFrame { background-color:var(--panel); }
+.TLabel { background-color:transparent; color:var(--text); foreground:var(--text); font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; }
+.TButton{ background-color:var(--btn); color:var(--btnText); foreground:var(--btnText); font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; bordercolor:var(--border); }
+.ChatText{ background-color:var(--bg); color:var(--text); font-family:"Consolas","Lucida Console",monospace; font-size:10pt; }
+
+/* Animations */
+@keyframes matrixRain{
+  0%{background-position:0 0, 0 0, 0 0}
+  100%{background-position:0 1200px, 0 800px, 0 400px}
+}
+@keyframes halPulse{
+  0%,100%{filter:saturate(1) brightness(1)}
+  50%{filter:saturate(1.15) brightness(1.08)}
+}
+
+/* --- Theme: MATRIX ------------------------------------------------ */
+:root{
+  --bg:#000;
+  --panel:#050805;
+  --text:#c6ffd1;
+  --muted:#59bf73;
+  --accent:#00ff6a;
+  --border:#103e1c;
+  --btn:#0a1a0f;
+  --btnText:#c6ffd1;
+  --bubble-user:#082b13;
+  --bubble-sarah:#061f0e;
+  --chip:#0b1f12;
+  --sm-effect-bg:repeating-linear-gradient(180deg, rgba(0,255,106,.16) 0px, rgba(0,255,106,.08) 2px, rgba(0,255,106,0) 7px), repeating-linear-gradient(90deg, rgba(0,255,106,.06) 0px, rgba(0,255,106,0) 10px), radial-gradient(circle at 50% 10%, rgba(0,255,106,.14), rgba(0,0,0,0) 55%);
+  --sm-effect-opacity:0.65;
+  --sm-effect-animation:matrixRain 14s linear infinite;
+}
+[data-sm-theme="matrix"]{
+  --bg:#000;
+  --panel:#050805;
+  --text:#c6ffd1;
+  --muted:#59bf73;
+  --accent:#00ff6a;
+  --border:#103e1c;
+  --btn:#0a1a0f;
+  --btnText:#c6ffd1;
+  --bubble-user:#082b13;
+  --bubble-sarah:#061f0e;
+  --chip:#0b1f12;
+  --sm-effect-bg:repeating-linear-gradient(180deg, rgba(0,255,106,.16) 0px, rgba(0,255,106,.08) 2px, rgba(0,255,106,0) 7px), repeating-linear-gradient(90deg, rgba(0,255,106,.06) 0px, rgba(0,255,106,0) 10px), radial-gradient(circle at 50% 10%, rgba(0,255,106,.14), rgba(0,0,0,0) 55%);
+  --sm-effect-opacity:0.65;
+  --sm-effect-animation:matrixRain 14s linear infinite;
+}
+
+/* Matrix typography override */
+html,body{font-family:"JetBrains Mono","Consolas","Lucida Console",monospace}
