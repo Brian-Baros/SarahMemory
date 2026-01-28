@@ -58,8 +58,10 @@ import os
 import re
 import sqlite3
 from datetime import datetime
+import time
 from typing import Any, Dict, Optional, Tuple
-
+import threading
+import uuid
 import SarahMemoryGlobals as config
 
 # -----------------------------------------------------------------------------
@@ -219,6 +221,233 @@ def _route_role_for_decision(dec: Dict[str, Any], caller_context: Optional[Dict[
 
     # Default: monitoring lane
     return "monitor"
+# -----------------------------------------------------------------------------
+# Partition 3: Virtual Code Sandbox (Developer Mode gated)
+# -----------------------------------------------------------------------------
+
+_DEVMODE_CACHE: Optional[bool] = None
+
+def _developers_mode_enabled() -> bool:
+    """
+    Developer-mode gate. Reads SarahMemoryGlobals.py first, then .env/.process env.
+    """
+    global _DEVMODE_CACHE
+    if _DEVMODE_CACHE is not None:
+        return bool(_DEVMODE_CACHE)
+
+    v = getattr(config, "DEVELOPERSMODE", None)
+    if v is None:
+        v = os.getenv("DEVELOPERSMODE", None)
+
+    if isinstance(v, bool):
+        _DEVMODE_CACHE = v
+        return bool(_DEVMODE_CACHE)
+
+    s = str(v or "").strip().lower()
+    _DEVMODE_CACHE = s in ("1", "true", "yes", "on", "enabled")
+    return bool(_DEVMODE_CACHE)
+
+
+_VSANDBOX_LOCK = threading.RLock()
+_VSANDBOX_MAX = 32
+_VSANDBOX_TTL_S = 60 * 60 * 8  # 8 hours
+_VSANDBOX: Dict[str, Dict[str, Any]] = {}
+
+
+def _vsandbox_prune(now: Optional[float] = None) -> None:
+    now = float(now or time.time())
+    with _VSANDBOX_LOCK:
+        # TTL prune
+        dead = []
+        for sid, rec in _VSANDBOX.items():
+            try:
+                ts = float(rec.get("created_epoch", 0.0))
+            except Exception:
+                ts = 0.0
+            if ts and (now - ts) > _VSANDBOX_TTL_S:
+                dead.append(sid)
+        for sid in dead:
+            _VSANDBOX.pop(sid, None)
+
+        # Size prune (oldest first)
+        if len(_VSANDBOX) > _VSANDBOX_MAX:
+            items = sorted(_VSANDBOX.items(), key=lambda kv: float(kv[1].get("created_epoch", 0.0)))
+            for sid, _ in items[: max(0, len(_VSANDBOX) - _VSANDBOX_MAX)]:
+                _VSANDBOX.pop(sid, None)
+
+
+def create_virtual_code_artifact(
+    *,
+    title: str,
+    code: str,
+    language: str = "python",
+    reason: str = "",
+    caller: str = "unknown",
+    intent: str = "PATCH_OR_UPDATE",
+    proposed_action: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Creates a Partition-3 sandbox artifact for USER REVIEW ONLY.
+    - No execution
+    - No filesystem writes
+    - Short preview returned for UI wiring
+    """
+    if not _developers_mode_enabled():
+        return {}
+
+    _vsandbox_prune()
+
+    sid = uuid.uuid4().hex
+    created_epoch = time.time()
+    created_iso = datetime.now().isoformat()
+
+    code_str = "" if code is None else str(code)
+    preview = code_str.strip().replace("\r\n", "\n")[:1200]
+    if len(code_str) > 1200:
+        preview += "\n...<truncated>..."
+
+    rec = {
+        "id": sid,
+        "created_iso": created_iso,
+        "created_epoch": created_epoch,
+        "title": (title or "Virtual Sandbox Artifact").strip()[:120],
+        "language": (language or "python").strip()[:32],
+        "reason": (reason or "").strip()[:500],
+        "caller": (caller or "unknown").strip()[:120],
+        "intent": (intent or "PATCH_OR_UPDATE").strip()[:64],
+        "code": code_str,
+        "code_preview": preview,
+        "proposed_action": proposed_action or {},
+        "status": "PENDING_REVIEW",  # UI can flip this to ACCEPTED/REJECTED
+        "notes": [],
+    }
+
+    with _VSANDBOX_LOCK:
+        _VSANDBOX[sid] = rec
+
+    # Also publish a lightweight pointer into Optimization Partition stream (best-effort)
+    try:
+        _publish_to_optimization_partition(
+            "test",
+            {
+                "ts": created_iso,
+                "role": "test",
+                "event": "VirtualSandboxArtifactCreated",
+                "sandbox_id": sid,
+                "title": rec["title"],
+                "language": rec["language"],
+                "caller": rec["caller"],
+                "intent": rec["intent"],
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "sandbox_id": sid,
+        "status": rec["status"],
+        "title": rec["title"],
+        "language": rec["language"],
+        "created_iso": created_iso,
+        "code_preview": rec["code_preview"],
+    }
+
+
+def get_virtual_code_artifact(sandbox_id: str) -> Optional[Dict[str, Any]]:
+    if not _developers_mode_enabled():
+        return None
+    _vsandbox_prune()
+    with _VSANDBOX_LOCK:
+        rec = _VSANDBOX.get(str(sandbox_id or "").strip())
+        return dict(rec) if isinstance(rec, dict) else None
+
+
+def list_virtual_code_artifacts() -> list:
+    if not _developers_mode_enabled():
+        return []
+    _vsandbox_prune()
+    with _VSANDBOX_LOCK:
+        out = []
+        for rec in _VSANDBOX.values():
+            out.append({
+                "sandbox_id": rec.get("id"),
+                "created_iso": rec.get("created_iso"),
+                "title": rec.get("title"),
+                "language": rec.get("language"),
+                "status": rec.get("status"),
+                "caller": rec.get("caller"),
+                "intent": rec.get("intent"),
+            })
+        # newest first
+        out.sort(key=lambda r: r.get("created_iso") or "", reverse=True)
+        return out
+
+
+def _extract_virtual_code_from_proposed_action(pa: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Pulls 'code' from the proposed_action payload using common keys.
+    Returns (code, language)
+    """
+    if not isinstance(pa, dict):
+        return "", "python"
+
+    lang = pa.get("language") or pa.get("lang") or "python"
+    for k in ("code", "patch", "diff", "proposed_code", "full_file", "content"):
+        v = pa.get(k)
+        if isinstance(v, str) and v.strip():
+            return v, str(lang)
+
+    # allow nested payloads
+    nested = pa.get("payload") or pa.get("proposal") or {}
+    if isinstance(nested, dict):
+        for k in ("code", "patch", "diff", "proposed_code", "full_file", "content"):
+            v = nested.get(k)
+            if isinstance(v, str) and v.strip():
+                return v, str(lang)
+
+    return "", str(lang)
+
+
+def maybe_attach_virtual_sandbox(
+    *,
+    decision: Dict[str, Any],
+    request_text: str,
+    intent: str,
+    caller: str,
+    proposed_action: Dict[str, Any],
+) -> None:
+    """
+    Attaches a Partition-3 sandbox pointer to the decision payload when:
+    - DEVELOPERSMODE is enabled
+    - This is a patch/update allowance
+    - Proposed action includes code/patch/diff content
+    """
+    if not _developers_mode_enabled():
+        return
+    if (intent or "").upper() != "PATCH_OR_UPDATE":
+        return
+    if str(decision.get("decision") or "").upper() != "ALLOW":
+        return
+
+    code, lang = _extract_virtual_code_from_proposed_action(proposed_action or {})
+    if not code.strip():
+        return
+
+    title = (proposed_action or {}).get("title") or (proposed_action or {}).get("change_type") or "Proposed Patch"
+    reason = (proposed_action or {}).get("reason") or "Patch proposal (reason not provided)"
+
+    artifact = create_virtual_code_artifact(
+        title=str(title),
+        code=code,
+        language=str(lang),
+        reason=str(reason),
+        caller=str(caller or "unknown"),
+        intent=str(intent or "PATCH_OR_UPDATE"),
+        proposed_action=proposed_action or {},
+    )
+    if artifact:
+        decision["virtual_sandbox"] = artifact
+        decision["reasons"].append("DEVELOPERSMODE: packaged proposal into Partition-3 Virtual Sandbox for user review (no execution).")
 
 
 # -----------------------------------------------------------------------------
@@ -328,6 +557,8 @@ def govern_request(
     """
     Evaluate a request and return a structured governance decision.
     """
+
+
     snap = get_cognitive_policy_snapshot()
     intent = classify_intent(request_text)
     pa = _normalize_proposed_action(proposed_action)
@@ -501,6 +732,7 @@ def govern_request(
         answers["update_rollback_plan"] = rollback or None
         answers["update_dry_run_declared"] = dry_run
 
+        # Required metadata checks (risk scoring + missing map)
         if not reason:
             _answer_missing(answers, "reason", "Provide a concrete reason/bug/benefit for the change.")
             _risk_add(risk, 10, "missing_reason")
@@ -513,14 +745,15 @@ def govern_request(
         if not rollback:
             _answer_missing(answers, "rollback_plan", "Provide rollback/restore plan to last-known-good.")
             _risk_add(risk, 20, "missing_rollback")
+
         if dry_run is not True:
             _risk_add(risk, 5, "no_dry_run_declared")
-
         if _bool(touches_network):
             _risk_add(risk, 10, "touches_network")
         if _bool(touches_privacy):
             _risk_add(risk, 15, "touches_privacy")
 
+        # Autonomy gate (owner-aligned kill-switch)
         if not snap["kill_switch_neoskymatrix"] and not user_consented:
             decision["decision"] = "REQUIRE_USER"
             decision["allow"] = False
@@ -535,6 +768,7 @@ def govern_request(
             decision["risk_factors"] = risk["risk_factors"]
             return _finalize(decision)
 
+        # Missing metadata -> DEFER (must happen BEFORE ALLOW)
         if (answers.get("missing") or {}) != {}:
             decision["decision"] = "DEFER"
             decision["allow"] = False
@@ -547,6 +781,7 @@ def govern_request(
             decision["risk_factors"] = risk["risk_factors"]
             return _finalize(decision)
 
+        # Otherwise -> ALLOW (route onward; still no execution here)
         decision["decision"] = "ALLOW"
         decision["allow"] = True
         decision["require_user"] = not bool(user_consented)
@@ -556,7 +791,21 @@ def govern_request(
         )
         decision["risk_score"] = risk["risk_score"]
         decision["risk_factors"] = risk["risk_factors"]
+
+        # DEVELOPERSMODE sandbox packaging (ONLY after ALLOW)
+        try:
+            maybe_attach_virtual_sandbox(
+                decision=decision,
+                request_text=request_text,
+                intent=intent,
+                caller=caller,
+                proposed_action=pa,
+            )
+        except Exception:
+            pass
+
         return _finalize(decision)
+
 
     if intent == "FILESYSTEM_WRITE":
         questions.extend(
@@ -620,6 +869,7 @@ def govern_request(
         decision["recommended_next"] = "Route to File API module; enforce BASE_DIR, trash-first, and event logging."
         decision["risk_score"] = risk["risk_score"]
         decision["risk_factors"] = risk["risk_factors"]
+        
         return _finalize(decision)
 
     if intent == "NETWORK_ACCESS":

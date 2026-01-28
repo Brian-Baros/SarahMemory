@@ -180,6 +180,8 @@ SARAH_TOTAL_MEMORY_MB = 4096 # 128mb, 256mb, 512mb, 1024=1gb, 2048 = 2gb, 4096 =
 SARAH_MEMORY_PARTITIONS= 4 # each Partition is divided into the amount of MEMORYALLOCATED therefore 4096/4 makes each Partition 1024 or 1gb each. 
 SARAH_MEMORY_REFRESH_MINUTES = 5  # in Minutes 5, 10, 15, 30, 60
 SARAH_MEMORY_SANDBOX_ENABLED = True
+DEVELOPERSMODE = True
+
 
 # --- Voice / Mic gating ---
 # IMPORTANT: default False so the mic can listen unless we are actively speaking.
