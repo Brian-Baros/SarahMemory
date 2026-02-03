@@ -3,7 +3,7 @@
 * Version:** 8.0.0  
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** January 22, 2026  
+* Last Update Date:** Febuary  2, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 
@@ -184,8 +184,27 @@ python SarahMemoryMain.py
 
 Advanced configuration must be performed manually in:
 SarahMemoryGlobals.py
+3. Build .NET 10 SDK Browser
+install Microsoft .NET 10.0 SDK using the following link.
+
+https://dotnet.microsoft.com/en-us/download/dotnet/10.0
+
+Use Command Prompt and go to
+cd\SarahMemory\resources\desktophost
+and type 
+
+dotnet restore
+dotnet build -c Release
 ---
 
+4. Build the WebUI React/Flask FrontEnd
+using the NPM command the FrontEnd which you can modify anyway you want will be in the 
+C:\SarahMemory\data\ui\V8_ui_src 
+folder you should be able to Run 'npm run build' which will then create the /dist folder
+all contents should be then COPIED to the C:\SarahMemory\data\ui\V8 folder
+
+NOTE: to Make the ResearchBrowser function work correctly you must do the above .NET 10.0 SDK build mentioned above.
+---
 
  WHAT MAKES THE SARAHMEMORY PROJECT UNIQUE. 
 
@@ -671,6 +690,12 @@ This spec is name-agnostic: the shell contract survives branding changes.
 
 ---
 Jan 6th-15th, 2026 -Updates - Development of AiOS Front-End Shell, has begun, Additional development for Drivers has begun, Web UI shell source code is under the ../data/ui/V8_ui_src folder, npm build is in the ../data/ui/V8 folder, Drivers will be located in ../data/drivers , Additional Addon/ Application Programs to Run in the system may be placed in the ../data/addons folder and should be detected by the Front-End, Full Arduino USB driver has been Created so far, Adjustable FrontEnd Taskbar is currently being developed. Reduced Settings Front-End Settings Windows to 1 instead of 2 different windows, Clicking on the MODE on the Status/Taskbar now changes the MODES from ANY, Local (Local only Sqlite3 database), Web (Web searching/scraping), API (API key researching) and is sync with Settings Controls. 
+
 Jan 20-21st, 2026 - Updates - Development and complete redesigning of v8.0.0 AiOS Cognitive Functionality and partial intergration. Front-End FileManager semi-completed, Front-End Chat updated with Follow up questions to enhance experience with the qa_cache.
-Jan 21-22nd, 2026 - Updates - added variables in SarahMemoryGlobals.py for MemoryAllocation , Partitions amounts, and MemoryRefreshRates, for SarahMemoryOptimization.py to create so SarahMemoryCognitiveServices.py may perform virtural sandbox testing and creations when governing decisions.
+
+Jan 21-22nd, 2026 - Updates - added variables in SarahMemoryGlobals.py for MemoryAllocation , Partitions amounts, and MemoryRefreshRates, for SarahMemoryOptimization.py to create so SarahMemoryCognitiveServices.py may perform virtural sandbox testing and creations when governing decisions. 
+
+Jan 29-Feb 2nd, 2026 - Updates - Correcting and building the Front-End Research Browser, having to add in the .NET 10 SDK so the Research function on the UI can work correctly. Added Instructions on this README.md , updated ResearchScreen.tsx, and added in files in the SarahMemory/resource/desktophost directory. [ App.xami, App.saml.cs, MainWindow.xami, MainWindow.xaml.cs, SarahMemoryDesktopHost.csproj ]
+
+
 
