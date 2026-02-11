@@ -6,6 +6,7 @@
 * Last Update Date:** Febuary  11, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
+* Created and Designed using Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
 
 ---
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
