@@ -6,7 +6,8 @@
 * Last Update Date:** Febuary  11, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
-* Created and Designed using Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional. On an AMD 8350FX with 32gb DDR3 and 3060 RTX, and on a Ryzen 3 with 8gb DDR4 with Radeon Vega Laptop, Samsung Galaxy S20+ , Apple iPhone 14 - NOTE This system was purposly Designed to Run on older Legancy Systems. Performance may change with newer Hardware. 
+* Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
+* Created using:** On an AMD 8350FX with 32gb DDR3 and 3060 RTX, and on a Ryzen 3 with 8gb DDR4 with Radeon Vega Laptop, Samsung Galaxy S20+ , Apple iPhone 14              - NOTE This system was purposly Designed to Run on older Legancy Systems. Performance may change with newer Hardware. 
 
 ---
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
