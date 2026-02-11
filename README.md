@@ -137,7 +137,7 @@ SarahMemory/
     
      If you don't know how to do this step, May GOD BLESS YOUR SOUL.
 
-3.  Install the Python Dependency
+3.  Install the Python Dependency - This Program has many python dependencies and installing those can be a hassle.
      type the following commands
     
     python -m venv venv
@@ -151,8 +151,16 @@ SarahMemory/
     pip install -r requirements.txt
     
      note depending what system Windows should complete okay or on Linux you might not be able to install every one This process will take sometime there are alot.
-
-4. Create a local set of databases
+     * As of Febuary 10th, I am currently working on multiple concepts to make installing the Program more user friendly, The 'requirements.txt' file has been broken into segments,
+     * (req1.txt-req12.txt) files have been added
+     * error correcting batch file that can be ran from a windows Administrators Command Prompt.
+     * requirements that can be Ran from Administror Windows PowerShell once you have unzipped the entire SarahMemory Project into a folder if so desired using.
+     * I will be working on an easier possibly DOCKER setup in future updates. - Feb 10, 2026.
+        
+    powershell -ExecutionPolicy Bypass -File .\requirements-install.ps1
+   
+      
+5. Create a local set of databases
     
      Be sure you're now see the command prompt as (venv)SarahMemory
      type the following
