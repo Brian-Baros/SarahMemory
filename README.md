@@ -697,5 +697,13 @@ Jan 21-22nd, 2026 - Updates - added variables in SarahMemoryGlobals.py for Memor
 
 Jan 29-Feb 2nd, 2026 - Updates - Correcting and building the Front-End Research Browser, having to add in the .NET 10 SDK so the Research function on the UI can work correctly. Added Instructions on this README.md , updated ResearchScreen.tsx, and added in files in the SarahMemory/resource/desktophost directory. [ App.xami, App.saml.cs, MainWindow.xami, MainWindow.xaml.cs, SarahMemoryDesktopHost.csproj ]
 
-
+Feb 10th, 2026 - Updated python dependency requirements, use any of the following installations 
+pip install -r requirements.txt
+or 
+pip install -r req1.txt # for example req1.txt-req12.txt 
+or use the Batch file
+Run from Administrator Command Prompt 
+requirements-install.bat
+or Run from PowerShell using
+powershell -ExecutionPolicy Bypass -File .\requirements-install.ps1
 

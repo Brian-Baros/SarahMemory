@@ -1,0 +1,6 @@
+# Workflow orchestration for LLM chains.
+langchain>=0.2,<0.5
+
+# Model validation (used across API modules)
+pydantic>=2.4,<2.13
+#selenium google-generativeai webdriver-manager

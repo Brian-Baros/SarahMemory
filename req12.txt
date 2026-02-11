@@ -1,0 +1,22 @@
+# ----------------------------------------------------------
+# DEVELOPMENT / BUILD TOOLS
+# ----------------------------------------------------------
+# setuptools required by several packages to build wheels.
+setuptools>=65.5.0
+pip>=24.3
+virtualenv>=20.30.0
+
+
+# ----------------------------------------------------------
+# OPTIONAL 3D / DCC (COMMENTED - POWER USERS ONLY)
+# These libraries are extremely heavy and WILL fail on most
+# user systems unless Blender SDK is installed.
+# ----------------------------------------------------------
+# bpy>=4.4.0               # Blender Python integration
+# blender>=1.4             # Blender automation helper
+trimesh>=4.6,<4.10         # 3D geometry tools (lightweight)
+
+# run after installing spacy
+#python -m spacy download en_core_web_sm 
+echo Type 'python -m spacy download en_core_web_sm' 
+echo And that should be the end of all the dependencies.

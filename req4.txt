@@ -1,0 +1,12 @@
+# ----------------------------------------------------------
+# GUI / DESKTOP WEBVIEW (Local Frontend Shell)
+# ----------------------------------------------------------
+# Used by SarahMemoryGUI.py for the Windows-native graphical UI.
+PyQt5>=5.15.11
+PyQt5-Qt5>=5.15.2
+PyQt5_sip>=12.17.0
+
+# pywebview allows a full HTML/JS UI inside a desktop window.
+pywebview==6.0
+tkhtmlview>=0.2.0
+tkinterweb>=3.23.10

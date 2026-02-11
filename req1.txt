@@ -1,0 +1,66 @@
+# ==========================================================
+# SarahMemory Project — requirements.txt (v8.0.0)
+#--==The SarahMemory Project==--
+#File: requirements.txt
+#Part of the SarahMemory Companion AI-bot Platform
+#Version: v8.0.0
+#Date: 2025-12-05
+#Time: 10:11:54
+#Author: © 2025 Brian Lee Baros. All Rights Reserved.
+#www.linkedin.com/in/brian-baros-29962a176
+#https://www.facebook.com/bbaros
+#brian.baros@sarahmemory.com
+#'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+#https://www.sarahmemory.com
+#https://api.sarahmemory.com
+#https://ai.sarahmemory.com
+#===============================================================================
+# Target Systems:
+#   • Windows 10/11 (full local client)
+#   • Linux (headless mode / PythonAnywhere cloud)
+#   • Python 3.10 – 3.13 (spaCy is gated for ≤3.12 only)
+#
+# PURPOSE:
+#   This is the ONLY master requirements file for the entire
+#   SarahMemory Project. Anyone who clones the GitHub repo
+#   installs this file to run the **local SarahMemory Client**.
+#
+#   By default, the local client connects to the OFFICIAL
+#   SarahMemory Cloud backend (PythonAnywhere). Users DO NOT need
+#   to create their own cloud version unless they intentionally
+#   choose to set up their own backend, which requires deep
+#   configuration.
+#
+#   This file includes:
+#   • All required AI/ML, CV, Audio, GUI, Web, Crypto, Research,
+#     and Automation dependencies.
+#   • Optional Windows-only sections protected with markers.
+#   • Optional heavy 3D DCC tools (Blender) commented out.
+#
+#   This file lists ONLY top-level dependencies.
+#   Pip will install transitive deps automatically.
+#
+# INSTALLATION:
+#   python -m venv venv
+#   venv\Scripts\activate        # Windows
+#   source venv/bin/activate     # Linux/macOS
+#   pip install -r requirements.txt
+# ==========================================================
+
+
+# ----------------------------------------------------------
+# CORE AI & MACHINE LEARNING STACK
+# ----------------------------------------------------------
+# These libraries power embeddings, model inference, memory
+# search, transformers, and local CPU/GPU operations.
+sentence-transformers>=2.6,<3.0
+transformers>=4.46,<5.0
+torch>=2.3,<3.0
+faiss-cpu>=1.7.4,<1.13
+scikit-learn>=1.4,<1.8
+numpy>=1.26,<2.4
+huggingface-hub>=0.32,<2.0
+agentlightning
+tensorboard
+nltk
+fire
