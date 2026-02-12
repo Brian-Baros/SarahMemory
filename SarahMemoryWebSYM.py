@@ -3,6 +3,7 @@ File: SarahMemoryWebSYM.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2025-12-21
+LastUpdate: 2026-02-11 
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -47,6 +48,12 @@ from decimal import Decimal, getcontext
 from typing import Union, List, Dict, Tuple, Any, Optional
 import SarahMemoryGlobals as config
 from SarahMemoryDatabase import search_answers
+
+# Optional advanced logic/calculus engine (Rosetta Stone layer)
+try:
+    from SarahMemoryLogicCalc import LogicCalc as _SM_LOGICCALC
+except Exception:
+    _SM_LOGICCALC = None
 
 # Set decimal precision for high-accuracy calculations
 getcontext().prec = 50
@@ -327,7 +334,22 @@ class WebSemanticSynthesizer:
         """
         research_path_logger = logging.getLogger("ResearchPathLogger")
         logger.info(f"[DEBUG] Synthesizing Web Content: {content[:200]}")
-        query = query.lower().strip()
+        # Preserve original query for downstream engines
+        _orig_query = (query or "").strip()
+        query = (query or "").lower().strip()
+
+        # Tier-0: Advanced LogicCalc routing (deterministic science + translation)
+        if _SM_LOGICCALC and _orig_query:
+            try:
+                lc = _SM_LOGICCALC.route(_orig_query)
+                if lc and lc.get("ok") and lc.get("kind") in ("calc", "convert", "solve", "translate", "chemistry", "nuclear", "constants"):
+                    if lc.get("text"):
+                        return str(lc.get("text"))
+                    if lc.get("value") is not None:
+                        return str(lc.get("value"))
+            except Exception:
+                # Non-fatal: keep legacy path operational
+                pass
         
         # Route to calculator for math queries
         if WebSemanticSynthesizer.is_math_query(query):
@@ -454,6 +476,21 @@ class WebSemanticSynthesizer:
         
         query_lower = query.lower().strip()
         original = original_query or query
+
+        # Tier-0 delegation: advanced deterministic science/translation engine
+        if _SM_LOGICCALC:
+            try:
+                _lc_keys = [
+                    "translate", "ohm", "newton", "reynolds", "thermo", "kinetic", "ideal gas", "pv=nrt",
+                    "ph", "acid", "base", "molar", "mole", "periodic", "element", "atomic", "nuclear",
+                    "decay", "half life", "half-life", "avogadro", "boltzmann", "planck", "speed of light"
+                ]
+                if any(k in query_lower for k in _lc_keys) or ("=" in query_lower and any(ch.isalpha() for ch in query_lower)):
+                    lc = _SM_LOGICCALC.route(original)
+                    if lc and lc.get("ok") and lc.get("text"):
+                        return str(lc.get("text"))
+            except Exception:
+                pass
         
         try:
             # ================================================================

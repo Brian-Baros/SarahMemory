@@ -697,24 +697,30 @@ def embed_local_datasets_on_boot():
 # =============================================================================
 def ensure_boot_schemas():
     """
-    v8.0: Ensure critical tables exist in their proper databases before core 
+    v8.0: Ensure critical tables exist in their proper databases before core
     modules run. Idempotent and safe to call multiple times.
     """
+    # -------------------------------------------------------------------------
+    # Core schema creation
+    # -------------------------------------------------------------------------
     try:
-        # Core schema creation
         from SarahMemoryDatabase import ensure_core_schema as _ensure_core_schema
         _ensure_core_schema()
         logger.info("[v8.0][SCHEMA] Core schema ensured")
-    
     except Exception as e:
-        logger.warning(f"[v8.0][SCHEMA] ensure_core_schema failed or unavailable: {e}")
+        logger.warning(
+            f"[v8.0][SCHEMA] ensure_core_schema failed or unavailable: {e}"
+        )
 
+    # -------------------------------------------------------------------------
     # Deep-Learning cache table
+    # -------------------------------------------------------------------------
     try:
         import SarahMemoryGlobals as config
+
         func_db = os.path.join(config.DATASETS_DIR, "functions.db")
         os.makedirs(os.path.dirname(func_db), exist_ok=True)
-        
+
         with sqlite3.connect(func_db) as con:
             cur = con.cursor()
             cur.execute("""
@@ -728,29 +734,45 @@ def ensure_boot_schemas():
                 )
             """)
             con.commit()
-        
+
         logger.info("[v8.0][SCHEMA] DL cache table ensured")
-    
+
     except Exception as e:
         logger.error(f"[v8.0][SCHEMA] ensure dl_cache failed: {e}")
 
-    # Responses table timestamp column
+    # -------------------------------------------------------------------------
+    # Personality + responses schema enforcement
+    # -------------------------------------------------------------------------
     try:
         import SarahMemoryGlobals as config
+        from SarahMemoryMigrations import ensure_traits_last_updated_column
+
         per_db = os.path.join(config.DATASETS_DIR, "personality1.db")
-        
+
         with sqlite3.connect(per_db) as con:
             cur = con.cursor()
+
+            # Ensure traits.last_updated exists (PHASE 6 fix)
+            ensure_traits_last_updated_column(con)
+
+            # Ensure responses.timestamp exists
             cur.execute("PRAGMA table_info(responses)")
             cols = [r[1] for r in cur.fetchall()]
-            
+
             if "timestamp" not in cols:
-                cur.execute("ALTER TABLE responses ADD COLUMN timestamp TEXT")
+                cur.execute(
+                    "ALTER TABLE responses ADD COLUMN timestamp TEXT"
+                )
                 con.commit()
-                logger.info("[v8.0][SCHEMA] Added timestamp column to responses table")
-    
+                logger.info(
+                    "[v8.0][SCHEMA] Added timestamp column to responses table"
+                )
+
     except Exception as e:
-        logger.info(f"[v8.0][SCHEMA] responses.timestamp check: {e}")
+        logger.info(
+            f"[v8.0][SCHEMA] personality/response schema check: {e}"
+        )
+
 
 
 # =============================================================================

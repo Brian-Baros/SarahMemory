@@ -614,7 +614,7 @@ def get_interaction_count() -> int:
 def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
     """Ensure the emotion database has all required tables."""
     cursor = conn.cursor()
-    
+
     # Traits table (emotional state persistence)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS traits (
@@ -624,7 +624,20 @@ def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
             last_updated TEXT
         )
     """)
-    
+
+    # Legacy install fix: if traits table already existed without last_updated,
+    # CREATE TABLE IF NOT EXISTS will NOT add the missing column.
+    try:
+        cursor.execute("PRAGMA table_info(traits);")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "last_updated" not in cols:
+            cursor.execute(
+                "ALTER TABLE traits ADD COLUMN last_updated TEXT;"
+            )
+    except Exception:
+        # Non-fatal: schema enforcement should never break boot
+        pass
+
     # Emotional history (time series)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS emotional_history (
@@ -636,15 +649,16 @@ def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
             trigger_text TEXT
         )
     """)
-    
+
     # Create legacy view for backward compatibility
     cursor.execute("""
         CREATE VIEW IF NOT EXISTS emotion_states AS
-        SELECT trait_name AS name, description AS value 
+        SELECT trait_name AS name, description AS value
         FROM traits
     """)
-    
+
     conn.commit()
+
 
 
 def connect_emotion_db() -> Optional[sqlite3.Connection]:

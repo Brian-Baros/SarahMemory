@@ -332,6 +332,27 @@ def run_versioned_migrations(target_version: str = None) -> bool:
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
         return False
+#======================================================================
+# MIGRATION HELPERS
+#======================================================================
+
+def ensure_traits_last_updated_column(conn):
+    """
+    Ensures the traits table contains the 'last_updated' column.
+    Idempotent and safe to run on every boot.
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(traits);")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "last_updated" not in columns:
+            cursor.execute(
+                "ALTER TABLE traits ADD COLUMN last_updated TEXT DEFAULT CURRENT_TIMESTAMP"
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[MIGRATIONS] Failed to ensure traits.last_updated column: {e}")
 
 # ============================================================================
 # VERSION-SPECIFIC MIGRATIONS
