@@ -1273,6 +1273,32 @@ def api_chat():
             "meta": {"source": "api", "reason": "uncaught_exception"},
         }), 500
 
+@app.get("/api/state")
+def api_state():
+    """
+    Lightweight runtime state snapshot.
+    Reads DATA_DIR/server_state.json via load_state() and returns it.
+    Never raises.
+    """
+    try:
+        state = load_state()  # uses STATE_DB (server_state.json)
+        if not isinstance(state, dict):
+            state = {}
+        return jsonify({
+            "ok": True,
+            "state": state,
+            "ts": time.time(),
+            "version": PROJECT_VERSION,
+        }), 200
+    except Exception as e:
+        # Fail-soft: state endpoint must never take down the API surface
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "ts": time.time(),
+            "version": PROJECT_VERSION,
+        }), 200
+
 
 # ---------------------------------------------------------------------------
 # Media Job Contract (v8.0.0) - JSON-first API for image/video/audio/3D
@@ -3278,24 +3304,15 @@ def api_ui_event():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.get("/api/fe/v800/speech.js")
-def serve_fe_speech_js():
-    """Serve FE speech layer JS if present."""
-    try:
-        js_path = Path(DATA_DIR) / "mods" / "v800" / "FE_v800_app_speech.js"
-        # Compatibility: allow .py file to be served as JS if user dropped it in incorrectly
-        if not js_path.exists():
-            alt = Path(DATA_DIR) / "mods" / "v800" / "FE_v800_app_speech.py"
-            if alt.exists():
-                js_path = alt
+# --- Terminal API (DEVELOPERSMODE gated by SarahMemoryTerminal) ---
+from flask import request, jsonify
+import SarahMemoryTerminal as smterm
 
-        if not js_path.exists():
-            return jsonify({"ok": False, "error": "Speech JS not found"}), 404
-
-        return send_file(str(js_path), mimetype="application/javascript")
-    except Exception as e:
-        app_logger.error(f"Failed to serve speech.js: {e}", exc_info=True)
-        return jsonify({"ok": False, "error": str(e)}), 500
+@app.post("/api/terminal/execute")
+def api_terminal_execute():
+    payload = request.get_json(silent=True) or {}
+    result = smterm.terminal_api_execute(payload, caller="Flask:/api/terminal/execute")
+    return jsonify(result), (200 if result.get("ok") else 403 if result.get("blocked") else 400)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
