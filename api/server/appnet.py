@@ -538,6 +538,61 @@ def _ensure_tables() -> None:
             pass
 
 
+# ----------------------------- rate limiting + privacy -----------------------------
+# Rate limiting state (in-memory, process-local)
+from collections import defaultdict, deque
+_RATE_LIMITS = defaultdict(lambda: deque(maxlen=200))
+
+
+def _check_rate_limit(key: str, max_per_min: int = 30) -> bool:
+    """Simple rolling-window limiter."""
+    now = time.time()
+    q = _RATE_LIMITS[key]
+    while q and q[0] < now - 60:
+        q.popleft()
+    if len(q) >= max_per_min:
+        return False
+    q.append(now)
+    return True
+
+
+def _privacy_allows(cur, to_node: str, from_node: str, kind: str) -> tuple[bool, str]:
+    """Enforce net_privacy + net_blocks. Returns (ok, reason_code)."""
+    try:
+        # Blocks (either specific kind or all)
+        cur.execute(
+            "SELECT 1 FROM net_blocks WHERE node_id=? AND blocked_node=? AND (kind='all' OR kind=?) LIMIT 1",
+            (to_node, from_node, kind),
+        )
+        if cur.fetchone():
+            return False, "blocked"
+    except Exception:
+        pass
+
+    try:
+        cur.execute(
+            "SELECT allow_messages, allow_calls, allow_files, require_file_accept, invisible FROM net_privacy WHERE node_id=?",
+            (to_node,),
+        )
+        row = cur.fetchone()
+        if not row:
+            # default allow
+            return True, "ok"
+        allow_messages = int(row[0] or 0)
+        allow_calls = int(row[1] or 0)
+        allow_files = int(row[2] or 0)
+
+        if kind in ("message", "chat", "text"):
+            return (allow_messages == 1), ("messages_off" if allow_messages != 1 else "ok")
+        if kind in ("call", "signal", "webrtc"):
+            return (allow_calls == 1), ("calls_off" if allow_calls != 1 else "ok")
+        if kind in ("file", "attachment"):
+            return (allow_files == 1), ("files_off" if allow_files != 1 else "ok")
+        return True, "ok"
+    except Exception:
+        return True, "ok"
+
+
 # ---------------------------------------------------------------------
 # Basic broker ping
 # ---------------------------------------------------------------------
@@ -662,6 +717,23 @@ def net_message_send():
 
     if not to_node or not from_node:
         return _err("Missing to_node/from_node")
+
+    # Rate limit per sender
+    if not _check_rate_limit(f"msg:{from_node}", max_per_min=30):
+        return _err("Rate limit exceeded", 429, error_code="rate_limited")
+
+
+    # Privacy / block enforcement (best-effort)
+    try:
+        con2 = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur2 = con2.cursor()
+        ok_priv, reason = _privacy_allows(cur2, to_node, from_node, "message")
+        con2.close()
+        if not ok_priv:
+            return _err("Recipient blocked or unavailable", 403, error_code=reason)
+    except Exception:
+        pass
+
 
     try:
         body_json = json.dumps(body, ensure_ascii=False)
@@ -1277,6 +1349,22 @@ def net_file_send_small():
     if not to_node or not from_node or not filename or not data_b64:
         return _err("Missing to_node/from_node/filename/data_b64")
 
+    # Rate limit per sender
+    if not _check_rate_limit(f"file:{from_node}", max_per_min=10):
+        return _err("Rate limit exceeded", 429, error_code="rate_limited")
+
+    # Privacy / block enforcement (best-effort)
+    try:
+        con2 = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur2 = con2.cursor()
+        ok_priv, reason = _privacy_allows(cur2, to_node, from_node, "file")
+        con2.close()
+        if not ok_priv:
+            return _err("Recipient blocked or unavailable", 403, error_code=reason)
+    except Exception:
+        pass
+
+
     try:
         blob = base64.b64decode(data_b64.encode("utf-8"), validate=True)
     except Exception:
@@ -1879,6 +1967,58 @@ def net_file_finish():
 # ---------------------------------------------------------------------
 # init_app (called by app.py ONCE)
 # ---------------------------------------------------------------------
+
+
+@bp.get("/api/net/diagnostics")
+def net_diagnostics():
+    """Unified broker diagnostics for WebUI."""
+    if not _require_injected():
+        return _err("Broker storage not configured (META_DB).", 500, error_code="no_storage")
+
+    results = {"ok": True, "ts": _now(), "tests": []}
+
+    # Test 1: DB connectivity
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) FROM net_presence")
+        count = int(cur.fetchone()[0])
+        con.close()
+        results["tests"].append({"name": "db_connectivity", "status": "pass", "detail": f"{count} nodes in presence"})
+    except Exception as e:
+        results["ok"] = False
+        results["tests"].append({"name": "db_connectivity", "status": "fail", "detail": str(e)})
+
+    # Test 2: Required tables
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = [r[0] for r in (cur.fetchall() or [])]
+        con.close()
+        required = ["net_presence", "net_messages", "net_files", "net_file_transfers", "net_privacy", "net_blocks"]
+        missing = [t for t in required if t not in tables]
+        if missing:
+            results["tests"].append({"name": "table_schema", "status": "warn", "detail": f"Missing tables: {missing}"})
+        else:
+            results["tests"].append({"name": "table_schema", "status": "pass", "detail": f"{len(tables)} tables present"})
+    except Exception as e:
+        results["ok"] = False
+        results["tests"].append({"name": "table_schema", "status": "fail", "detail": str(e)})
+
+    # Test 3: Active transfers
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT COUNT(*) FROM net_file_transfers WHERE status='active'")
+        active = int(cur.fetchone()[0])
+        con.close()
+        results["tests"].append({"name": "file_transfers", "status": "pass", "detail": f"{active} active"})
+    except Exception as e:
+        results["ok"] = False
+        results["tests"].append({"name": "file_transfers", "status": "fail", "detail": str(e)})
+
+    return jsonify(results), 200
 def init_app(app, connect_sqlite, meta_db_path: str, api_key_auth_ok=None, sign_ok=None) -> None:
     """
     app.py should call:
