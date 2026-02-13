@@ -3275,8 +3275,14 @@ def api_download(filename):
 
 # --- v8 local system endpoints (Files / OS utilities) ---
 try:
-    import appsys
-    appsys.init_app(app)
+    try:
+        # When imported as a package (e.g., `from api.server.app import app`)
+        from . import appsys as _appsys  # type: ignore
+    except Exception:
+        # When executed with api/server on sys.path (e.g., `python api/server/app.py`)
+        import appsys as _appsys  # type: ignore
+
+    _appsys.init_app(app)
 except Exception as _e:
     try:
         app_logger.error(f"appsys init failed: {_e}")
@@ -3285,8 +3291,12 @@ except Exception as _e:
 
 # --- v8 MCP broker endpoints (SarahNet one-way broker) ---
 try:
-    import appnet
-    appnet.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        from . import appnet as _appnet  # type: ignore
+    except Exception:
+        import appnet as _appnet  # type: ignore
+
+    _appnet.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
 except Exception as _e:
     try:
         app_logger.error(f"appnet init failed: {_e}")
