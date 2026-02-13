@@ -1276,22 +1276,44 @@ def api_chat():
 @app.get("/api/state")
 def api_state():
     """
-    Lightweight runtime state snapshot.
-    Reads DATA_DIR/server_state.json via load_state() and returns it.
+    Runtime state snapshot.
+    Combines persisted server_state.json with a live main_running check.
     Never raises.
     """
     try:
-        state = load_state()  # uses STATE_DB (server_state.json)
+        state = load_state()
         if not isinstance(state, dict):
             state = {}
+
+        # Live truth: mirror /api/health main_running computation
+        main_running = False
+        try:
+            fn = globals().get("_is_running")
+            if callable(fn):
+                main_running = bool(fn())
+        except Exception:
+            main_running = False
+
+        state["main_running"] = main_running
+        state.setdefault("ok", True)
+        state.setdefault("notes", [])
+        state.setdefault("source", "state_db_plus_live")
+        state["ts"] = time.time()
+
+        # Optional: persist the refreshed truth so UI/other callers stay consistent
+        try:
+            save_state(state)
+        except Exception:
+            pass
+
         return jsonify({
             "ok": True,
             "state": state,
             "ts": time.time(),
             "version": PROJECT_VERSION,
         }), 200
+
     except Exception as e:
-        # Fail-soft: state endpoint must never take down the API surface
         return jsonify({
             "ok": False,
             "error": str(e),
