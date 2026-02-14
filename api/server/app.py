@@ -3340,6 +3340,22 @@ except Exception as _e:
     except Exception:
         pass
 
+# --- V8 CANVAS STUDIO SUITE ./api/server/appmedia.py mount ---
+try:
+    import appmedia
+    app.register_blueprint(
+        appmedia.init_appmedia(
+            connect_sqlite=_connect_sqlite,
+            meta_db_path=META_DB,
+            api_key_auth_ok=lambda: True,  # replace with your existing key validator
+            sign_ok=_sign_ok,
+        )
+    )
+    app_logger.info("appmedia blueprint mounted at /api/media/*")
+except Exception as e:
+    app_logger.warning(f"appmedia not mounted: {e}")
+
+
 # --- v8 MCP broker endpoints (SarahNet one-way broker) ---
 try:
     _ensure_api_import_paths()
@@ -3354,7 +3370,6 @@ except Exception as _e:
         app_logger.error(f"appnet init failed: {_e}", exc_info=True)
     except Exception:
         pass
-
 
 
 # ============================================================================
