@@ -609,6 +609,42 @@ def net_ping():
 # ---------------------------------------------------------------------
 # Rendezvous (presence)
 # ---------------------------------------------------------------------
+
+@bp.get("/api/net/health")
+def net_health():
+    """
+    Lightweight SarahNet health surface.
+    - Always returns JSON (never falls through to asset handler)
+    - Returns ok/enabled and basic storage status
+    """
+    payload = {
+        "ok": True,
+        "enabled": bool(_CONNECT_SQLITE and _META_DB),
+        "ts": _now(),
+        "version": PROJECT_VERSION if "PROJECT_VERSION" in globals() else "8.0.0",
+    }
+
+    if not payload["enabled"]:
+        payload["ok"] = False
+        payload["reason"] = "no_storage"
+        return jsonify(payload), 200
+
+    # DB connectivity check (fail-soft)
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        # minimal sanity query against sqlite_master
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1;")
+        cur.fetchone()
+        con.close()
+        payload["storage"] = "sqlite"
+    except Exception as e:
+        payload["ok"] = False
+        payload["reason"] = "db_error"
+        payload["detail"] = str(e)
+
+    return jsonify(payload), 200
+
 @bp.post("/api/net/rendezvous/announce")
 def net_rendezvous_announce():
     raw = _body_bytes()

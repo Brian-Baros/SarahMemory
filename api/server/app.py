@@ -24,7 +24,7 @@ from __future__ import annotations
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
 from pathlib import Path
 from decimal import Decimal
-from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
 # --- Flask CORS (safe import for CLI testing & WSGI) ---
 try:
     from flask_cors import CORS
@@ -3273,8 +3273,59 @@ def api_download(filename):
         # Flask <2.0 compatibility: download_name not supported
         return send_file(full_path, as_attachment=True)
 
-# --- v8 local system endpoints (Files / OS utilities) ---
+
+# -----------------------------------------------------------------------------
+# Optional dependency shim: bleach
+# -----------------------------------------------------------------------------
+# appsys.py relies on `bleach.clean()` for HTML sanitization. On some minimal
+# installs, `bleach` may not be present. To keep APPSYS online without forcing
+# extra installs, we provide a conservative fallback implementation.
 try:
+    import bleach  # type: ignore
+except Exception:  # pragma: no cover
+    try:
+        import types as _types
+        import re as _re
+        import html as _html
+        _bleach_mod = _types.ModuleType("bleach")
+
+        def _fallback_clean(text, tags=None, attributes=None, strip=False, strip_comments=True, **kwargs):
+            try:
+                s = "" if text is None else str(text)
+            except Exception:
+                s = ""
+            # Remove HTML comments (basic)
+            if strip_comments:
+                s = _re.sub(r"<!--.*?-->", "", s, flags=_re.DOTALL)
+            if strip:
+                # Drop all tags
+                s = _re.sub(r"<[^>]+>", "", s)
+                return s
+            # Escape everything (safest default)
+            return _html.escape(s, quote=True)
+
+        _bleach_mod.clean = _fallback_clean  # type: ignore
+        import sys as _sys
+        _sys.modules["bleach"] = _bleach_mod
+    except Exception:
+        # If even the shim fails, appsys import will raise and be logged.
+        pass
+
+# --- v8 local system endpoints (Files / OS utilities) ---
+def _ensure_api_import_paths():
+    """Make api/server modules importable in all launch modes."""
+    try:
+        server_dir = os.path.abspath(os.path.dirname(__file__))      # .../api/server
+        api_dir = os.path.abspath(os.path.join(server_dir, ".."))   # .../api
+        proj_dir = os.path.abspath(os.path.join(api_dir, ".."))     # project root
+        for p in (server_dir, api_dir, proj_dir):
+            if p and p not in sys.path:
+                sys.path.insert(0, p)
+    except Exception:
+        pass
+
+try:
+    _ensure_api_import_paths()
     try:
         # When imported as a package (e.g., `from api.server.app import app`)
         from . import appsys as _appsys  # type: ignore
@@ -3285,12 +3336,13 @@ try:
     _appsys.init_app(app)
 except Exception as _e:
     try:
-        app_logger.error(f"appsys init failed: {_e}")
+        app_logger.error(f"appsys init failed: {_e}", exc_info=True)
     except Exception:
         pass
 
 # --- v8 MCP broker endpoints (SarahNet one-way broker) ---
 try:
+    _ensure_api_import_paths()
     try:
         from . import appnet as _appnet  # type: ignore
     except Exception:
@@ -3299,7 +3351,7 @@ try:
     _appnet.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
 except Exception as _e:
     try:
-        app_logger.error(f"appnet init failed: {_e}")
+        app_logger.error(f"appnet init failed: {_e}", exc_info=True)
     except Exception:
         pass
 
