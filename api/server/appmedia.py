@@ -2,7 +2,6 @@
 # File: /api/server/appmedia.py
 # Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
 # Part of the SarahMemory Companion AI-bot Platform
-# Part of the SarahMemory Companion AI-bot Platform
 # Author: © 2025 Brian Lee Baros. All Rights Reserved.
 # www.linkedin.com/in/brian-baros-29962a176
 # https://www.facebook.com/bbaros
@@ -12,12 +11,25 @@
 # https://api.sarahmemory.com
 # https://ai.sarahmemory.com
 
-# Design goals:
-# - NO duplicate endpoints with app.py/appnet.py (avoid Flask route collisions)
-# - Everything is namespaced under /api/media/*
-# - Standardize output packaging (exports + manifest sidecar)
-# - Provide a clean contract for Creative Studio UI: submit -> render -> download
-# - Fail-soft: missing optional engines should not break the API surface
+"""appmedia.py
+
+Enterprise intent
+- Stand up a stable, cloud-safe API surface for Creative Studio outputs.
+- Standardize packaging: job folder + manifest.json + downloadable artifacts.
+- Fail-soft: if an optional engine is missing, endpoints remain online.
+
+API contract (high level)
+- POST /api/media/job/create
+- POST /api/media/job/render
+- GET  /api/media/job/status?job_id=...
+- GET  /api/media/job/download?job_id=...&filename=...
+- GET  /api/media/job/manifest?job_id=...
+- GET  /api/media/capabilities
+
+Notes
+- This module does NOT expose any filesystem outside the export root.
+- All job IDs are sanitized to prevent path traversal.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +42,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, List
 
 from flask import Blueprint, jsonify, request, send_file
@@ -98,6 +109,19 @@ def _sha256_hex(b: bytes) -> str:
 def _safe_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
+def _sanitize_job_id(job_id: str) -> str:
+    """Hard containment: force job_id into a safe, filename-like token."""
+    j = (job_id or "").strip()
+    if not j:
+        return _safe_id("mediajob")
+    j = j.replace("\\", "/")
+    j = j.split("/")[-1]
+    j = re.sub(r"[^a-zA-Z0-9._-]+", "_", j)
+    j = j.replace("..", "_")
+    if not j:
+        return _safe_id("mediajob")
+    return j[:128]
+
 def _sanitize_filename(name: str, default: str) -> str:
     n = (name or "").strip()
     if not n:
@@ -119,11 +143,13 @@ def _get_export_root() -> str:
     # Best-effort: prefer SarahMemoryGlobals if present
     try:
         import SarahMemoryGlobals as SMG  # type: ignore
+
         d = getattr(SMG, "CANVAS_EXPORTS_DIR", None)
         if d:
             d = os.fspath(d)
             _ensure_dir(d)
             return d
+
         # fallback to DATA_DIR/canvas/exports
         base_dir = getattr(SMG, "DATA_DIR", None)
         if base_dir:
@@ -146,8 +172,8 @@ def _get_export_root() -> str:
 
 def _job_dir(job_id: str) -> str:
     root = _get_export_root()
-    # Keep per-job directories for clean packaging
-    d = os.path.join(root, "jobs", job_id)
+    jid = _sanitize_job_id(job_id)
+    d = os.path.join(root, "jobs", jid)
     _ensure_dir(d)
     return d
 
@@ -172,10 +198,12 @@ def _b64d(s: str) -> bytes:
     return base64.b64decode((s or "").encode("ascii"), validate=False)
 
 def _verify_auth(body: bytes) -> bool:
-    """
+    """Authentication model (fail-soft for dev)
+
     Accept either:
       - X-Sarah-Signature verified by injected _SIGN_OK(body, sig)
       - API key verified by injected _API_KEY_AUTH_OK()
+
     If nothing injected, allow (dev mode).
     """
     sig = (request.headers.get("X-Sarah-Signature") or "").strip()
@@ -194,11 +222,17 @@ def _verify_auth(body: bytes) -> bool:
     return True
 
 def _download_allowed() -> bool:
-    # Optional lightweight download token
     if not DOWNLOAD_TOKEN:
         return True
     tok = (request.args.get("token") or request.headers.get("X-Sarah-Download-Token") or "").strip()
     return tok == DOWNLOAD_TOKEN
+
+def _send_file_compat(path: str, *, as_attachment: bool, download_name: str, mimetype: str):
+    """Compatibility shim for Flask < 2.0 (download_name not supported)."""
+    try:
+        return send_file(path, as_attachment=as_attachment, download_name=download_name, mimetype=mimetype)
+    except TypeError:
+        return send_file(path, as_attachment=as_attachment, mimetype=mimetype)
 
 # ---------------------------
 # DB: media_jobs
@@ -211,7 +245,8 @@ def _ensure_tables() -> None:
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
-        cur.execute("""
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS media_jobs (
                 job_id TEXT PRIMARY KEY,
                 created_ts REAL,
@@ -222,7 +257,8 @@ def _ensure_tables() -> None:
                 result_json TEXT,
                 error_text TEXT
             )
-        """)
+            """
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_media_jobs_ts ON media_jobs(created_ts)")
         con.commit()
     except Exception:
@@ -238,7 +274,14 @@ def _ensure_tables() -> None:
         except Exception:
             pass
 
-def _db_upsert_job(job_id: str, status: str, kind: str, req: Dict[str, Any], result: Optional[Dict[str, Any]] = None, error: str = "") -> None:
+def _db_upsert_job(
+    job_id: str,
+    status: str,
+    kind: str,
+    req: Dict[str, Any],
+    result: Optional[Dict[str, Any]] = None,
+    error: str = "",
+) -> None:
     if not _require_injected():
         return
     con = None
@@ -284,26 +327,32 @@ def _db_upsert_job(job_id: str, status: str, kind: str, req: Dict[str, Any], res
             pass
 
 def _db_get_job(job_id: str) -> Dict[str, Any]:
+    job_id = _sanitize_job_id(job_id)
+
     if not _require_injected():
-        # fall back to manifest only
         m = _read_json(_manifest_path(job_id))
         if m:
             return {"job_id": job_id, "status": m.get("status", "unknown"), "kind": m.get("kind"), "manifest": m}
         return {}
+
     con = None
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
-        cur.execute("SELECT job_id, created_ts, updated_ts, status, kind, request_json, result_json, error_text FROM media_jobs WHERE job_id=? LIMIT 1", (job_id,))
+        cur.execute(
+            "SELECT job_id, created_ts, updated_ts, status, kind, request_json, result_json, error_text FROM media_jobs WHERE job_id=? LIMIT 1",
+            (job_id,),
+        )
         row = cur.fetchone()
         if not row:
             return {}
-        # sqlite3.Row compatible and tuple compatible
+
         def _get(i, k):
             try:
                 return row[k]
             except Exception:
                 return row[i]
+
         out = {
             "job_id": _get(0, "job_id"),
             "created_ts": _get(1, "created_ts"),
@@ -330,7 +379,7 @@ def _db_get_job(job_id: str) -> Dict[str, Any]:
 
 @dataclass
 class RenderArtifact:
-    role: str               # "image" | "audio" | "video" | "project" | "manifest"
+    role: str
     filename: str
     path: str
     mime: str
@@ -338,27 +387,28 @@ class RenderArtifact:
     sha256: str
 
 def _probe_engines() -> Dict[str, bool]:
-    caps = {}
+    caps: Dict[str, bool] = {}
+
     try:
-        import SarahMemoryCanvasStudio as _cs  # noqa
+        import SarahMemoryCanvasStudio as _cs  # noqa: F401
         caps["canvas_studio"] = True
     except Exception:
         caps["canvas_studio"] = False
 
     try:
-        import SarahMemoryMusicGenerator as _mg  # noqa
+        import SarahMemoryMusicGenerator as _mg  # noqa: F401
         caps["music_generator"] = True
     except Exception:
         caps["music_generator"] = False
 
     try:
-        import SarahMemoryLyricsToSong as _lts  # noqa
+        import SarahMemoryLyricsToSong as _lts  # noqa: F401
         caps["lyrics_to_song"] = True
     except Exception:
         caps["lyrics_to_song"] = False
 
     try:
-        import SarahMemoryVideoEditorCore as _ve  # noqa
+        import SarahMemoryVideoEditorCore as _ve  # noqa: F401
         caps["video_editor_core"] = True
     except Exception:
         caps["video_editor_core"] = False
@@ -377,20 +427,15 @@ def _artifact_from_path(role: str, path: str, mime: str) -> RenderArtifact:
         size = int(st.st_size)
     except Exception:
         size = 0
+
     sha = ""
     try:
         with open(p, "rb") as f:
             sha = _sha256_hex(f.read())
     except Exception:
         sha = ""
-    return RenderArtifact(
-        role=role,
-        filename=os.path.basename(p),
-        path=p,
-        mime=mime,
-        size_bytes=size,
-        sha256=sha,
-    )
+
+    return RenderArtifact(role=role, filename=os.path.basename(p), path=p, mime=mime, size_bytes=size, sha256=sha)
 
 def _mime_from_ext(filename: str) -> str:
     ext = (filename.rsplit(".", 1)[-1] or "").lower()
@@ -444,9 +489,8 @@ def media_job_create():
 
     payload = _j()
     kind = (payload.get("kind") or "generic").strip().lower()
-    job_id = _safe_id("mediajob")
+    job_id = _sanitize_job_id(payload.get("job_id") or _safe_id("mediajob"))
 
-    # Establish job folder + baseline manifest
     jd = _job_dir(job_id)
     manifest = {
         "job_id": job_id,
@@ -462,6 +506,7 @@ def media_job_create():
         "notes": [],
         "version": PROJECT_VERSION,
     }
+
     _write_json(_manifest_path(job_id), manifest)
     _ensure_tables()
     _db_upsert_job(job_id, "created", kind, payload, result={"manifest": "manifest.json"})
@@ -470,19 +515,17 @@ def media_job_create():
 
 @bp.get("/api/media/job/status")
 def media_job_status():
-    job_id = (request.args.get("job_id") or "").strip()
+    job_id = _sanitize_job_id(request.args.get("job_id") or "")
     if not job_id:
         return _err("missing_job_id", 400)
 
     job = _db_get_job(job_id)
     if job:
-        # Attach manifest if present
         m = _read_json(_manifest_path(job_id))
         if m:
             job["manifest"] = m
         return _ok(job=job)
 
-    # fallback manifest-only
     m = _read_json(_manifest_path(job_id))
     if not m:
         return _err("job_not_found", 404, job_id=job_id)
@@ -490,21 +533,11 @@ def media_job_status():
 
 @bp.post("/api/media/job/render")
 def media_job_render():
-    """
-    Render entrypoint for Creative Studio.
-    Expected payload:
-    {
-      "job_id": "...",            # optional; if missing, server creates
-      "kind": "image|music|video|hybrid",
-      "prompt": "...",            # for image generation (or guidance)
-      "lyrics": "...",            # for LyricsToSong
-      "music": {...},             # for MusicGenerator
-      "video": {...},             # for VideoEditorCore
-      "output": {
-         "filename": "optional.ext",
-         "format": "png|wav|mp4|...",
-      }
-    }
+    """Render entrypoint for Creative Studio.
+
+    Engine modes
+    - If inline_b64 is provided, the server packages it.
+    - If inline_b64 is missing, the server attempts a best-effort call into the relevant engine.
     """
     body = _body_bytes()
     if not _verify_auth(body):
@@ -513,12 +546,11 @@ def media_job_render():
     payload = _j()
     kind = (payload.get("kind") or "generic").strip().lower()
 
-    # Validate + clamp user text fields
     for k in ("prompt", "lyrics"):
         if k in payload and isinstance(payload[k], str) and len(payload[k]) > MAX_PROMPT_CHARS:
             payload[k] = payload[k][:MAX_PROMPT_CHARS]
 
-    job_id = (payload.get("job_id") or "").strip() or _safe_id("mediajob")
+    job_id = _sanitize_job_id(payload.get("job_id") or _safe_id("mediajob"))
     jd = _job_dir(job_id)
     mp = _manifest_path(job_id)
 
@@ -548,13 +580,7 @@ def media_job_render():
     artifacts: List[RenderArtifact] = []
 
     try:
-        # -------------------------
-        # IMAGE path (CanvasStudio)
-        # -------------------------
         if kind in ("image", "img", "canvas"):
-            # Two supported modes:
-            #  1) inline_b64: client already generated bytes (server packages it)
-            #  2) prompt: server attempts to call CanvasStudio if it exposes a compatible API
             out = payload.get("output") or {}
             fmt = (out.get("format") or "png").strip().lower()
             if fmt not in ("png", "jpg", "jpeg", "webp"):
@@ -574,53 +600,60 @@ def media_job_render():
                 if not prompt:
                     raise ValueError("missing_prompt_or_inline_b64")
 
-                # Best-effort adapter: we do NOT hard-require a specific method signature.
-                # If CanvasStudio has generate_from_prompt/export helpers, we use them.
                 try:
                     import SarahMemoryCanvasStudio as CS  # type: ignore
-                    studio = getattr(CS, "CanvasStudio", None)
-                    if studio is None:
+
+                    studio_cls = getattr(CS, "CanvasStudio", None)
+                    if studio_cls is None:
                         raise RuntimeError("CanvasStudio_class_missing")
-                    studio_obj = studio()
+                    studio = studio_cls()
 
-                    # Common naming patterns (fail-soft)
-                    gen = getattr(studio_obj, "generate_from_prompt", None) or getattr(studio_obj, "generate", None)
-                    if not callable(gen):
-                        raise RuntimeError("CanvasStudio_generate_missing")
+                    gen = getattr(studio, "generate_from_prompt", None)
+                    exp = getattr(studio, "export_canvas", None)
+                    if not callable(gen) or not callable(exp):
+                        raise RuntimeError("CanvasStudio_missing_entrypoints")
 
-                    # Attempt generate
-                    generated = gen(prompt, style=payload.get("style"), quality=payload.get("quality"))  # type: ignore[arg-type]
+                    canvas = gen(
+                        prompt,
+                        width=int((payload.get("width") or 1024)),
+                        height=int((payload.get("height") or 1024)),
+                        style=(payload.get("style") or "default"),
+                        quality=(payload.get("quality") or "standard"),
+                    )
 
-                    # Export strategy:
-                    # - If returned bytes, write bytes
-                    # - If returned path-like, copy/point to that output
-                    # - If returned PIL/numpy, try studio.export_canvas or PIL save
-                    if isinstance(generated, (bytes, bytearray)):
-                        _write_bytes(out_path, bytes(generated))
-                    elif isinstance(generated, str) and os.path.isfile(generated):
-                        # copy into job dir
-                        with open(generated, "rb") as f:
-                            _write_bytes(out_path, f.read())
-                    else:
-                        # Try a generic export hook
-                        exp = getattr(studio_obj, "export_canvas", None) or getattr(studio_obj, "export", None)
-                        if callable(exp):
-                            exp(generated, out_path, format=fmt.upper())  # type: ignore[misc]
+                    if canvas is None:
+                        raise RuntimeError("canvas_generation_returned_none")
+
+                    ok = exp(canvas, out_path, format=fmt.upper(), quality=int(payload.get("image_quality") or 90), flatten=True)
+                    if not ok:
+                        raise RuntimeError("canvas_export_failed")
+
+                    if not os.path.isfile(out_path):
+                        guess = f"{out_path}.{fmt}"
+                        if os.path.isfile(guess):
+                            out_path = guess
                         else:
-                            raise RuntimeError("CanvasStudio_export_missing")
+                            newest = None
+                            newest_ts = 0.0
+                            for fn in os.listdir(jd):
+                                fp = os.path.join(jd, fn)
+                                if os.path.isfile(fp):
+                                    ts = os.path.getmtime(fp)
+                                    if ts >= newest_ts:
+                                        newest_ts = ts
+                                        newest = fp
+                            if newest:
+                                out_path = newest
 
                 except Exception as e:
                     raise RuntimeError(f"canvas_render_failed:{e}")
 
             artifacts.append(_artifact_from_path("image", out_path, _mime_from_ext(out_path)))
 
-        # -------------------------
-        # MUSIC path (MusicGenerator)
-        # -------------------------
         elif kind in ("music", "audio"):
             out = payload.get("output") or {}
             fmt = (out.get("format") or "wav").strip().lower()
-            if fmt not in ("wav", "mp3", "flac", "ogg", "m4a"):
+            if fmt not in ("wav", "mp3", "flac"):
                 fmt = "wav"
 
             filename = _sanitize_filename(out.get("filename") or f"music.{fmt}", f"music.{fmt}")
@@ -633,50 +666,41 @@ def media_job_render():
                     raise ValueError("inline_b64_too_large")
                 _write_bytes(out_path, blob)
             else:
-                # Best-effort: use MusicStudio export hooks if available
                 try:
                     import SarahMemoryMusicGenerator as MG  # type: ignore
+
                     studio_cls = getattr(MG, "MusicStudio", None)
                     if studio_cls is None:
                         raise RuntimeError("MusicStudio_class_missing")
                     studio = studio_cls()
 
-                    # Allow either a "music" dict or lightweight params at top-level
                     m = payload.get("music") or {}
                     duration = float(m.get("duration") or payload.get("duration") or 15.0)
                     style = (m.get("style") or payload.get("style") or "default").strip()
                     tempo = int(m.get("tempo") or payload.get("tempo") or 120)
 
-                    # Try common entrypoints
-                    gen_song = getattr(MG, "generate_song", None) or getattr(studio, "generate_song", None)
-                    export = getattr(studio, "export_project", None) or getattr(studio, "export", None)
+                    create_project = getattr(studio, "create_project", None)
+                    generate_song = getattr(studio, "generate_song", None) or getattr(MG, "generate_song", None)
+                    export_project = getattr(studio, "export_project", None) or getattr(studio, "export", None)
 
-                    if callable(gen_song) and callable(export):
-                        proj = getattr(studio, "create_project", None)
-                        if callable(proj):
-                            p = proj(f"Job {job_id}", tempo=tempo, key=(m.get("key") or "C"), time_signature=(4, 4))
-                        else:
-                            p = None
+                    project = None
+                    if callable(create_project):
+                        project = create_project(f"Job {job_id}", tempo=tempo, key=(m.get("key") or "C"), time_signature=(4, 4))
 
-                        # Generate content
-                        song = gen_song(duration=duration, style=style, tempo=tempo)  # type: ignore[misc]
-                        # Export strategy:
-                        # If song is bytes -> write
-                        if isinstance(song, (bytes, bytearray)):
-                            _write_bytes(out_path, bytes(song))
-                        else:
-                            # If project exists, attempt to export it
-                            try:
-                                export(p, out_path, format=fmt.upper(), quality=(m.get("quality") or "high"))  # type: ignore[misc]
-                            except Exception:
-                                # last resort: if MG can export directly
-                                exporter = getattr(MG, "export_audio", None)
-                                if callable(exporter):
-                                    exporter(song, out_path, fmt=fmt)  # type: ignore[misc]
-                                else:
-                                    raise RuntimeError("music_export_failed")
+                    if callable(generate_song):
+                        song = generate_song(duration=duration, style=style, tempo=tempo)  # type: ignore[misc]
                     else:
-                        # Minimal fallback: if generate_tone exists, write a tone
+                        song = None
+
+                    if isinstance(song, (bytes, bytearray)):
+                        _write_bytes(out_path, bytes(song))
+                    elif callable(export_project):
+                        export_project(project, out_path, format=fmt.upper(), quality=(m.get("quality") or "high"))  # type: ignore[misc]
+                        if not os.path.isfile(out_path):
+                            guess = f"{out_path}.{fmt}"
+                            if os.path.isfile(guess):
+                                out_path = guess
+                    else:
                         gen_tone = getattr(MG, "generate_tone", None)
                         if callable(gen_tone):
                             tone = gen_tone(440.0, duration=duration)  # type: ignore[misc]
@@ -692,13 +716,10 @@ def media_job_render():
 
             artifacts.append(_artifact_from_path("audio", out_path, _mime_from_ext(out_path)))
 
-        # -------------------------
-        # VIDEO path (VideoEditorCore)
-        # -------------------------
         elif kind in ("video", "vid"):
             out = payload.get("output") or {}
             fmt = (out.get("format") or "mp4").strip().lower()
-            if fmt not in ("mp4", "webm", "avi"):
+            if fmt not in ("mp4", "webm"):
                 fmt = "mp4"
 
             filename = _sanitize_filename(out.get("filename") or f"video.{fmt}", f"video.{fmt}")
@@ -713,15 +734,13 @@ def media_job_render():
             else:
                 try:
                     import SarahMemoryVideoEditorCore as VE  # type: ignore
+
                     editor_cls = getattr(VE, "VideoEditorCore", None)
                     if editor_cls is None:
                         raise RuntimeError("VideoEditorCore_class_missing")
                     editor = editor_cls()
 
                     v = payload.get("video") or {}
-                    # Inputs can be:
-                    # - "inputs": list of file paths already on server
-                    # - "image_b64" + "audio_b64" for quick composition
                     inputs = v.get("inputs") or []
                     image_b64 = (v.get("image_b64") or "").strip()
                     audio_b64 = (v.get("audio_b64") or "").strip()
@@ -731,35 +750,37 @@ def media_job_render():
                         _write_bytes(img_path, _b64d(image_b64))
                         inputs = list(inputs) + [img_path]
 
+                    aud_path = os.path.join(jd, "input_audio.wav")
                     if audio_b64:
-                        aud_path = os.path.join(jd, "input_audio.wav")
                         _write_bytes(aud_path, _b64d(audio_b64))
 
-                    # Preferred: create project + add clips (best-effort)
                     create_project = getattr(editor, "create_project", None)
                     export_project = getattr(editor, "export_project", None)
 
                     if callable(create_project) and callable(export_project):
                         res = v.get("resolution") or [1920, 1080]
                         fps = int(v.get("fps") or 30)
-                        proj = create_project(f"Job {job_id}", resolution=(int(res[0]), int(res[1])), fps=fps)  # type: ignore[misc]
+                        proj = create_project(f"Job {job_id}", resolution=(int(res[0]), int(res[1])), fps=fps)
 
-                        # Add inputs as clips if possible
                         add_clip = getattr(proj, "add_clip", None)
                         if callable(add_clip):
                             t = 0.0
                             for p in inputs:
                                 if isinstance(p, str) and os.path.isfile(p):
-                                    add_clip(p, start_time=t)  # type: ignore[misc]
+                                    add_clip(p, start_time=t)
                                     t += float(v.get("clip_spacing") or 0.0)
 
-                        # Add audio if we staged it
                         if audio_b64 and os.path.isfile(aud_path):
                             add_audio = getattr(proj, "add_audio_track", None)
                             if callable(add_audio):
-                                add_audio(aud_path, volume=float(v.get("audio_volume") or 0.8))  # type: ignore[misc]
+                                add_audio(aud_path, volume=float(v.get("audio_volume") or 0.8))
 
-                        export_project(proj, out_path, quality=(v.get("quality") or "high"), resolution=(v.get("export_resolution") or "1080p"))  # type: ignore[misc]
+                        export_project(proj, out_path, quality=(v.get("quality") or "high"), resolution=(v.get("export_resolution") or "1080p"))
+
+                        if not os.path.isfile(out_path):
+                            guess = f"{out_path}.{fmt}"
+                            if os.path.isfile(guess):
+                                out_path = guess
                     else:
                         raise RuntimeError("video_editor_missing_entrypoints")
 
@@ -768,13 +789,7 @@ def media_job_render():
 
             artifacts.append(_artifact_from_path("video", out_path, _mime_from_ext(out_path)))
 
-        # -------------------------
-        # HYBRID path (compose)
-        # -------------------------
         elif kind in ("hybrid", "compose", "multimodal"):
-            # Strategy:
-            # - allow the client to provide multiple inline assets (image/audio/video)
-            # - server packages them + writes a manifest suitable for downstream tools
             comp = payload.get("compose") or {}
             parts = comp.get("parts") or []
 
@@ -799,33 +814,24 @@ def media_job_render():
         else:
             raise ValueError(f"unsupported_kind:{kind}")
 
-        # Finalize manifest
-        artifact_list = []
-        for a in artifacts:
-            artifact_list.append(
-                {
-                    "role": a.role,
-                    "filename": a.filename,
-                    "path": a.path,
-                    "mime": a.mime,
-                    "size_bytes": a.size_bytes,
-                    "sha256": a.sha256,
-                }
-            )
+        artifact_list = [
+            {
+                "role": a.role,
+                "filename": a.filename,
+                "path": a.path,
+                "mime": a.mime,
+                "size_bytes": a.size_bytes,
+                "sha256": a.sha256,
+            }
+            for a in artifacts
+        ]
 
         manifest["artifacts"] = artifact_list
         manifest["status"] = "complete"
         manifest["updated_at"] = _iso()
         _write_json(mp, manifest)
 
-        result = {
-            "job_id": job_id,
-            "status": "complete",
-            "kind": kind,
-            "job_dir": jd,
-            "manifest": "manifest.json",
-            "artifacts": artifact_list,
-        }
+        result = {"job_id": job_id, "status": "complete", "kind": kind, "job_dir": jd, "manifest": "manifest.json", "artifacts": artifact_list}
         _db_upsert_job(job_id, "complete", kind, payload, result=result)
         return _ok(result=result)
 
@@ -840,17 +846,10 @@ def media_job_render():
 
 @bp.get("/api/media/job/download")
 def media_job_download():
-    """
-    Download an artifact from a job directory.
-    Query:
-      - job_id=...
-      - filename=...
-      - token=... (optional if MEDIA_DOWNLOAD_TOKEN set)
-    """
     if not _download_allowed():
         return _err("download_unauthorized", 401)
 
-    job_id = (request.args.get("job_id") or "").strip()
+    job_id = _sanitize_job_id(request.args.get("job_id") or "")
     filename = (request.args.get("filename") or "").strip()
     if not job_id or not filename:
         return _err("missing_job_id_or_filename", 400)
@@ -860,11 +859,11 @@ def media_job_download():
     if not os.path.isfile(path):
         return _err("file_not_found", 404, path=path)
 
-    return send_file(path, as_attachment=True, download_name=filename, mimetype=_mime_from_ext(filename))
+    return _send_file_compat(path, as_attachment=True, download_name=filename, mimetype=_mime_from_ext(filename))
 
 @bp.get("/api/media/job/manifest")
 def media_job_manifest():
-    job_id = (request.args.get("job_id") or "").strip()
+    job_id = _sanitize_job_id(request.args.get("job_id") or "")
     if not job_id:
         return _err("missing_job_id", 400)
 
@@ -875,7 +874,7 @@ def media_job_manifest():
     if not _download_allowed():
         return _err("manifest_unauthorized", 401)
 
-    return send_file(mp, as_attachment=False, download_name="manifest.json", mimetype="application/json")
+    return _send_file_compat(mp, as_attachment=False, download_name="manifest.json", mimetype="application/json")
 
 # ---------------------------
 # Initialization / Injection
@@ -887,15 +886,27 @@ def init_appmedia(
     api_key_auth_ok: Optional[Callable[[], bool]] = None,
     sign_ok: Optional[Callable[[bytes, str], bool]] = None,
 ) -> Blueprint:
-    """
-    Called by app.py to inject storage/auth helpers, then mount blueprint.
-    """
+    """Inject storage/auth helpers and return blueprint."""
     global _CONNECT_SQLITE, _META_DB, _API_KEY_AUTH_OK, _SIGN_OK
     _CONNECT_SQLITE = connect_sqlite
     _META_DB = meta_db_path
     _API_KEY_AUTH_OK = api_key_auth_ok
     _SIGN_OK = sign_ok
 
-    # Ensure tables exist at init time (fail-soft)
     _ensure_tables()
     return bp
+
+def init_app(
+    app,
+    connect_sqlite: Callable[..., Any],
+    meta_db_path: str,
+    api_key_auth_ok: Optional[Callable[[], bool]] = None,
+    sign_ok: Optional[Callable[[bytes, str], bool]] = None,
+) -> None:
+    """Preferred: inject + register blueprint into Flask app (single-call)."""
+    if "appmedia_v800" in getattr(app, "blueprints", {}):
+        return
+
+    init_appmedia(connect_sqlite, meta_db_path, api_key_auth_ok=api_key_auth_ok, sign_ok=sign_ok)
+    _ensure_tables()
+    app.register_blueprint(bp)
