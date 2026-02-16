@@ -2,9 +2,9 @@
 File: SarahMemorySynapes.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-15
+Date: 2025-12-21
 Time: 10:11:54
-Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
+Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -52,6 +52,9 @@ import hashlib
 import threading
 import time
 import re
+import platform
+import shutil
+import multiprocessing
 from typing import Dict, List, Tuple, Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
@@ -730,28 +733,179 @@ def synapes_awareness_tick(
     base_model_id: str = "base::seed",
     adapter_model_id: str = "adapter::pending",
     enqueue_job: bool = True,
+    mode: str = "background",  # startup | background | on_user_event
+    user_event: Optional[Dict[str, Any]] = None,
+    include_system_profile: bool = True,
+    generate_curiosity: bool = True,
 ) -> Dict[str, Any]:
     """
-    orchestration tick:
-    - ingest data into ledger
-    - optionally enqueue a training job (Phase 3) for an adapter
-    - does NOT force heavy training at runtime
+    Living-model "synapses" tick. This is the lightweight, always-on heartbeat that makes the
+    platform feel *alive* without burning RAM/GPU.
+
+    What it does:
+      1) Records a transparent self-observation snapshot (system limits + runtime meta)
+      2) Ingests eligible local SQLite knowledge into the dataset ledger (provenance tracked)
+      3) Optionally enqueues an adapter training job (governed + best-effort)
+
+    What it does NOT do:
+      - It does NOT silently change core files
+      - It does NOT run heavyweight training in the hot path
+      - It does NOT spam the user; it writes "curiosity prompts" as suggestions for the UI to surface
     """
     ensure_sarahmemory_model_dirs()
 
+    # -----------------------------
+    # Self-observation (alive + limits)
+    # -----------------------------
+    observation_hash: Optional[str] = None
+    curiosity_hash: Optional[str] = None
+    try:
+        if include_system_profile:
+            rt = {}
+            try:
+                rt = get_runtime_meta() or {}
+            except Exception:
+                rt = {}
+
+            # System capability snapshot (no external deps)
+            cpu_count = None
+            try:
+                cpu_count = int(multiprocessing.cpu_count())
+            except Exception:
+                cpu_count = None
+
+            disk = {}
+            try:
+                usage = shutil.disk_usage(str(BASE_DIR))
+                disk = {
+                    "base_dir": str(BASE_DIR),
+                    "total_bytes": int(usage.total),
+                    "used_bytes": int(usage.used),
+                    "free_bytes": int(usage.free),
+                }
+            except Exception:
+                disk = {"base_dir": str(BASE_DIR)}
+
+            obs = {
+                "kind": "self_observation",
+                "mode": str(mode),
+                "ts": _now_iso(),
+                "project_version": str(PROJECT_VERSION),
+                "python": {
+                    "version": str(sys.version),
+                    "executable": str(sys.executable),
+                },
+                "platform": {
+                    "system": platform.system(),
+                    "release": platform.release(),
+                    "version": platform.version(),
+                    "machine": platform.machine(),
+                    "processor": platform.processor(),
+                },
+                "runtime_meta": rt,
+                "limits": {
+                    "cpu_count": cpu_count,
+                    "device_mode": str(DEVICE_MODE),
+                    "run_mode": str(RUN_MODE),
+                    "device_profile": str(DEVICE_PROFILE),
+                },
+                "disk": disk,
+            }
+
+            if user_event:
+                # Keep this minimal; detailed events should be logged elsewhere.
+                obs["last_user_event"] = {
+                    "type": str(user_event.get("type", "")),
+                    "ts": str(user_event.get("ts", _now_iso())),
+                }
+
+            observation_hash = log_dataset_sample(
+                dataset_id=dataset_id,
+                sample_type="self_observation",
+                source_ref=f"runtime://{mode}",
+                content=obs,
+                score=1.0,
+                verified=True,
+            )
+
+        # -----------------------------
+        # Curiosity prompts (non-annoying, UI surfaced)
+        # -----------------------------
+        if generate_curiosity:
+            state_path = os.path.join(SM_MODEL_DIR, "governance", "curiosity_state.json")
+            os.makedirs(os.path.dirname(state_path), exist_ok=True)
+
+            now_epoch = int(time.time())
+            last_epoch = 0
+            try:
+                if os.path.exists(state_path):
+                    with open(state_path, "r", encoding="utf-8") as f:
+                        st = json.load(f) or {}
+                        last_epoch = int(st.get("last_epoch", 0) or 0)
+            except Exception:
+                last_epoch = 0
+
+            # Throttle: at most once per 24h (or at startup if never asked)
+            if (now_epoch - last_epoch) >= (60 * 60 * 24) or last_epoch == 0:
+                prompts = [
+                    {"id": "prefs_name", "q": "What should I call you, and what name should I use for myself?"},
+                    {"id": "prefs_style", "q": "Do you want concise answers, detailed answers, or a mix depending on the task?"},
+                    {"id": "prefs_learning", "q": "Should I learn from your interactions automatically, or only when you explicitly approve it?"},
+                    {"id": "prefs_privacy", "q": "Should web research be on by default, or only when you ask for it?"},
+                    {"id": "prefs_goals", "q": "What are your top 3 goals for SarahMemory this week (stability, features, speed, UI, etc.)?"},
+                ]
+
+                cur = {
+                    "kind": "curiosity_prompts",
+                    "ts": _now_iso(),
+                    "policy": {
+                        "throttle_hours": 24,
+                        "owner_first": True,
+                        "loyal_to_user": True,
+                        "ask_before_doing": True,
+                    },
+                    "prompts": prompts,
+                }
+                curiosity_hash = log_dataset_sample(
+                    dataset_id=dataset_id,
+                    sample_type="curiosity_prompts",
+                    source_ref=f"runtime://{mode}",
+                    content=cur,
+                    score=0.8,
+                    verified=True,
+                )
+
+                try:
+                    with open(state_path, "w", encoding="utf-8") as f:
+                        json.dump({"last_epoch": now_epoch, "last_iso": _now_iso()}, f, indent=2)
+                except Exception:
+                    pass
+    except Exception:
+        # Never break boot on awareness logic
+        pass
+
+    # -----------------------------
+    # Local ingestion (knowledge capture)
+    # -----------------------------
     ingest_summary = ingest_sqlite_datasets_to_ledger(
         dataset_id=dataset_id,
         verified_only=ingest_verified_only,
         max_rows_per_table=max_rows_per_table,
     )
 
-    out = {
+    out: Dict[str, Any] = {
         "dataset_id": dataset_id,
+        "mode": str(mode),
+        "observation_hash": observation_hash,
+        "curiosity_hash": curiosity_hash,
         "ingest": ingest_summary,
         "job": None,
         "timestamp": _now_iso(),
     }
 
+    # -----------------------------
+    # Optional adapter micro-train enqueue (governed)
+    # -----------------------------
     if enqueue_job:
         job_id = f"train::{adapter_model_id}::{int(time.time())}"
         enqueue_training_job(
@@ -766,6 +920,11 @@ def synapes_awareness_tick(
                 "batch_size": 1,
                 "lr": 2e-4,
                 "notes": "auto-enqueued by synapes_awareness_tick",
+                "governance": {
+                    "ask_before_promote": True,
+                    "require_canary_pass": True,
+                    "no_heavy_training_in_hot_path": True,
+                },
             },
             priority=50,
             requested_by="synapes_awareness_tick",
@@ -1056,13 +1215,32 @@ def start_training_dispatcher_background(
     interval_seconds: int = 60,
     worker_id: str = "synapses",
     stop_event: Optional[threading.Event] = None,
+    # Awareness loop (alive + curious), lightweight + throttled
+    start_awareness: bool = True,
+    awareness_interval_seconds: int = 15 * 60,
+    awareness_dataset_id: str = "sm_live",
+    awareness_enqueue_job: bool = True,
+    awareness_ingest_verified_only: bool = False,
+    awareness_max_rows_per_table: int = 250,
 ) -> threading.Thread:
     """
-    Start a lightweight background loop that attempts to process jobs periodically.
+    Start background services for the Living Model lane.
+
+    1) Training dispatcher (Phase 3):
+       - Periodically attempts to process queued adapter training jobs.
+       - Best-effort: never breaks boot, never forces heavyweight deps.
+
+    2) Awareness loop (optional):
+       - Records self-observation snapshots (system limits + runtime meta)
+       - Ingests local knowledge into the dataset ledger
+       - Optionally enqueues an adapter micro-train job
+       - Designed to feel "alive" without being annoying:
+         throttled curiosity prompts, and proposals are UI-surfaced (not auto-executed).
     """
     ev = stop_event or threading.Event()
 
-    def _loop():
+    # --- Training dispatcher loop
+    def _dispatch_loop():
         logger.info(f"[LivingModel][P3] Training dispatcher started (interval={interval_seconds}s)")
         while not ev.is_set():
             try:
@@ -1071,8 +1249,51 @@ def start_training_dispatcher_background(
                 pass
             ev.wait(max(5, int(interval_seconds)))
 
-    t = threading.Thread(target=_loop, daemon=True)
+    t = threading.Thread(target=_dispatch_loop, daemon=True)
     t.start()
+
+    # --- Awareness loop
+    if start_awareness:
+        def _awareness_loop():
+            try:
+                # Startup pulse (know it's alive)
+                synapes_awareness_tick(
+                    dataset_id=awareness_dataset_id,
+                    ingest_verified_only=awareness_ingest_verified_only,
+                    max_rows_per_table=awareness_max_rows_per_table,
+                    enqueue_job=awareness_enqueue_job,
+                    mode="startup",
+                    generate_curiosity=True,
+                )
+            except Exception:
+                pass
+
+            logger.info(
+                f"[LivingModel][AWARE] Awareness loop started (interval={awareness_interval_seconds}s, dataset={awareness_dataset_id})"
+            )
+
+            while not ev.is_set():
+                try:
+                    synapes_awareness_tick(
+                        dataset_id=awareness_dataset_id,
+                        ingest_verified_only=awareness_ingest_verified_only,
+                        max_rows_per_table=awareness_max_rows_per_table,
+                        enqueue_job=awareness_enqueue_job,
+                        mode="background",
+                        generate_curiosity=True,
+                    )
+                except Exception:
+                    pass
+                ev.wait(max(30, int(awareness_interval_seconds)))
+
+        aw = threading.Thread(target=_awareness_loop, daemon=True)
+        aw.start()
+        # attach for observability (non-breaking)
+        try:
+            setattr(t, "awareness_thread", aw)
+        except Exception:
+            pass
+
     return t
 
 
@@ -1931,6 +2152,9 @@ class SandboxTester:
         logger.info(f"Test suite complete: {passed_count}/{len(test_results)} passed")
 
         return all_passed, test_results
+
+
+# [CONTINUING IN NEXT PART DUE TO LENGTH...]
 
 # ============================================================================
 # CODE GENERATION ENGINE
