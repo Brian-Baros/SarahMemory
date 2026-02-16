@@ -63,6 +63,7 @@ from pathlib import Path
 # Import SarahMemory core modules
 from SarahMemoryGlobals import (
     BASE_DIR,
+    DATA_DIR,
     DATASETS_DIR,
     PROJECT_VERSION,
     DEBUG_MODE,
