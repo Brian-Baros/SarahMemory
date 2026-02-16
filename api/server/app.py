@@ -1079,6 +1079,26 @@ def api_health():
     """
     ok, notes, main_running = _perform_health_checks()
     status = "ok" if ok else "down"
+    ts = time.time()
+
+    # Keep persisted server_state.json aligned with live truth
+    try:
+        state = load_state() or {}
+        if not isinstance(state, dict):
+            state = {}
+
+        state["ok"] = bool(ok)
+        state["notes"] = notes if isinstance(notes, list) else []
+        state["main_running"] = bool(main_running)
+        state["running"] = True
+        state["status"] = status
+        state["version"] = PROJECT_VERSION
+        state["ts"] = ts
+        state["source"] = "api_health_writer"
+
+        save_state(state)
+    except Exception:
+        pass
 
     return jsonify(
         {
@@ -1087,7 +1107,7 @@ def api_health():
             "running": True,  # API is up if we're here
             "main_running": main_running,
             "version": PROJECT_VERSION,
-            "ts": time.time(),
+            "ts": ts,
             "notes": notes,
         }
     )
