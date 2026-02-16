@@ -82,7 +82,7 @@ from SarahMemoryFilesystem import save_code_to_addons
 logger = logging.getLogger('SarahMemorySynapes')
 logger.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
 
-log_dir = os.path.join(BASE_DIR, "logs", "synapses")
+log_dir = os.path.join(DATA_DIR, "logs", "synapses")
 os.makedirs(log_dir, exist_ok=True)
 
 file_handler = logging.FileHandler(
