@@ -100,8 +100,9 @@ from typing import Dict, List, Optional, Tuple, Any, Union, Set
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from bs4 import BeautifulSoup
+# import data.mods.v800.sm_v800_research_rssfeedread  # noqa
 
-# ============================================================================
+# =======================================================================
 # WINDOWS REGISTRY (OPTIONAL - GRACEFUL DEGRADATION)
 # ============================================================================
 try:

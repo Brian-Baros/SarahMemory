@@ -58,9 +58,6 @@ NEW (CURRENT UPDATES DISCUSSED):
        - SarahMemoryDL (best-effort)
        - SarahMemoryAPI
      and optionally run SarahMemoryCompare against the candidate suggestion for validation.
-
-NOTE:
-- This file is OWNER-ONLY and is not intended for GitHub.
 """
 
 from __future__ import annotations

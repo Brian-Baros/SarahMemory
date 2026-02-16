@@ -56,6 +56,7 @@ import datetime
 import sys
 import subprocess
 import time
+import json
 import warnings
 import requests
 import platform
@@ -73,24 +74,42 @@ try:
     _data_dir = getattr(config, "DATA_DIR", None) or os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")
     os.makedirs(_data_dir, exist_ok=True)
 
+    _pid = int(os.getpid())
     _pid_file = os.path.join(_data_dir, "sarahmemory.pid")
     with open(_pid_file, "w", encoding="utf-8") as _f:
-        _f.write(str(os.getpid()))
+        _f.write(str(_pid))
 
     _state_file = os.path.join(_data_dir, "server_state.json")
-    _state = {}
+    _state: dict = {}
     try:
         if os.path.exists(_state_file):
             with open(_state_file, "r", encoding="utf-8") as _f:
-                _state = json.load(_f) if _f.readable() else {}
+                try:
+                    _state = json.load(_f)
+                except Exception:
+                    _state = {}
             if not isinstance(_state, dict):
                 _state = {}
     except Exception:
         _state = {}
 
-    _state["MAIN_RUNNING"] = True
-    _state["MAIN_PID"] = int(os.getpid())
-    _state["MAIN_LAST_SEEN_TS"] = float(time.time())
+    # Dual-schema update:
+    # - Legacy/internal keys (UPPERCASE) used by some desktop modules
+    # - API/UI keys (lowercase) expected by /api/health + diagnostics tooling
+    _now = float(time.time())
+    _state.update({
+        "ok": True,
+        "ts": _now,
+        "notes": _state.get("notes") if isinstance(_state.get("notes"), list) else [],
+        "source": "SarahMemoryMain",
+        "main_running": True,
+        "main_pid": _pid,
+        "main_last_seen_ts": _now,
+
+        "MAIN_RUNNING": True,
+        "MAIN_PID": _pid,
+        "MAIN_LAST_SEEN_TS": _now,
+    })
 
     _tmp = _state_file + ".tmp"
     with open(_tmp, "w", encoding="utf-8") as _f:
@@ -150,6 +169,58 @@ console_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
 root.addHandler(file_handler)
 root.addHandler(console_handler)
 logger = logging.getLogger("SarahMemoryMain")
+
+# =============================================================================
+# OPTIONAL AUTONOMOUS SERVICES - v8.0 (Synapses / SelfAware / Evolution)
+# -----------------------------------------------------------------------------
+# Objective: keep SarahMemoryMain as the boot orchestrator while allowing
+# controlled lab-mode autonomy when NEOSKYMATRIX + DEVELOPERSMODE are armed.
+# - Never blocks boot (best-effort / non-fatal)
+# - Keeps audit/logging centralized under ./data/logs
+# =============================================================================
+try:
+    # 1) Synapses bootstrap (model directory contract)
+    import SarahMemorySynapes as _SYN  # type: ignore
+    if hasattr(_SYN, "ensure_sarahmemory_model_dirs"):
+        _SYN.ensure_sarahmemory_model_dirs()  # type: ignore
+        logger.info("[v8.0] Synapses bootstrap complete (model dirs ensured).")
+except Exception as _e:
+    logger.debug(f"[v8.0] Synapses bootstrap skipped/failed: {type(_e).__name__}: {_e}")
+
+try:
+    # 2) Gate autonomous services
+    _neosky = bool(getattr(config, "NEOSKYMATRIX", False)) or str(os.getenv("NEOSKYMATRIX", "")).strip().lower() in ("1","true","yes","on","enabled")
+    _dev = bool(getattr(config, "DEVELOPERSMODE", False)) or str(os.getenv("DEVELOPERSMODE", "")).strip().lower() in ("1","true","yes","on","enabled")
+
+    if _neosky and _dev:
+        import threading
+
+        # SelfAware autonomous loop (runs forever, daemon thread)
+        try:
+            import SarahMemorySelfAware as _SMA  # type: ignore
+            if hasattr(_SMA, "run_autonomous_loop"):
+                _t = threading.Thread(target=_SMA.run_autonomous_loop, name="SM_SelfAware", daemon=True)
+                _t.start()
+                logger.warning("[v8.0] SelfAware ARMED (NEOSKYMATRIX+DEVELOPERSMODE) — autonomous loop started.")
+        except Exception as _e:
+            logger.exception(f"[v8.0] SelfAware start failed: {type(_e).__name__}: {_e}")
+
+        # Evolution cycle (non-blocking one-shot; internal weekly gate controls execution)
+        try:
+            import SarahMemoryEvolution as _EVO  # type: ignore
+            if hasattr(_EVO, "evolve_once"):
+                _t2 = threading.Thread(
+                    target=lambda: _EVO.evolve_once(autonomous=True, weekly_gate=True),  # type: ignore
+                    name="SM_Evolution",
+                    daemon=True
+                )
+                _t2.start()
+                logger.warning("[v8.0] Evolution cycle scheduled (one-shot with weekly gate).")
+        except Exception as _e:
+            logger.exception(f"[v8.0] Evolution start failed: {type(_e).__name__}: {_e}")
+except Exception as _e:
+    logger.debug(f"[v8.0] Autonomous services gate evaluation skipped: {type(_e).__name__}: {_e}")
+
 
 # =============================================================================
 # API SERVER MANAGEMENT - v8.0 Enhanced
@@ -236,6 +307,17 @@ def wait_for_api_server(timeout=10):
     
     logger.warning(f"[TIMEOUT][v8.0] Local API server did not respond within {timeout} seconds.")
     return False
+# =============================================================================
+# OPTIONAL: API server keepalive / status probes
+# =============================================================================
+def check_api_server_health(url="http://127.0.0.1:5000/api/health", timeout=1.25):
+    try:
+        r = requests.get(url, timeout=timeout)
+        if r.status_code == 200:
+            return True, r.json()
+        return False, {"status_code": r.status_code}
+    except Exception as e:
+        return False, {"error": str(e)}
 
 # =============================================================================
 # v8.0 BOOTUP BANNER - World-Class Visual Identity

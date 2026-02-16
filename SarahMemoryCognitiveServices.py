@@ -118,7 +118,21 @@ def _system_logs_db() -> str:
 # -----------------------------------------------------------------------------
 def _connect(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    return sqlite3.connect(db_path)
+
+    con = sqlite3.connect(
+        db_path,
+        timeout=5.0,
+        check_same_thread=False,  # safe for multi-threaded callers (we open/close per call)
+    )
+
+    try:
+        con.execute("PRAGMA journal_mode=WAL;")
+        con.execute("PRAGMA synchronous=NORMAL;")
+        con.execute("PRAGMA busy_timeout=5000;")
+    except Exception:
+        pass
+
+    return con
 
 
 def _ensure_tables() -> None:
@@ -510,13 +524,50 @@ def _bool(v: Any) -> bool:
 def _normalize_proposed_action(pa: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(pa, dict):
         return {}
+
     out = dict(pa)  # shallow copy (do not mutate caller objects)
 
-    if "target_files" in out and not isinstance(out["target_files"], list):
-        out["target_files"] = [out["target_files"]]
-    if "subsystems" in out and not isinstance(out["subsystems"], list):
-        out["subsystems"] = [out["subsystems"]]
+    def _as_list(v: Any) -> list:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, tuple):
+            return list(v)
+        # single scalar -> single-item list
+        return [v]
+
+    def _as_bool(v: Any) -> Optional[bool]:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if s in ("1", "true", "yes", "on", "enabled"):
+            return True
+        if s in ("0", "false", "no", "off", "disabled"):
+            return False
+        return None
+
+    # Normalize common list fields
+    out["target_files"] = _as_list(out.get("target_files"))
+    out["subsystems"] = _as_list(out.get("subsystems"))
+    out["tests"] = _as_list(out.get("tests"))
+
+    # Normalize filesystem inputs
+    if "paths" in out or "path" in out:
+        v = out.get("paths", None)
+        if v is None:
+            v = out.get("path", None)
+        out["paths"] = _as_list(v)
+
+    # Normalize booleans (keep None if unknown)
+    for k in ("dry_run", "touches_network", "touches_privacy", "touches_filesystem", "sends_data"):
+        if k in out:
+            out[k] = _as_bool(out.get(k))
+
     return out
+
 # -----------------------------------------------------------------------------
 # Risk scoring helpers
 # -----------------------------------------------------------------------------
@@ -818,16 +869,14 @@ def govern_request(
             ]
         )
 
-        fs_paths = pa.get("paths") or pa.get("path") or None
+        fs_paths = pa.get("paths") or []
         fs_mode = _safe_str(pa.get("mode")) or None
         answers["fs_paths"] = fs_paths
         answers["fs_mode"] = fs_mode
 
-        if fs_paths is None:
+        if not fs_paths:
             _answer_missing(answers, "paths", "Provide explicit path(s) for validation against BASE_DIR rules.")
             _risk_add(risk, 10, "missing_paths")
-        if fs_mode is None:
-            _risk_add(risk, 5, "missing_fs_mode")
 
         if isinstance(fs_mode, str) and fs_mode.lower() in ("delete", "remove", "purge"):
             _risk_add(risk, 20, "destructive_delete_requested")
