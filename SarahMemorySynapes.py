@@ -732,7 +732,7 @@ def synapes_awareness_tick(
     enqueue_job: bool = True,
 ) -> Dict[str, Any]:
     """
-    Phase 2 + Phase 3 orchestration tick:
+    orchestration tick:
     - ingest data into ledger
     - optionally enqueue a training job (Phase 3) for an adapter
     - does NOT force heavy training at runtime
@@ -1931,9 +1931,6 @@ class SandboxTester:
         logger.info(f"Test suite complete: {passed_count}/{len(test_results)} passed")
 
         return all_passed, test_results
-
-
-# [CONTINUING IN NEXT PART DUE TO LENGTH...]
 
 # ============================================================================
 # CODE GENERATION ENGINE
