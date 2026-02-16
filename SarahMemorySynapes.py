@@ -121,6 +121,33 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 PERFORMANCE_THRESHOLD_MS = 1000
 MEMORY_THRESHOLD_MB = 100
 
+# ============================================================================
+# LIVING MODEL (SARAHMEMORY LLM) - REGISTRY + DATA LEDGER (LOCAL-FIRST)
+# ----------------------------------------------------------------------------
+# This module extends Synapses beyond code-generation into "Model Ops":
+# - A transparent, auditable local model registry (base + adapters)
+# - Dataset ledger (what data trained what adapter, with hashes/provenance)
+# - Training run telemetry (config + metrics + promotion/rollback readiness)
+#
+# Design principles:
+# - Base model remains stable; growth happens in adapters (LoRA/QLoRA style)
+# - No heavy deps required here; this file only manages registry + governance
+# - Actual training execution can be delegated to the platform (optional)
+# ============================================================================
+MODELS_ROOT_DIR = os.path.join(BASE_DIR, "data", "models")
+SARAHMEMORY_MODEL_DIR = os.path.join(MODELS_ROOT_DIR, "SarahMemory")
+SARAHMEMORY_BASE_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "base")
+SARAHMEMORY_ADAPTERS_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "adapters")
+SARAHMEMORY_DATASETS_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "datasets")
+SARAHMEMORY_RUNS_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "training_runs")
+SARAHMEMORY_EVAL_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "eval")
+SARAHMEMORY_GOV_DIR = os.path.join(SARAHMEMORY_MODEL_DIR, "governance")
+
+# Registry manifests
+BASE_MANIFEST_JSON = os.path.join(SARAHMEMORY_BASE_DIR, "base_manifest.json")
+ADAPTER_REGISTRY_JSON = os.path.join(SARAHMEMORY_ADAPTERS_DIR, "adapter_registry.json")
+DATASETS_INDEX_JSON = os.path.join(SARAHMEMORY_DATASETS_DIR, "datasets_index.json")
+
 
 # ============================================================================
 # ENUMERATIONS & DATA STRUCTURES
@@ -237,6 +264,816 @@ def connect_db(db_name: str) -> sqlite3.Connection:
     except Exception as e:
         logger.error(f"Database connection error for {db_name}: {e}")
         raise
+
+
+
+
+def ensure_sarahmemory_model_dirs() -> None:
+    """Idempotently ensure the SarahMemory living-model directory layout exists."""
+    try:
+        for d in (
+            MODELS_ROOT_DIR,
+            SARAHMEMORY_MODEL_DIR,
+            SARAHMEMORY_BASE_DIR,
+            SARAHMEMORY_ADAPTERS_DIR,
+            SARAHMEMORY_DATASETS_DIR,
+            SARAHMEMORY_RUNS_DIR,
+            SARAHMEMORY_EVAL_DIR,
+            SARAHMEMORY_GOV_DIR,
+        ):
+            os.makedirs(d, exist_ok=True)
+
+        # seed empty registries if missing (transparent, user-readable)
+        if not os.path.exists(ADAPTER_REGISTRY_JSON):
+            with open(ADAPTER_REGISTRY_JSON, "w", encoding="utf-8") as f:
+                json.dump({"adapters": [], "updated_at": datetime.datetime.now().isoformat()}, f, indent=2)
+
+        if not os.path.exists(DATASETS_INDEX_JSON):
+            with open(DATASETS_INDEX_JSON, "w", encoding="utf-8") as f:
+                json.dump({"datasets": [], "updated_at": datetime.datetime.now().isoformat()}, f, indent=2)
+
+    except Exception as e:
+        logger.error(f"Failed to ensure SarahMemory model dirs: {e}", exc_info=True)
+
+
+def _sha256_file(path: str) -> str:
+    """Compute SHA256 for a file (streaming)."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now().isoformat()
+
+
+def register_model(
+    *,
+    model_id: str,
+    model_type: str,
+    name: str,
+    storage_path: str,
+    fmt: str = "hf",
+    quantization: str = "n/a",
+    params_estimate: Optional[float] = None,
+    sha256: str = "",
+    manifest: Optional[Dict[str, Any]] = None,
+    status: str = "staged",
+    base_model_id: Optional[str] = None,
+) -> None:
+    """
+    Register a base/adapter model into synapses.db for auditability.
+    This does NOT load/execute the model; it is pure governance + registry.
+    """
+    try:
+        ensure_sarahmemory_model_dirs()
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+
+        try:
+            manifest_json = json.dumps(manifest or {}, ensure_ascii=False)
+        except Exception:
+            manifest_json = "{}"
+
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO model_registry
+            (model_id, model_type, name, base_model_id, storage_path, format, quantization,
+             params_estimate, sha256, manifest_json, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM model_registry WHERE model_id=?), ?), ?)
+            """,
+            (
+                str(model_id),
+                str(model_type),
+                str(name),
+                str(base_model_id) if base_model_id else None,
+                str(storage_path),
+                str(fmt),
+                str(quantization),
+                float(params_estimate) if params_estimate is not None else None,
+                str(sha256 or ""),
+                manifest_json,
+                str(status),
+                str(model_id),
+                _now_iso(),
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Model registry write failed: {e}", exc_info=True)
+
+
+def log_dataset_sample(
+    *,
+    dataset_id: str,
+    sample_type: str,
+    source_ref: str,
+    content: Dict[str, Any],
+    score: float = 0.0,
+    verified: bool = False,
+) -> str:
+    """
+    Append a single training sample to the dataset ledger with hash + provenance.
+    Returns the content hash for traceability.
+    """
+    ensure_sarahmemory_model_dirs()
+    try:
+        payload = json.dumps(content or {}, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        payload = "{}"
+    content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO dataset_ledger
+            (dataset_id, sample_type, source_ref, content_json, content_sha256, score, verified, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(dataset_id),
+                str(sample_type),
+                str(source_ref),
+                payload,
+                str(content_hash),
+                float(score),
+                1 if verified else 0,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Dataset ledger write failed: {e}", exc_info=True)
+
+    return content_hash
+
+
+def log_training_run(
+    *,
+    run_id: str,
+    base_model_id: str,
+    adapter_model_id: Optional[str],
+    dataset_id: Optional[str],
+    config: Optional[Dict[str, Any]] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    status: str = "queued",
+    notes: str = "",
+    started_at: Optional[str] = None,
+    finished_at: Optional[str] = None,
+) -> None:
+    """Record a training/eval run (for adapters) in synapses.db."""
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO training_runs
+            (run_id, base_model_id, adapter_model_id, dataset_id, config_json, metrics_json,
+             status, started_at, finished_at, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(run_id),
+                str(base_model_id),
+                str(adapter_model_id) if adapter_model_id else None,
+                str(dataset_id) if dataset_id else None,
+                json.dumps(config or {}, ensure_ascii=False),
+                json.dumps(metrics or {}, ensure_ascii=False),
+                str(status),
+                started_at,
+                finished_at,
+                str(notes or ""),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Training run write failed: {e}", exc_info=True)
+
+
+
+def record_eval_result(
+    *,
+    model_id: str,
+    suite_name: str,
+    results: Dict[str, Any],
+    passed: bool,
+) -> str:
+    """Persist evaluation results for an adapter/base model."""
+    eval_id = f"eval::{model_id}::{suite_name}::{int(time.time())}"
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO eval_results
+            (eval_id, model_id, suite_name, results_json, passed, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(eval_id),
+                str(model_id),
+                str(suite_name),
+                json.dumps(results or {}, ensure_ascii=False),
+                1 if passed else 0,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Eval result write failed: {e}", exc_info=True)
+    return eval_id
+
+
+def promote_adapter(
+    *,
+    adapter_model_id: str,
+    lane: str = "default",
+    require_canary_pass: bool = True,
+) -> bool:
+    """
+    Promote an adapter to active for a given lane.
+    Governance gate: optional canary requirement.
+    """
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+
+        if require_canary_pass:
+            cur.execute(
+                """
+                SELECT passed
+                FROM eval_results
+                WHERE model_id=? AND suite_name='canary'
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (str(adapter_model_id),),
+            )
+            r = cur.fetchone()
+            if not r or int(r[0]) != 1:
+                conn.close()
+                logger.warning(f"[LivingModel] Promotion blocked (missing canary pass): {adapter_model_id}")
+                return False
+
+        # set registry status active
+        cur.execute(
+            """
+            UPDATE model_registry
+            SET status='active', updated_at=?
+            WHERE model_id=? AND model_type='adapter'
+            """,
+            (_now_iso(), str(adapter_model_id)),
+        )
+
+        # update adapter_registry.json lane mapping (transparent)
+        ensure_sarahmemory_model_dirs()
+        reg = {"adapters": [], "updated_at": _now_iso()}
+        try:
+            if os.path.exists(ADAPTER_REGISTRY_JSON):
+                with open(ADAPTER_REGISTRY_JSON, "r", encoding="utf-8") as f:
+                    reg = json.load(f) or reg
+        except Exception:
+            pass
+
+        adapters = reg.get("adapters", [])
+        # remove existing lane entry
+        adapters = [a for a in adapters if str(a.get("lane")) != str(lane)]
+        adapters.append({
+            "lane": lane,
+            "active_adapter_model_id": adapter_model_id,
+            "promoted_at": _now_iso(),
+        })
+        reg["adapters"] = adapters
+        reg["updated_at"] = _now_iso()
+
+        try:
+            with open(ADAPTER_REGISTRY_JSON, "w", encoding="utf-8") as f:
+                json.dump(reg, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+        conn.commit()
+        conn.close()
+        logger.info(f"[LivingModel] Adapter promoted: {adapter_model_id} -> lane:{lane}")
+        return True
+
+    except Exception as e:
+        logger.error(f"[LivingModel] promote_adapter failed: {e}", exc_info=True)
+        return False
+
+
+def _score_sample_heuristic(sample: Dict[str, Any]) -> float:
+    """
+    Lightweight scoring:
+    - verified/corrected signals upweight
+    - tool success upweight
+    - longer/structured traces slightly upweight
+    """
+    score = 0.0
+    try:
+        if sample.get("verified") is True:
+            score += 0.6
+        if sample.get("correction") or sample.get("corrected_response"):
+            score += 0.5
+        if sample.get("tool_success") is True:
+            score += 0.4
+        # small bump for richer content
+        size = len(json.dumps(sample, ensure_ascii=False)) if sample else 0
+        score += min(0.3, size / 4000.0)
+    except Exception:
+        pass
+    return max(0.0, min(1.0, score))
+
+
+def ingest_sqlite_datasets_to_ledger(
+    *,
+    dataset_id: str,
+    verified_only: bool = False,
+    max_rows_per_table: int = 250,
+) -> Dict[str, Any]:
+    """
+    Phase 2 ingestion:
+    - scans DATASETS_DIR for *.db
+    - enumerates tables
+    - attempts to detect common columns for interaction/correction/tool traces
+    - writes to dataset_ledger with provenance refs
+    """
+    ensure_sarahmemory_model_dirs()
+    summary = {"dataset_id": dataset_id, "files": 0, "tables": 0, "rows_ingested": 0, "errors": []}
+
+    try:
+        db_files = [f for f in os.listdir(DATASETS_DIR) if f.lower().endswith(".db")]
+    except Exception as e:
+        summary["errors"].append(f"list_db_files: {e}")
+        return summary
+
+    for db_name in db_files:
+        db_path = os.path.join(DATASETS_DIR, db_name)
+        if not os.path.isfile(db_path):
+            continue
+        summary["files"] += 1
+        try:
+            conn = sqlite3.connect(db_path, timeout=10.0)
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [r[0] for r in cur.fetchall() if r and r[0]]
+            summary["tables"] += len(tables)
+
+            for table in tables:
+                try:
+                    cur.execute(f"PRAGMA table_info({table});")
+                    cols = [r[1] for r in cur.fetchall() if r and r[1]]
+                    if not cols:
+                        continue
+
+                    # detect likely schema
+                    prompt_col = next((c for c in cols if c.lower() in ("prompt", "user_input", "input", "query", "question")), None)
+                    response_col = next((c for c in cols if c.lower() in ("response", "assistant_response", "answer", "output")), None)
+                    correction_col = next((c for c in cols if c.lower() in ("correction", "corrected_response", "fixed_response")), None)
+                    verified_col = next((c for c in cols if c.lower() in ("verified", "is_verified", "approved", "confirmed")), None)
+                    tool_success_col = next((c for c in cols if c.lower() in ("tool_success", "success", "passed")), None)
+
+                    if not any([prompt_col, response_col, correction_col]):
+                        continue
+
+                    # fetch rows bounded
+                    cur.execute(f"SELECT rowid, * FROM {table} LIMIT {int(max_rows_per_table)};")
+                    rows = cur.fetchall()
+                    for row in rows:
+                        d = dict(row)
+                        rowid = d.get("rowid")
+                        # compute verified
+                        verified = False
+                        if verified_col and d.get(verified_col) is not None:
+                            v = d.get(verified_col)
+                            verified = (str(v).lower() in ("1", "true", "yes", "y", "ok", "approved"))
+                        if verified_only and not verified:
+                            continue
+
+                        content = {
+                            "db": db_name,
+                            "table": table,
+                            "rowid": rowid,
+                            "prompt": d.get(prompt_col) if prompt_col else None,
+                            "response": d.get(response_col) if response_col else None,
+                            "correction": d.get(correction_col) if correction_col else None,
+                            "verified": verified,
+                            "tool_success": (bool(d.get(tool_success_col)) if tool_success_col else None),
+                        }
+
+                        sample_type = "interaction"
+                        if correction_col and d.get(correction_col):
+                            sample_type = "correction"
+
+                        score = _score_sample_heuristic(content)
+                        src_ref = f"sqlite://{db_name}/{table}/{rowid}"
+                        log_dataset_sample(
+                            dataset_id=dataset_id,
+                            sample_type=sample_type,
+                            source_ref=src_ref,
+                            content=content,
+                            score=score,
+                            verified=verified,
+                        )
+                        summary["rows_ingested"] += 1
+
+                except Exception as e:
+                    summary["errors"].append(f"{db_name}:{table}: {e}")
+
+            conn.close()
+
+        except Exception as e:
+            summary["errors"].append(f"{db_name}: {e}")
+
+    # update datasets_index.json (transparent)
+    try:
+        idx_obj = {"datasets": [], "updated_at": _now_iso()}
+        if os.path.exists(DATASETS_INDEX_JSON):
+            with open(DATASETS_INDEX_JSON, "r", encoding="utf-8") as f:
+                idx_obj = json.load(f) or idx_obj
+
+        datasets = idx_obj.get("datasets", [])
+        datasets = [d for d in datasets if str(d.get("dataset_id")) != str(dataset_id)]
+        datasets.append({
+            "dataset_id": dataset_id,
+            "updated_at": _now_iso(),
+            "rows_ingested": summary["rows_ingested"],
+            "verified_only": bool(verified_only),
+        })
+        idx_obj["datasets"] = datasets
+        idx_obj["updated_at"] = _now_iso()
+
+        with open(DATASETS_INDEX_JSON, "w", encoding="utf-8") as f:
+            json.dump(idx_obj, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+    return summary
+
+
+def synapes_awareness_tick(
+    *,
+    dataset_id: str = "sm_live",
+    ingest_verified_only: bool = False,
+    max_rows_per_table: int = 250,
+    lane: str = "default",
+    base_model_id: str = "base::seed",
+    adapter_model_id: str = "adapter::pending",
+    enqueue_job: bool = True,
+) -> Dict[str, Any]:
+    """
+    Phase 2 + Phase 3 orchestration tick:
+    - ingest data into ledger
+    - optionally enqueue a training job (Phase 3) for an adapter
+    - does NOT force heavy training at runtime
+    """
+    ensure_sarahmemory_model_dirs()
+
+    ingest_summary = ingest_sqlite_datasets_to_ledger(
+        dataset_id=dataset_id,
+        verified_only=ingest_verified_only,
+        max_rows_per_table=max_rows_per_table,
+    )
+
+    out = {
+        "dataset_id": dataset_id,
+        "ingest": ingest_summary,
+        "job": None,
+        "timestamp": _now_iso(),
+    }
+
+    if enqueue_job:
+        job_id = f"train::{adapter_model_id}::{int(time.time())}"
+        enqueue_training_job(
+            job_id=job_id,
+            base_model_id=base_model_id,
+            adapter_model_id=adapter_model_id,
+            dataset_id=dataset_id,
+            lane=lane,
+            config={
+                "strategy": "qlora_adapter_microtrain",
+                "max_steps": 200,
+                "batch_size": 1,
+                "lr": 2e-4,
+                "notes": "auto-enqueued by synapes_awareness_tick",
+            },
+            priority=50,
+            requested_by="synapes_awareness_tick",
+            notes="phase3_queue",
+        )
+        out["job"] = {"job_id": job_id, "status": "queued"}
+
+    return out
+
+
+# ============================================================================
+# LIVING MODEL (PHASE 3) - TRAINING JOB DISPATCHER (LIGHTWEIGHT / NO NEW DEPS)
+# ----------------------------------------------------------------------------
+# Purpose:
+# - Provide a transparent job queue so Synapses can request adapter micro-trains
+#   without forcing heavyweight training dependencies into the core runtime.
+# - The dispatcher is "best-effort": if no trainer is available, jobs are left
+#   queued (or marked failed with a clear reason), never crashing boot.
+#
+# Contract:
+# - enqueue_training_job(...) records intent + config + dataset_id
+# - claim_next_training_job(...) is used by a worker loop
+# - complete_training_job(...) records terminal status + metrics
+# - run_training_dispatcher_once(...) attempts to execute 1 job (optional)
+#
+# Notes:
+# - Actual training can be implemented in a separate optional module (e.g. a
+#   local LoRA runner, a CLI script, or an API call) and wired in later.
+# - This is governance + orchestration plumbing, keeping SarahMemory lean.
+# ============================================================================
+
+def enqueue_training_job(
+    *,
+    job_id: str,
+    base_model_id: str,
+    adapter_model_id: str,
+    dataset_id: str,
+    lane: str = "default",
+    config: Optional[Dict[str, Any]] = None,
+    priority: int = 50,
+    requested_by: str = "synapses",
+    notes: str = "",
+) -> None:
+    """Queue a training job for an adapter. Does not execute training."""
+    ensure_sarahmemory_model_dirs()
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO training_jobs
+            (job_id, priority, status, base_model_id, adapter_model_id, dataset_id,
+             lane, config_json, requested_by, requested_at, started_at, finished_at,
+             worker_id, metrics_json, error_message, notes)
+            VALUES (
+                ?, ?,
+                COALESCE((SELECT status FROM training_jobs WHERE job_id=?), 'queued'),
+                ?, ?, ?,
+                ?, ?, ?, 
+                COALESCE((SELECT requested_at FROM training_jobs WHERE job_id=?), ?),
+                (SELECT started_at FROM training_jobs WHERE job_id=?),
+                (SELECT finished_at FROM training_jobs WHERE job_id=?),
+                (SELECT worker_id FROM training_jobs WHERE job_id=?),
+                (SELECT metrics_json FROM training_jobs WHERE job_id=?),
+                (SELECT error_message FROM training_jobs WHERE job_id=?),
+                ?
+            )
+            """,
+            (
+                str(job_id),
+                int(priority),
+                str(job_id),
+                str(base_model_id),
+                str(adapter_model_id),
+                str(dataset_id),
+                str(lane),
+                json.dumps(config or {}, ensure_ascii=False),
+                str(requested_by),
+                str(job_id),
+                _now_iso(),
+                str(job_id),
+                str(job_id),
+                str(job_id),
+                str(job_id),
+                str(job_id),
+                str(job_id),
+                str(notes or ""),
+            ),
+        )
+        conn.commit()
+        conn.close()
+        logger.info(f"[LivingModel][P3] Training job queued: {job_id} ({adapter_model_id} on {dataset_id})")
+    except Exception as e:
+        logger.error(f"[LivingModel][P3] enqueue_training_job failed: {e}", exc_info=True)
+
+
+def claim_next_training_job(worker_id: str = "synapses") -> Optional[Dict[str, Any]]:
+    """
+    Atomically claim the next queued training job (highest priority, earliest requested).
+    Returns the claimed job row as a dict, or None.
+    """
+    ensure_sarahmemory_model_dirs()
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+
+        conn.execute("BEGIN IMMEDIATE;")
+        cur.execute(
+            """
+            SELECT job_id
+            FROM training_jobs
+            WHERE status = 'queued'
+            ORDER BY priority DESC, requested_at ASC
+            LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            conn.execute("COMMIT;")
+            conn.close()
+            return None
+
+        job_id = row[0]
+        cur.execute(
+            """
+            UPDATE training_jobs
+            SET status='running', started_at=?, worker_id=?
+            WHERE job_id=? AND status='queued'
+            """,
+            (_now_iso(), str(worker_id), str(job_id)),
+        )
+        if cur.rowcount != 1:
+            conn.execute("COMMIT;")
+            conn.close()
+            return None
+
+        cur.execute("SELECT * FROM training_jobs WHERE job_id=?", (str(job_id),))
+        full = cur.fetchone()
+        conn.execute("COMMIT;")
+        conn.close()
+        return dict(full) if full else None
+
+    except Exception as e:
+        logger.error(f"[LivingModel][P3] claim_next_training_job failed: {e}", exc_info=True)
+        try:
+            conn.execute("ROLLBACK;")
+            conn.close()
+        except Exception:
+            pass
+        return None
+
+
+def complete_training_job(
+    job_id: str,
+    *,
+    status: str,
+    metrics: Optional[Dict[str, Any]] = None,
+    error_message: str = "",
+) -> None:
+    """Mark a training job terminal and attach metrics/error."""
+    try:
+        conn = connect_db("synapses.db")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE training_jobs
+            SET status=?, finished_at=?, metrics_json=?, error_message=?
+            WHERE job_id=?
+            """,
+            (
+                str(status),
+                _now_iso(),
+                json.dumps(metrics or {}, ensure_ascii=False),
+                str(error_message or ""),
+                str(job_id),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"[LivingModel][P3] complete_training_job failed: {e}", exc_info=True)
+
+
+def _try_run_adapter_trainer(job: Dict[str, Any]) -> Tuple[bool, Dict[str, Any], str]:
+    """
+    Best-effort adapter trainer hook.
+    - If a trainer function is available, call it.
+    - If not available, return (False, {}, reason) without crashing.
+    """
+    trainer = None
+    try:
+        import SarahMemoryOptimization as SMOPT  # optional
+        trainer = getattr(SMOPT, "run_adapter_training", None)
+    except Exception:
+        trainer = None
+
+    if callable(trainer):
+        try:
+            metrics = trainer(
+                job.get("base_model_id"),
+                job.get("adapter_model_id"),
+                job.get("dataset_id"),
+                json.loads(job.get("config_json") or "{}"),
+            )
+            if not isinstance(metrics, dict):
+                metrics = {"metrics": metrics}
+            return True, metrics, ""
+        except Exception as e:
+            return False, {}, f"trainer_error: {type(e).__name__}: {e}"
+
+    return False, {}, "no_trainer_available"
+
+
+def run_training_dispatcher_once(worker_id: str = "synapses") -> str:
+    """
+    Process a single queued training job (if any).
+    Safe for boot: never raises.
+    """
+    job = claim_next_training_job(worker_id=worker_id)
+    if not job:
+        return "no_jobs"
+
+    job_id = str(job.get("job_id"))
+    ok, metrics, err = _try_run_adapter_trainer(job)
+
+    if ok:
+        complete_training_job(job_id, status="passed", metrics=metrics)
+        try:
+            log_training_run(
+                run_id=f"job::{job_id}",
+                base_model_id=str(job.get("base_model_id")),
+                adapter_model_id=str(job.get("adapter_model_id")),
+                dataset_id=str(job.get("dataset_id")),
+                config=json.loads(job.get("config_json") or "{}"),
+                metrics=metrics,
+                status="passed",
+                started_at=str(job.get("started_at") or _now_iso()),
+                finished_at=_now_iso(),
+                notes=f"dispatcher:{worker_id}",
+            )
+        except Exception:
+            pass
+        logger.info(f"[LivingModel][P3] Training job PASSED: {job_id}")
+        return "passed"
+
+    if err == "no_trainer_available":
+        # Re-queue, keep audit signal (don’t fail the system)
+        try:
+            conn = connect_db("synapses.db")
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE training_jobs
+                SET status='queued', started_at=NULL, worker_id=NULL, error_message=?
+                WHERE job_id=?
+                """,
+                ("no_trainer_available", job_id),
+            )
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        logger.warning(f"[LivingModel][P3] Training job deferred (no trainer): {job_id}")
+        return "deferred"
+
+    complete_training_job(job_id, status="failed", metrics={}, error_message=err)
+    try:
+        log_training_run(
+            run_id=f"job::{job_id}",
+            base_model_id=str(job.get("base_model_id")),
+            adapter_model_id=str(job.get("adapter_model_id")),
+            dataset_id=str(job.get("dataset_id")),
+            config=json.loads(job.get("config_json") or "{}"),
+            metrics={},
+            status="failed",
+            started_at=str(job.get("started_at") or _now_iso()),
+            finished_at=_now_iso(),
+            notes=err,
+        )
+    except Exception:
+        pass
+    logger.error(f"[LivingModel][P3] Training job FAILED: {job_id} - {err}")
+    return "failed"
+
+
+def start_training_dispatcher_background(
+    *,
+    interval_seconds: int = 60,
+    worker_id: str = "synapses",
+    stop_event: Optional[threading.Event] = None,
+) -> threading.Thread:
+    """
+    Start a lightweight background loop that attempts to process jobs periodically.
+    """
+    ev = stop_event or threading.Event()
+
+    def _loop():
+        logger.info(f"[LivingModel][P3] Training dispatcher started (interval={interval_seconds}s)")
+        while not ev.is_set():
+            try:
+                run_training_dispatcher_once(worker_id=worker_id)
+            except Exception:
+                pass
+            ev.wait(max(5, int(interval_seconds)))
+
+    t = threading.Thread(target=_loop, daemon=True)
+    t.start()
+    return t
 
 
 def initialize_synapses_database():
@@ -390,6 +1227,109 @@ def initialize_synapses_database():
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_code_hash_violations ON safety_violations(code_hash)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_severity ON safety_violations(severity)")
+
+
+        # --------------------------------------------------------------------
+        # MODEL OPS (Living Model Registry + Dataset Ledger)
+        # --------------------------------------------------------------------
+        cursor.execute(r"""
+            CREATE TABLE IF NOT EXISTS model_registry (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                model_id TEXT UNIQUE NOT NULL,
+                model_type TEXT NOT NULL,           -- base | adapter
+                name TEXT,
+                base_model_id TEXT,                 -- null for base models
+                storage_path TEXT,
+                format TEXT,                        -- hf | gguf | onnx | other
+                quantization TEXT,                  -- q4 | q8 | fp16 | fp32 | n/a
+                params_estimate REAL,               -- optional
+                sha256 TEXT,
+                manifest_json TEXT,
+                status TEXT,                        -- active | inactive | staged | deprecated
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_registry_type ON model_registry(model_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_registry_status ON model_registry(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_model_registry_base ON model_registry(base_model_id)")
+
+        cursor.execute(r"""
+            CREATE TABLE IF NOT EXISTS dataset_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset_id TEXT NOT NULL,
+                sample_type TEXT NOT NULL,          -- interaction | correction | tool_trace | citation_bundle
+                source_ref TEXT,                    -- e.g. sqlite://db/table/rowid or file path
+                content_json TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                score REAL DEFAULT 0.0,
+                verified INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_dataset ON dataset_ledger(dataset_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_type ON dataset_ledger(sample_type)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_verified ON dataset_ledger(verified)")
+
+        cursor.execute(r"""
+            CREATE TABLE IF NOT EXISTS training_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT UNIQUE NOT NULL,
+                base_model_id TEXT NOT NULL,
+                adapter_model_id TEXT,
+                dataset_id TEXT,
+                config_json TEXT,
+                metrics_json TEXT,
+                status TEXT,                        -- queued | running | passed | failed | promoted | rolled_back
+                started_at TEXT,
+                finished_at TEXT,
+                notes TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_runs_status ON training_runs(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_runs_base ON training_runs(base_model_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_runs_adapter ON training_runs(adapter_model_id)")
+
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS training_jobs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_id TEXT UNIQUE NOT NULL,
+        priority INTEGER DEFAULT 50,
+        status TEXT NOT NULL,
+        base_model_id TEXT NOT NULL,
+        adapter_model_id TEXT NOT NULL,
+        dataset_id TEXT NOT NULL,
+        lane TEXT DEFAULT 'default',
+        config_json TEXT,
+        requested_by TEXT,
+        requested_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT,
+        worker_id TEXT,
+        metrics_json TEXT,
+        error_message TEXT,
+        notes TEXT
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_jobs_status ON training_jobs(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_jobs_priority ON training_jobs(priority)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_jobs_lane ON training_jobs(lane)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_training_jobs_dataset ON training_jobs(dataset_id)")
+
+        cursor.execute(r"""
+            CREATE TABLE IF NOT EXISTS eval_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                eval_id TEXT UNIQUE NOT NULL,
+                model_id TEXT NOT NULL,
+                suite_name TEXT NOT NULL,
+                results_json TEXT NOT NULL,
+                passed INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_eval_model ON eval_results(model_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_eval_suite ON eval_results(suite_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_eval_passed ON eval_results(passed)")
 
         conn.commit()
         conn.close()
