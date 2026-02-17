@@ -509,25 +509,56 @@ INTERNET_ARCHIVE_RESEARCH_ENABLED = False #Set True/False for testing purposes
 API_RESEARCH_ENABLED = True #False = Disable from Learning from An Ai API.
 #Allows End User to select which AI API to be used for SarahMemoryResearch.py - Class 3 when query is passed through SarahMemoryAPI.py
 #WARNING: AS OF VERSION 7.0 CURRENTLY ONLY ONE (1) OF THE FOLLOWING API's MAY BE SET TO TRUE AND ALL OTHERS MUST BE SET TO FALSE
-OPEN_AI_API = True # True/False = On /Off for Open AI API
-CLAUDE_API = True # True/False = On /Off for Claude (Anthropic) API
-MISTRAL_API = False # True/False = On /Off for Mistral API
-GEMINI_API = True # True/False = On /Off for Gemini (Google) API
-HUGGINGFACE_API = False # True/False = On /Off for HuggingFace API
+# ============================================================================
+# API PROVIDER CONFIGURATION (v8.0 Expanded Selection Logic)
+# ============================================================================
 
-# Aggregate API configuration (v7.1.3)
-# PRIMARY_API defines the default provider. API_FALLBACKS lists the order of fallback providers.
-PRIMARY_API = "openai" if OPEN_AI_API else "claude" if CLAUDE_API else "mistral" if MISTRAL_API else "gemini" if GEMINI_API else "huggingface" if HUGGINGFACE_API else "none"
-API_FALLBACKS = []
-for provider_flag, name in [
-    (OPEN_AI_API, "openai"),
-    (CLAUDE_API, "claude"),
-    (MISTRAL_API, "mistral"),
-    (GEMINI_API, "gemini"),
-    (HUGGINGFACE_API, "huggingface"),
-]:
-    if provider_flag and name != PRIMARY_API:
-        API_FALLBACKS.append(name)
+# Individual Provider Toggles
+OPEN_AI_API     = True
+CLAUDE_API      = False
+ANTHROPIC_API   = False
+MISTRAL_API     = False
+GEMINI_API      = False
+HUGGINGFACE_API = False
+DEEPSEEK_API    = False
+GROQ_API        = False
+COHERE_API      = False
+
+# ---------------------------------------------------------------------------
+# Unified Provider Registry
+# ---------------------------------------------------------------------------
+
+API_PROVIDER_FLAGS = {
+    "openai":      OPEN_AI_API,
+    "claude":      CLAUDE_API,
+    "anthropic":   ANTHROPIC_API,
+    "mistral":     MISTRAL_API,
+    "gemini":      GEMINI_API,
+    "huggingface": HUGGINGFACE_API,
+    "deepseek":    DEEPSEEK_API,
+    "groq":        GROQ_API,
+    "cohere":      COHERE_API,
+}
+
+# ---------------------------------------------------------------------------
+# Provider Selection Logic
+# ---------------------------------------------------------------------------
+
+# First enabled provider becomes PRIMARY_API
+PRIMARY_API = next(
+    (name for name, enabled in API_PROVIDER_FLAGS.items() if enabled),
+    "none"
+)
+
+# All other enabled providers become fallbacks (ordered)
+API_FALLBACKS = [
+    name for name, enabled in API_PROVIDER_FLAGS.items()
+    if enabled and name != PRIMARY_API
+]
+
+# Convenience flag
+ANY_API_ENABLED = any(API_PROVIDER_FLAGS.values())
+
 
 # API RATE LIMIT/TIMEOUT CONTROLLER to allow AUTO SWITCHING OF API's For the Best Results.
 API_TIMEOUT = 20 # timer number is for seconds. (API_TIMEOUT = 20 is default)
@@ -1602,9 +1633,14 @@ def _sm_get_default_settings():
         # APIs
         "OPEN_AI_API": True,
         "CLAUDE_API": False,
+        "ANTHROPIC_API": False,
         "MISTRAL_API": False,
         "GEMINI_API": False,
         "HUGGINGFACE_API": False,
+        "DEEPSEEK_API": False,
+        "GROQ_API": False,
+        "COHERE_API": False,
+        
         "API_TIMEOUT": 20,
         
         # Models
