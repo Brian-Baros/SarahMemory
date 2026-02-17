@@ -89,6 +89,8 @@ import logging
 import zipfile
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
+import warnings
+warnings.filterwarnings("error", category=SyntaxWarning)
 
 # =============================================================================
 # LOGGING CONFIGURATION - v8.0 Enhanced

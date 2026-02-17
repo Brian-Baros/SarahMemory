@@ -76,6 +76,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import warnings
+warnings.filterwarnings("error", category=SyntaxWarning)
+
 # =============================================================================
 # SAFE IMPORTS (OPTIONAL CORE MODULES)
 # =============================================================================

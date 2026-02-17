@@ -48,6 +48,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import warnings
+warnings.filterwarnings("error", category=SyntaxWarning)
 
 # ---------------------------------------------------------------------------
 # Core config import (single source of truth)

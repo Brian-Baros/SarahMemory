@@ -59,10 +59,11 @@ import time
 import json
 import threading
 import atexit
-import warnings
 import requests
 import platform
 import SarahMemoryGlobals as config
+import warnings
+warnings.filterwarnings("error", category=SyntaxWarning)
 
 # =============================================================================
 # [v8.0] MAIN PROCESS HEARTBEAT / PID MARKER

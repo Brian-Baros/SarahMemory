@@ -55,6 +55,8 @@ try:
     load_dotenv()
 except Exception as e:
     print(f"[WARN] python-dotenv unavailable or failed, .env not loaded: {e}")
+import warnings
+warnings.filterwarnings("error", category=SyntaxWarning)
 
 # ---------------------------------------------------------------------------
 # CONFIG / DEFAULTS
