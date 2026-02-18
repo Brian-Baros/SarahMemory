@@ -64,7 +64,7 @@ agentlightning
 tensorboard
 nltk
 fire
-
+GPUtil
 
 # ----------------------------------------------------------
 # VISION / AUDIO / INTERACTION STACK
@@ -74,8 +74,7 @@ fire
 onnxruntime>=1.18,<2.0
 opencv-python>=4.8,<5.0
 Pillow>=10.2,<12.1
-# pygame>=2.5,<2.7
-pygame-ce
+pygame>=2.5,<2.7
 SpeechRecognition>=3.10,<3.15
 pyttsx3>=2.9,<3.1
 
@@ -150,7 +149,7 @@ langchain>=0.2,<0.5
 
 # Model validation (used across API modules)
 pydantic>=2.4,<2.13
-#selenium google-generativeai webdriver-manager
+selenium google-generativeai webdriver-manager
 
 # ----------------------------------------------------------
 # DATA / SYSTEM UTILITIES
@@ -212,15 +211,15 @@ rich>=13.7,<14.0
 orjson>=3.9,<3.12
 zstandard>=0.22,<0.26
 matplotlib>=3.8,<3.11
-# pandas>=2.1,<2.3
-pandas
+pandas>=2.1,<2.3
+
 
 # ----------------------------------------------------------
 # DEVELOPMENT / BUILD TOOLS
 # ----------------------------------------------------------
 # setuptools required by several packages to build wheels.
-# setuptools>=65.5.0
-# pip>=24.3
+setuptools>=65.5.0
+pip>=24.3
 virtualenv>=20.30.0
 
 
@@ -235,5 +234,5 @@ trimesh>=4.6,<4.10         # 3D geometry tools (lightweight)
 
 # run after installing spacy
 #python -m spacy download en_core_web_sm 
-# echo Type 'python -m spacy download en_core_web_sm' 
-# echo And that should be the end of all the dependencies.
+echo Type 'python -m spacy download en_core_web_sm' 
+echo And that should be the end of all the dependencies.

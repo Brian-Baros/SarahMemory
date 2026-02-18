@@ -57,13 +57,10 @@ import sys
 import subprocess
 import time
 import json
-import threading
-import atexit
+import warnings
 import requests
 import platform
 import SarahMemoryGlobals as config
-import warnings
-warnings.filterwarnings("error", category=SyntaxWarning)
 
 # =============================================================================
 # [v8.0] MAIN PROCESS HEARTBEAT / PID MARKER
@@ -173,109 +170,6 @@ root.addHandler(file_handler)
 root.addHandler(console_handler)
 logger = logging.getLogger("SarahMemoryMain")
 
-# -----------------------------------------------------------------------------
-# Purpose:
-# - Keep DATA_DIR/server_state.json "fresh" for the WebUI and /api/health consumers.
-# - Mirror the MAIN_* fields written at boot (PID + last_seen) on a fixed cadence.
-# - Never block boot; never crash the main loop if filesystem permissions are odd.
-#
-# Configuration (optional):
-# - MAIN_HEARTBEAT_SECONDS (SarahMemoryGlobals.py or .env) default: 5 seconds
-# =============================================================================
-_MAIN_HEARTBEAT_SECONDS = 5
-try:
-    _MAIN_HEARTBEAT_SECONDS = int(getattr(config, "MAIN_HEARTBEAT_SECONDS", 5) or 5)
-except Exception:
-    _MAIN_HEARTBEAT_SECONDS = 5
-if _MAIN_HEARTBEAT_SECONDS < 1:
-    _MAIN_HEARTBEAT_SECONDS = 1
-
-def _sm_write_main_state(_running: bool) -> None:
-    """Best-effort: update data/server_state.json with MAIN_* + main_* compatibility keys."""
-    try:
-        data_dir = getattr(config, "DATA_DIR", None) or os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")
-        os.makedirs(data_dir, exist_ok=True)
-
-        pid = int(os.getpid())
-        now = float(time.time())
-
-        state_file = os.path.join(data_dir, "server_state.json")
-        state = {}
-        try:
-            if os.path.exists(state_file):
-                with open(state_file, "r", encoding="utf-8") as f:
-                    try:
-                        state = json.load(f)
-                    except Exception:
-                        state = {}
-        except Exception:
-            state = {}
-
-        if not isinstance(state, dict):
-            state = {}
-
-        # MAIN_* (legacy caps) + main_* (api state) keys
-        state["MAIN_RUNNING"] = bool(_running)
-        state["MAIN_PID"] = pid
-        state["MAIN_LAST_SEEN_TS"] = now
-
-        state["main_running"] = bool(_running)
-        state["main_pid"] = pid
-        state["main_last_seen_ts"] = now
-
-        # If api isn't writing, at least keep a minimal truthy payload
-        state.setdefault("ok", True)
-        state.setdefault("running", True)
-        state.setdefault("status", "ok")
-        state.setdefault("notes", [])
-
-        state["ts"] = now
-        state.setdefault("source", "main_heartbeat")
-
-        tmp = state_file + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, sort_keys=True)
-        os.replace(tmp, state_file)
-
-        # Keep pid file aligned (used by /api/health main_running checks)
-        pid_file = os.path.join(data_dir, "sarahmemory.pid")
-        try:
-            with open(pid_file, "w", encoding="utf-8") as f:
-                f.write(str(pid))
-        except Exception:
-            pass
-    except Exception:
-        # Never block boot or runtime on heartbeat failures.
-        pass
-
-def _sm_main_heartbeat_loop() -> None:
-    """Daemon heartbeat loop."""
-    # Initial mark (helps immediately after boot)
-    _sm_write_main_state(True)
-    while True:
-        try:
-            time.sleep(_MAIN_HEARTBEAT_SECONDS)
-            _sm_write_main_state(True)
-        except Exception:
-            # Hard safety: never exit the loop.
-            try:
-                time.sleep(_MAIN_HEARTBEAT_SECONDS)
-            except Exception:
-                pass
-
-# Start heartbeat thread ASAP (non-blocking)
-try:
-    _hb = threading.Thread(target=_sm_main_heartbeat_loop, name="SM_MainHeartbeat", daemon=True)
-    _hb.start()
-    logger.info(f"[v8.0] Main heartbeat started ({_MAIN_HEARTBEAT_SECONDS}s).")
-except Exception as _e:
-    logger.debug(f"[v8.0] Main heartbeat failed to start: {type(_e).__name__}: {_e}")
-
-# On clean exit, mark MAIN_RUNNING false (best-effort)
-try:
-    atexit.register(lambda: _sm_write_main_state(False))
-except Exception:
-    pass
 # =============================================================================
 # OPTIONAL AUTONOMOUS SERVICES - v8.0 (Synapses / SelfAware / Evolution)
 # -----------------------------------------------------------------------------
@@ -383,7 +277,7 @@ def start_local_api_server():
 
 
 
-def wait_for_api_server(timeout=10):
+def wait_for_api_server(timeout=30):
     """
     Enhanced v8.0: Check if the local API server is online before launching integration.
     Includes retry logic and better error handling.
@@ -395,14 +289,17 @@ def wait_for_api_server(timeout=10):
         bool: True if server is ready, False otherwise
     """
     logger.info("[v8.0] Waiting for local API server to respond...")
-    url = f"http://{config.DEFAULT_HOST}:{config.DEFAULT_PORT}/api/status"
-    
+    url_health = f"http://{config.DEFAULT_HOST}:{config.DEFAULT_PORT}/api/health"
+    url_status = f"http://{config.DEFAULT_HOST}:{config.DEFAULT_PORT}/api/status"
+
     for attempt in range(timeout):
         try:
-            response = requests.get(url, timeout=2)
-            if response.status_code == 200:
-                logger.info(f"[READY][v8.0] Local API server is online (attempt {attempt + 1}/{timeout}).")
-                return True
+            for _url in (url_health, url_status):
+                response = requests.get(_url, timeout=2)
+                if response.status_code == 200:
+                    # /api/health returns JSON; accept even if body parsing fails
+                    logger.info(f"[READY][v8.0] Local API server is online via {_url} (attempt {attempt + 1}/{timeout}).")
+                    return True
         except requests.exceptions.RequestException:
             pass
         
@@ -496,6 +393,7 @@ try:
     import SarahMemoryCognitiveServices as cognitive
     import SarahMemoryIntegration as integration
     
+    import SarahMemoryDiagnostics as diagnostics
     # optional safe warmup (no network, no execution)
     try:
         cognitive.ensure_response_table()   # optional legacy table

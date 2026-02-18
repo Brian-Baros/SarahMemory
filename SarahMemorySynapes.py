@@ -1011,7 +1011,6 @@ def enqueue_training_job(
                 str(job_id),
                 str(job_id),
                 str(job_id),
-                str(job_id),
                 str(notes or ""),
             ),
         )

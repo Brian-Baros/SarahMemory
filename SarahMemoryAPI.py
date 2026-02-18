@@ -2,9 +2,9 @@
 File: SarahMemoryAPI.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2026-02-17
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -193,6 +193,128 @@ research_path_logger = logging.getLogger("ResearchPathLogger")
 # ============================================================================
 # CONSTANTS AND CONFIGURATION
 # ============================================================================
+#
+# Lazy caches (avoid loading heavy stuff at import-time)
+__EMBEDDER_LOCK = threading.Lock()
+__EMBEDDER_CACHE: Dict[str, Any] = {}
+__MODEL_AVAIL_CACHE: Optional[Dict[str, bool]] = None
+
+def _safe_bool(x: Any) -> bool:
+    try:
+        return bool(x)
+    except Exception:
+        return False
+
+def _models_root() -> str:
+    # Prefer Globals MODELS_DIR if present, else BASE_DIR/data/models
+    base_dir = getattr(config, "BASE_DIR", os.getcwd())
+    models_dir = getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
+    # Your convention mentioned: ./data/models/SarahMemory/...
+    return os.path.join(models_dir, "SarahMemory")
+
+def _is_cloud() -> bool:
+    # RUN_MODE exists in Globals (auto-detects PythonAnywhere)
+    return getattr(config, "RUN_MODE", "local") == "cloud"
+
+def _enabled_model_names() -> Dict[str, bool]:
+    # Source of truth is MODEL_CONFIG in Globals
+    model_cfg = getattr(config, "MODEL_CONFIG", {}) or {}
+    multi_model = _safe_bool(getattr(config, "MULTI_MODEL", False))
+    if not multi_model:
+        # MODE B: if multi-model off, use primary embedding model only
+        primary = (getattr(config, "EMBEDDING_MODELS", {}) or {}).get("primary", "all-MiniLM-L6-v2")
+        return {primary: True}
+
+    # Multi-model on: return the dict as-is (enabled flags)
+    return {k: _safe_bool(v) for k, v in model_cfg.items() if _safe_bool(v)}
+
+def _probe_local_model_availability() -> Dict[str, bool]:
+    """
+    Checks if the enabled models appear to be installed locally.
+    MODE B policy: cloud mode returns 'not available' for local models.
+    """
+    global __MODEL_AVAIL_CACHE
+    if __MODEL_AVAIL_CACHE is not None:
+        return __MODEL_AVAIL_CACHE
+
+    enabled = _enabled_model_names()
+    avail: Dict[str, bool] = {k: False for k in enabled.keys()}
+
+    if _is_cloud():
+        __MODEL_AVAIL_CACHE = avail
+        return avail
+
+    root = _models_root()
+    # Lightweight heuristic: model folder exists or a manifest exists
+    for name in enabled.keys():
+        # allow either "all-MiniLM-L6-v2" as folder, or a sanitized folder name
+        candidates = [
+            os.path.join(root, name),
+            os.path.join(root, name.replace("/", "_")),
+            os.path.join(root, name.replace("-", "_")),
+            os.path.join(root, f"{name}.json"),
+        ]
+        avail[name] = any(os.path.exists(p) for p in candidates)
+
+    __MODEL_AVAIL_CACHE = avail
+    return avail
+
+def pick_embedding_model(requested: Optional[str] = None) -> str:
+    """
+    MODE B selection:
+    1) If caller requests a model and it's enabled, honor it.
+    2) Else use Globals EMBEDDING_MODELS.primary if enabled.
+    3) Else pick the first enabled model.
+    """
+    enabled = _enabled_model_names()
+    if requested and enabled.get(requested):
+        return requested
+
+    emb_cfg = getattr(config, "EMBEDDING_MODELS", {}) or {}
+    primary = emb_cfg.get("primary", "all-MiniLM-L6-v2")
+    if enabled.get(primary):
+        return primary
+
+    # deterministic fallback
+    return sorted(enabled.keys())[0] if enabled else "all-MiniLM-L6-v2"
+
+def get_embedder(model_name: Optional[str] = None):
+    """
+    Lazy-load SentenceTransformer only when actually used.
+    Falls back cleanly if sentence-transformers isn't installed.
+    """
+    chosen = pick_embedding_model(model_name)
+
+    with __EMBEDDER_LOCK:
+        if chosen in __EMBEDDER_CACHE:
+            return __EMBEDDER_CACHE[chosen]
+
+        # In cloud mode, do not try to load local models
+        if _is_cloud():
+            raise RuntimeError("Local embedder requested in cloud mode (RUN_MODE=cloud).")
+
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+        except Exception as e:
+            raise RuntimeError(f"sentence-transformers not available: {e}")
+
+        # MODE B: allow HF cache/model dir to be the SarahMemory models folder
+        local_root = _models_root()
+        os.makedirs(local_root, exist_ok=True)
+
+        # SentenceTransformer can pull from HF if available; it will also use local cache.
+        embedder = SentenceTransformer(chosen, cache_folder=local_root)
+        __EMBEDDER_CACHE[chosen] = embedder
+        return embedder
+
+def embed_text(text: str, model_name: Optional[str] = None):
+    """
+    Single, reusable embedding function for the whole stack.
+    Use this inside /api/local/brain, vector DB writes, similarity checks, etc.
+    """
+    emb = get_embedder(model_name)
+    vec = emb.encode([text], normalize_embeddings=True)
+    return vec[0].tolist()
 
 # API Disabled flag
 API_DISABLED = not getattr(config, 'API_RESEARCH_ENABLED', True)
@@ -241,6 +363,9 @@ API_KEYS: Dict[str, Optional[str]] = {
     "deepseek": os.getenv("DEEPSEEK_API_KEY"),
     "groq": os.getenv("GROQ_API_KEY"),
     "cohere": os.getenv("COHERE_API_KEY") or os.getenv("CO_API_KEY"),
+    "local": os.getenv("LOCAL_BRAIN"),
+    "ollama": os.getenv("OLLAMA_API"),
+    "mesh": os.getenv("MESH_API"),
 }
 
 # OpenAI endpoint selection (honor custom endpoint if valid)
@@ -262,6 +387,9 @@ API_URLS: Dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "cohere": "https://api.cohere.ai/v1/chat",
+    "local": "http://127.0.0.1:8000/api/local/chat",
+    "ollama": "http://127.0.0.1:11434/api/chat",
+    "mesh": "https://api.sarahmemory.com/api/chat",
 }
 
 # Default models for each provider
@@ -275,14 +403,25 @@ DEFAULT_MODELS: Dict[str, str] = {
     "deepseek": "deepseek-chat",
     "groq": "llama-3.1-70b-versatile",
     "cohere": "command-r-plus",
+    "local": "synapses-micro-brain",
+    "ollama": "llama3",
+    "mesh": "auto",
 }
 
 # Provider priority for fallback
 PROVIDER_PRIORITY: List[str] = [
-    "openai", "claude", "mistral", "gemini", "groq", "deepseek", "cohere", "huggingface"
+    "local",       # Synapses micro-brain (deterministic + retrieval + tool routing)
+    "ollama",      # Local LLM runtime
+    "openai",
+    "claude",
+    "mistral",
+    "gemini",
+    "deepseek",
+    "groq",
+    "cohere",
+    "huggingface",
+    "mesh",        # Distributed tier LAST unless explicitly requested
 ]
-
-
 # ============================================================================
 # ENHANCED ROLE MAP (60+ SPECIALIZED ROLES)
 # ============================================================================
@@ -614,80 +753,61 @@ def log_cognitive_event(provider: str, input_text: str, result: str) -> None:
 # PROVIDER SELECTION
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# Provider enablement + key-gating (backed by SarahMemoryGlobals toggles)
+# ---------------------------------------------------------------------------
+def _provider_flag_attr(provider: str) -> Optional[str]:
+    """Map provider name -> SarahMemoryGlobals flag attribute name."""
+    p = (provider or "").strip().lower()
+    return {
+        "openai": "OPEN_AI_API",
+        "claude": "CLAUDE_API",
+        "anthropic": "ANTHROPIC_API",
+        "mistral": "MISTRAL_API",
+        "gemini": "GEMINI_API",
+        "huggingface": "HUGGINGFACE_API",
+        "deepseek": "DEEPSEEK_API",
+        "groq": "GROQ_API",
+        "cohere": "COHERE_API",
+        "ollama": "OLLAMA_API",
+        "local": "LOCAL_API",
+        "mesh": "MESH_API",
+    }.get(p)
+
+def _provider_is_enabled(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    if p == "anthropic":
+        return bool(getattr(config, "ANTHROPIC_API", False) or getattr(config, "CLAUDE_API", False))
+    attr = _provider_flag_attr(p)
+    return bool(getattr(config, attr, False)) if attr else False
+
+def _provider_requires_key(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    return p not in {"local", "ollama", "mesh"}
+
+def _provider_has_credentials(provider: str) -> bool:
+    p = (provider or "").strip().lower()
+    if not _provider_is_enabled(p):
+        return False
+    if not _provider_requires_key(p):
+        return True
+    return bool(API_KEYS.get(p))
+
 def fallback_provider(current: str) -> Optional[str]:
-    """
-    Select the next available API provider based on configured fallbacks.
-
-    Args:
-        current: Current provider that failed
-
-    Returns:
-        Next available provider name or None
-    """
-    try:
-        # Check config fallbacks first
-        fallbacks = getattr(config, "API_FALLBACKS", None)
-        if fallbacks and isinstance(fallbacks, (list, tuple)):
-            for p in fallbacks:
-                if p != current and API_KEYS.get(p):
-                    return p
-
-        # Use default priority
-        for p in PROVIDER_PRIORITY:
-            if p != current and API_KEYS.get(p):
-                # Also check if provider is enabled in config
-                if getattr(config, f"{p.upper()}_API", True):
-                    return p
-
-        return None
-
-    except Exception:
-        # Fallback to simple priority list
-        for p in PROVIDER_PRIORITY:
-            if p != current and API_KEYS.get(p):
-                return p
-        return None
-
+    """Return the next available provider based on priority order."""
+    for p in PROVIDER_PRIORITY:
+        if p == current:
+            continue
+        if _provider_has_credentials(p):
+            return p
+    return None
 
 def get_best_provider_for_intent(intent: str) -> str:
-    """
-    Select the best provider for a given intent.
-
-    Args:
-        intent: The classified intent
-
-    Returns:
-        Best provider name
-    """
-    # Intent-to-provider preferences
-    preferences = {
-        "code": ["openai", "claude", "deepseek"],
-        "debug": ["claude", "openai", "deepseek"],
-        "creative": ["claude", "openai", "gemini"],
-        "story": ["claude", "openai", "gemini"],
-        "math": ["openai", "claude", "deepseek"],
-        "research": ["claude", "openai", "gemini"],
-        "medical": ["claude", "openai"],
-        "legal": ["claude", "openai"],
-    }
-
-    preferred = preferences.get(intent, PROVIDER_PRIORITY)
-
-    for p in preferred:
-        if API_KEYS.get(p):
-            return p
-
-    # Return first available
+    """Pick the best enabled provider for an intent using a simple priority scan."""
     for p in PROVIDER_PRIORITY:
-        if API_KEYS.get(p):
+        if _provider_has_credentials(p):
             return p
-
-    return "openai"
-
-
-# ============================================================================
-# PROMPT BUILDING
-# ============================================================================
+    return PRIMARY_PROVIDER
 
 def get_role_for_intent(intent: str) -> str:
     """
@@ -1324,6 +1444,76 @@ def _call_cohere(
 # MAIN API FUNCTION
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# LOCAL / OLLAMA / MESH backends
+# ---------------------------------------------------------------------------
+def _call_local(prompt: str, model: Optional[str] = None, timeout: int = 8) -> Tuple[Optional[str], Optional[str]]:
+    """Call the local SarahMemory API chat endpoint (POST /api/chat)."""
+    url = API_URLS.get("local")
+    if not url:
+        return None, "LOCAL endpoint not configured"
+    payload = {"text": prompt, "model": model or DEFAULT_MODELS.get("local")}
+    try:
+        r = requests.post(url, json=payload, timeout=timeout, verify=False)
+        if r.status_code >= 400:
+            return None, f"Local HTTP {r.status_code}: {r.text[:400]}"
+        data = r.json() if r.content else {}
+        return data.get("reply") or data.get("response") or data.get("text") or data.get("content"), None
+    except Exception as e:
+        return None, str(e)
+
+def _call_ollama(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+    """Call a local Ollama runtime via /api/chat."""
+    url = API_URLS.get("ollama")
+    if not url:
+        return None, "OLLAMA endpoint not configured"
+    payload = {
+        "model": model or DEFAULT_MODELS.get("ollama") or "llama3",
+        "messages": [
+            {"role": "system", "content": "You are SarahMemory local runtime."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+    }
+    headers = {"Content-Type": "application/json"}
+    key = API_KEYS.get("ollama")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=timeout, verify=False)
+        if r.status_code >= 400:
+            return None, f"Ollama HTTP {r.status_code}: {r.text[:400]}"
+        data = r.json() if r.content else {}
+        msg = (data.get("message") or {})
+        content = msg.get("content")
+        if content is not None:
+            return content, None
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            return (choices[0].get("message") or {}).get("content"), None
+        return "", None
+    except Exception as e:
+        return None, str(e)
+
+def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str] = None, timeout: int = 45) -> Tuple[Optional[str], Optional[str]]:
+    """Call the distributed mesh tier (cloud broker)."""
+    url = API_URLS.get("mesh")
+    if not url:
+        return None, "MESH endpoint not configured"
+    payload = {"prompt": prompt, "provider": provider, "model": model}
+    headers = {"Content-Type": "application/json"}
+    key = API_KEYS.get("mesh")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        r = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        if r.status_code >= 400:
+            return None, f"Mesh HTTP {r.status_code}: {r.text[:400]}"
+        data = r.json() if r.content else {}
+        return data.get("reply") or data.get("text") or data.get("content"), None
+    except Exception as e:
+        return None, str(e)
+
 def send_to_api(
     user_input: str,
     provider: str = "openai",
@@ -1425,7 +1615,7 @@ def send_to_api(
             else:
                 provider = get_best_provider_for_intent(intent)
         except Exception:
-            provider = "openai"
+            provider = get_best_provider_for_intent(intent)
 
     # Normalize provider name
     provider = provider.lower()
@@ -1434,7 +1624,7 @@ def send_to_api(
 
     # Get API key
     key = API_KEYS.get(provider)
-    if not key:
+    if _provider_requires_key(provider) and not key:
         return {
             "source": provider,
             "data": None,
@@ -1488,6 +1678,12 @@ def send_to_api(
             content, error = _call_deepseek(prompt, model, key, max_tokens, temperature)
         elif provider == "cohere":
             content, error = _call_cohere(prompt, model, key)
+        elif provider == "local":
+            content, error = _call_local(prompt, model)
+        elif provider == "ollama":
+            content, error = _call_ollama(prompt, model)
+        elif provider == "mesh":
+            content, error = _call_mesh(prompt, provider=None, model=model)
         else:
             error = f"Unknown provider: {provider}"
 

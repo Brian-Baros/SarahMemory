@@ -487,7 +487,7 @@ IMPORT_OTHER_DATA_LEARN = True #Rebuilds Vector on each BOOT UP if True It will 
 LEARNING_PHASE_ACTIVE = True #Keeps system from constantly rebuilding Vectored dataset. If True will rebuild constantly
 
 # Researching Configurations
-LOCAL_DATA_ENABLED = False # False = Temporary Disable local search until trained. SarahMemoryResearch.py Class 1
+LOCAL_DATA_ENABLED = True # False = Temporary Disable local search until trained. SarahMemoryResearch.py Class 1
 ROUTE_MODE = "Any"  # Options: "Any", "Local", "Web", "API"
 WEB_RESEARCH_ENABLED = True # True = False Disable Web search Learning. SarahMemoryResearch.py - Class 2
 # Web Homepage This will be the HomePage in which is seen when the SarahMemoryGUI.py interface is loaded.
@@ -524,11 +524,16 @@ DEEPSEEK_API    = False
 GROQ_API        = False
 COHERE_API      = False
 
+OLLAMA_API      = False
+LOCAL_API       = True
+MESH_API        = True
 # ---------------------------------------------------------------------------
 # Unified Provider Registry
 # ---------------------------------------------------------------------------
 
 API_PROVIDER_FLAGS = {
+    "ollama":      OLLAMA_API,
+    "local":       LOCAL_API,
     "openai":      OPEN_AI_API,
     "claude":      CLAUDE_API,
     "anthropic":   ANTHROPIC_API,
@@ -538,6 +543,7 @@ API_PROVIDER_FLAGS = {
     "deepseek":    DEEPSEEK_API,
     "groq":        GROQ_API,
     "cohere":      COHERE_API,
+    "mesh":        MESH_API,
 }
 
 # ---------------------------------------------------------------------------
@@ -1640,7 +1646,9 @@ def _sm_get_default_settings():
         "DEEPSEEK_API": False,
         "GROQ_API": False,
         "COHERE_API": False,
-        
+        "OOLAMA_API": True,
+        "LOCAL_API": True,
+        "MESH_API": True,
         "API_TIMEOUT": 20,
         
         # Models

@@ -60,6 +60,121 @@ logger.addHandler(stream_handler)
 # =============================================================================
 terminate_flag = threading.Event()
 
+# =============================================================================
+# RUNTIME SERVICES (POST-API) - v8.0
+# =============================================================================
+# Start SelfAware/Synapes/Diagnostics ONLY after the local API is up.
+_runtime_services_started = False
+_runtime_services_lock = threading.Lock()
+
+def _start_runtime_services_once() -> None:
+    """Start post-API runtime services exactly once (best-effort, non-blocking)."""
+    global _runtime_services_started
+
+    # Idempotency guard
+    try:
+        with _runtime_services_lock:
+            if _runtime_services_started:
+                return
+            _runtime_services_started = True
+    except Exception:
+        if _runtime_services_started:
+            return
+        _runtime_services_started = True
+
+    # Wait briefly for local API readiness (do NOT hard-fail)
+    try:
+        host = getattr(config, "DEFAULT_HOST", "127.0.0.1")
+        port = int(getattr(config, "DEFAULT_PORT", 8000))
+    except Exception:
+        host, port = "127.0.0.1", 8000
+
+    status_url = f"http://{host}:{port}/api/status"
+    api_ok = False
+    try:
+        import requests  # type: ignore
+        for _ in range(40):  # ~10s @ 0.25s
+            if terminate_flag.is_set():
+                break
+            try:
+                r = requests.get(status_url, timeout=0.75)
+                if getattr(r, "status_code", 0) == 200:
+                    api_ok = True
+                    break
+            except Exception:
+                pass
+            time.sleep(0.25)
+    except Exception:
+        api_ok = False
+
+    if api_ok:
+        logger.info("[v8.0][RUNTIME] Local API is ready. Starting post-API runtime services...")
+    else:
+        logger.warning("[v8.0][RUNTIME] Local API not confirmed ready. Starting runtime services in degraded mode...")
+
+    # Diagnostics / Self-check (post-API) - background thread
+    def _diag_worker():
+        try:
+            run_self_check()
+        except Exception as e:
+            logger.debug("[v8.0][RUNTIME] run_self_check failed: %s", e)
+
+    try:
+        threading.Thread(target=_diag_worker, name="SM_RuntimeDiagnostics", daemon=True).start()
+    except Exception:
+        pass
+
+    # Synapses: awareness tick + background training dispatcher (if available)
+    try:
+        import SarahMemorySynapes as syn  # type: ignore
+
+        if hasattr(syn, "start_training_dispatcher_background"):
+            try:
+                syn.start_training_dispatcher_background()
+                logger.info("[v8.0][RUNTIME] Synapes training dispatcher started.")
+            except Exception as e:
+                logger.debug("[v8.0][RUNTIME] start_training_dispatcher_background failed: %s", e)
+
+        if hasattr(syn, "synapes_awareness_tick"):
+            def _syn_awareness_loop():
+                try:
+                    while not terminate_flag.is_set():
+                        try:
+                            syn.synapes_awareness_tick()
+                        except TypeError:
+                            break
+                        except Exception:
+                            pass
+                        time.sleep(2.0)
+                except Exception:
+                    pass
+
+            try:
+                threading.Thread(target=_syn_awareness_loop, name="SM_SynapesAwareness", daemon=True).start()
+                logger.info("[v8.0][RUNTIME] Synapes awareness loop started.")
+            except Exception as e:
+                logger.debug("[v8.0][RUNTIME] Synapes awareness thread failed: %s", e)
+
+    except Exception as e:
+        logger.debug("[v8.0][RUNTIME] Synapes module not available: %s", e)
+
+    # SelfAware (only when gated) - background daemon
+    try:
+        neosky = bool(getattr(config, "NEOSKYMATRIX", False))
+        dev = bool(getattr(config, "DEVELOPERSMODE", False))
+
+        if neosky and dev:
+            try:
+                import SarahMemorySelfAware as sma  # type: ignore
+                if hasattr(sma, "run_autonomous_loop"):
+                    threading.Thread(target=sma.run_autonomous_loop, name="SM_SelfAware", daemon=True).start()
+                    logger.warning("[v8.0][RUNTIME] SelfAware ARMED (NEOSKYMATRIX+DEVELOPERSMODE).")
+            except Exception as e:
+                logger.debug("[v8.0][RUNTIME] SelfAware start failed: %s", e)
+    except Exception:
+        pass
+
+
 
 # =============================================================================
 # v8.0 BOOTSTRAP STARTUP SEQUENCE
@@ -456,6 +571,11 @@ def launch_gui():
     """
     try:
         logger.info("[v8.0] Launching main GUI...")
+        # Ensure runtime services are active before GUI mainloop
+        try:
+            _start_runtime_services_once()
+        except Exception:
+            pass
         synthesize_voice("Loading Main GUI interface, Please Wait.")
         
         voice_thread = threading.Thread(target=run_voice_chat)
@@ -598,6 +718,12 @@ def main_menu():
                     logger.debug("[v8.0][TTS] Loading GUI prompt failed silently.")
                 
                 print("\n[v8.0] Launching Chat GUI...")
+
+                # Start post-API runtime services before entering GUI mainloop
+                try:
+                    _start_runtime_services_once()
+                except Exception:
+                    pass
                 
                 try:
                     import SarahMemoryGUI as gui
@@ -629,6 +755,12 @@ def main_menu():
                 logger.debug("[v8.0][TTS] Loading GUI prompt (bypass mode) failed silently.")
             
             print("\n[v8.0] Launching Chat GUI (bypass mode)...")
+
+            # Start post-API runtime services before entering GUI mainloop
+            try:
+                _start_runtime_services_once()
+            except Exception:
+                pass
             
             try:
                 import SarahMemoryGUI as gui
@@ -776,9 +908,19 @@ except Exception:
 # =============================================================================
 if __name__ == "__main__":
     logger.info("[v8.0] Starting SarahMemory AI Bot.")
-    
-    run_self_check()
-    sync_dataset_bidirectional()
+
+    # In standalone mode, try to start runtime services once the local API is reachable.
+    try:
+        _start_runtime_services_once()
+    except Exception:
+        pass
+
+    # Optional dataset sync (network-dependent)
+    try:
+        sync_dataset_bidirectional()
+    except Exception:
+        pass
+
     main_menu()
 
 # =============================================================================
