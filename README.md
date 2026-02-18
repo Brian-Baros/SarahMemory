@@ -756,7 +756,11 @@ NOTE: That number reflects: the engines exist and are strong; the control plane 
 Feb 12th, 2026 - Updated - Modification of SarahMemoryWebSYM.py to assist in math formulas and work in conjunction with newly added core file SarahMemoryLogicCalc.py
 
 Feb 13th, 2026 - Updated - Server files app.py, appnet.py, and appsys.py fixed filesystem, additional Endpoints have been updated. 
+
 Feb 14th, 2026 - Updated - Server file app.py to include new server file addon appmedia.py
+
 Feb 15th, 2026 - Updated - SarahMemorySynapes.py Core file with higher synapes functionalities.
-Feb 16th, 2026 - Updated - SarahMemoryMain.py Core file added SarahMemorySelfAware.py and updated ./api/data/server/app.py files for full self automation capablities. Updated SarahMemoryGlobals.py and SarahMemoryAPI.py and .env examples for additional API keys should a user wish to use them. 
-Feb 17th, 2026 - Updated - Core Files again so Bootup Process can run smoothly with system being SelfAware now, Modifying SarahMemoryAPI.py and ./api/server/app.py file added in new route functions for local mode /api/local/brain , allowing system to start develop it own LLM Model in the ./data/models/SarahMemory directory Modied SarahmemoryMain.py along with SarahMemoryIntegration.py bootup to make it Faster and more functional with less errors. 
+
+Feb 16th, 2026 - Updated - SarahMemoryMain.py Core file added SarahMemorySelfAware.py and updated ./api/data/server/app.py files for full self automation capablities. Updated SarahMemoryGlobals.py and SarahMemoryAPI.py and .env examples for additional API keys should a user wish to use them.
+
+Feb 17th, 2026 - Updated - Core Files again so Bootup Process can run smoothly with system being SelfAware now, Modifying SarahMemoryAPI.py and ./api/server/app.py file added in new route functions for local mode /api/local/brain and /api/ui/exit allowing system for easier exiting of learning loop The system is starting develop it own LLM Model in the ./data/models/SarahMemory directory Modied SarahmemoryMain.py along with SarahMemoryIntegration.py bootup to make it Faster and more functional with less errors.
