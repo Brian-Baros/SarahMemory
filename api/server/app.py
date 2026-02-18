@@ -45,6 +45,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from datetime import datetime, timedelta
+import threading
 import logging # Explicitly import logging
 
 # ---------------------------------------------------------------------------
@@ -3250,6 +3251,139 @@ def api_ping():
         "running": True,
         "main_running": main_running,
     })
+# =========================== LOCAL RUNTIME CONTROL ===========================
+# one-per-process shutdown latch
+if "SM_SHUTDOWN_EVENT" not in globals():
+    SM_SHUTDOWN_EVENT = threading.Event()
+
+def _is_localhost_request() -> bool:
+    """True only for local desktop installs (never true for PythonAnywhere / public)."""
+    try:
+        host = (request.host or "").split(":", 1)[0].strip().lower()
+        if host in ("127.0.0.1", "localhost"):
+            return True
+    except Exception:
+        pass
+
+    # allow LAN desktop installs if you explicitly run them (optional)
+    try:
+        ra = (request.remote_addr or "").strip()
+        if ra in ("127.0.0.1", "::1"):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+def _is_cloud_request() -> bool:
+    """Best-effort: treat ai.* / api.* as cloud, and never honor shutdown there."""
+    try:
+        host = (request.host or "").split(":", 1)[0].strip().lower()
+        if host.startswith("ai.") or host.startswith("api."):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _request_main_shutdown(reason: str = "ui_exit") -> dict:
+    """
+    MODE B contract:
+    - Local: set a shutdown flag + persist state so SarahMemoryMain/Synapes/SelfAware can stop.
+    - Cloud: NOOP (never kill the shared server).
+    """
+    # Always persist a flag that the launcher can watch.
+    try:
+        state = load_state() or {}
+        if not isinstance(state, dict):
+            state = {}
+        state["shutdown_requested"] = True
+        state["shutdown_reason"] = str(reason)
+        state["shutdown_ts"] = time.time()
+        save_state(state)
+    except Exception:
+        pass
+
+    # In-process latch (for any background workers living inside app.py itself)
+    try:
+        SM_SHUTDOWN_EVENT.set()
+    except Exception:
+        pass
+
+    # If running local desktop with a tracked MAIN_PID, request termination by signaling the PID.
+    # IMPORTANT: we DO NOT do this in cloud mode.
+    killed = False
+    pid = None
+    try:
+        if os.path.exists(PID_FILE):
+            with open(PID_FILE, "r", encoding="utf-8") as f:
+                pid_txt = f.read().strip()
+            if pid_txt.isdigit():
+                pid = int(pid_txt)
+    except Exception:
+        pid = None
+
+    # Soft signal: write the flag; your Main loop should observe it and shutdown gracefully.
+    # Hard signal is optional; leave commented unless you want it.
+    #
+    # try:
+    #     if pid and pid > 1:
+    #         os.kill(pid, signal.SIGTERM)
+    #         killed = True
+    # except Exception:
+    #     killed = False
+
+    return {"ok": True, "shutdown_requested": True, "pid": pid, "hard_signal_sent": killed}
+
+@app.get("/api/local/brain")
+def api_local_brain():
+    """
+    MODE B:
+    - Local desktop UI can call this to decide whether to keep brain loops running.
+    - Cloud always returns enabled=False so a mobile browser close never kills the service.
+    """
+    if _is_cloud_request():
+        return jsonify({"ok": True, "mode": "cloud", "enabled": False, "reason": "shared_service"}), 200
+
+    if not _is_localhost_request():
+        return jsonify({"ok": False, "enabled": False, "error": "forbidden_non_local"}), 403
+
+    # If shutdown requested, tell UI/launcher to stop Synapes/SelfAware loops.
+    try:
+        state = load_state() or {}
+        shutting_down = bool(state.get("shutdown_requested"))
+    except Exception:
+        shutting_down = bool(SM_SHUTDOWN_EVENT.is_set())
+
+    return jsonify({"ok": True, "mode": "local", "enabled": (not shutting_down), "shutdown": shutting_down}), 200
+
+@app.post("/api/ui/exit")
+def api_ui_exit():
+    """
+    MODE B:
+    - Local desktop only: called when the LOCAL WebUI closes to trigger coordinated shutdown.
+    - Cloud: NOOP (returns ok, but does not shutdown anything).
+    """
+    # Cloud safety: never shutdown shared server
+    if _is_cloud_request():
+        return jsonify({"ok": True, "mode": "cloud", "noop": True}), 200
+
+    # Local safety: only accept from localhost installs
+    if not _is_localhost_request():
+        return jsonify({"ok": False, "error": "forbidden_non_local"}), 403
+
+    payload = {}
+    try:
+        payload = request.get_json(silent=True) or {}
+    except Exception:
+        payload = {}
+
+    reason = (payload.get("reason") or "ui_exit").strip()
+    result = _request_main_shutdown(reason=reason)
+
+    return jsonify({"ok": True, "mode": "local", **result}), 200
+
+# ========================= LOCAL RUNTIME CONTROL ===========================
+
 @app.route("/api/ledger/top-nodes")
 def api_top_nodes():
     limit_str = request.args.get("limit", "10")
