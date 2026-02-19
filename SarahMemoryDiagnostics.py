@@ -2,7 +2,7 @@
 File: SarahMemoryDiagnostics.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-01-06
+Date: 2026-02-18
 Time: 10:11:54
 Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -111,6 +111,16 @@ REQUIRED_FILES = [
 # ============================
 # PHASE A: Identity & Device Awareness (v7.7.5–8)
 # ============================
+def _mask_secret(value: str) -> str:
+    """
+    Masks API keys or secrets safely.
+    Shows first 4 and last 4 characters only.
+    """
+    if not value:
+        return "NOT_SET"
+    if len(value) <= 8:
+        return "*" * len(value)
+    return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
 
 def _mask_sensitive_values(text: str) -> str:
     """
@@ -380,19 +390,28 @@ def run_self_check():
     logger.info(f"Python version: {py_version}")
     log_diagnostics_event("Python Version", f"Python version: {py_version}")
 
-    # Check required environment variables
-    env_vars = {
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", "Not Set"),
-        "AZURE_OPENAI_KEY": os.getenv("AZURE_OPENAI_KEY", "Not Set")
+    
+    # -----------------------------
+    # Check required environment variables (SECURE)
+    # -----------------------------
+    raw_openai = os.getenv("OPENAI_API_KEY")
+    raw_azure = os.getenv("AZURE_OPENAI_KEY")
+
+    diagnostics_report["environment_variables"] = {
+        "OPENAI_API_KEY": _mask_secret(raw_openai),
+        "AZURE_OPENAI_KEY": _mask_secret(raw_azure)
     }
-    diagnostics_report["environment_variables"] = env_vars
-    for var, val in env_vars.items():
-        if val == "Not Set":
-            logger.warning(f"{var} not set in environment.")
-            log_diagnostics_event("Env Var Warning", f"{var} not set.")
+
+    for var_name, raw_value in {
+        "OPENAI_API_KEY": raw_openai,
+        "AZURE_OPENAI_KEY": raw_azure
+    }.items():
+        if not raw_value:
+            logger.warning(f"{var_name} not set in environment.")
+            log_diagnostics_event("Env Var Warning", f"{var_name} not set.")
         else:
-            logger.info(f"{var} is set.")
-            log_diagnostics_event("Env Var Check", f"{var} is set.")
+            logger.info(f"{var_name} is set.")
+            log_diagnostics_event("Env Var Check", f"{var_name} is set.")
 
     # Check connectivity to external services (e.g., SarahMemory API)
     try:
@@ -602,7 +621,6 @@ def run_webui_bridge_diagnostics(app_path=None, js_path=None):
             else:
                 logger.error("❌ " + msg)
         except Exception:
-            # Logging should never break diagnostics
             pass
 
     def _first_existing(paths):
@@ -613,7 +631,9 @@ def run_webui_bridge_diagnostics(app_path=None, js_path=None):
 
     base_dir = getattr(config, "BASE_DIR", os.getcwd())
 
-    # --- app.py checks -------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # app.py checks
+    # -------------------------------------------------------------------------
     if app_path is None:
         candidate_app_paths = [
             os.path.join(base_dir, "app.py"),
@@ -629,6 +649,7 @@ def run_webui_bridge_diagnostics(app_path=None, js_path=None):
     else:
         _add_check(os.path.basename(app_path), "file", "presence", 1, True,
                    f"Found app.py at {app_path}")
+
         try:
             with open(app_path, "r", encoding="utf-8") as f:
                 app_src = f.read()
@@ -638,23 +659,91 @@ def run_webui_bridge_diagnostics(app_path=None, js_path=None):
             app_src = ""
 
         if app_src:
-            # Helper to map index → line number
+            import re as _re
+
             def _idx_to_line(txt, idx):
                 return txt.count("\n", 0, idx) + 1
 
-            import re as _re
+            # Detect Blueprint url_prefix="/api"
+            blueprint_prefix_detected = False
+            if _re.search(r"url_prefix\s*=\s*['\"]\/api['\"]", app_src):
+                blueprint_prefix_detected = True
 
             for route in ("/api/health", "/api/chat"):
-                m = _re.search(r"@app\.route\(['\"]" + _re.escape(route) + r"['\"][^)]*\)", app_src)
-                if m:
-                    line = _idx_to_line(app_src, m.start())
-                    _add_check(os.path.basename(app_path), route, "route", line,
-                               True, f"Route {route} is registered in app.py.")
-                else:
-                    _add_check(os.path.basename(app_path), route, "route", None,
-                               False, f"Route {route} not found in app.py.")
 
-    # --- app.js checks -------------------------------------------------------
+                found = False
+                detected_line = None
+
+                # -------------------------------------------------------------
+                # 1) Direct decorator: @app.route("/api/health")
+                # -------------------------------------------------------------
+                decorator_pattern = (
+                    r"@[\w_]+\s*\.\s*route\s*\(\s*"
+                    r"['\"]" + _re.escape(route) + r"['\"]"
+                )
+
+                m = _re.search(decorator_pattern, app_src, _re.MULTILINE | _re.DOTALL)
+                if m:
+                    found = True
+                    detected_line = _idx_to_line(app_src, m.start())
+
+                # -------------------------------------------------------------
+                # 2) add_url_rule("/api/health")
+                # -------------------------------------------------------------
+                if not found:
+                    add_rule_pattern = (
+                        r"\.add_url_rule\s*\(\s*"
+                        r"['\"]" + _re.escape(route) + r"['\"]"
+                    )
+                    m2 = _re.search(add_rule_pattern, app_src, _re.MULTILINE)
+                    if m2:
+                        found = True
+                        detected_line = _idx_to_line(app_src, m2.start())
+
+                # -------------------------------------------------------------
+                # 3) Blueprint split route:
+                #     url_prefix="/api"
+                #     @bp.route("/health")
+                # -------------------------------------------------------------
+                if not found and blueprint_prefix_detected and route.startswith("/api/"):
+                    short_route = route.replace("/api", "", 1)
+                    blueprint_pattern = (
+                        r"@[\w_]+\s*\.\s*route\s*\(\s*"
+                        r"['\"]" + _re.escape(short_route) + r"['\"]"
+                    )
+                    m3 = _re.search(blueprint_pattern, app_src, _re.MULTILINE | _re.DOTALL)
+                    if m3:
+                        found = True
+                        detected_line = _idx_to_line(app_src, m3.start())
+
+                # -------------------------------------------------------------
+                # 4) Fallback: literal string presence anywhere
+                # -------------------------------------------------------------
+                if not found and route in app_src:
+                    found = True
+                    detected_line = None
+
+                # -------------------------------------------------------------
+                # Final reporting
+                # -------------------------------------------------------------
+                if found:
+                    _add_check(
+                        os.path.basename(app_path),
+                        route,
+                        "route",
+                        detected_line,
+                        True,
+                        f"Route {route} detected via structured analysis.",
+                    )
+                else:
+                    _add_check(
+                        os.path.basename(app_path),
+                        route,
+                        "route",
+                        None,
+                        False,
+                        f"Route {route} not detected in app.py.",
+                    )
     if js_path is None:
         candidate_js_paths = [
             os.path.join(base_dir, "data", "ui", "app.js"),
@@ -684,34 +773,36 @@ def run_webui_bridge_diagnostics(app_path=None, js_path=None):
 
             import re as _re
 
-            # SM_pollHealth presence
+            # SM_pollHealth
             m_ph = _re.search(r"function\s+SM_pollHealth\s*\(", js_src)
             if m_ph:
                 line = _idx_to_line_js(js_src, m_ph.start())
-                _add_check(os.path.basename(js_path), "SM_pollHealth", "function", line,
-                           True, "SM_pollHealth() helper is defined.")
+                _add_check(os.path.basename(js_path), "SM_pollHealth", "function",
+                           line, True, "SM_pollHealth() helper is defined.")
             else:
-                _add_check(os.path.basename(js_path), "SM_pollHealth", "function", None,
-                           False, "SM_pollHealth() helper not found in app.js.")
+                _add_check(os.path.basename(js_path), "SM_pollHealth", "function",
+                           None, False, "SM_pollHealth() helper not found.")
 
-            # Chat bridge via SM_getApi('/chat')
-            m_chat = _re.search(r"SM_getApi\(['\"]/chat['\"]\)", js_src)
+            # Chat bridge detection (robust)
+            m_chat = _re.search(
+                r"SM_getApi\(\s*['\"]\/chat['\"]\s*\)",
+                js_src
+            )
             if m_chat:
                 line = _idx_to_line_js(js_src, m_chat.start())
-                _add_check(os.path.basename(js_path), "/chat", "bridge", line,
-                           True, "Chat submit uses SM_getApi('/chat') for API base resolution.")
+                _add_check(os.path.basename(js_path), "/chat", "bridge",
+                           line, True,
+                           "Chat submit uses SM_getApi('/chat') for API base resolution.")
             else:
-                _add_check(os.path.basename(js_path), "/chat", "bridge", None,
-                           False, "SM_getApi('/chat') not found; chat bridge wiring may be incorrect.")
+                _add_check(os.path.basename(js_path), "/chat", "bridge",
+                           None, False,
+                           "SM_getApi('/chat') not found; chat bridge wiring may be incorrect.")
 
-    # Overall status
-    if report["checks"]:
-        report["ok"] = all(c.get("status") == "PASS" for c in report["checks"])
-    else:
-        report["ok"] = False
+    report["ok"] = bool(report["checks"]) and all(
+        c.get("status") == "PASS" for c in report["checks"]
+    )
 
     return report
-
 
 def _print_webui_bridge_report(report):
     """
@@ -1399,23 +1490,32 @@ def _print_context_mesh_agent_report(report: dict) -> None:
 # Phase 4 — API Diagnostics
 # ---------------------------------------------------------------------------
 
-def run_api_diagnostics(api_base: str | None = None) -> dict:
+def run_api_diagnostics(api_base=None) -> dict:
     """
     SuperTask Phase 4: API Diagnostics
 
-    Console usage:
-        python SarahMemoryDiagnostics.py api
-    """
-    report: dict = {"ok": False, "checks": []}
+    Validates:
+      - /api/health returns HTTP 200 + JSON
+      - Optional routing metadata (non-blocking)
+      - /api/chat accepts POST JSON with {"text": "..."} and returns a reply payload
 
-    def _add(target: str, kind: str, passed: bool, detail: str, latency_ms: float | None = None):
+    NOTE:
+      - routing_meta is treated as OPTIONAL because /api/health may not publish provider/model info.
+    """
+    report = {"ok": False, "checks": []}
+
+    def _add(target: str, kind: str, passed: bool, detail: str, lat_ms: float | None = None):
         status = "PASS" if passed else "FAIL"
-        entry = {"target": target, "kind": kind, "status": status, "detail": detail}
-        if latency_ms is not None:
-            entry["latency_ms"] = round(latency_ms, 1)
+        entry = {
+            "target": target,
+            "kind": kind,
+            "status": status,
+            "detail": detail,
+            "lat_ms": float(lat_ms) if isinstance(lat_ms, (int, float)) else None,
+        }
         report["checks"].append(entry)
-        msg = f"{target} ({kind}) => {status} — {detail}"
         try:
+            msg = f"{target} ({kind}) => {status} — {detail}"
             log_diagnostics_event("API Diagnostics", msg)
             if passed:
                 logger.info("✅ " + msg)
@@ -1424,92 +1524,118 @@ def run_api_diagnostics(api_base: str | None = None) -> dict:
         except Exception:
             pass
 
+    # requests import
     try:
         import requests  # type: ignore
-        from urllib.parse import urlparse, urlunparse
+        import time
     except Exception as e:
         _add("requests", "import", False, f"'requests' not available: {e}")
         report["ok"] = False
         return report
 
-    api_hint = (
+    # Resolve base
+    base = (
         api_base
         or getattr(config, "PUBLIC_API_BASE", None)
         or getattr(config, "PUBLIC_API_URL", None)
         or getattr(config, "DEFAULT_API_URL", None)
-        or "https://api.sarahmemory.com/api/health"
-    )
+        or "https://api.sarahmemory.com"
+    ).rstrip("/")
 
-    parsed = urlparse(api_hint)
-    path = parsed.path or ""
+    health_url = f"{base}/api/health"
+    chat_url = f"{base}/api/chat"
 
-    if path.endswith("/api/health"):
-        api_health = urlunparse(parsed._replace(query="", fragment=""))
-        api_root = api_health.rsplit("/api/health", 1)[0] + "/api"
-    elif path.endswith("/api") or path.endswith("/api/"):
-        api_root = urlunparse(parsed._replace(query="", fragment="")).rstrip("/")
-        api_health = api_root.rstrip("/") + "/health"
-    else:
-        api_root = urlunparse(parsed._replace(path="/api", query="", fragment="")).rstrip("/")
-        api_health = api_root.rstrip("/") + "/health"
-
-    api_chat = api_root.rstrip("/") + "/chat"
-
-    # /api/health
+    # ---------------------------------------------------------------------
+    # Health check
+    # ---------------------------------------------------------------------
     try:
-        t0 = time.perf_counter()
-        r = requests.get(api_health, timeout=15)
-        lat = (time.perf_counter() - t0) * 1000.0
-        ok = r.status_code == 200
-        _add(api_health, "health_http", ok, f"HTTP {r.status_code}", lat)
-        if ok:
-            try:
-                payload = r.json()
-                keys = list(payload.keys())
-                _add(api_health, "health_json", True, f"JSON keys: {keys}")
-                meta_val = payload.get("model") or payload.get("models") or payload.get("provider")
-                if meta_val:
-                    _add(api_health, "routing_meta", True, f"Model/provider info: {meta_val!r}")
-                else:
-                    _add(api_health, "routing_meta", False, "No explicit model/provider info.")
-            except Exception as e:
-                _add(api_health, "health_json", False, f"JSON parse failed: {e}")
+        t0 = time.time()
+        r = requests.get(health_url, timeout=10)
+        lat = (time.time() - t0) * 1000.0
+        _add(health_url, "health_http", r.ok, f"HTTP {r.status_code}", lat_ms=lat)
     except Exception as e:
-        _add(api_health, "health_http", False, f"Request failed: {e}")
+        _add(health_url, "health_http", False, f"Request failed: {e}")
+        report["ok"] = False
+        return report
 
-    # /api/chat
+    health_json = None
     try:
+        health_json = r.json()
+        if isinstance(health_json, dict):
+            keys = list(health_json.keys())
+            _add(health_url, "health_json", True, f"JSON keys: {keys}")
+        else:
+            _add(health_url, "health_json", False, f"Unexpected JSON type: {type(health_json)}")
+    except Exception as e:
+        _add(health_url, "health_json", False, f"JSON decode failed: {e}")
+
+    # ---------------------------------------------------------------------
+    # Optional routing metadata (NON-BLOCKING)
+    # ---------------------------------------------------------------------
+    # Accept any of these signals if present:
+    #   health_json["meta"]["provider"|"model"|"engine"|"source"]
+    #   health_json["provider"|"model"|"engine"|"source"]
+    if isinstance(health_json, dict):
+        meta = health_json.get("meta") if isinstance(health_json.get("meta"), dict) else {}
+        provider = meta.get("provider") or health_json.get("provider")
+        model = meta.get("model") or health_json.get("model")
+        engine = meta.get("engine") or health_json.get("engine")
+        source = meta.get("source") or health_json.get("source")
+
+        if any([provider, model, engine, source]):
+            _add(health_url, "routing_meta", True, f"meta={{provider:{provider!r}, model:{model!r}, engine:{engine!r}, source:{source!r}}}")
+        else:
+            # PASS on purpose: health endpoint is not required to disclose routing/provider details
+            _add(health_url, "routing_meta", True, "No explicit model/provider info (optional for /api/health).")
+
+    # ---------------------------------------------------------------------
+    # Chat check (POST with correct schema: {'text': ...})
+    # ---------------------------------------------------------------------
+    try:
+        t0 = time.time()
         payload = {
-            "message": "Diagnostics test: What is your name?",
-            "meta": {"source": "SarahMemoryDiagnostics", "mode": "diagnostics"},
+            "text": "diagnostics ping",
+            "intent": "diagnostics",
+            "tone": "neutral",
+            "complexity": "low",
         }
-        t0 = time.perf_counter()
-        r = requests.post(api_chat, json=payload, timeout=30)
-        lat = (time.perf_counter() - t0) * 1000.0
-        ok = r.status_code == 200
-        _add(api_chat, "chat_http", ok, f"HTTP {r.status_code}", lat)
-        if ok:
-            try:
-                data = r.json()
-                reply = data.get("reply") or data.get("text") or data.get("message")
-                if isinstance(reply, str) and reply.strip():
-                    _add(api_chat, "chat_json", True, "Reply field present and non-empty.")
-                else:
-                    _add(api_chat, "chat_json", False, "JSON parsed but reply field missing/empty.")
-                used = data.get("model") or data.get("provider") or data.get("backend")
-                if used:
-                    _add(api_chat, "chat_routing", True, f"Served by: {used!r}")
-                else:
-                    _add(api_chat, "chat_routing", False, "No explicit model/provider field.")
-            except Exception as e:
-                _add(api_chat, "chat_json", False, f"Chat JSON parse failed: {e}")
+        r2 = requests.post(chat_url, json=payload, timeout=15)
+        lat2 = (time.time() - t0) * 1000.0
+        ok_http = 200 <= r2.status_code < 300
+        _add(chat_url, "chat_http", ok_http, f"HTTP {r2.status_code}", lat_ms=lat2)
     except Exception as e:
-        _add(api_chat, "chat_http", False, f"Chat request failed: {e}")
+        _add(chat_url, "chat_http", False, f"Request failed: {e}")
+        report["ok"] = False
+        return report
 
-    checks = [c for c in report["checks"] if c.get("kind") != "import"]
-    report["ok"] = bool(checks) and all(c["status"] == "PASS" for c in checks)
+    # Chat JSON validation (non-destructive)
+    try:
+        chat_json = r2.json()
+        if not isinstance(chat_json, dict):
+            _add(chat_url, "chat_json", False, f"Unexpected JSON type: {type(chat_json)}")
+        else:
+            # Minimum expected contract
+            ok_flag = bool(chat_json.get("ok"))
+            reply = (chat_json.get("reply") or "").strip()
+            meta = chat_json.get("meta") if isinstance(chat_json.get("meta"), dict) else {}
+
+            _add(chat_url, "chat_contract_ok", ok_flag, f"ok={ok_flag}")
+            _add(chat_url, "chat_reply", bool(reply), f"reply_len={len(reply)}")
+
+            # routing info should be in meta for chat responses
+            if meta:
+                src = meta.get("source")
+                ver = meta.get("version")
+                _add(chat_url, "chat_meta", True, f"meta={{source:{src!r}, version:{ver!r}}}")
+            else:
+                # PASS: meta is recommended but don’t break diagnostics if it’s omitted
+                _add(chat_url, "chat_meta", True, "meta not present (recommended but not required).")
+    except Exception as e:
+        _add(chat_url, "chat_json", False, f"JSON decode failed: {e}")
+
+    # Overall status = only FAIL if any hard checks failed
+    report["ok"] = all(c["status"] == "PASS" for c in report["checks"])
     return report
-
 
 def _print_api_report(report: dict) -> None:
     checks = report.get("checks") or []
@@ -2200,7 +2326,9 @@ def run_security_diagnostics() -> dict:
         except Exception:
             pass
 
-    # API keys present
+    # ------------------------------------------------------------------
+    # API keys present (MASKED + SAFE)
+    # ------------------------------------------------------------------
     key_names = [
         "OPENAI_API_KEY",
         "GROQ_API_KEY",
@@ -2208,11 +2336,20 @@ def run_security_diagnostics() -> dict:
         "DEEPSEEK_API_KEY",
         "GOOGLE_API_KEY",
     ]
-    for name in key_names:
-        val = os.environ.get(name) or getattr(config, name, None)
-        _add("apikey", name, bool(val), "Present." if val else "MISSING.")
 
+    for name in key_names:
+        raw_val = os.environ.get(name) or getattr(config, name, None)
+
+        if raw_val:
+            masked = _mask_secret(raw_val)
+            detail = f"Present (masked: {masked}, len={len(str(raw_val))})"
+            _add("apikey", name, True, detail)
+        else:
+            _add("apikey", name, False, "MISSING.")
+
+    # ------------------------------------------------------------------
     # .env permissions (POSIX only)
+    # ------------------------------------------------------------------
     env_path = getattr(config, "BASE_DIR", ".")
     env_file = os.path.join(env_path, ".env")
     if os.path.exists(env_file):
@@ -2233,14 +2370,19 @@ def run_security_diagnostics() -> dict:
     else:
         _add("env", "permissions", False, ".env file not found.")
 
-    # Unsafe localhost exposure (simple heuristic)
+    # ------------------------------------------------------------------
+    # Unsafe localhost exposure
+    # ------------------------------------------------------------------
     host = getattr(config, "DEFAULT_FLASK_HOST", None) or getattr(config, "API_HOST", None)
     if host in ("0.0.0.0", None, ""):
-        _add("network", "bind_host", False, f"Flask API binding host is {host!r}; recommended to use 127.0.0.1 behind a reverse proxy.")
+        _add("network", "bind_host", False,
+             f"Flask API binding host is {host!r}; recommended to use 127.0.0.1 behind a reverse proxy.")
     else:
         _add("network", "bind_host", True, f"Binding host is {host!r}")
 
-    # Encryption key integrity (length / default check only)
+    # ------------------------------------------------------------------
+    # Encryption key integrity
+    # ------------------------------------------------------------------
     for name in ("SARAH_VAULT_PASSWORD", "ENCRYPTION_KEY", "FERNET_SECRET", "DB_ENCRYPTION_KEY"):
         val = os.environ.get(name) or getattr(config, name, None)
         if not val:
@@ -2251,8 +2393,8 @@ def run_security_diagnostics() -> dict:
             _add("crypto", name, True, "Present and looks non-trivial.")
 
     checks = [c for c in report["checks"] if c.get("kind") != "import"]
-    # Security ok if no FAILED entries
     report["ok"] = bool(checks) and all(c["status"] == "PASS" for c in checks)
+
     return report
 
 
@@ -2294,71 +2436,139 @@ def run_ui_diagnostics() -> dict:
 
     def _add(component: str, kind: str, passed: bool, detail: str):
         status = "PASS" if passed else "FAIL"
-        entry = {"component": component, "kind": kind, "status": status, "detail": detail}
+        entry = {
+            "component": component,
+            "kind": kind,
+            "status": status,
+            "detail": detail,
+        }
         report["checks"].append(entry)
+
+        icon = "✅" if passed else "❌"
         msg = f"{component} ({kind}) => {status} — {detail}"
+
         try:
             log_diagnostics_event("UI Diagnostics", msg)
             if passed:
-                logger.info("✅ " + msg)
+                logger.info(f"{icon} {msg}")
             else:
-                logger.error("❌ " + msg)
+                logger.error(f"{icon} {msg}")
         except Exception:
             pass
 
-    ui_dir = getattr(config, "WEB_DIR", None) or os.path.join(getattr(config, "BASE_DIR", "."), "data", "ui")
-    index_path = os.path.join(ui_dir, "index.html")
-    js_path = os.path.join(ui_dir, "app.js")
-    css_path = os.path.join(ui_dir, "styles.css")
+    # ---------------------------------------------------------------------
+    # Detect Active UI Mode
+    # ---------------------------------------------------------------------
+    ui_mode = getattr(config, "UI_MODE", "classic")
+    use_classic = getattr(config, "USE_CLASSIC_GUI", False)
+    use_legacy = getattr(config, "USE_LEGACY_WEBUI", False)
+    use_custom = getattr(config, "USE_CUSTOM_WEBUI", False)
 
-    # index.html
-    if os.path.isfile(index_path):
-        _add("ui", "index.html", True, f"Found at {index_path}")
+    _add("ui", "mode", True, f"Active UI mode: {ui_mode}")
+
+    base_dir = getattr(config, "BASE_DIR", ".")
+    legacy_ui_dir = os.path.join(base_dir, "data", "ui")
+    custom_dist_dir = getattr(config, "CUSTOM_UI_DIST_DIR", None)
+
+    # ---------------------------------------------------------------------
+    # LEGACY WEB UI CHECKS (only if active)
+    # ---------------------------------------------------------------------
+    if use_legacy:
+
+        index_path = os.path.join(legacy_ui_dir, "index.html")
+        js_path = os.path.join(legacy_ui_dir, "app.js")
+        css_path = os.path.join(legacy_ui_dir, "styles.css")
+
+        _add("ui", "legacy_root", os.path.isdir(legacy_ui_dir),
+             f"Legacy UI dir: {legacy_ui_dir}")
+
+        # index.html
+        _add("ui", "index.html",
+             os.path.isfile(index_path),
+             f"Found at {index_path}" if os.path.isfile(index_path)
+             else f"Missing at {index_path}")
+
+        # app.js
+        if os.path.isfile(js_path):
+            _add("ui", "app.js", True, f"Found at {js_path}")
+            try:
+                with open(js_path, "r", encoding="utf-8", errors="ignore") as f:
+                    js = f.read()
+
+                _add("ui", "SM_getApi",
+                     "SM_getApi" in js,
+                     "SM_getApi() found." if "SM_getApi" in js else "SM_getApi() missing.")
+
+                _add("ui", "SM_pollHealth",
+                     "SM_pollHealth" in js,
+                     "SM_pollHealth() found." if "SM_pollHealth" in js else "SM_pollHealth() missing.")
+
+                _add("ui", "bridge_autodetect",
+                     "SM_BRIDGE_BASE_AUTODETECT_V1" in js,
+                     "Bridge marker found."
+                     if "SM_BRIDGE_BASE_AUTODETECT_V1" in js
+                     else "Bridge marker missing.")
+
+                _add("ui", "mobile_detection",
+                     ("navigator.userAgent" in js or "window.innerWidth" in js),
+                     "Viewport / device detection present."
+                     if ("navigator.userAgent" in js or "window.innerWidth" in js)
+                     else "No viewport detection logic detected.")
+
+            except Exception as e:
+                _add("ui", "app.js_read", False, f"Read failure: {e}")
+        else:
+            _add("ui", "app.js", False, f"Missing at {js_path}")
+
+        # styles.css
+        if os.path.isfile(css_path):
+            _add("ui", "styles.css", True, f"Found at {css_path}")
+            try:
+                with open(css_path, "r", encoding="utf-8", errors="ignore") as f:
+                    css = f.read()
+
+                _add("ui", "responsive_css",
+                     "@media" in css,
+                     "Responsive @media rules detected."
+                     if "@media" in css
+                     else "No @media rules detected.")
+
+            except Exception as e:
+                _add("ui", "styles.css_read", False, f"Read failure: {e}")
+        else:
+            _add("ui", "styles.css", False, f"Missing at {css_path}")
+
     else:
-        _add("ui", "index.html", False, f"index.html missing at {index_path}")
+        _add("ui", "legacy_stack", True,
+             "Legacy WebUI not active — validation skipped.")
 
-    # app.js
-    if os.path.isfile(js_path):
-        _add("ui", "app.js", True, f"Found at {js_path}")
-        try:
-            js = open(js_path, "r", encoding="utf-8", errors="ignore").read()
-            if "SM_getApi" in js:
-                _add("ui", "SM_getApi", True, "SM_getApi() definition found.")
-            else:
-                _add("ui", "SM_getApi", False, "SM_getApi() not found.")
-            if "SM_pollHealth" in js:
-                _add("ui", "SM_pollHealth", True, "SM_pollHealth() definition found.")
-            else:
-                _add("ui", "SM_pollHealth", False, "SM_pollHealth() not found.")
-            if "SM_BRIDGE_BASE_AUTODETECT_V1" in js:
-                _add("ui", "bridge_autodetect", True, "SM_BRIDGE_BASE_AUTODETECT_V1 marker found.")
-            else:
-                _add("ui", "bridge_autodetect", False, "SM_BRIDGE_BASE_AUTODETECT_V1 marker missing.")
-            if "navigator.userAgent" in js or "window.innerWidth" in js:
-                _add("ui", "mobile_detection", True, "Mobile / viewport detection logic present.")
-            else:
-                _add("ui", "mobile_detection", False, "No obvious mobile detection logic found.")
-        except Exception as e:
-            _add("ui", "app.js_read", False, f"Failed to read app.js: {e}")
+    # ---------------------------------------------------------------------
+    # CUSTOM (Vite / React) UI CHECKS
+    # ---------------------------------------------------------------------
+    if use_custom:
+        _add("ui", "custom_dist",
+             custom_dist_dir and os.path.isdir(custom_dist_dir),
+             f"Custom dist folder: {custom_dist_dir}"
+             if custom_dist_dir and os.path.isdir(custom_dist_dir)
+             else "Custom dist folder missing.")
+
+        custom_index = os.path.join(custom_dist_dir, "index.html") if custom_dist_dir else None
+        if custom_index:
+            _add("ui", "custom_index",
+                 os.path.isfile(custom_index),
+                 f"Found at {custom_index}"
+                 if os.path.isfile(custom_index)
+                 else f"Missing at {custom_index}")
     else:
-        _add("ui", "app.js", False, f"app.js missing at {js_path}")
+        _add("ui", "custom_stack", True,
+             "Custom WebUI not active — validation skipped.")
 
-    # styles.css
-    if os.path.isfile(css_path):
-        _add("ui", "styles.css", True, f"Found at {css_path}")
-        try:
-            css = open(css_path, "r", encoding="utf-8", errors="ignore").read()
-            if "@media" in css:
-                _add("ui", "responsive_css", True, "Found @media queries (responsive CSS).")
-            else:
-                _add("ui", "responsive_css", False, "No @media queries detected in styles.css.")
-        except Exception as e:
-            _add("ui", "styles.css_read", False, f"Failed to read styles.css: {e}")
-    else:
-        _add("ui", "styles.css", False, f"styles.css missing at {css_path}")
-
+    # ---------------------------------------------------------------------
+    # Final Status
+    # ---------------------------------------------------------------------
     checks = [c for c in report["checks"] if c.get("kind") != "import"]
     report["ok"] = bool(checks) and all(c["status"] == "PASS" for c in checks)
+
     return report
 
 

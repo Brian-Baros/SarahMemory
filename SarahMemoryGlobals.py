@@ -401,18 +401,48 @@ USE_CLASSIC_GUI  = (UI_MODE == "classic")
 USE_LEGACY_WEBUI = (UI_MODE == "web")
 USE_CUSTOM_WEBUI = (UI_MODE == "custom")
 
-# --- Legacy WebUI (index.html + app.js + styles.css) paths ---
-# These are the files that already live in the repo root and can be served locally.
-LEGACY_WEBUI_DIR   = os.path.join(BASE_DIR)  # where the old index.html lives by default
-LEGACY_WEBUI_INDEX = os.path.join(LEGACY_WEBUI_DIR, "index.html")
 
+# =============================================================================
+# --- Legacy WebUI (index.html + app.js + styles.css) paths ---
+# =============================================================================
+# These files LIVE in: ./data/ui
+# They are the older static WebUI stack and are served directly by Flask
+# or opened via pywebview depending on runtime mode.
+#
+# Folder layout expected:
+#   BASE_DIR/
+#       data/
+#           ui/
+#               index.html
+#               app.js
+#               styles.css
+#
+# DO NOT point this to BASE_DIR root — that caused prior path confusion.
+# =============================================================================
+
+LEGACY_WEBUI_DIR = os.path.join(BASE_DIR, "data", "ui")
+LEGACY_WEBUI_INDEX = os.path.join(LEGACY_WEBUI_DIR, "index.html")
+LEGACY_WEBUI_JS = os.path.join(LEGACY_WEBUI_DIR, "app.js")
+LEGACY_WEBUI_CSS = os.path.join(LEGACY_WEBUI_DIR, "styles.css")
+
+# Safety: If folder missing, auto-fallback to classic
+if USE_LEGACY_WEBUI and not os.path.isdir(LEGACY_WEBUI_DIR):
+    print("[UI WARNING] Legacy WebUI directory missing — falling back to classic mode.")
+    USE_LEGACY_WEBUI = False
+    USE_CLASSIC_GUI = True
+
+
+# =============================================================================
 # --- Custom React/Vite WebUI (Lovable / Vite build) ---
+# =============================================================================
 # Our pipeline:
 #   - SarahMemoryUIupdater.py clones into:   BASE_DIR/data/ui/V8_ui_src
 #   - It builds Vite "dist" there
 #   - Then copies dist/* into:              BASE_DIR/data/ui/V8
 #
 # So the *served* dist folder is always: BASE_DIR/data/ui/V8
+# =============================================================================
+
 CUSTOM_UI_ROOT = os.getenv(
     "SARAH_CUSTOM_UI_ROOT",
     os.path.join(BASE_DIR, "data", "ui", "V8_ui_src"),
@@ -425,12 +455,18 @@ CUSTOM_UI_DIST_DIR = os.getenv(
 
 CUSTOM_UI_INDEX = os.path.join(CUSTOM_UI_DIST_DIR, "index.html")
 
-# If a dev server is running (npm run dev / npm run preview), we can point pywebview
-# or the browser directly at this URL instead of a local file path.
+# If a dev server is running (npm run dev / npm run preview), we can point
+# pywebview or the browser directly at this URL instead of a local file path.
 CUSTOM_UI_DEV_URL = os.getenv(
     "SARAH_CUSTOM_UI_DEV_URL",
-    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8000",
 )
+
+# Safety: If custom selected but dist missing, auto-fallback
+if USE_CUSTOM_WEBUI and not os.path.isdir(CUSTOM_UI_DIST_DIR):
+    print("[UI WARNING] Custom UI dist folder missing — falling back to legacy web.")
+    USE_CUSTOM_WEBUI = False
+    USE_LEGACY_WEBUI = True
 
 
 def get_ui_launch_profile() -> dict:
