@@ -1,0 +1,16 @@
+/* SarahMemory Unified Theme — HAL2000 (v7.7.5) */
+:root{
+  --bg:#0d0d0f; --panel:#141417; --text:#ffd0c8; --muted:#ff9f90;
+  --accent:#ff3b2d; --border:#3a0f0e; --btn:#1a1515; --btnText:#ffd0c8;
+  --bubble-user:#1f1919; --bubble-sarah:#151114;
+}
+html,body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
+.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
+.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
+.small,.muted{color:var(--muted)}
+
+.TFrame { background-color:#141417; }
+.TLabel { background-color:transparent; color:#ff3b2d; foreground:#ff3b2d; font-family:"Segoe UI",Arial,sans-serif; font-size:12pt; }
+.TButton{ background-color:#1a1515; color:#ffd0c8; foreground:#ffd0c8; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; bordercolor:#3a0f0e; }
+.ChatText{ background-color:#0d0d0f; color:#ffd0c8; font-family:"Consolas","Lucida Console",monospace; font-size:11pt; }
