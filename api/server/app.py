@@ -779,6 +779,30 @@ def _cognitive_guard():
 
     return None
 
+@app.get("/api/status")
+def api_status():
+    """
+    Explicit status endpoint separate from /api/health.
+    Returns persisted server_state.json without rewriting it.
+    """
+    try:
+        state = load_state() or {}
+        if not isinstance(state, dict):
+            state = {}
+        return jsonify({
+            "ok": True,
+            "state": state,
+            "version": PROJECT_VERSION,
+            "ts": time.time(),
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "version": PROJECT_VERSION,
+            "ts": time.time(),
+        }), 500
+
 
 
 @app.route("/api/session/bootstrap", methods=['POST'])
@@ -3566,6 +3590,28 @@ def api_terminal_execute():
     payload = request.get_json(silent=True) or {}
     result = smterm.terminal_api_execute(payload, caller="Flask:/api/terminal/execute")
     return jsonify(result), (200 if result.get("ok") else 403 if result.get("blocked") else 400)
+
+def _start_autonomous_services():
+    try:
+        import SarahMemoryGlobals as config
+        _neosky = bool(getattr(config, "NEOSKYMATRIX", False))
+        _dev = bool(getattr(config, "DEVELOPERSMODE", False))
+
+        if _neosky and _dev:
+            import threading
+            import SarahMemorySelfAware as _SMA
+            if hasattr(_SMA, "run_autonomous_loop"):
+                t = threading.Thread(
+                    target=_SMA.run_autonomous_loop,
+                    name="SM_SelfAware",
+                    daemon=True
+                )
+                t.start()
+                app_logger.warning("SelfAware ARMED (API Mode).")
+    except Exception as e:
+        app_logger.error(f"Autonomous init failed: {e}", exc_info=True)
+
+_start_autonomous_services()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))
