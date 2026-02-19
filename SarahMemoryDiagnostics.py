@@ -28,6 +28,7 @@ import socket
 import ssl
 import time
 import stat
+import re
 
 # Optional: access DB paths + cloud connector without duplicating logic
 try:
@@ -46,11 +47,13 @@ if not logger.hasHandlers():
 # Core functional files that must be present in the root directory
 REQUIRED_FILES = [
     os.path.join(config.API_DIR, "server", "app.py"), #API LOCAL and CLOUD SERVER
-    os.path.join(config.API_DIR, "server", "appnet.py"), #SARAHNET Network for All Nodes
+    os.path.join(config.API_DIR, "server", "appnet.py"), #SARAHNET Network for All Nodes, communications, etc
+    os.path.join(config.API_DIR, "server", "appsys.py"), #API For System Functions such as FileManager, etc
+    os.path.join(config.API_DIR, "server", "appmedia.py"), #API For Media Studios, Image,Video,Music
     os.path.join(config.BASE_DIR, "SarahMemoryAdaptive.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAdvCU.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py") if hasattr(config, "HAS_AI_CORE") else os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py"),
-    os.path.join(config.BASE_DIR, "SarahMemoryAPI.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryAPI.py"), #MultiRole Model/API intrupter 
     os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py") if hasattr(config, "HAS_AVATAR") else os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryBrowser.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryCanvasStudio.py"),
@@ -60,6 +63,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryDiagnostics.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryDL.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryEncryption.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryEvolution.py"), #Self Evolving Module Creator.
     os.path.join(config.BASE_DIR, "SarahMemoryExpressOut.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryFacialRecognition.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryFilesystem.py"),
@@ -81,15 +85,20 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryReminder.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReply.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryResearch.py"),
+    os.path.join(config.BASE_DIR, "SarahMemorySelfAware.py"), #System selfawareness automation file
     os.path.join(config.BASE_DIR, "SarahMemorySOBJE.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySi.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySynapes.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySync.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySystemIndexer.py") if hasattr(config, "HAS_INDEXER") else os.path.join(config.BASE_DIR, "SarahMemorySystemIndexer.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySystemLearn.py") if hasattr(config, "HAS_SYSTEM_LEARN") else os.path.join(config.BASE_DIR, "SarahMemorySystemLearn.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryTerminal.py"), #CONSOLE MODULE
+    os.path.join(config.BASE_DIR, "SarahMemoryUIupdater.py"), #Flast/React FrontEnd AutoPatcher
+    os.path.join(config.BASE_DIR, "SarahMemoryUpdater.py"), #Monkey-Patching Creation File
     os.path.join(config.BASE_DIR, "SarahMemoryVideoEditorCore.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryVoice.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryWebSYM.py"),
+    os.path.join(config.BASE_DIR, "SarahNetMCP_Diagnostics.py"),
     os.path.join(config.BASE_DIR, "UnifiedAvatarController.py")
     # "SarahMemoryCleanup.py" Stand-Alone Tool, that is in DEVELOPMENT to CLEAN THE DATABASES
     # "SarahMemoryCleanupDaily.py" Stand-Alone Tool, Daily Database Cleaning tool
@@ -102,6 +111,28 @@ REQUIRED_FILES = [
 # ============================
 # PHASE A: Identity & Device Awareness (v7.7.5–8)
 # ============================
+
+def _mask_sensitive_values(text: str) -> str:
+    """
+    Masks API keys, tokens, and secrets while preserving formatting.
+    """
+    if not isinstance(text, str):
+        return text
+
+    patterns = [
+        r"(sk-[A-Za-z0-9]{10,})",
+        r"(ghp_[A-Za-z0-9]{10,})",
+        r"(AIza[A-Za-z0-9_\-]{10,})",
+        r"(Bearer\s+[A-Za-z0-9\._\-]{10,})",
+        r"(SM_AGI_\d+\s*=\s*[^\n]+)",
+        r"(JWT_SECRET\s*=\s*[^\n]+)",
+        r"(GITHUB_TOKEN\s*=\s*[^\n]+)",
+    ]
+
+    for pattern in patterns:
+        text = re.sub(pattern, lambda m: m.group(0)[:4] + "****MASKED****", text)
+
+    return text
 
 def _ensure_canvas_dirs():
     """Ensure Canvas Studio workspace directories exist (non-fatal)."""

@@ -75,7 +75,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import textwrap
 import warnings
 warnings.filterwarnings("error", category=SyntaxWarning)
 
@@ -682,18 +682,25 @@ def _make_nonconflicting_patch_name(base_name: str) -> str:
 def _embed_error_context_as_comment(err_text: str, max_chars: int = 14000) -> str:
     """
     Formats error context into safe comment lines for patch stub.
-    Returned string is already comment-formatted lines.
+    Ensures indentation safety inside generated patch files.
     """
     if not err_text:
-        return "# (no error context captured)\n"
+        return "    # (no error context captured)\n"
+
     clipped = (err_text or "")[:max_chars]
     lines = clipped.splitlines()
+
     out: List[str] = []
-    out.append("# ==== ORIGINAL ERROR CONTEXT (copied by SarahMemoryEvolution) ====")
+    out.append("    # ==== ORIGINAL ERROR CONTEXT (copied by SarahMemoryEvolution) ====")
+
     for ln in lines:
-        out.append("# " + (ln[:400] if ln else ""))
-    out.append("# ==== END ORIGINAL ERROR CONTEXT ====")
+        safe_line = (ln or "").rstrip()
+        out.append(f"    # {safe_line}")
+
+    out.append("    # ==== END ORIGINAL ERROR CONTEXT ====")
+
     return "\n".join(out) + "\n"
+
 
 
 def _archive_log_before_edit(log_path: Path) -> Optional[Path]:
