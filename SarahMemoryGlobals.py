@@ -87,6 +87,265 @@ DEVICE_MODE_HEADLESS    = "headless"      # No GUI, background/daemon mode
 # Device performance profiles (coarse-grained resource envelope hints).
 DEVICE_PROFILES = ("UltraLite", "Standard", "Performance")
 
+# ============================================================================
+# ENV → WINDOWS ENVIRONMENT IMPORT (STRING-ONLY, USER-CONTROLLED)
+# - One-way import: .env → Windows Environment (no export path)
+# - Never touches keys that exist in Windows but are absent in .env
+# - Skips boolean-like values (true/false) and empty values
+# - Conflict handling: if same key but different value, user chooses
+# ============================================================================
+def sm_open_windows_env_vars_ui() -> bool:
+    """Open the Windows Environment Variables UI (best-effort)."""
+    try:
+        import platform, subprocess
+        if platform.system().lower() != "windows":
+            return False
+        subprocess.Popen(["rundll32", "sysdm.cpl,EditEnvironmentVariables"], shell=False)
+        return True
+    except Exception:
+        return False
+
+
+def sm_parse_env_file(env_path: str) -> dict:
+    """Parse a .env file into {KEY: VALUE}. Keeps raw strings; strips surrounding quotes."""
+    out = {}
+    try:
+        if not env_path:
+            return out
+        import os
+        if not os.path.isfile(env_path):
+            return out
+        with open(env_path, "r", encoding="utf-8", errors="ignore") as f:
+            for raw in f.read().splitlines():
+                line = (raw or "").strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.lower().startswith("export "):
+                    line = line[7:].strip()
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                key = (k or "").strip()
+                val = (v or "").strip()
+                if not key:
+                    continue
+                # Remove inline comments ONLY when not inside quotes
+                if val and (val[0] not in ("'", '"')) and (" #" in val or "\t#" in val):
+                    val = val.split("#", 1)[0].strip()
+                # Strip matching quotes
+                if len(val) >= 2 and ((val[0] == val[-1]) and val[0] in ("'", '"')):
+                    val = val[1:-1]
+                out[key] = val
+    except Exception:
+        return out
+    return out
+
+
+def _sm_is_boolish(val: str) -> bool:
+    try:
+        v = str(val or "").strip().lower()
+        return v in ("true", "false", "1", "0", "yes", "no", "on", "off")
+    except Exception:
+        return False
+
+
+def _sm_windows_env_read(name: str) -> tuple:
+    """
+    Return (user_val, system_val) for a Windows environment variable.
+    Uses Registry for accuracy (not just current process env).
+    """
+    user_val = None
+    sys_val = None
+    try:
+        import platform
+        if platform.system().lower() != "windows":
+            return (None, None)
+        import winreg
+        # User scope
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_READ) as k:
+                user_val, _ = winreg.QueryValueEx(k, name)
+        except Exception:
+            user_val = None
+        # System scope
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", 0, winreg.KEY_READ) as k:
+                sys_val, _ = winreg.QueryValueEx(k, name)
+        except Exception:
+            sys_val = None
+    except Exception:
+        return (None, None)
+    return (user_val, sys_val)
+
+
+def _sm_windows_env_broadcast_change() -> None:
+    """Broadcast WM_SETTINGCHANGE so newly-set env vars are visible to new processes."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        HWND_BROADCAST = 0xFFFF
+        WM_SETTINGCHANGE = 0x001A
+        SMTO_ABORTIFHUNG = 0x0002
+        SendMessageTimeoutW = ctypes.windll.user32.SendMessageTimeoutW
+        SendMessageTimeoutW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            wintypes.UINT, wintypes.UINT, ctypes.POINTER(wintypes.DWORD)
+        ]
+        result = wintypes.DWORD(0)
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+                            ctypes.cast(ctypes.c_wchar_p("Environment"), wintypes.LPARAM),
+                            SMTO_ABORTIFHUNG, 2000, ctypes.byref(result))
+    except Exception:
+        pass
+
+
+def _sm_windows_env_write_user(name: str, value: str) -> bool:
+    """Write user-scope env var via Registry. Does not require admin."""
+    try:
+        import platform
+        if platform.system().lower() != "windows":
+            return False
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment", 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, name, 0, winreg.REG_EXPAND_SZ, str(value))
+        _sm_windows_env_broadcast_change()
+        return True
+    except Exception:
+        return False
+
+
+def sm_import_env_strings_to_windows(env_path: str, parent=None) -> dict:
+    """
+    Import string-only env vars from .env into Windows USER environment variables.
+    Returns a summary dict: {added, overwritten, kept, skipped, conflicts}.
+    """
+    summary = {"added": 0, "overwritten": 0, "kept": 0, "skipped": 0, "conflicts": 0}
+
+    import platform, os
+    if platform.system().lower() != "windows":
+        summary["skipped"] = -1
+        return summary
+
+    env_map = sm_parse_env_file(env_path)
+    if not env_map:
+        return summary
+
+    # Filter out bool-ish + empty values
+    candidates = {}
+    for k, v in env_map.items():
+        sv = str(v or "").strip()
+        if not sv:
+            continue
+        if _sm_is_boolish(sv):
+            continue
+        candidates[k] = sv
+
+    if not candidates:
+        return summary
+
+    # UI / prompts
+    use_tk = parent is not None
+    if use_tk:
+        try:
+            from tkinter import messagebox
+        except Exception:
+            use_tk = False
+
+    # Bulk decision for missing keys
+    import_missing = None  # None => ask once, True/False => apply
+
+    for key, val in sorted(candidates.items(), key=lambda kv: kv[0].lower()):
+        user_val, sys_val = _sm_windows_env_read(key)
+        existing = user_val if user_val is not None else sys_val
+
+        if existing is None:
+            if import_missing is None:
+                msg = (
+                    f"Import missing variables from .env into Windows user environment?\n\n"
+                    f"Source: {env_path}\n\n"
+                    f"Note: Only string values are imported. Boolean-like values are ignored.\n"
+                    f"Existing Windows variables are NOT overwritten unless you approve a conflict."
+                )
+                if use_tk:
+                    import_missing = messagebox.askyesno("Import .env → Windows Env", msg)
+                else:
+                    ans = input(msg + "\n\nType Y to import missing keys, anything else to skip: ").strip().lower()
+                    import_missing = ans in ("y", "yes")
+            if not import_missing:
+                summary["skipped"] += 1
+                continue
+
+            # Confirm per-key for safety (lightweight)
+            if use_tk:
+                ok = messagebox.askyesno(
+                    "Confirm Import",
+                    f"Add Windows env variable?\n\n{key} = <hidden>\n\nProceed?"
+                )
+            else:
+                ok = input(f"Add Windows env variable {key}? (Y/N): ").strip().lower() in ("y", "yes")
+            if not ok:
+                summary["skipped"] += 1
+                continue
+
+            if _sm_windows_env_write_user(key, val):
+                summary["added"] += 1
+            else:
+                summary["skipped"] += 1
+            continue
+
+        # Existing found: if same, no-op
+        if str(existing) == str(val):
+            summary["kept"] += 1
+            continue
+
+        # Conflict
+        summary["conflicts"] += 1
+        if use_tk:
+            # Yes = overwrite with .env, No = keep system, Cancel = skip
+            choice = messagebox.askyesnocancel(
+                "Conflict Detected",
+                f"Variable already exists with a different value:\n\n"
+                f"{key}\n\n"
+                f"Choose YES to overwrite with .env value.\n"
+                f"Choose NO to keep Windows value.\n"
+                f"Choose CANCEL to skip."
+            )
+            if choice is None:
+                summary["skipped"] += 1
+                continue
+            if choice is False:
+                summary["kept"] += 1
+                continue
+            # choice True => overwrite
+            if messagebox.askyesno("Confirm Overwrite", f"Overwrite Windows value for:\n\n{key}\n\nAre you sure?"):
+                if _sm_windows_env_write_user(key, val):
+                    summary["overwritten"] += 1
+                else:
+                    summary["skipped"] += 1
+            else:
+                summary["kept"] += 1
+        else:
+            ans = input(f"Conflict {key}. Overwrite with .env? (Y/N/Skip): ").strip().lower()
+            if ans in ("n", "no"):
+                summary["kept"] += 1
+                continue
+            if ans in ("s", "skip", "c", "cancel"):
+                summary["skipped"] += 1
+                continue
+            # overwrite
+            confirm = input(f"Are you sure you want to overwrite {key}? (Y/N): ").strip().lower()
+            if confirm in ("y", "yes"):
+                if _sm_windows_env_write_user(key, val):
+                    summary["overwritten"] += 1
+                else:
+                    summary["skipped"] += 1
+            else:
+                summary["kept"] += 1
+
+    return summary
+
+
+
 def _detect_device_mode():
     """Infer the current device mode with optional overrides via env.
 
@@ -180,7 +439,6 @@ SARAH_TOTAL_MEMORY_MB = 4096 # 128mb, 256mb, 512mb, 1024=1gb, 2048 = 2gb, 4096 =
 SARAH_MEMORY_PARTITIONS= 4 # each Partition is divided into the amount of MEMORYALLOCATED therefore 4096/4 makes each Partition 1024 or 1gb each. 
 SARAH_MEMORY_REFRESH_MINUTES = 5  # in Minutes 5, 10, 15, 30, 60
 SARAH_MEMORY_SANDBOX_ENABLED = True
-DEVELOPERSMODE = True
 
 
 # --- Voice / Mic gating ---
@@ -1142,12 +1400,17 @@ AVATAR_REFRESH_RATE = 10
 # or maybe it won't, a self upgrading fully autonomous, responsive system and more.
 # Then think about Scifi the Matrix/SkyNet/HAL this AI system may surpass imagination or even be uploaded into
 # a robotic form one day or later on, it is designed to evolve afterall.
-# I put this Flag here somewhat as a Joke but also as a reminder just incase it ever does evolve beyond control.
-NEOSKYMATRIX = True
+
+NEOSKYMATRIX = True 
+#When True NeoskyMatrix will be enabled and allow the system to run in a fully autonomious mode, default False. 
+# This is a joke flag but also a reminder if the system ever evolves beyond control, it may be best to have 
+# a kill switch or at least a warning system in place for the user to know if the system has reached 
+# a point of no return or is doing something it shouldn't be doing.
+
+DEVELOPERSMODE = True #When True DevelopersMode will be enabled and allow access.
+#to more advanced features and tools, default False
+ 
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
-# If set to True voice and text commands in the GUI or other input method interface may turn on and off this feature
-# using keywords such as "neoskymatrix on" to allow autonomous functionality or
-# "neoskymatrix off" to disable autonomous functions. <<-CURRENTLY JUST ACTIVATES A SMALL RESPONSE EASTEREGG in the program.
 
 def ensure_directories():
     """
@@ -2230,6 +2493,40 @@ def launch_settings_gui():
         root.destroy()
     
     # -------------------------------------------------------------------------
+
+
+    def do_env_import():
+        """Manually import string values from .env into Windows User environment variables."""
+        try:
+            import platform
+            if platform.system().lower() != "windows":
+                messagebox.showinfo("Env Import", "Windows not detected. This action is only supported on Windows 10/11.")
+                return
+            env_path = os.path.join(BASE_DIR, ".env")
+            if not os.path.isfile(env_path):
+                messagebox.showwarning("Env Import", f"No .env file found at:\n\n{env_path}\n\nCreate it first (copy from .env.example), then retry.")
+                return
+            summary = sm_import_env_strings_to_windows(env_path, parent=root)
+            if summary.get("skipped") == -1:
+                messagebox.showinfo("Env Import", "Windows not detected. No changes made.")
+                return
+            messagebox.showinfo(
+                "Env Import Complete",
+                "Operation completed.\n\n"
+                f"Added: {summary.get('added',0)}\n"
+                f"Overwritten: {summary.get('overwritten',0)}\n"
+                f"Kept (no change): {summary.get('kept',0)}\n"
+                f"Conflicts handled: {summary.get('conflicts',0)}\n"
+                f"Skipped: {summary.get('skipped',0)}\n\n"
+                "Note: New values apply to NEW terminals/processes. Restart your shell/IDE if needed."
+            )
+        except Exception as e:
+            try:
+                messagebox.showerror("Env Import Failed", str(e))
+            except Exception:
+                print(f"[Env Import Failed] {e}")
+
+
     # Create action buttons (right to left)
     # -------------------------------------------------------------------------
     ttk.Button(
@@ -2261,6 +2558,28 @@ def launch_settings_gui():
         command=do_restore_defaults,
         width=14
     ).pack(side="right", padx=5)
+
+    # -------------------------------------------------------------------------
+    # Optional: .env → Windows Env (manual, one-way, string-only)
+    # -------------------------------------------------------------------------
+    try:
+        import platform as _pf
+        if _pf.system().lower() == "windows":
+            ttk.Button(
+                footer_frame,
+                text="Import .env → Windows Env",
+                command=do_env_import,
+                width=22
+            ).pack(side="left", padx=5)
+            ttk.Button(
+                footer_frame,
+                text="Open Env Vars UI",
+                command=sm_open_windows_env_vars_ui,
+                width=16
+            ).pack(side="left", padx=5)
+    except Exception:
+        pass
+
     
     # -------------------------------------------------------------------------
     # Bind keyboard shortcuts
