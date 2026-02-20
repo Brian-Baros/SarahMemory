@@ -3,7 +3,7 @@
 File: SarahMemoryLogicCalc.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-11
+Date: 2026-02-18
 Time: 10:11:54
 Author: © 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -212,6 +212,16 @@ class UnitRegistry:
         self.add(Unit("volt", "V", 1.0, (M * (L ** 2)) / (T ** 3) / I))
         self.add(Unit("ohm", "Ω", 1.0, (M * (L ** 2)) / (T ** 3) / (I ** 2)))
 
+        # Temperature handled
+        # Robotics / kinematics convenience units (SI-compatible)
+        self.add(Unit("radian", "rad", 1.0, Dimension()))  # dimensionless
+        self.add(Unit("degree", "deg", math.pi / 180.0, Dimension()))  # dimensionless
+
+        # Common composite kinematic units (treated as named units to keep conversion deterministic)
+        self.add(Unit("meters_per_second", "m/s", 1.0, L / T))
+        self.add(Unit("meters_per_second2", "m/s^2", 1.0, L / (T ** 2)))
+        self.add(Unit("newton_meter", "N*m", 1.0, (M * L / (T ** 2)) * L))
+        self.add(Unit("newton_meter_alt", "Nm", 1.0, (M * L / (T ** 2)) * L))
         # Temperature handled as special (affine), but keep symbol for recognition
         self.add(Unit("kelvin", "K", 1.0, Th))
         self.add(Unit("celsius", "C", 1.0, Th))
@@ -268,6 +278,224 @@ class UnitRegistry:
             return (k - 273.15) * (9.0/5.0) + 32.0
         raise ValueError("Unknown temperature unit.")
 
+
+
+
+# =============================================================================
+# VECTOR + TENSOR ALGEBRA WITH DIMENSIONAL AWARENESS (ROBOTICS-GRADE)
+# =============================================================================
+
+@dataclass(frozen=True)
+class Vec3:
+    """
+    3D vector with dimensional awareness.
+    - values are in SI units for the associated dimension.
+    - dim describes the physical dimension of each component (same for x,y,z).
+    """
+    x: float
+    y: float
+    z: float
+    dim: Dimension = Dimension()
+
+    def as_tuple(self) -> Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+    def __add__(self, other: "Vec3") -> "Vec3":
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 add: incompatible dimensions.")
+        return Vec3(self.x + other.x, self.y + other.y, self.z + other.z, self.dim)
+
+    def __sub__(self, other: "Vec3") -> "Vec3":
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 sub: incompatible dimensions.")
+        return Vec3(self.x - other.x, self.y - other.y, self.z - other.z, self.dim)
+
+    def __mul__(self, k: float) -> "Vec3":
+        return Vec3(self.x * k, self.y * k, self.z * k, self.dim)
+
+    def __truediv__(self, k: float) -> "Vec3":
+        if k == 0:
+            raise ValueError("Vec3 div: scalar cannot be zero.")
+        return Vec3(self.x / k, self.y / k, self.z / k, self.dim)
+
+    def magnitude(self) -> float:
+        return math.sqrt(self.x*self.x + self.y*self.y + self.z*self.z)
+
+    def direction(self) -> "Vec3":
+        mag = self.magnitude()
+        if mag == 0:
+            raise ValueError("Vec3 normalize: magnitude is zero.")
+        # direction is dimensionless
+        return Vec3(self.x/mag, self.y/mag, self.z/mag, Dimension())
+
+    def dot(self, other: "Vec3") -> Tuple[float, Dimension]:
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 dot: incompatible dimensions.")
+        return (self.x*other.x + self.y*other.y + self.z*other.z, self.dim * other.dim)
+
+    def cross(self, other: "Vec3") -> "Vec3":
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 cross: incompatible dimensions.")
+        return Vec3(
+            self.y*other.z - self.z*other.y,
+            self.z*other.x - self.x*other.z,
+            self.x*other.y - self.y*other.x,
+            self.dim * other.dim
+        )
+
+    def project_onto(self, axis: "Vec3") -> "Vec3":
+        # Projection of self onto axis: (self·axis_hat) * axis_hat
+        ah = axis.direction()
+        scalar, _ = Vec3(self.x, self.y, self.z, self.dim).dot(Vec3(ah.x, ah.y, ah.z, Dimension()))
+        return Vec3(ah.x, ah.y, ah.z, Dimension()) * scalar  # returns same dim as self
+
+    def format(self, unit_hint: str = "") -> str:
+        u = f" {unit_hint}".rstrip()
+        return f"({self.x}, {self.y}, {self.z}){u}"
+
+
+@dataclass(frozen=True)
+class Tensor33:
+    """
+    3x3 tensor with dimensional awareness (all components share same dim).
+    Storage is row-major.
+    """
+    m00: float; m01: float; m02: float
+    m10: float; m11: float; m12: float
+    m20: float; m21: float; m22: float
+    dim: Dimension = Dimension()
+
+    def rows(self) -> Tuple[Tuple[float,float,float], Tuple[float,float,float], Tuple[float,float,float]]:
+        return (
+            (self.m00, self.m01, self.m02),
+            (self.m10, self.m11, self.m12),
+            (self.m20, self.m21, self.m22),
+        )
+
+    def trace(self) -> float:
+        return self.m00 + self.m11 + self.m22
+
+    def transpose(self) -> "Tensor33":
+        return Tensor33(
+            self.m00, self.m10, self.m20,
+            self.m01, self.m11, self.m21,
+            self.m02, self.m12, self.m22,
+            self.dim
+        )
+
+    def det(self) -> float:
+        # Laplace expansion
+        a,b,c = self.m00, self.m01, self.m02
+        d,e,f = self.m10, self.m11, self.m12
+        g,h,i = self.m20, self.m21, self.m22
+        return (
+            a*(e*i - f*h)
+            - b*(d*i - f*g)
+            + c*(d*h - e*g)
+        )
+
+    def mul_vec(self, v: Vec3) -> Vec3:
+        # Tensor-vector multiplication: dims multiply
+        return Vec3(
+            self.m00*v.x + self.m01*v.y + self.m02*v.z,
+            self.m10*v.x + self.m11*v.y + self.m12*v.z,
+            self.m20*v.x + self.m21*v.y + self.m22*v.z,
+            self.dim * v.dim
+        )
+
+    def format(self, unit_hint: str = "") -> str:
+        u = f" {unit_hint}".rstrip()
+        r = self.rows()
+        return f"[[{r[0][0]}, {r[0][1]}, {r[0][2]}], [{r[1][0]}, {r[1][1]}, {r[1][2]}], [{r[2][0]}, {r[2][1]}, {r[2][2]}]]{u}"
+
+
+def _dim_to_unit_hint(dim: Dimension) -> str:
+    # Not a full unit synthesis engine; provides human hints for the common robotics stack.
+    d = dim.as_tuple()
+    # dimensionless
+    if d == Dimension().as_tuple():
+        return ""
+    # length
+    if d == Dimension(L=1).as_tuple():
+        return "m"
+    # velocity
+    if d == (Dimension(L=1) / Dimension(T=1)).as_tuple():
+        return "m/s"
+    # acceleration
+    if d == (Dimension(L=1) / (Dimension(T=1) ** 2)).as_tuple():
+        return "m/s^2"
+    # force
+    if d == (Dimension(M=1) * Dimension(L=1) / (Dimension(T=1) ** 2)).as_tuple():
+        return "N"
+    # torque / energy
+    if d == (Dimension(M=1) * (Dimension(L=1) ** 2) / (Dimension(T=1) ** 2)).as_tuple():
+        return "N*m"
+    return ""
+
+
+def _parse_vec3_literal(s: str) -> Optional[Tuple[float,float,float]]:
+    """
+    Parse (x,y,z) or [x,y,z] or <x,y,z>
+    """
+    if not s:
+        return None
+    m = re.search(r"[\(\[\<]\s*([\-0-9\.eE\+]+)\s*[, ]\s*([\-0-9\.eE\+]+)\s*[, ]\s*([\-0-9\.eE\+]+)\s*[\)\]\>]", s)
+    if not m:
+        return None
+    try:
+        return (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+    except Exception:
+        return None
+
+
+def _parse_tensor33_literal(s: str) -> Optional[Tuple[float, ...]]:
+    """
+    Parse a 3x3 tensor in either:
+      - [[a,b,c],[d,e,f],[g,h,i]]
+      - [a b c; d e f; g h i]
+    Returns 9 floats row-major.
+    """
+    if not s:
+        return None
+
+    # Bracket form
+    m = re.search(
+        r"\[\s*\[\s*([^\]]+?)\s*\]\s*,\s*\[\s*([^\]]+?)\s*\]\s*,\s*\[\s*([^\]]+?)\s*\]\s*\]",
+        s
+    )
+    if m:
+        rows = []
+        for grp in (m.group(1), m.group(2), m.group(3)):
+            parts = [p.strip() for p in re.split(r"[, ]+", grp.strip()) if p.strip()]
+            if len(parts) != 3:
+                return None
+            rows.append(parts)
+        flat = [rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0], rows[2][1], rows[2][2]]
+        try:
+            return tuple(float(x) for x in flat)
+        except Exception:
+            return None
+
+    # Semicolon form
+    m2 = re.search(r"\[\s*([^\]]+?)\s*\]", s)
+    if m2 and ";" in m2.group(1):
+        raw = m2.group(1)
+        row_strs = [r.strip() for r in raw.split(";") if r.strip()]
+        if len(row_strs) != 3:
+            return None
+        rows = []
+        for rs in row_strs:
+            parts = [p.strip() for p in rs.replace(",", " ").split() if p.strip()]
+            if len(parts) != 3:
+                return None
+            rows.append(parts)
+        flat = [rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0], rows[2][1], rows[2][2]]
+        try:
+            return tuple(float(x) for x in flat)
+        except Exception:
+            return None
+
+    return None
 
 
 # =============================================================================
@@ -790,6 +1018,13 @@ class ReasoningEngine:
         if self._looks_like_conversion(ql):
             return self.convert(q)
 
+        # 3.5) Vector / tensor math (directional force, robotics-grade linear algebra)
+        if self._looks_like_vector_math(ql):
+            return self.vector_math(q)
+
+        if self._looks_like_tensor_math(ql):
+            return self.tensor_math(q)
+
         # 4) Domain formula solve
         if self._looks_like_formula_solve(ql):
             return self.solve_formula(q)
@@ -808,6 +1043,19 @@ class ReasoningEngine:
             or re.search(r"\b(es|spanish)\s*(to|->)\s*(en|english)\b", ql) is not None
         )
 
+    def _looks_like_chemistry(self, ql: str) -> bool:
+        keywords = ["ph", "acid", "base", "molar", "mole", "element", "atomic weight", "atomic mass", "ideal gas", "pv=nrt", "gas law"]
+        return any(k in ql for k in keywords)
+
+    def _looks_like_nuclear(self, ql: str) -> bool:
+        keywords = ["nuclear", "decay", "half-life", "halflife", "lambda", "e=mc", "emc2", "mass energy", "radioactive"]
+        return any(k in ql for k in keywords)
+
+    def _looks_like_constants(self, ql: str) -> bool:
+        keywords = ["speed of light", "planck", "boltzmann", "avogadro", "gas constant", "gravitational constant", "elementary charge", "standard atmosphere"]
+        return any(k in ql for k in keywords)
+
+
     def _looks_like_conversion(self, ql: str) -> bool:
         return ("convert" in ql) or (re.search(r"\bto\b", ql) and re.search(r"\d", ql))
 
@@ -822,6 +1070,276 @@ class ReasoningEngine:
 
     def _looks_like_math(self, ql: str) -> bool:
         return bool(re.search(r"[\d\+\-\*/\^\(\)]", ql))
+
+
+    def _looks_like_vector_math(self, ql: str) -> bool:
+        keywords = ["vector", "vec3", "vector3", "vector3d", "dot", "cross", "magnitude", "norm", "normalize",
+                    "projection", "project", "directional", "torque", "moment", "r×f", "rxf", "force vector"]
+        if any(k in ql for k in keywords):
+            return True
+        # detect explicit 3D literals like (1,2,3)
+        if re.search(r"[\(\[\<]\s*\-?\d", ql) and re.search(r"[, ]\s*\-?\d", ql):
+            return True
+        return False
+
+    def _looks_like_tensor_math(self, ql: str) -> bool:
+        keywords = ["tensor", "matrix", "3x3", "trace", "det", "determinant", "transpose", "stress", "strain"]
+        if any(k in ql for k in keywords):
+            return True
+        # detect matrix literal [[...],[...],[...]] or semicolon rows
+        if "[[" in ql and "]]" in ql:
+            return True
+        if ";" in ql and "[" in ql and "]" in ql:
+            return True
+        return False
+
+
+    # -------------------------------
+    # VECTOR MATH (Vec3 + directional force + torque)
+    # -------------------------------
+
+    def vector_math(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "vector"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        def _unit_after_literal(text: str, lit_span: Tuple[int,int]) -> str:
+            # look right after the literal for a unit token, e.g. "(1,2,3) N"
+            tail = text[lit_span[1]:]
+            m = re.match(r"\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)", tail)
+            return (m.group(1) if m else "").strip()
+
+        # Extract the first two vector literals, if present
+        vec_matches = list(re.finditer(r"[\(\[\<]\s*[\-0-9\.eE\+]+\s*[, ]\s*[\-0-9\.eE\+]+\s*[, ]\s*[\-0-9\.eE\+]+\s*[\)\]\>]", q))
+        v1 = v2 = None
+        u1 = u2 = ""
+        if len(vec_matches) >= 1:
+            t = _parse_vec3_literal(vec_matches[0].group(0))
+            if t:
+                u1 = _unit_after_literal(q, vec_matches[0].span())
+                v1 = t
+        if len(vec_matches) >= 2:
+            t = _parse_vec3_literal(vec_matches[1].group(0))
+            if t:
+                u2 = _unit_after_literal(q, vec_matches[1].span())
+                v2 = t
+
+        # Helper: build Vec3 with unit -> SI and dim from registry (if known)
+        def _vec_from(vals: Tuple[float,float,float], unit: str) -> Vec3:
+            unit = (unit or "").strip()
+            if unit:
+                uu = self.units.get(unit)
+                if uu:
+                    return Vec3(vals[0]*uu.factor_to_si, vals[1]*uu.factor_to_si, vals[2]*uu.factor_to_si, uu.dim)
+            # default SI / dimensionless
+            return Vec3(vals[0], vals[1], vals[2], Dimension())
+
+        try:
+            # OPERATIONS -------------------------------------------------------
+            if "torque" in ql or "moment" in ql or "r×f" in ql or "rxf" in ql:
+                # torque τ = r × F
+                # Expect: r=(.. ) m, F=(.. ) N  (order flexible)
+                # Use first vector as r, second as F by default.
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="torque")
+                    return SolveResult(ok=False, kind="vector", text="Vector torque requires two vectors: r=(x,y,z) and F=(x,y,z).", meaning=mg)
+
+                r_vec = _vec_from(v1, u1 or "m")
+                f_vec = _vec_from(v2, u2 or "N")
+                mg.add("uses_operation", [Term("torque", "concept")])
+                tau = r_vec.cross(f_vec)
+                unit_hint = _dim_to_unit_hint(tau.dim) or "N*m"
+                mg.add("derives", [Term("tau", "concept", tau.as_tuple())], unit=unit_hint)
+                return SolveResult(ok=True, kind="vector", value={"tau": tau.as_tuple(), "unit": unit_hint},
+                                   text=f"Torque τ = r × F = {tau.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": tau.dim.as_tuple()})
+
+            if "cross" in ql:
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="cross")
+                    return SolveResult(ok=False, kind="vector", text="Cross product requires two vectors.", meaning=mg)
+                a = _vec_from(v1, u1)
+                b = _vec_from(v2, u2 or u1)
+                mg.add("uses_operation", [Term("cross", "concept")])
+                c = a.cross(b)
+                unit_hint = _dim_to_unit_hint(c.dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"cross": c.as_tuple(), "unit": unit_hint},
+                                   text=f"a × b = {c.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": c.dim.as_tuple()})
+
+            if "dot" in ql:
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="dot")
+                    return SolveResult(ok=False, kind="vector", text="Dot product requires two vectors.", meaning=mg)
+                a = _vec_from(v1, u1)
+                b = _vec_from(v2, u2 or u1)
+                mg.add("uses_operation", [Term("dot", "concept")])
+                d, dim = a.dot(b)
+                unit_hint = _dim_to_unit_hint(dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"dot": d, "unit": unit_hint},
+                                   text=f"a · b = {d} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": dim.as_tuple()})
+
+            if "magnitude" in ql or "norm" in ql:
+                if not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="magnitude")
+                    return SolveResult(ok=False, kind="vector", text="Magnitude requires one vector literal like (x,y,z).", meaning=mg)
+                a = _vec_from(v1, u1)
+                mg.add("uses_operation", [Term("magnitude", "concept")])
+                mag = a.magnitude()
+                unit_hint = _dim_to_unit_hint(a.dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"magnitude": mag, "unit": unit_hint},
+                                   text=f"|v| = {mag} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": a.dim.as_tuple()})
+
+            if "normalize" in ql or "unit vector" in ql or "direction" in ql:
+                if not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="normalize")
+                    return SolveResult(ok=False, kind="vector", text="Normalize requires one vector literal like (x,y,z).", meaning=mg)
+                a = _vec_from(v1, u1)
+                mg.add("uses_operation", [Term("normalize", "concept")])
+                ah = a.direction()
+                return SolveResult(ok=True, kind="vector",
+                                   value={"unit_vector": ah.as_tuple()},
+                                   text=f"v̂ = {ah.format()} (dimensionless)",
+                                   meaning=mg,
+                                   meta={"dim": ah.dim.as_tuple()})
+
+            if "directional" in ql and ("force" in ql or "f=" in ql):
+                # Build force vector from magnitude + direction: F = |F| * d̂
+                # Example: "force 10 N direction (1,1,0)"
+                m_mag = re.search(r"(?:force|f)\s*(?:=)?\s*(\-?\d+(?:\.\d+)?)\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)?", ql)
+                if not m_mag or not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="directional_force")
+                    return SolveResult(ok=False, kind="vector", text="Directional force requires a magnitude + direction vector. Example: 'force 10 N direction (1,1,0)'.", meaning=mg)
+                mag = float(m_mag.group(1))
+                unit = (m_mag.group(2) or "N").strip()
+                uu = self.units.get(unit) or self.units.get("N")
+                if not uu:
+                    raise ValueError("Unknown force unit.")
+                d = _vec_from(v1, "")  # direction should be dimensionless
+                dh = Vec3(d.x, d.y, d.z, Dimension()).direction()
+                F = Vec3(dh.x, dh.y, dh.z, Dimension()) * (mag * uu.factor_to_si)
+                F = Vec3(F.x, F.y, F.z, uu.dim)
+                unit_hint = _dim_to_unit_hint(F.dim) or (uu.symbol or uu.name)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"F": F.as_tuple(), "unit": unit_hint},
+                                   text=f"F = |F|·d̂ = {F.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": F.dim.as_tuple()})
+
+            # Default: treat as a vector literal echo with unit/dim normalization
+            if v1:
+                a = _vec_from(v1, u1)
+                unit_hint = _dim_to_unit_hint(a.dim) or u1
+                mg.add("vector", [Term("v", "concept", a.as_tuple())], unit=unit_hint)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"v": a.as_tuple(), "unit": unit_hint},
+                                   text=f"Vector3D normalized: {a.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": a.dim.as_tuple()})
+
+            mg.add("vector_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="vector", text="Vector engine ready. Provide an operation (dot, cross, magnitude, normalize, torque) and vector literals like (x,y,z).", meaning=mg)
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="vector", text=f"Vector failure: {e}", meaning=mg)
+
+
+    # -------------------------------
+    # TENSOR MATH (3x3, stress/strain primitives)
+    # -------------------------------
+
+    def tensor_math(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "tensor"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # Parse tensor literal
+        tvals = _parse_tensor33_literal(q)
+        if not tvals:
+            mg.add("tensor_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="tensor", text="Tensor engine expects a 3x3 literal like [[a,b,c],[d,e,f],[g,h,i]].", meaning=mg)
+
+        # Optional unit token at end: "... ]] Pa"
+        unit = ""
+        m_u = re.search(r"\]\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)\s*$", q)
+        if m_u:
+            unit = (m_u.group(1) or "").strip()
+
+        # Build tensor with unit -> SI and dim
+        uu = self.units.get(unit) if unit else None
+        if uu:
+            t = Tensor33(
+                tvals[0]*uu.factor_to_si, tvals[1]*uu.factor_to_si, tvals[2]*uu.factor_to_si,
+                tvals[3]*uu.factor_to_si, tvals[4]*uu.factor_to_si, tvals[5]*uu.factor_to_si,
+                tvals[6]*uu.factor_to_si, tvals[7]*uu.factor_to_si, tvals[8]*uu.factor_to_si,
+                uu.dim
+            )
+        else:
+            t = Tensor33(*tvals, dim=Dimension())
+
+        try:
+            if "trace" in ql:
+                tr = t.trace()
+                unit_hint = _dim_to_unit_hint(t.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"trace": tr, "unit": unit_hint},
+                                   text=f"tr(T) = {tr} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": t.dim.as_tuple()})
+
+            if "det" in ql:
+                detv = t.det()
+                unit_hint = _dim_to_unit_hint(t.dim) or unit
+                # determinant is cubic in units (dim^3) if dim not dimensionless; we report hint only
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"det": detv, "unit_hint": unit_hint},
+                                   text=f"det(T) = {detv} (unit-hint: {unit_hint}^3)".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": t.dim.as_tuple()})
+
+            if "transpose" in ql:
+                tt = t.transpose()
+                unit_hint = _dim_to_unit_hint(tt.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"transpose": tt.rows(), "unit": unit_hint},
+                                   text=f"Tᵀ = {tt.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": tt.dim.as_tuple()})
+
+            if "mul" in ql or "apply" in ql or "·v" in ql or "tv" in ql:
+                v = _parse_vec3_literal(q)
+                if not v:
+                    mg.add("tensor_request", [Term("raw", "concept", q)], op="mul_vec")
+                    return SolveResult(ok=False, kind="tensor", text="Tensor·vector requires a vector literal (x,y,z) in the query.", meaning=mg)
+                vv = Vec3(v[0], v[1], v[2], Dimension())
+                outv = t.mul_vec(vv)
+                unit_hint = _dim_to_unit_hint(outv.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"T_mul_v": outv.as_tuple(), "unit": unit_hint},
+                                   text=f"T·v = {outv.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": outv.dim.as_tuple()})
+
+            # Default: echo normalized tensor
+            unit_hint = _dim_to_unit_hint(t.dim) or unit
+            return SolveResult(ok=True, kind="tensor",
+                               value={"T": t.rows(), "unit": unit_hint},
+                               text=f"Tensor33 normalized: {t.format(unit_hint)}",
+                               meaning=mg,
+                               meta={"dim": t.dim.as_tuple()})
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="tensor", text=f"Tensor failure: {e}", meaning=mg)
+
 
     # -------------------------------
     # CALC (safe eval baseline)

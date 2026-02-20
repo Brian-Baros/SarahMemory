@@ -3,7 +3,7 @@ File: SarahMemoryWebSYM.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2025-12-21
-LastUpdate: 2026-02-11 
+LastUpdate: 2026-02-18 
 Time: 10:11:54
 Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -342,7 +342,7 @@ class WebSemanticSynthesizer:
         if _SM_LOGICCALC and _orig_query:
             try:
                 lc = _SM_LOGICCALC.route(_orig_query)
-                if lc and lc.get("ok") and lc.get("kind") in ("calc", "convert", "solve", "translate", "chemistry", "nuclear", "constants"):
+                if lc and lc.get("ok") and lc.get("kind") in ("calc", "convert", "solve", "translate", "chemistry", "nuclear", "constants", "vector", "tensor"):
                     if lc.get("text"):
                         return str(lc.get("text"))
                     if lc.get("value") is not None:
