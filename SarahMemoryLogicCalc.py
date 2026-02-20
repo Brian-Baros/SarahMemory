@@ -3,7 +3,7 @@
 File: SarahMemoryLogicCalc.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-18
+Date: 2026-02-19
 Time: 10:11:54
 Author: © 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -327,15 +327,11 @@ class Vec3:
             raise ValueError("Vec3 normalize: magnitude is zero.")
         # direction is dimensionless
         return Vec3(self.x/mag, self.y/mag, self.z/mag, Dimension())
-
     def dot(self, other: "Vec3") -> Tuple[float, Dimension]:
-        if self.dim.as_tuple() != other.dim.as_tuple():
-            raise ValueError("Vec3 dot: incompatible dimensions.")
+        # Allow different dimensions: result dimension is product of component dimensions.
         return (self.x*other.x + self.y*other.y + self.z*other.z, self.dim * other.dim)
-
     def cross(self, other: "Vec3") -> "Vec3":
-        if self.dim.as_tuple() != other.dim.as_tuple():
-            raise ValueError("Vec3 cross: incompatible dimensions.")
+        # Allow different dimensions: result dimension is product (e.g., torque: r[m] × F[N] -> N·m).
         return Vec3(
             self.y*other.z - self.z*other.y,
             self.z*other.x - self.x*other.z,
@@ -380,6 +376,25 @@ class Tensor33:
             self.m00, self.m10, self.m20,
             self.m01, self.m11, self.m21,
             self.m02, self.m12, self.m22,
+            self.dim
+        )
+
+    def __mul__(self, k: float) -> "Tensor33":
+        # Scalar scaling (dimension unchanged; use _tensor_scale_dim when scalar has dimension)
+        return Tensor33(
+            self.m00*k, self.m01*k, self.m02*k,
+            self.m10*k, self.m11*k, self.m12*k,
+            self.m20*k, self.m21*k, self.m22*k,
+            self.dim
+        )
+
+    def __truediv__(self, k: float) -> "Tensor33":
+        if k == 0:
+            raise ValueError("Tensor33 div: scalar cannot be zero.")
+        return Tensor33(
+            self.m00/k, self.m01/k, self.m02/k,
+            self.m10/k, self.m11/k, self.m12/k,
+            self.m20/k, self.m21/k, self.m22/k,
             self.dim
         )
 
@@ -432,6 +447,60 @@ def _dim_to_unit_hint(dim: Dimension) -> str:
         return "N*m"
     return ""
 
+
+
+# =============================================================================
+# SCALAR / VECTOR / TENSOR OVERLOAD UTILITIES (ENTERPRISE-GRADE)
+# =============================================================================
+
+Scalar = Union[int, float]
+Value = Union[Scalar, Vec3, Tensor33]
+
+def _is_scalar(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+def _is_vec3(v: Any) -> bool:
+    return isinstance(v, Vec3)
+
+def _is_tensor33(v: Any) -> bool:
+    return isinstance(v, Tensor33)
+
+def _require_scalar(name: str, v: Any) -> float:
+    if not _is_scalar(v):
+        raise ValueError(f"{name} must be a scalar number.")
+    return float(v)
+
+def _vec3_scale_dim(v: Vec3, k: float, k_dim: Dimension) -> Vec3:
+    # Multiply a vector by a (possibly dimensional) scalar, updating the vector dimension.
+    return Vec3(v.x * k, v.y * k, v.z * k, v.dim * k_dim)
+
+def _vec3_div_dim(v: Vec3, k: float, k_dim: Dimension) -> Vec3:
+    if k == 0:
+        raise ValueError("scalar cannot be zero.")
+    return Vec3(v.x / k, v.y / k, v.z / k, v.dim / k_dim)
+
+def _tensor_scale_dim(t: Tensor33, k: float, k_dim: Dimension) -> Tensor33:
+    return Tensor33(
+        t.m00*k, t.m01*k, t.m02*k,
+        t.m10*k, t.m11*k, t.m12*k,
+        t.m20*k, t.m21*k, t.m22*k,
+        t.dim * k_dim
+    )
+
+def _tensor_div_dim(t: Tensor33, k: float, k_dim: Dimension) -> Tensor33:
+    if k == 0:
+        raise ValueError("scalar cannot be zero.")
+    return Tensor33(
+        t.m00/k, t.m01/k, t.m02/k,
+        t.m10/k, t.m11/k, t.m12/k,
+        t.m20/k, t.m21/k, t.m22/k,
+        t.dim / k_dim
+    )
+
+def _colinear_vecs(a: Vec3, b: Vec3, eps: float = 1e-9) -> bool:
+    # Colinearity check via |a x b| == 0 (numerical)
+    c = a.cross(b)
+    return c.magnitude() <= eps * max(1.0, a.magnitude(), b.magnitude())
 
 def _parse_vec3_literal(s: str) -> Optional[Tuple[float,float,float]]:
     """
@@ -709,18 +778,83 @@ class FormulaLibrary:
         Ohm_dim = V_dim / I
 
         # Newton 2nd law: F = m a
-        def solve_n2(known: Dict[str, float]) -> Dict[str, float]:
-            out = {}
-            if "m" in known and "a" in known and "F" not in known:
-                out["F"] = known["m"] * known["a"]
-            if "F" in known and "m" in known and "a" not in known:
-                if known["m"] == 0:
+        def solve_n2(known: Dict[str, Any]) -> Dict[str, Any]:
+            """Newton's 2nd Law overload: supports scalar OR Vec3 for F and a.
+
+            Rules:
+              - m must be scalar (kg)
+              - a may be scalar (m/s^2) or Vec3 (m/s^2)
+              - F may be scalar (N) or Vec3 (N)
+
+            Inversion semantics:
+              - If solving for a with F Vec3 => a Vec3
+              - If solving for m with F Vec3 and a Vec3 => m scalar only if colinear (direction consistent)
+            """
+            out: Dict[str, Any] = {}
+
+            m_val = known.get("m", None)
+            a_val = known.get("a", None)
+            f_val = known.get("F", None)
+
+            # Guard: mass must be scalar
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be a scalar (kg), not a vector/tensor.")
+
+            # Compute F
+            if m_val is not None and a_val is not None and f_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(a_val):
+                    # Force vector: F = m * a
+                    a: Vec3 = a_val
+                    out["F"] = _vec3_scale_dim(a, m, M)  # dim: (L/T^2) * M = N
+                else:
+                    a = _require_scalar("a", a_val)
+                    out["F"] = m * a
+
+            # Compute a
+            if f_val is not None and m_val is not None and a_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
                     raise ValueError("m cannot be zero.")
-                out["a"] = known["F"] / known["m"]
-            if "F" in known and "a" in known and "m" not in known:
-                if known["a"] == 0:
-                    raise ValueError("a cannot be zero.")
-                out["m"] = known["F"] / known["a"]
+                if _is_vec3(f_val):
+                    F: Vec3 = f_val
+                    out["a"] = _vec3_div_dim(F, m, M)  # dim: N / M = L/T^2
+                else:
+                    F = _require_scalar("F", f_val)
+                    out["a"] = F / m
+
+            # Compute m
+            if f_val is not None and a_val is not None and m_val is None:
+                if _is_vec3(f_val) and _is_vec3(a_val):
+                    F: Vec3 = f_val
+                    a: Vec3 = a_val
+                    if a.magnitude() == 0:
+                        raise ValueError("a cannot be zero.")
+                    # If vectors are not colinear, scalar mass is not well-defined
+                    if not _colinear_vecs(F, a):
+                        raise ValueError("Cannot solve scalar m from non-colinear F and a vectors.")
+                    out["m"] = F.magnitude() / a.magnitude()
+                elif (not _is_vec3(f_val)) and (not _is_vec3(a_val)):
+                    F = _require_scalar("F", f_val)
+                    a = _require_scalar("a", a_val)
+                    if a == 0:
+                        raise ValueError("a cannot be zero.")
+                    out["m"] = F / a
+                else:
+                    # Mixed scalar/vector: require scalar solve using magnitudes
+                    if _is_vec3(f_val):
+                        F: Vec3 = f_val
+                        a = _require_scalar("a", a_val)
+                        if a == 0:
+                            raise ValueError("a cannot be zero.")
+                        out["m"] = F.magnitude() / abs(a)
+                    else:
+                        F = _require_scalar("F", f_val)
+                        a: Vec3 = a_val
+                        if a.magnitude() == 0:
+                            raise ValueError("a cannot be zero.")
+                        out["m"] = abs(F) / a.magnitude()
+
             return out
 
         self.register(Formula(
@@ -734,19 +868,152 @@ class FormulaLibrary:
             notes="Deterministic mechanics baseline."
         ))
 
-        # Kinetic energy: KE = 1/2 m v^2
-        def solve_ke(known: Dict[str, float]) -> Dict[str, float]:
-            out = {}
-            if "m" in known and "v" in known and "KE" not in known:
-                out["KE"] = 0.5 * known["m"] * (known["v"] ** 2)
-            if "KE" in known and "m" in known and "v" not in known:
-                if known["m"] == 0:
+        # Momentum: p = m * v  (vector-capable)
+        def solve_p_m_v(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m", None)
+            v_val = known.get("v", None)
+            p_val = known.get("p", None)
+
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be scalar (kg).")
+
+            # p = m v
+            if m_val is not None and v_val is not None and p_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    out["p"] = _vec3_scale_dim(v, m, M)  # dim: (L/T) * M
+                else:
+                    v = _require_scalar("v", v_val)
+                    out["p"] = m * v
+
+            # v = p / m
+            if p_val is not None and m_val is not None and v_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
                     raise ValueError("m cannot be zero.")
-                out["v"] = math.sqrt((2 * known["KE"]) / known["m"])
-            if "KE" in known and "v" in known and "m" not in known:
-                if known["v"] == 0:
-                    raise ValueError("v cannot be zero.")
-                out["m"] = (2 * known["KE"]) / (known["v"] ** 2)
+                if _is_vec3(p_val):
+                    p: Vec3 = p_val
+                    out["v"] = _vec3_div_dim(p, m, M)
+                else:
+                    p = _require_scalar("p", p_val)
+                    out["v"] = p / m
+
+            # m = |p| / |v| (only well-defined if both are vectors and colinear, or both scalars)
+            if p_val is not None and v_val is not None and m_val is None:
+                if _is_vec3(p_val) and _is_vec3(v_val):
+                    p: Vec3 = p_val
+                    v: Vec3 = v_val
+                    if v.magnitude() == 0:
+                        raise ValueError("v cannot be zero.")
+                    if not _colinear_vecs(p, v):
+                        raise ValueError("Cannot solve scalar m from non-colinear p and v vectors.")
+                    out["m"] = p.magnitude() / v.magnitude()
+                elif (not _is_vec3(p_val)) and (not _is_vec3(v_val)):
+                    p = _require_scalar("p", p_val)
+                    v = _require_scalar("v", v_val)
+                    if v == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = p / v
+                else:
+                    # Mixed scalar/vector => use magnitudes
+                    if _is_vec3(p_val):
+                        p: Vec3 = p_val
+                        v = _require_scalar("v", v_val)
+                        if v == 0:
+                            raise ValueError("v cannot be zero.")
+                        out["m"] = p.magnitude() / abs(v)
+                    else:
+                        p = _require_scalar("p", p_val)
+                        v: Vec3 = v_val
+                        if v.magnitude() == 0:
+                            raise ValueError("v cannot be zero.")
+                        out["m"] = abs(p) / v.magnitude()
+
+            return out
+
+        self.register(Formula(
+            name="Linear Momentum",
+            domain="physics.mechanics",
+            equation="p = m * v",
+            variables={"p": "Momentum", "m": "Mass", "v": "Velocity"},
+            units={"p": "kg*m/s", "m": "kg", "v": "m/s"},
+            dims={"p": M*L/T, "m": M, "v": L/T},
+            solve=solve_p_m_v,
+            notes="Vector-capable momentum solver for robotics dynamics."
+        ))
+
+        # Torque: τ = r × F  (forward solve; robotics-grade)
+        def solve_tau_r_cross_F(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            r_val = known.get("r", None)
+            f_val = known.get("F", None)
+            tau_val = known.get("tau", None)
+
+            if tau_val is None and r_val is not None and f_val is not None:
+                if not _is_vec3(r_val) or not _is_vec3(f_val):
+                    raise ValueError("Torque solve requires r and F as Vec3.")
+                r: Vec3 = r_val
+                Fv: Vec3 = f_val
+                out["tau"] = r.cross(Fv)  # dim: L * N
+            return out
+
+        tau_dim = N_dim * L
+        self.register(Formula(
+            name="Torque (Cross Product)",
+            domain="physics.mechanics",
+            equation="tau = r × F",
+            variables={"tau": "Torque vector", "r": "Position/lever arm", "F": "Force vector"},
+            units={"tau": "N*m", "r": "m", "F": "N"},
+            dims={"tau": tau_dim, "r": L, "F": N_dim},
+            solve=solve_tau_r_cross_F,
+            notes="Forward torque computation (vector cross). Inversion is intentionally conservative."
+        ))
+
+        # Kinetic energy: KE = 1/2 m v^2
+        def solve_ke(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m", None)
+            v_val = known.get("v", None)
+            ke_val = known.get("KE", None)
+
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be scalar (kg).")
+
+            # KE = 1/2 m |v|^2
+            if m_val is not None and v_val is not None and ke_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    out["KE"] = 0.5 * m * (v.magnitude() ** 2)
+                else:
+                    v = _require_scalar("v", v_val)
+                    out["KE"] = 0.5 * m * (v ** 2)
+
+            # |v| = sqrt(2 KE / m)
+            if ke_val is not None and m_val is not None and v_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
+                    raise ValueError("m cannot be zero.")
+                KE = _require_scalar("KE", ke_val)
+                out["v"] = math.sqrt((2 * KE) / m)
+
+            # m = 2 KE / |v|^2
+            if ke_val is not None and v_val is not None and m_val is None:
+                KE = _require_scalar("KE", ke_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    spd2 = v.magnitude() ** 2
+                    if spd2 == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = (2 * KE) / spd2
+                else:
+                    v = _require_scalar("v", v_val)
+                    if v == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = (2 * KE) / (v ** 2)
+
             return out
 
         self.register(Formula(
