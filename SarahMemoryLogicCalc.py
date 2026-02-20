@@ -1025,6 +1025,10 @@ class ReasoningEngine:
         if self._looks_like_tensor_math(ql):
             return self.tensor_math(q)
 
+        # 3.75) Scalar / Vector / Tensor Calculus (field operators + Jacobian/Hessian)
+        if self._looks_like_calculus(ql):
+            return self.calculus(q)
+
         # 4) Domain formula solve
         if self._looks_like_formula_solve(ql):
             return self.solve_formula(q)
@@ -1094,6 +1098,20 @@ class ReasoningEngine:
         return False
 
 
+
+    def _looks_like_calculus(self, ql: str) -> bool:
+        # Field operators + differential tensor/vector calculus
+        keywords = [
+            "grad", "gradient", "div", "divergence", "curl",
+            "jacobian", "hessian", "partial", "d/dx", "d/dy", "d/dz",
+            "nabla", "∇", "tensor calculus", "vector calculus", "scalar calculus"
+        ]
+        if any(k in ql for k in keywords):
+            return True
+        # shorthand patterns: grad( ... ), div( ... ), curl( ... )
+        if re.search(r"\b(grad|div|curl|jacobian|hessian)\s*\(", ql):
+            return True
+        return False
     # -------------------------------
     # VECTOR MATH (Vec3 + directional force + torque)
     # -------------------------------
@@ -1341,7 +1359,276 @@ class ReasoningEngine:
             return SolveResult(ok=False, kind="tensor", text=f"Tensor failure: {e}", meaning=mg)
 
 
+    
     # -------------------------------
+    # SCALAR / VECTOR / TENSOR CALCULUS (finite-difference, unit-aware)
+    # -------------------------------
+
+    def calculus(self, query: str) -> SolveResult:
+        """
+        Deterministic calculus operators for scalar/vector/tensor fields.
+        Supported (all numeric via central finite differences):
+          - grad(f) / gradient(f)
+          - div(Fx,Fy,Fz) / divergence(...)
+          - curl(Fx,Fy,Fz)
+          - jacobian(Fx,Fy,Fz)  (3x3)
+          - hessian(f)          (3x3)
+          - tensor_div(Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz) -> Vec3
+        Usage patterns:
+          grad(x*y + z) x=1 y=2 z=3 h=1e-5 unit=Pa
+          div(x, y, z) x=1 y=2 z=3
+          curl(y, -x, 0) x=1 y=0 z=0
+          jacobian(x*y, y*z, z*x) x=1 y=2 z=3
+          hessian(x*x + y*y + z*z) x=1 y=2 z=3
+          tensor_div( x,0,0, 0,y,0, 0,0,z ) x=1 y=2 z=3
+        """
+        mg = MeaningGraph(meta={"intent": "calculus"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # Extract evaluation point + step size
+        vars_known = self._extract_assignments(q)
+        x0 = float(vars_known.get("x", 0.0))
+        y0 = float(vars_known.get("y", 0.0))
+        z0 = float(vars_known.get("z", 0.0))
+        h = float(vars_known.get("h", 1e-5))
+
+        # Optional unit hint for the field values
+        unit = ""
+        m_unit = re.search(r"\b(?:unit|u)\s*=\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)\b", q, flags=re.I)
+        if m_unit:
+            unit = (m_unit.group(1) or "").strip()
+
+        uu = self.units.get(unit) if unit else None
+        base_dim = uu.dim if uu else Dimension()
+        L = Dimension(L=1)
+
+        # Identify operator + body
+        op = None
+        body = None
+        m = re.search(r"\b(grad|gradient|divergence|div|curl|jacobian|hessian|tensor_div|tensordiv)\s*\((.*)\)", ql)
+        if m:
+            op = m.group(1)
+            # slice original query for body to preserve case/symbols
+            # best-effort: find the first '(' after op
+            p = q.lower().find(m.group(1))  # op start
+            p_paren = q.find("(", p)
+            if p_paren != -1:
+                # find matching ')'
+                depth = 0
+                end = -1
+                for i in range(p_paren, len(q)):
+                    if q[i] == "(":
+                        depth += 1
+                    elif q[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                if end != -1:
+                    body = q[p_paren+1:end].strip()
+        else:
+            # Alternate pattern: "grad f=..." or "gradient f=..."
+            m2 = re.search(r"\b(grad|gradient|divergence|div|curl|jacobian|hessian|tensor_div|tensordiv)\b\s*(.+)", ql)
+            if m2:
+                op = m2.group(1)
+                body = q[len(m2.group(1)):].strip()
+
+        if not op or not body:
+            mg.add("calculus_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="calculus",
+                               text="Calculus engine expects an operator like grad(...), div(...), curl(...), jacobian(...), hessian(...), tensor_div(...), plus x=,y=,z= and optional h=.",
+                               meaning=mg)
+
+        op_norm = op.lower()
+        if op_norm == "gradient":
+            op_norm = "grad"
+        if op_norm == "divergence":
+            op_norm = "div"
+        if op_norm == "tensordiv":
+            op_norm = "tensor_div"
+
+        # Safe evaluation for expressions in x,y,z
+        def eval_expr(expr: str, x: float, y: float, z: float) -> float:
+            return self._safe_eval_xyz(expr, x=x, y=y, z=z)
+
+        def d_dx(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x+h, y, z) - eval_expr(expr, x-h, y, z)) / (2.0*h)
+
+        def d_dy(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x, y+h, z) - eval_expr(expr, x, y-h, z)) / (2.0*h)
+
+        def d_dz(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x, y, z+h) - eval_expr(expr, x, y, z-h)) / (2.0*h)
+
+        # Parse arguments
+        args = self._split_top_level_args(body)
+
+        try:
+            if op_norm == "grad":
+                if len(args) != 1:
+                    return SolveResult(ok=False, kind="calculus", text="grad(f) requires exactly one scalar expression f(x,y,z).", meaning=mg)
+                f = args[0]
+                gx = d_dx(f, x0, y0, z0)
+                gy = d_dy(f, x0, y0, z0)
+                gz = d_dz(f, x0, y0, z0)
+                dim_out = base_dim / L
+                v = Vec3(gx, gy, gz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("grad", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"grad": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇f = {v.format(unit_hint)} at (x,y,z)=({x0},{y0},{z0})",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "div":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="div(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                divv = d_dx(Fx, x0, y0, z0) + d_dy(Fy, x0, y0, z0) + d_dz(Fz, x0, y0, z0)
+                dim_out = base_dim / L
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("div", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"div": divv, "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇·F = {divv} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "curl":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="curl(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                cx = d_dy(Fz, x0, y0, z0) - d_dz(Fy, x0, y0, z0)
+                cy = d_dz(Fx, x0, y0, z0) - d_dx(Fz, x0, y0, z0)
+                cz = d_dx(Fy, x0, y0, z0) - d_dy(Fx, x0, y0, z0)
+                dim_out = base_dim / L
+                v = Vec3(cx, cy, cz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("curl", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"curl": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇×F = {v.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "jacobian":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="jacobian(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                j00 = d_dx(Fx, x0, y0, z0); j01 = d_dy(Fx, x0, y0, z0); j02 = d_dz(Fx, x0, y0, z0)
+                j10 = d_dx(Fy, x0, y0, z0); j11 = d_dy(Fy, x0, y0, z0); j12 = d_dz(Fy, x0, y0, z0)
+                j20 = d_dx(Fz, x0, y0, z0); j21 = d_dy(Fz, x0, y0, z0); j22 = d_dz(Fz, x0, y0, z0)
+                dim_out = base_dim / L
+                T = Tensor33(j00, j01, j02, j10, j11, j12, j20, j21, j22, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("jacobian", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"jacobian": T.rows(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"J = {T.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "hessian":
+                if len(args) != 1:
+                    return SolveResult(ok=False, kind="calculus", text="hessian(f) requires exactly one scalar expression.", meaning=mg)
+                f = args[0]
+                # second derivatives via central differences on first derivatives (stable enough for deterministic baseline)
+                f_x = lambda X,Y,Z: d_dx(f, X, Y, Z)
+                f_y = lambda X,Y,Z: d_dy(f, X, Y, Z)
+                f_z = lambda X,Y,Z: d_dz(f, X, Y, Z)
+
+                h00 = (f_x(x0+h, y0, z0) - f_x(x0-h, y0, z0)) / (2.0*h)
+                h11 = (f_y(x0, y0+h, z0) - f_y(x0, y0-h, z0)) / (2.0*h)
+                h22 = (f_z(x0, y0, z0+h) - f_z(x0, y0, z0-h)) / (2.0*h)
+
+                h01 = (f_x(x0, y0+h, z0) - f_x(x0, y0-h, z0)) / (2.0*h)
+                h02 = (f_x(x0, y0, z0+h) - f_x(x0, y0, z0-h)) / (2.0*h)
+                h10 = (f_y(x0+h, y0, z0) - f_y(x0-h, y0, z0)) / (2.0*h)
+                h12 = (f_y(x0, y0, z0+h) - f_y(x0, y0, z0-h)) / (2.0*h)
+                h20 = (f_z(x0+h, y0, z0) - f_z(x0-h, y0, z0)) / (2.0*h)
+                h21 = (f_z(x0, y0+h, z0) - f_z(x0, y0-h, z0)) / (2.0*h)
+
+                dim_out = base_dim / (L ** 2)
+                H = Tensor33(h00, h01, h02, h10, h11, h12, h20, h21, h22, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("hessian", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"hessian": H.rows(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"H = {H.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "tensor_div":
+                if len(args) != 9:
+                    return SolveResult(ok=False, kind="calculus", text="tensor_div(Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz) requires 9 component expressions.", meaning=mg)
+                Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz = args
+                # (∇·T)_i = ∂T_{ij}/∂x_j  with j in {x,y,z}
+                vx = d_dx(Txx, x0,y0,z0) + d_dy(Txy, x0,y0,z0) + d_dz(Txz, x0,y0,z0)
+                vy = d_dx(Tyx, x0,y0,z0) + d_dy(Tyy, x0,y0,z0) + d_dz(Tyz, x0,y0,z0)
+                vz = d_dx(Tzx, x0,y0,z0) + d_dy(Tzy, x0,y0,z0) + d_dz(Tzz, x0,y0,z0)
+                dim_out = base_dim / L
+                v = Vec3(vx, vy, vz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("tensor_div", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"tensor_div": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇·T = {v.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            return SolveResult(ok=False, kind="calculus", text=f"Unknown calculus operator: {op_norm}", meaning=mg)
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="calculus", text=f"Calculus failure: {e}", meaning=mg)
+
+    def _safe_eval_xyz(self, expr: str, x: float, y: float, z: float) -> float:
+        """
+        Safe numeric evaluation of expressions in x,y,z.
+        Deterministic, restricted builtins.
+        """
+        if not expr:
+            raise ValueError("Empty expression.")
+        e = expr.strip()
+        e = e.replace("^", "**").replace("×", "*").replace("÷", "/")
+        allowed = {
+            "x": float(x), "y": float(y), "z": float(z),
+            "pi": math.pi, "e": math.e, "tau": math.tau,
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2,
+            "log": math.log, "log10": math.log10, "exp": math.exp,
+            "abs": abs, "floor": math.floor, "ceil": math.ceil,
+            "pow": pow, "min": min, "max": max,
+        }
+        if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\)\sA-Za-z_]+", e):
+            raise ValueError("Unsafe expression.")
+        return float(eval(e, {"__builtins__": {}}, allowed))
+
+    def _split_top_level_args(self, s: str) -> List[str]:
+        """
+        Split a comma-separated argument list, respecting (),[],{} nesting.
+        """
+        out: List[str] = []
+        buf: List[str] = []
+        depth = 0
+        for ch in (s or ""):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                part = "".join(buf).strip()
+                if part:
+                    out.append(part)
+                buf = []
+            else:
+                buf.append(ch)
+        last = "".join(buf).strip()
+        if last:
+            out.append(last)
+        return out
+# -------------------------------
     # CALC (safe eval baseline)
     # -------------------------------
 
