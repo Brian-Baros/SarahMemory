@@ -2,9 +2,9 @@
 File: SarahMemoryIntegration.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-02-22
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -34,6 +34,138 @@ from SarahMemoryGUI import run_gui
 from SarahMemoryVoice import synthesize_voice, shutdown_tts
 from SarahMemoryDiagnostics import run_self_check
 import SarahMemoryGlobals as config
+
+# =============================================================================
+# FILESYSTEM ACTION EXECUTOR (Kernel "do it" lane)
+# =============================================================================
+try:
+    import SarahMemoryFilesystem as _FS  # type: ignore
+except Exception:
+    _FS = None
+
+# Reusable managers (avoid re-init churn)
+_FS_BACKUP_MGR = None
+_FS_SCANNER = None
+
+def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
+    """Execute a normalized action ticket locally using SarahMemoryFilesystem.
+
+    Governance:
+    - Respects SAFE_MODE and LOCAL_ONLY_MODE gates.
+    - If ticket requires confirmation, caller must pass confirm=True.
+    - Never calls network/API.
+
+    Returns a result envelope: {ok, action, result, error, needs_confirm}
+    """
+    # Basic validation
+    if not isinstance(ticket, dict):
+        return {"ok": False, "error": "ticket must be a dict", "action": None}
+
+    action = str(ticket.get("action") or "").strip().lower()
+    args = ticket.get("args") if isinstance(ticket.get("args"), dict) else {}
+    requires_confirm = bool(ticket.get("requires_confirm", True))
+    safety_level = str(ticket.get("safety_level") or "medium").strip().lower()
+
+    # Hard gates
+    try:
+        if bool(getattr(config, "SAFE_MODE", True)) and safety_level in ("medium", "high"):
+            # SAFE_MODE == no autonomous execution unless explicitly confirmed
+            requires_confirm = True
+    except Exception:
+        pass
+
+    if requires_confirm and not confirm:
+        return {"ok": False, "action": action, "needs_confirm": True, "error": "confirmation_required"}
+
+    if _FS is None:
+        return {"ok": False, "action": action, "error": "SarahMemoryFilesystem not available"}
+
+    global _FS_BACKUP_MGR, _FS_SCANNER
+    try:
+        if _FS_BACKUP_MGR is None:
+            _FS_BACKUP_MGR = _FS.BackupManager()
+    except Exception:
+        _FS_BACKUP_MGR = None
+
+    try:
+        if _FS_SCANNER is None:
+            _FS_SCANNER = _FS.FileScanner()
+    except Exception:
+        _FS_SCANNER = None
+
+    # Dispatch map
+    try:
+        if action in ("file_copy", "copy"):
+            return {"ok": bool(_FS.FileOperations.safe_copy(args.get("source", ""), args.get("destination", ""), verify=bool(args.get("verify", True)))),
+                    "action": action, "result": {}}
+
+        if action in ("file_move", "move"):
+            return {"ok": bool(_FS.FileOperations.safe_move(args.get("source", ""), args.get("destination", ""), overwrite=bool(args.get("overwrite", False)))),
+                    "action": action, "result": {}}
+
+        if action in ("file_rename", "rename"):
+            return {"ok": bool(_FS.FileOperations.safe_rename(args.get("old_path", ""), args.get("new_path", ""))),
+                    "action": action, "result": {}}
+
+        if action in ("file_delete", "delete"):
+            return {"ok": bool(_FS.FileOperations.safe_delete(args.get("file_path", ""), secure=bool(args.get("secure", False)))),
+                    "action": action, "result": {}}
+
+        if action in ("file_attrs", "set_attributes", "file_attributes"):
+            return {"ok": bool(_FS.FileOperations.set_file_attributes(
+                        args.get("file_path", ""),
+                        readonly=args.get("readonly", None),
+                        hidden=args.get("hidden", None),
+                        system=args.get("system", None),
+                    )),
+                    "action": action, "result": {}}
+
+        if action in ("backup_full", "backup_create_full"):
+            if _FS_BACKUP_MGR is None:
+                return {"ok": False, "action": action, "error": "BackupManager unavailable"}
+            path = _FS_BACKUP_MGR.create_full_backup(source_dir=args.get("source_dir", None), destination=args.get("destination", None))
+            return {"ok": bool(path), "action": action, "result": {"backup_path": path}}
+
+        if action in ("backup_incremental", "backup_create_incremental"):
+            if _FS_BACKUP_MGR is None:
+                return {"ok": False, "action": action, "error": "BackupManager unavailable"}
+            path = _FS_BACKUP_MGR.create_incremental_backup(source_dir=args.get("source_dir", None), base_backup=args.get("base_backup", None))
+            return {"ok": bool(path), "action": action, "result": {"backup_path": path}}
+
+        if action in ("backup_restore", "restore_backup"):
+            if _FS_BACKUP_MGR is None:
+                return {"ok": False, "action": action, "error": "BackupManager unavailable"}
+            ok = _FS_BACKUP_MGR.restore_backup(args.get("backup_path", ""), destination=args.get("destination", None), verify_checksum=bool(args.get("verify_checksum", True)))
+            return {"ok": bool(ok), "action": action, "result": {}}
+
+        if action in ("backup_rotate", "rotate_backups"):
+            if _FS_BACKUP_MGR is None:
+                return {"ok": False, "action": action, "error": "BackupManager unavailable"}
+            _FS_BACKUP_MGR.rotate_old_backups(max_count=int(args.get("max_count", 50)), max_age_days=int(args.get("max_age_days", 30)))
+            return {"ok": True, "action": action, "result": {}}
+
+        if action in ("scan_file", "file_scan"):
+            if _FS_SCANNER is None:
+                return {"ok": False, "action": action, "error": "FileScanner unavailable"}
+            data = _FS_SCANNER.scan_file(args.get("file_path", ""), quarantine_on_threat=bool(args.get("quarantine_on_threat", True)))
+            return {"ok": True, "action": action, "result": data}
+
+        if action in ("scan_dir", "scan_directory", "dir_scan"):
+            if _FS_SCANNER is None:
+                return {"ok": False, "action": action, "error": "FileScanner unavailable"}
+            data = _FS_SCANNER.scan_directory(args.get("directory", ""), recursive=bool(args.get("recursive", True)), quarantine_on_threat=bool(args.get("quarantine_on_threat", True)))
+            return {"ok": True, "action": action, "result": {"items": data}}
+
+        if action in ("quarantine_restore", "restore_quarantine"):
+            if _FS_SCANNER is None:
+                return {"ok": False, "action": action, "error": "FileScanner unavailable"}
+            ok = _FS_SCANNER.restore_from_quarantine(args.get("quarantine_path", ""), restore_path=args.get("restore_path", None))
+            return {"ok": bool(ok), "action": action, "result": {}}
+
+        return {"ok": False, "action": action, "error": f"unknown_action:{action}"}
+
+    except Exception as e:
+        return {"ok": False, "action": action, "error": f"{type(e).__name__}: {e}"}
 
 # =============================================================================
 # CONTEXT BUFFER INITIALIZATION

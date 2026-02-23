@@ -80,6 +80,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryMigrations.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryMusicGenerator.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryNetwork.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryNeuron.py"),   
     os.path.join(config.BASE_DIR, "SarahMemoryOptimization.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryPersonality.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReminder.py"),
