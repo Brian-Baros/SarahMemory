@@ -2326,6 +2326,126 @@ def run_automation_trigger():
 # Calendar + Chat history (for Web UI)
 CHAT_HISTORY_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "context_history.db")
 
+
+# ---------------------------------------------------------------------------
+# v8 WebUI Compatibility: Conversations API (HistoryScreen.tsx)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/conversations")
+def api_conversations_list():
+    """Return recent conversation threads.
+
+    Response:
+      { ok: true, conversations: [ {id,title,preview,timestamp,message_count} ] }
+    """
+    con = None
+    try:
+        con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        # Best-effort schema support: we aggregate by conversation id.
+        cur.execute(
+            """
+            SELECT
+              id,
+              MAX(timestamp) AS timestamp,
+              MAX(COALESCE(user_input, '')) AS preview,
+              COUNT(1) AS message_count
+            FROM conversations
+            GROUP BY id
+            ORDER BY MAX(timestamp) DESC
+            LIMIT 250
+            """
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        convs = []
+        for r in rows:
+            cid = str(r.get('id'))
+            convs.append({
+                'id': cid,
+                'title': f'Conversation {cid[:8]}' if cid else 'Conversation',
+                'preview': r.get('preview') or '',
+                'timestamp': r.get('timestamp') or '',
+                'message_count': int(r.get('message_count') or 0),
+            })
+        return jsonify({'ok': True, 'conversations': convs}), 200
+    except Exception as e:
+        app_logger.error(f"/api/conversations failed: {e}", exc_info=True)
+        return jsonify({'ok': False, 'error': 'Failed to fetch conversations'}), 500
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/conversations/<convo_id>")
+def api_conversation_get(convo_id):
+    """Return one conversation as a message list.
+
+    Response:
+      { ok: true, id: <id>, messages: [ {role,content,meta?,timestamp?} ] }
+    """
+    if not convo_id:
+        return jsonify({'ok': False, 'error': 'Conversation ID required'}), 400
+
+    con = None
+    try:
+        con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        # Order by timestamp when present; otherwise stable rowid.
+        try:
+            cur.execute(
+                """
+                SELECT role, text, metadata AS meta, timestamp
+                FROM conversations
+                WHERE id = ?
+                ORDER BY COALESCE(timestamp, '') ASC
+                """,
+                (convo_id,),
+            )
+        except Exception:
+            cur.execute(
+                """
+                SELECT role, text, metadata AS meta, NULL AS timestamp
+                FROM conversations
+                WHERE id = ?
+                """,
+                (convo_id,),
+            )
+
+        rows = [dict(r) for r in cur.fetchall()]
+        if not rows:
+            return jsonify({'ok': False, 'error': 'Not found'}), 404
+
+        msgs = []
+        for r in rows:
+            role = (r.get('role') or '').strip().lower() or 'assistant'
+            if role not in ('user', 'assistant', 'system'):
+                # fall back if DB stores other values
+                role = 'user' if role.startswith('u') else 'assistant'
+            msgs.append({
+                'role': role,
+                'content': r.get('text') or '',
+                'meta': r.get('meta') or None,
+                'timestamp': r.get('timestamp') or None,
+            })
+
+        return jsonify({'ok': True, 'id': convo_id, 'messages': msgs}), 200
+    except Exception as e:
+        app_logger.error(f"/api/conversations/{convo_id} failed: {e}", exc_info=True)
+        return jsonify({'ok': False, 'error': 'Failed to fetch conversation'}), 500
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
 @app.route("/get_chat_threads_by_date")
 def get_chat_threads_by_date():
     date_filter = request.args.get("date", "").strip()  # YYYY-MM-DD

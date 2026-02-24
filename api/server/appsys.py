@@ -975,6 +975,38 @@ def browser_open_external():
         return _err("Open failed", 500, detail=str(e))
 
 
+@bp.post("/api/browser/open_native")
+def browser_open_native():
+    """Alias for /api/browser/open used by the WebUI."""
+    return browser_open_external()
+
+
+@bp.get("/api/dlengine/status")
+def dlengine_status():
+    """
+    Lightweight status endpoint used by DLEngineScreen.tsx.
+
+    This is intentionally minimal: it reports availability + basic context without
+    pulling heavy model runtimes. If you later wire an actual downloader/engine,
+    extend the payload but keep fields stable.
+    """
+    try:
+        info = {
+            "ok": True,
+            "status": "ok",
+            "engine": "local",
+        }
+        try:
+            import SarahMemoryGlobals as G  # type: ignore
+            info["local_only"] = bool(getattr(G, "LOCAL_ONLY_MODE", False))
+            info["multi_model"] = bool(getattr(G, "MULTI_MODEL", False))
+            info["dev_mode"] = bool(getattr(G, "DEVELOPERSMODE", False))
+        except Exception:
+            pass
+        return jsonify(info), 200
+    except Exception as e:
+        return _err("dlengine status failed", 500, detail=str(e))
+
 # ---------------------------------------------------------------------
 # init_app (called by app.py ONCE)
 # ---------------------------------------------------------------------
