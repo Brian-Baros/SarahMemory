@@ -43,9 +43,9 @@ NEW (CURRENT UPDATES DISCUSSED):
     WE DON'T WANT SARAHMEMORY TO BECOME LIKE Scifi Terminator Movies of SKYNET or THE MATRIX,
     SO THE KILL SWITCH IS IN THE SarahMemoryGlobals.py file around LINE 1062-1072
     the FLAG -default is FALSE .....for now...
-    -SET TO FALSE you're Taking the BLUE PILL, - It's Safe 
-    -SET TO TRUE you Taking the RED PILL, - And you're allowing the System to Self Evolve 
-    
+    -SET TO FALSE you're Taking the BLUE PILL, - It's Safe
+    -SET TO TRUE you Taking the RED PILL, - And you're allowing the System to Self Evolve
+
    - When NEOSKYMATRIX is False: tool runs manually / interactively (prompts).
    - When NEOSKYMATRIX is True: tool can run in autonomous mode (no prompts) and can be gated to weekly.
 2) Patch overlay version behavior:
@@ -464,6 +464,60 @@ def _read_text_safely(p: Path, max_chars: int = 200_000) -> str:
 
 
 # =============================================================================
+# NORMALIZATION (DEDUP STABILITY) — NEW
+# =============================================================================
+
+def _normalize_error_text(text: str, max_len: int = 200_000) -> str:
+    """
+    Normalize volatile tokens so the same root-cause produces the same fingerprint across runs.
+    Removes timestamps, PIDs, hex addresses, request IDs, ports, and other high-churn noise.
+
+    IMPORTANT:
+    - We keep exception types, messages, module/file names, and stack frame structure.
+    - This function is intended ONLY for hashing/dedup; we still store original details separately.
+    """
+    if not text:
+        return ""
+
+    s = text[:max_len]
+
+    # Normalize line endings
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove common timestamp formats
+    # 2026-02-16 18:34:15,980  |  2026-02-16T18:34:15Z  |  2026-02-16 18:34:15
+    s = re.sub(r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z)?\b", "<TS>", s)
+
+    # Remove Windows-style date time like 02/16/2026 18:34:15
+    s = re.sub(r"\b\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}:\d{2}\b", "<TS>", s)
+
+    # Remove hex memory addresses (0x0000..., 0x7ffe...)
+    s = re.sub(r"\b0x[0-9a-fA-F]+\b", "<HEX>", s)
+
+    # Remove PIDs / TIDs / numeric IDs in common patterns
+    s = re.sub(r"\bPID[:= ]+\d+\b", "PID=<N>", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bTID[:= ]+\d+\b", "TID=<N>", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bthread[-_ ]id[:= ]+\d+\b", "THREAD_ID=<N>", s, flags=re.IGNORECASE)
+    s = re.sub(r"\brequest[-_ ]id[:= ]+[A-Za-z0-9\-_.]+\b", "REQUEST_ID=<ID>", s, flags=re.IGNORECASE)
+
+    # Normalize localhost-style ports and explicit port prints
+    s = re.sub(r"\b(port\s*[=:]\s*)\d+\b", r"\1<N>", s, flags=re.IGNORECASE)
+    s = re.sub(r"\b127\.0\.0\.1:\d+\b", "127.0.0.1:<N>", s)
+    s = re.sub(r"\blocalhost:\d+\b", "localhost:<N>", s)
+
+    # Normalize paths that include temp random folders (best-effort, keep file name)
+    # Example: C:\Users\...\AppData\Local\Temp\tmpabcd\file.py -> <PATH>\file.py
+    s = re.sub(r"\b[A-Za-z]:\\(?:Users\\[^\\]+\\)?AppData\\Local\\Temp\\[^\\\s]+\\", "<TMP>\\", s)
+
+    # Normalize repeated whitespace
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+
+    # Trim
+    return s.strip()
+
+
+# =============================================================================
 # NEOSKYMATRIX MODE + WEEKLY GATING (NEW)
 # =============================================================================
 
@@ -510,11 +564,26 @@ def _save_neosky_last_run(dt: datetime) -> None:
 def _should_run_weekly() -> bool:
     """
     Autonomous runs should happen at most once per 7 days to prevent bloat.
+    NOTE:
+    - If you want to test hourly scheduling in a separate environment, keep your scheduler hourly
+      BUT leave this gate OFF (weekly_gate=False) OR adjust the interval in SarahMemoryGlobals.py
+      by setting NEOSKY_MIN_INTERVAL_HOURS (optional).
     """
+    # Optional override for testing environments:
+    # config.NEOSKY_MIN_INTERVAL_HOURS = 1  (hourly)
+    min_hours = 24 * 7
+    try:
+        if config is not None and hasattr(config, "NEOSKY_MIN_INTERVAL_HOURS"):
+            v = getattr(config, "NEOSKY_MIN_INTERVAL_HOURS")
+            if isinstance(v, (int, float)) and v > 0:
+                min_hours = int(v)
+    except Exception:
+        pass
+
     last = _load_neosky_last_run()
     if last is None:
         return True
-    return (datetime.now() - last) >= timedelta(days=7)
+    return (datetime.now() - last) >= timedelta(hours=min_hours)
 
 
 def _discover_mods_overlay_dir() -> Optional[Path]:
@@ -656,27 +725,15 @@ def _list_existing_patch_files() -> List[str]:
 
 def _make_nonconflicting_patch_name(base_name: str) -> str:
     """
-    If a patch file already exists in v800 staging dir, append _r1/_r2/etc before '_patch.py'.
-    NOTE: A newer mods folder (v801+) is allowed to override by using the same filename.
-          This tool avoids overwriting within v800 itself.
+    NOTE (Owner rule update):
+    - We DO NOT generate _r1/_r2/... revision patch names anymore.
+    - In v8, each issue gets ONE deterministic patch filename (includes fingerprint).
+    - This helper remains for compatibility, but now it simply returns base_name.
+
+    If you see name collisions, it means two different issues are mapping to the same base_name.
+    That is addressed by embedding the issue fingerprint into the filename (see create_patch_from_issue).
     """
-    existing = set(_list_existing_patch_files())
-    if base_name not in existing:
-        return base_name
-
-    if base_name.endswith("_patch.py"):
-        stem = base_name[:-9]  # remove "_patch.py"
-        suffix = "_patch.py"
-    else:
-        stem = base_name[:-3] if base_name.endswith(".py") else base_name
-        suffix = ".py"
-
-    n = 1
-    while True:
-        candidate = f"{stem}_r{n}{suffix}"
-        if candidate not in existing:
-            return candidate
-        n += 1
+    return base_name
 
 
 def _embed_error_context_as_comment(err_text: str, max_chars: int = 14000) -> str:
@@ -895,7 +952,8 @@ def scan_logs_for_issues(limit_files: int = 40) -> List[DetectedIssue]:
 
         blocks = _extract_error_blocks(raw, max_blocks=8)
         for b in blocks:
-            fp = _hash_text(f"{lf}\n{b}")
+            norm = _normalize_error_text(b)
+            fp = _hash_text(f"{lf}\n{norm}")
             issue_id = f"LOG-{fp}"
             summary = b.splitlines()[0][:200] if b else "Log issue"
             issues.append(
@@ -1027,7 +1085,8 @@ def scan_system_db_for_issues(limit_rows_per_table: int = 180) -> List[DetectedI
                     if not looks_bad:
                         continue
 
-                    fp = _hash_text(f"{db_path}:{table}:{msg[:2000]}")
+                    norm_msg = _normalize_error_text(msg, max_len=50_000)
+                    fp = _hash_text(f"{db_path}:{table}:{norm_msg[:2000]}")
                     issue_id = f"DB-{fp}"
                     summary = f"{table}: {msg.splitlines()[0][:200]}"
 
@@ -1103,7 +1162,7 @@ def run_sarahmemory_diagnostics() -> Tuple[List[DetectedIssue], Dict[str, Any]]:
     try:
         blob = json.dumps(raw_report, indent=2)[:200000]
         if any(p.search(blob) for p in _ERROR_PATTERNS):
-            fp = _hash_text(blob[:8000])
+            fp = _hash_text(_normalize_error_text(blob[:8000]))
             issues.append(
                 DetectedIssue(
                     issue_id=f"DIAG-{fp}",
@@ -1153,7 +1212,7 @@ def network_blob_to_issues(net_blob: Dict[str, Any]) -> List[DetectedIssue]:
             return issues
         if "error" in net_blob:
             txt = json.dumps(net_blob, indent=2)[:12000]
-            fp = _hash_text(txt)
+            fp = _hash_text(_normalize_error_text(txt))
             issues.append(
                 DetectedIssue(
                     issue_id=f"NET-{fp}",
@@ -1168,7 +1227,7 @@ def network_blob_to_issues(net_blob: Dict[str, Any]) -> List[DetectedIssue]:
         ms = net_blob.get("mesh_stats")
         if isinstance(ms, dict) and ms.get("error"):
             txt = json.dumps(ms, indent=2)[:8000]
-            fp = _hash_text(txt)
+            fp = _hash_text(_normalize_error_text(txt))
             issues.append(
                 DetectedIssue(
                     issue_id=f"MESH-{fp}",
@@ -1256,6 +1315,24 @@ def propose_patch_filename(target_file: str, component: str, intent: str) -> str
     return f"sm_{VERSION_TAG}_{suffix}_{comp}_{inten}_patch.py"
 
 
+def _inject_fingerprint_into_patch_name(base_name: str, fp: str) -> str:
+    """
+    Deterministic one-patch-per-issue naming:
+      <base> -> <stem>_<fp>_patch.py (or <stem>_<fp>.py)
+    """
+    fp = _sanitize_token(fp)[:16] or "fp"
+
+    if base_name.endswith("_patch.py"):
+        stem = base_name[:-9]  # remove "_patch.py"
+        return f"{stem}_{fp}_patch.py"
+
+    if base_name.endswith(".py"):
+        stem = base_name[:-3]
+        return f"{stem}_{fp}.py"
+
+    return f"{base_name}_{fp}"
+
+
 def build_patch_header(patch_file_rel: str, patch_title: str, goal_lines: List[str]) -> str:
     goals = "\n".join([f"# - {g}" for g in goal_lines])
     return (
@@ -1294,7 +1371,7 @@ def build_patch_template(
         - This patch should be safe to import multiple times.
         - It may add wrappers / monkey-patch functions in-memory at runtime.
         - No new dependencies.
-        \"\"\"
+        \"\"\" 
 
         from __future__ import annotations
 
@@ -1380,8 +1457,13 @@ def _guess_component_intent(text: str, advcu_intent: Optional[str] = None) -> Tu
 
 def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Optional[PatchPlan]:
     """
-    Creates a non-conflicting patch stub and registers the issue fingerprint so it won't duplicate.
+    Creates a deterministic patch stub and registers the issue fingerprint so it won't duplicate.
     Returns None if already processed.
+
+    Owner rule enforced:
+    - ONE patch file per issue fingerprint.
+    - No _r1/_r2 revisions.
+    - Never overwrite existing patch file with same name.
     """
     _ensure_dirs()
 
@@ -1390,9 +1472,33 @@ def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Opt
         return None
 
     component, intent = _guess_component_intent(issue.summary + "\n" + issue.details, issue.advcu_intent)
+
+    # Base (semantic) name then inject fingerprint to make it unique-per-issue deterministically
     base_name = propose_patch_filename(target_file_guess, component, intent)
-    patch_name = _make_nonconflicting_patch_name(base_name)
+    patch_name = _inject_fingerprint_into_patch_name(base_name, issue.fingerprint)
+    patch_name = _make_nonconflicting_patch_name(patch_name)
+
     patch_path = MODS_DIR / patch_name
+
+    # If the patch file already exists, we DO NOT rewrite it.
+    # We just mark the issue as processed and return a plan referencing the existing file.
+    if patch_path.exists():
+        issue.suggested_patch_name = patch_name
+        issue.suggested_patch_goal = f"{component.title()} {intent.replace('_',' ').title()}"
+        issue.suggested_target_file = target_file_guess
+        _mark_processed(issue, patch_name=patch_name)
+
+        return PatchPlan(
+            patch_path=str(patch_path),
+            target_file=target_file_guess,
+            patch_name=patch_name,
+            patch_goal=issue.suggested_patch_goal or "Patch",
+            issue_ids=[issue.issue_id],
+            created_at=_now_iso(),
+            sandbox_tested=False,
+            sandbox_passed=False,
+            safe_to_apply=False,
+        )
 
     patch_title = f"{component.title()} {intent.replace('_',' ').title()}"
     goal_lines = [
@@ -1401,6 +1507,7 @@ def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Opt
         "No core file modifications; monkey-patch only.",
         "Must remain headless-safe (Linux/PythonAnywhere) and Windows-safe.",
         "Patch stub includes original error context for reference.",
+        f"Deterministic issue fingerprint: {issue.fingerprint}",
     ]
 
     apply_body_comment = f"Auto-generated stub from {issue.kind} ({issue.source}). Insert minimal patch logic."
@@ -1849,7 +1956,7 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
       - AdvCU enrich (intent + code-target suggestion)
       - Report
       - (Optional) submit for repair (outbox + suggestions)
-      - (Optional) generate patch stubs (non-conflicting; embeds error context; deduped)
+      - (Optional) generate patch stubs (deterministic; embeds error context; deduped)
       - (Optional) mark/erase original log error blocks after patch generation (owner-approved; DISABLED in autonomous)
       - (Optional) sandbox test patch stubs
     """
@@ -1858,7 +1965,7 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
     if autonomous and weekly_gate:
         if not _should_run_weekly():
             last = _load_neosky_last_run()
-            print(f"[NEOSKYMATRIX] Weekly gate: skipped (last_run={last.isoformat(timespec='seconds') if last else None})")
+            print(f"[NEOSKYMATRIX] Interval gate: skipped (last_run={last.isoformat(timespec='seconds') if last else None})")
             return
 
     def decide(prompt: str, default_no: bool = True, force: Optional[bool] = None) -> bool:
@@ -2015,7 +2122,13 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
                 continue
 
             plans.append(plan)
-            print(f"  + wrote patch stub: {plan.patch_name}")
+            # Detect whether file was newly created vs reused
+            try:
+                exists_now = Path(plan.patch_path).exists()
+                # If it exists, it was either created now or pre-existed; we log same either way.
+                print(f"  + patch ready: {plan.patch_name}")
+            except Exception:
+                print(f"  + patch ready: {plan.patch_name}")
 
             # OPTIONAL: mark/erase original log error block to prevent duplicate detection
             # SAFETY: disabled in autonomous mode (owner-only manual action).
@@ -2082,7 +2195,7 @@ def main() -> None:
         print("  1) Run Evolution Cycle (interactive)")
         print("  2) Show Paths (BASE/DATA/DATASETS/MODS)")
         print("  3) Add SM_AGI key to .env (append-only, user supplies value)")
-        print("  4) NEOSKYMATRIX: Run Autonomous Weekly Cycle (no prompts; gated to 7 days)")
+        print("  4) NEOSKYMATRIX: Run Autonomous Weekly Cycle (no prompts; gated to interval)")
         print("  5) Response Corrections: Improve flagged answers (evolution_corrections.db)")
         print("  6) Operator Bridge: Build Claude Upload Pack + Prompt")
         print("  7) Operator Bridge: Store Claude Output to Repair Outbox")
@@ -2136,16 +2249,13 @@ def main() -> None:
                 print("Failed to modify .env (no changes made).")
 
         elif choice == "4":
-            # Autonomous weekly cycle: respects weekly gating file
+            # Autonomous cycle: respects interval gating file
             try:
                 evolve_once(autonomous=True, weekly_gate=True)
             except KeyboardInterrupt:
                 print("\nCancelled by user.\n")
-                # (message consolidated)
-                # (message consolidated)
             except Exception as e:
                 print(f"\nAutonomous evolution crashed (tool survived): {e}")
-                # (message consolidated)
                 print(traceback.format_exc())
 
         elif choice == "5":
@@ -2159,11 +2269,8 @@ def main() -> None:
                 run_response_corrections(limit=limit)
             except KeyboardInterrupt:
                 print("\nCancelled by user.\n")
-                # (message consolidated)
-                # (message consolidated)
             except Exception as e:
                 print(f"\nResponse correction run crashed (tool survived): {e}")
-                # (message consolidated)
                 print(traceback.format_exc())
 
         elif choice == "6":
@@ -2175,7 +2282,6 @@ def main() -> None:
                 files = [f.strip() for f in files_csv.split(",") if f.strip()]
                 if not files:
                     print("No files provided. Nothing to pack.\n")
-                    # (message consolidated)
                     continue
                 pack_dir, manifest_path, prompt_path = build_claude_operator_pack(
                     pack_title=title,
@@ -2183,26 +2289,19 @@ def main() -> None:
                     rel_paths=files,
                 )
                 print("\nClaude Pack Created:")
-                # (message consolidated)
                 print(f"  Pack Dir:   {pack_dir}")
                 print(f"  Manifest:   {manifest_path}")
                 print(f"  Prompt:     {prompt_path}\n")
-                # (message consolidated)
             except KeyboardInterrupt:
                 print("\nCancelled by user.\n")
-                # (message consolidated)
-                # (message consolidated)
             except Exception as e:
                 print(f"\nPack creation crashed (tool survived): {e}")
-                # (message consolidated)
                 print(traceback.format_exc())
 
         elif choice == "7":
             # Operator helper: store Claude output / patch suggestions into repair outbox (no auto-apply).
             try:
                 print("\nPaste Claude output (end with a single line containing: EOF)\n")
-                # (message consolidated)
-                # (message consolidated)
                 lines = []
                 while True:
                     ln = input()
@@ -2210,22 +2309,15 @@ def main() -> None:
                         break
                     lines.append(ln)
                 blob = "\n".join(lines).strip()
-                # (join consolidated)
                 if not blob:
                     print("No output captured.\n")
-                    # (message consolidated)
                     continue
                 outp = store_operator_result(blob)
                 print(f"\nStored operator result in outbox: {outp}\n")
-                # (message consolidated)
-                # (message consolidated)
             except KeyboardInterrupt:
                 print("\nCancelled by user.\n")
-                # (message consolidated)
-                # (message consolidated)
             except Exception as e:
                 print(f"\nStoring operator result crashed (tool survived): {e}")
-                # (message consolidated)
                 print(traceback.format_exc())
 
         elif choice == "0":

@@ -479,6 +479,113 @@ def _make_creative_job_ticket(prompt: str, kind: str, meta: Dict[str, Any], adv:
 
 
 # -----------------------------------------------------------------------------
+# Action lane: strict local executor ticketing (Filesystem/System operations)
+# Neuron ONLY emits tickets; Kernel/Integration performs execution.
+# -----------------------------------------------------------------------------
+def _is_action_intent(intent: str, text: str, adv: Optional[Dict[str, Any]] = None) -> bool:
+    cmd = (adv or {}).get("command") or {}
+    act = str(cmd.get("action") or cmd.get("intent") or cmd.get("type") or "").lower()
+    t = (text or "").lower()
+
+    if act and any(k in act for k in (
+        "copy", "move", "rename", "delete",
+        "backup", "restore", "scan", "quarantine",
+        "file_", "filesystem"
+    )):
+        return True
+
+    return any(k in t for k in (
+        "copy file", "move file", "rename file", "delete file",
+        "create backup", "restore backup", "scan file", "scan directory",
+        "quarantine", "restore from quarantine"
+    ))
+
+def _map_action_to_executor_action(adv: Optional[Dict[str, Any]] = None, text: str = "") -> str:
+    cmd = (adv or {}).get("command") or {}
+    act = str(cmd.get("action") or cmd.get("intent") or cmd.get("type") or "").lower()
+    t = (text or "").lower()
+
+    if "copy" in act or "copy" in t:
+        return "file_copy"
+    if "move" in act or "move" in t:
+        return "file_move"
+    if "rename" in act or "rename" in t:
+        return "file_rename"
+    if "delete" in act or "delete" in t:
+        return "file_delete"
+    if "attribute" in act or "attributes" in act:
+        return "file_attrs"
+    if "incremental" in act:
+        return "backup_incremental"
+    if "backup" in act or "create backup" in t:
+        return "backup_full"
+    if "restore" in act or "restore backup" in t:
+        return "backup_restore"
+    if "rotate" in act:
+        return "backup_rotate"
+    if "scan directory" in act or "scan_dir" in act or "scan directory" in t:
+        return "scan_dir"
+    if "scan" in act or "scan file" in t:
+        return "scan_file"
+    if "quarantine" in act and "restore" in act:
+        return "quarantine_restore"
+    if "restore from quarantine" in t:
+        return "quarantine_restore"
+    return act or "unknown"
+
+def _infer_safety_level(executor_action: str) -> str:
+    a = (executor_action or "").lower()
+    if a in ("scan_file", "scan_dir"):
+        return "low"
+    if a in ("file_copy", "file_move", "file_rename", "backup_full", "backup_incremental", "backup_rotate"):
+        return "medium"
+    if a in ("file_delete", "backup_restore", "file_attrs", "quarantine_restore"):
+        return "high"
+    return "medium"
+
+def _make_action_ticket(text: str, meta: Dict[str, Any], adv: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cmd = (adv or {}).get("command") or {}
+    entities = (adv or {}).get("entities") or {}
+
+    executor_action = _map_action_to_executor_action(adv=adv, text=text)
+    safety_level = _infer_safety_level(executor_action)
+
+    args: Dict[str, Any] = {}
+    if isinstance(cmd, dict):
+        args.update(cmd.get("args") or {})
+    if isinstance(entities, dict):
+        for k, v in (entities or {}).items():
+            if k not in args:
+                args[k] = v
+
+    if "src" in args and "source" not in args:
+        args["source"] = args["src"]
+    if "dst" in args and "destination" not in args:
+        args["destination"] = args["dst"]
+    if "path" in args and "file_path" not in args and executor_action in ("file_delete", "scan_file", "file_attrs"):
+        args["file_path"] = args["path"]
+    if "dir" in args and "directory" not in args and executor_action == "scan_dir":
+        args["directory"] = args["dir"]
+
+    requires_confirm = True
+    ticket_id = f"act_{int(time.time()*1000)}"
+    return {
+        "ticket_id": ticket_id,
+        "action": executor_action,
+        "args": args,
+        "safety_level": safety_level,
+        "requires_confirm": requires_confirm,
+        "executor": "SarahMemoryFilesystem",
+        "meta": {
+            "intent": meta.get("intent"),
+            "session_id": meta.get("session_id") or (meta.get("meta", {}) or {}).get("session_id") if isinstance(meta.get("meta"), dict) else None,
+            "user_id": meta.get("user_id") or (meta.get("meta", {}) or {}).get("user_id") if isinstance(meta.get("meta"), dict) else None,
+            "offline": bool(meta.get("offline") or meta.get("LOCAL_ONLY_MODE") or meta.get("local_only")),
+        },
+        "ts": time.time(),
+    }
+
+# -----------------------------------------------------------------------------
 # Tier-2: Evidence-backed research lane
 # -----------------------------------------------------------------------------
 def _try_research(text: str) -> Optional[Dict[str, Any]]:
@@ -653,6 +760,24 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None) -> Neuro
 
     inp.meta["intent"] = intent
     trace["intent"] = intent
+
+    # Action lane: emit local execution ticket (never execute here)
+    if _is_action_intent(intent, inp.text, adv):
+        ticket = _make_action_ticket(inp.text, inp.meta, adv)
+        trace["tiers"].append({"tier": "action", "engine": "ActionTicket", "ok": True, "action": ticket.get("action")})
+        res = NeuronResult(
+            ok=True,
+            reply=f"ACTION_TICKET::{ticket.get('action')}::{ticket.get('ticket_id')}",
+            confidence=0.74,
+            intent="action",
+            source="action_ticket",
+            artifacts={"action_ticket": ticket},
+            trace=trace,
+        )
+        _log_event("route", "action", res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
+        return res
+
+
 
     # Creative lane: emit job ticket
     if _is_creative_intent(intent, inp.text, adv):

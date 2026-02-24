@@ -2,9 +2,9 @@
 File: SarahMemoryIntegration.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-02-22
+Date: 2025-12-21
 Time: 10:11:54
-Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+Author: © 2025 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -43,7 +43,6 @@ try:
 except Exception:
     _FS = None
 
-# Reusable managers (avoid re-init churn)
 _FS_BACKUP_MGR = None
 _FS_SCANNER = None
 
@@ -55,9 +54,8 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
     - If ticket requires confirmation, caller must pass confirm=True.
     - Never calls network/API.
 
-    Returns a result envelope: {ok, action, result, error, needs_confirm}
+    Returns: {ok, action, result, error, needs_confirm}
     """
-    # Basic validation
     if not isinstance(ticket, dict):
         return {"ok": False, "error": "ticket must be a dict", "action": None}
 
@@ -66,10 +64,9 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
     requires_confirm = bool(ticket.get("requires_confirm", True))
     safety_level = str(ticket.get("safety_level") or "medium").strip().lower()
 
-    # Hard gates
+    # Tighten confirmation in SAFE_MODE for anything non-trivial
     try:
         if bool(getattr(config, "SAFE_MODE", True)) and safety_level in ("medium", "high"):
-            # SAFE_MODE == no autonomous execution unless explicitly confirmed
             requires_confirm = True
     except Exception:
         pass
@@ -93,32 +90,31 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
     except Exception:
         _FS_SCANNER = None
 
-    # Dispatch map
     try:
         if action in ("file_copy", "copy"):
-            return {"ok": bool(_FS.FileOperations.safe_copy(args.get("source", ""), args.get("destination", ""), verify=bool(args.get("verify", True)))),
-                    "action": action, "result": {}}
+            ok = bool(_FS.FileOperations.safe_copy(args.get("source", ""), args.get("destination", ""), verify=bool(args.get("verify", True))))
+            return {"ok": ok, "action": action, "result": {}}
 
         if action in ("file_move", "move"):
-            return {"ok": bool(_FS.FileOperations.safe_move(args.get("source", ""), args.get("destination", ""), overwrite=bool(args.get("overwrite", False)))),
-                    "action": action, "result": {}}
+            ok = bool(_FS.FileOperations.safe_move(args.get("source", ""), args.get("destination", ""), overwrite=bool(args.get("overwrite", False))))
+            return {"ok": ok, "action": action, "result": {}}
 
         if action in ("file_rename", "rename"):
-            return {"ok": bool(_FS.FileOperations.safe_rename(args.get("old_path", ""), args.get("new_path", ""))),
-                    "action": action, "result": {}}
+            ok = bool(_FS.FileOperations.safe_rename(args.get("old_path", ""), args.get("new_path", "")))
+            return {"ok": ok, "action": action, "result": {}}
 
         if action in ("file_delete", "delete"):
-            return {"ok": bool(_FS.FileOperations.safe_delete(args.get("file_path", ""), secure=bool(args.get("secure", False)))),
-                    "action": action, "result": {}}
+            ok = bool(_FS.FileOperations.safe_delete(args.get("file_path", ""), secure=bool(args.get("secure", False))))
+            return {"ok": ok, "action": action, "result": {}}
 
         if action in ("file_attrs", "set_attributes", "file_attributes"):
-            return {"ok": bool(_FS.FileOperations.set_file_attributes(
-                        args.get("file_path", ""),
-                        readonly=args.get("readonly", None),
-                        hidden=args.get("hidden", None),
-                        system=args.get("system", None),
-                    )),
-                    "action": action, "result": {}}
+            ok = bool(_FS.FileOperations.set_file_attributes(
+                args.get("file_path", ""),
+                readonly=args.get("readonly", None),
+                hidden=args.get("hidden", None),
+                system=args.get("system", None),
+            ))
+            return {"ok": ok, "action": action, "result": {}}
 
         if action in ("backup_full", "backup_create_full"):
             if _FS_BACKUP_MGR is None:
@@ -166,6 +162,7 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
 
     except Exception as e:
         return {"ok": False, "action": action, "error": f"{type(e).__name__}: {e}"}
+
 
 # =============================================================================
 # CONTEXT BUFFER INITIALIZATION

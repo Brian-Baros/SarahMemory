@@ -786,7 +786,7 @@ ROUTE_MODE = "Any"  # Options: "Any", "Local", "Web", "API"
 WEB_RESEARCH_ENABLED = True # True = False Disable Web search Learning. SarahMemoryResearch.py - Class 2
 # Web Homepage This will be the HomePage in which is seen when the SarahMemoryGUI.py interface is loaded.
 WEB_HOMEPAGE = "https://www.duckduckgo.com"
-# ðŸŒ Web Research Source Flags, For SarahMemoryResearch.py - Class 2 - WebSearching and Learning mode
+# Web Research Source Flags, For SarahMemoryResearch.py - Class 2 - WebSearching and Learning mode
 DUCKDUCKGO_RESEARCH_ENABLED = False #Set True/False for testing purposes (semi-works)
 WIKIPEDIA_RESEARCH_ENABLED = True #Set True/False for testing purposes (works)
 FREE_DICTIONARY_RESEARCH_ENABLED = False #Set True/False for Testing purposes (semi-works)
@@ -1292,6 +1292,169 @@ def MARK_UPDATER_RAN() -> None:
     except Exception as e:
         logger.warning(f"[Updater] Could not record last run time: {e}")
 
+
+# =============================================================================
+# ===== Unified Scheduler Policy (Updater + UI Updater + Backup + Evolution) ===
+# =============================================================================
+# Goal:
+# - One policy language across the platform: never|always|hourly|daily|weekly|monthly|quarterly|yearly
+# - Interval-minutes fallback always supported (whichever triggers first wins).
+# - Evolution is HARD-GATED by NEOSKYMATRIX + DEVELOPERSMODE (armed mode).
+#
+# NOTE:
+# - schedule_to_days() is defined in this file and may be redefined later for legacy blocks.
+#   The final definition must remain compatible with the mapping above.
+# =============================================================================
+
+# --- Evolution scheduling (SarahMemoryEvolution.py autonomous runs) ---
+EVOLUTION_ENABLED: bool = os.getenv("SARAH_EVOLUTION_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+EVOLUTION_SCHEDULE: str = os.getenv("SARAH_EVOLUTION_SCHEDULE", "weekly").strip().lower()
+EVOLUTION_INTERVAL_MINUTES: int = int(os.getenv("SARAH_EVOLUTION_INTERVAL_MINUTES", "60"))  # default 1 hour
+EVOLUTION_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_evolution_run.txt")
+
+# --- Backup scheduling (Filesystem/FTP backups) ---
+BACKUP_ENABLED: bool = os.getenv("SARAH_BACKUP_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+BACKUP_SCHEDULE: str = os.getenv("SARAH_BACKUP_SCHEDULE", os.getenv("SARAH_FTP_BACKUP_SCHEDULE", "weekly")).strip().lower()
+BACKUP_INTERVAL_MINUTES: int = int(os.getenv("SARAH_BACKUP_INTERVAL_MINUTES", "60"))  # default 1 hour
+BACKUP_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_backup_run.txt")
+
+# --- SelfAware scheduling (SarahMemorySelfAware.py loop tick cadence gating) ---
+SELFAWARE_ENABLED: bool = os.getenv("SARAH_SELFAWARE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+SELFAWARE_SCHEDULE: str = os.getenv("SARAH_SELFAWARE_SCHEDULE", "hourly").strip().lower()
+SELFAWARE_INTERVAL_MINUTES: int = int(os.getenv("SARAH_SELFAWARE_INTERVAL_MINUTES", "60")) # default 1 hour
+SELFAWARE_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_selfaware_run.txt")
+
+def _read_stamp_iso(path: str) -> str | None:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            iso = (f.read() or "").strip()
+        return iso or None
+    except Exception:
+        return None
+
+def _write_stamp_iso(path: str, now: datetime | None = None) -> None:
+    try:
+        from datetime import datetime as _dt
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ts = (now or _dt.utcnow()).isoformat()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(ts)
+    except Exception:
+        # never block boot
+        pass
+
+def _interval_due(last_iso: str | None, minutes: int, *, now: datetime | None = None) -> bool:
+    try:
+        from datetime import datetime as _dt, timedelta
+        if minutes <= 0:
+            return True
+        if not last_iso:
+            return True
+        last = _dt.fromisoformat(last_iso)
+        now_dt = now or _dt.utcnow()
+        return now_dt >= (last + timedelta(minutes=minutes))
+    except Exception:
+        return True
+
+def _schedule_due(last_iso: str | None, schedule_kind: str, *, now: datetime | None = None) -> bool:
+    """Return True if schedule_kind says run now (day-based)."""
+    try:
+        from datetime import datetime as _dt, timedelta
+        kind = (schedule_kind or "").strip().lower()
+        days = schedule_to_days(kind)
+        if days == 0:
+            return False
+        if days == -1:
+            return True
+        if not last_iso:
+            return True
+        last = _dt.fromisoformat(last_iso)
+        now_dt = now or _dt.utcnow()
+        return now_dt >= (last + timedelta(days=days))
+    except Exception:
+        return True
+
+def _armed_evolution_mode() -> bool:
+    """Evolution is only allowed when NEOSKYMATRIX + DEVELOPERSMODE are both True."""
+    try:
+        return bool(globals().get("NEOSKYMATRIX", False) and globals().get("DEVELOPERSMODE", False))
+    except Exception:
+        return False
+
+def SHOULD_RUN_EVOLUTION(now: datetime | None = None) -> bool:
+    """Unified gate: Evolution runs only when armed + enabled and policy triggers."""
+    if not EVOLUTION_ENABLED:
+        return False
+    if not _armed_evolution_mode():
+        return False
+
+    last_iso = _read_stamp_iso(EVOLUTION_STAMP_FILE)
+
+    # 1) Friendly schedule names (day-based)
+    if EVOLUTION_SCHEDULE in ("never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly", "90days", "180days"):
+        # hourly is handled via interval minutes below
+        if EVOLUTION_SCHEDULE not in ("hourly",) and _schedule_due(last_iso, EVOLUTION_SCHEDULE, now=now):
+            return True
+
+    # 2) Interval-minutes fallback (hourly testing lives here)
+    if _interval_due(last_iso, max(1, EVOLUTION_INTERVAL_MINUTES), now=now):
+        return True
+
+    return False
+
+def MARK_EVOLUTION_RAN(now: datetime | None = None) -> None:
+    """Stamp Evolution last-successful run."""
+    _write_stamp_iso(EVOLUTION_STAMP_FILE, now=now)
+
+def SHOULD_RUN_BACKUP(now: datetime | None = None) -> bool:
+    """Unified backup gate (local + FTP). Does not assume network; that check is downstream."""
+    if not BACKUP_ENABLED:
+        return False
+
+    last_iso = _read_stamp_iso(BACKUP_STAMP_FILE)
+
+    # 1) Friendly schedule names (day-based)
+    if BACKUP_SCHEDULE in ("never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly", "90days", "180days"):
+        if BACKUP_SCHEDULE not in ("hourly",) and _schedule_due(last_iso, BACKUP_SCHEDULE, now=now):
+            return True
+
+    # 2) Interval-minutes fallback
+    if _interval_due(last_iso, max(1, BACKUP_INTERVAL_MINUTES), now=now):
+        return True
+
+    return False
+
+def MARK_BACKUP_RAN(now: datetime | None = None) -> None:
+    """Stamp backup last-successful run."""
+    _write_stamp_iso(BACKUP_STAMP_FILE, now=now)
+
+def SHOULD_RUN_SELFAWARE(now: datetime | None = None) -> bool:
+    """Gate SelfAware cycles so dev-mode doesn’t churn continuously."""
+    if not SELFAWARE_ENABLED:
+        return False
+    if not _armed_evolution_mode():
+        # SelfAware is also gated to armed mode (governance-first)
+        return False
+
+    last_iso = _read_stamp_iso(SELFAWARE_STAMP_FILE)
+
+    # schedule_kind "hourly" is primarily interval-driven
+    if SELFAWARE_SCHEDULE in ("never", "always", "daily", "weekly", "monthly", "quarterly", "yearly"):
+        if _schedule_due(last_iso, SELFAWARE_SCHEDULE, now=now):
+            return True
+
+    if _interval_due(last_iso, max(1, SELFAWARE_INTERVAL_MINUTES), now=now):
+        return True
+
+    return False
+
+def MARK_SELFAWARE_RAN(now: datetime | None = None) -> None:
+    _write_stamp_iso(SELFAWARE_STAMP_FILE, now=now)
+
+
 KEYSTORE_DIR      = os.path.join(WALLET_DIR, "keystore")
 
 # Avatars
@@ -1766,8 +1929,27 @@ GUI_MAX_IMAGE_HEIGHT = 512
 FTP_BACKUP_SCHEDULE = os.getenv("SARAH_FTP_BACKUP_SCHEDULE", "weekly")
 
 def schedule_to_days(kind: str) -> int:
-    mapping = {"never":0,"daily":1,"weekly":7,"monthly":30,"90days":90,"180days":180}
-    return mapping.get((kind or "weekly").lower(), 7)
+    """Map a friendly schedule name to days between runs.
+
+    Returns:
+      0  -> never
+     -1  -> always
+      >0 -> days
+    """
+    k = (kind or "").strip().lower()
+    return {
+        "never": 0,
+        "always": -1,
+        "hourly": 0,      # handled by minute-based interval gates elsewhere
+        "daily": 1,
+        "weekly": 7,
+        "monthly": 30,
+        "quarterly": 91,
+        "yearly": 365,
+        # Legacy aliases
+        "90days": 90,
+        "180days": 180,
+    }.get(k, 7)
 # ============================================================================
 
 # ===== Reasoning Order & Learning (v7.5) =====
