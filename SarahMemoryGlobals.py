@@ -469,7 +469,7 @@ EMOTION_TTS_MAP = {
 # These flags enable granular control of heavy features when running on limited resources.
 # SAFE_MODE disables heavy or optional modules, leaving only core functionality active.
 SAFE_MODE = _env_flag("SARAH_SAFE_MODE", "false")
-LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "false")  # When True, bypass all external network research and use local data only.
+LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "False")  # When True, bypass all external network research and use local data only.
 
 # SarahMemory AI-Agent may control your PC, Move,open,close,windows execute programs, and operate as if a they were a standard operator they are not allowed to delete files. or move files.
 
@@ -3371,11 +3371,11 @@ def agent_permissions_summary() -> dict:
         "device_mode":            globals().get("DEVICE_MODE", "headless"),
         "safe_mode":              bool(globals().get("SAFE_MODE", False)),
         "local_only":             bool(globals().get("LOCAL_ONLY_MODE", False)),
-        "agent_enabled":          bool(globals().get("AI_AGENT_ENABLED", False)),
-        "allow_app_launch":       bool(globals().get("AI_AGENT_ALLOW_APP_LAUNCH", False)),
-        "allow_file_write":       bool(globals().get("AI_AGENT_ALLOW_FILE_WRITE", False)),
-        "allow_remote_control":   bool(globals().get("AI_AGENT_ALLOW_REMOTE_CONTROL", False)),
-        "allow_network_tasks":    bool(globals().get("AI_AGENT_ALLOW_NETWORK_TASKS", False)),
+        "agent_enabled":          bool(globals().get("AI_AGENT_ENABLED", True)),
+        "allow_app_launch":       bool(globals().get("AI_AGENT_ALLOW_APP_LAUNCH", True)),
+        "allow_file_write":       bool(globals().get("AI_AGENT_ALLOW_FILE_WRITE", True)),
+        "allow_remote_control":   bool(globals().get("AI_AGENT_ALLOW_REMOTE_CONTROL", True)),
+        "allow_network_tasks":    bool(globals().get("AI_AGENT_ALLOW_NETWORK_TASKS", True)),
         "user_activity_timeout":  int(globals().get("AI_AGENT_USER_ACTIVITY_TIMEOUT_MS", 2500)),
         "resume_delay_ms":        int(globals().get("AI_AGENT_RESUME_DELAY", 9000)),
     }
