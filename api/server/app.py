@@ -1234,6 +1234,58 @@ def api_chat():
         engine_source = "api"  # Default source
 
         # ------------------------------------------------------------------
+        # Neuron routing (tiered local-first router)
+        # ------------------------------------------------------------------
+        try:
+            import SarahMemoryGlobals as G
+            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False))
+        except Exception:
+            local_only = False
+
+        force_neuron = bool(payload.get("force_neuron") or payload.get("use_neuron") or payload.get("neuron") or False)
+
+        if local_only or force_neuron:
+            try:
+                from SarahMemoryNeuron import neuron_route
+                nres = neuron_route(text, meta={
+                    "intent": intent,
+                    "tone": tone,
+                    "complexity": complexity,
+                    "avatar_request": avatar_request,
+                    "ui": "webui",
+                    "local_only": local_only,
+                    "offline": local_only,
+                })
+
+                # NeuronResult supports to_dict(); fall back to attributes if needed
+                nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
+                    "ok": getattr(nres, "ok", True),
+                    "reply": getattr(nres, "reply", ""),
+                    "confidence": getattr(nres, "confidence", None),
+                    "intent": getattr(nres, "intent", intent),
+                    "source": getattr(nres, "source", "neuron"),
+                    "artifacts": getattr(nres, "artifacts", {}) or {},
+                    "trace": getattr(nres, "trace", {}) or {},
+                }
+
+                return jsonify({
+                    "ok": bool(nres_dict.get("ok", True)),
+                    "reply": str(nres_dict.get("reply") or ""),
+                    "meta": {
+                        "source": str(nres_dict.get("source") or "neuron"),
+                        "engine": "neuron_route",
+                        "intent": str(nres_dict.get("intent") or intent),
+                        "confidence": nres_dict.get("confidence"),
+                        "trace": nres_dict.get("trace") or {},
+                        "local_only": local_only,
+                        "version": PROJECT_VERSION,
+                    },
+                    "artifacts": nres_dict.get("artifacts") or {},
+                }), 200
+            except Exception as e:
+                app_logger.warning(f"Neuron route skipped/failed: {e}", exc_info=True)
+
+        # ------------------------------------------------------------------
         # Try the lightweight router (commands, mouse moves, URL opens)
         # ------------------------------------------------------------------
         router_result = None
@@ -1295,37 +1347,43 @@ def api_chat():
                     reply_str = str(bundle or "").strip()
 
         # ------------------------------------------------------------------
+                # ------------------------------------------------------------------
         # Last-ditch fallback: Direct API call if all else fails
         # ------------------------------------------------------------------
         if not reply_str:
-            try:
-                from SarahMemoryAPI import send_to_api as _send_to_api
-                api_res = _send_to_api(
-                    text,
-                    provider="openai",
-                    intent=intent,
-                    tone=tone,
-                    complexity=complexity,
-                )
-                if isinstance(api_res, dict):
-                    reply_str = str(api_res.get("data") or "").strip()
-                else:
-                    reply_str = str(api_res).strip()
-                engine_source = "direct_api_fallback"
-            except ImportError:
-                app_logger.warning("SarahMemoryAPI module not found. Cannot perform direct API call fallback.")
-            except Exception as api_e:
-                app_logger.error(
-                    "SarahMemoryReply.generate_reply failed (or not imported); API fallback failed.",
-                    exc_info=True,
-                )
-                return jsonify({
-                    "ok": False,
-                    "error": "Internal server error: Failed to generate reply.",
-                    "meta": {"source": "api", "reason": "all_reply_methods_failed", "version": PROJECT_VERSION},
-                }), 500
+            if 'local_only' in locals() and local_only:
+                # Enforce local-first behavior: do NOT call external providers when LOCAL_ONLY_MODE is enabled.
+                reply_str = "LOCAL_ONLY_MODE is enabled. External API providers are blocked."
+                engine_source = "local_only_block"
+            else:
+                try:
+                    from SarahMemoryAPI import send_to_api as _send_to_api
+                    api_res = _send_to_api(
+                        text,
+                        provider="openai",
+                        intent=intent,
+                        tone=tone,
+                        complexity=complexity,
+                    )
+                    if isinstance(api_res, dict):
+                        reply_str = str(api_res.get("data") or "").strip()
+                    else:
+                        reply_str = str(api_res).strip()
+                    engine_source = "direct_api_fallback"
+                except ImportError:
+                    app_logger.warning("SarahMemoryAPI module not found. Cannot perform direct API call fallback.")
+                except Exception as api_e:
+                    app_logger.error(
+                        "SarahMemoryReply.generate_reply failed (or not imported); API fallback failed.",
+                        exc_info=True,
+                    )
+                    return jsonify({
+                        "ok": False,
+                        "error": "Internal server error: Failed to generate reply.",
+                        "meta": {"source": "api", "reason": "all_reply_methods_failed", "version": PROJECT_VERSION},
+                    }), 500
 
-        # Final safety: never return None; if still empty, provide general fallback
+# Final safety: never return None; if still empty, provide general fallback
         reply_str = reply_str or "I'm sorry, I couldn't generate a response at this time."
 
         meta_out = {
