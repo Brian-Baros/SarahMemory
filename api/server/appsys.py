@@ -131,6 +131,24 @@ def _files_enabled() -> bool:
     return os.environ.get("SARAHMEMORY_ALLOW_SERVER_FILES", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _local_ingest_enabled() -> bool:
+    """Enable ingestion only when localhost + LOCAL_ONLY_MODE + NEOSKYMATRIX (owner intent)."""
+    if not _is_local_request():
+        return False
+    try:
+        import SarahMemoryGlobals as _G  # type: ignore
+        if not bool(getattr(_G, "LOCAL_ONLY_MODE", False)):
+            return False
+        if not bool(getattr(_G, "NEOSKYMATRIX", False)):
+            return False
+    except Exception:
+        return False
+    # Extra safety: allow kill-switch env var
+    if os.environ.get("SARAHMEMORY_DISABLE_EAT_THIS", "0").strip().lower() in ("1","true","yes","on"):
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------
 # JSON helpers
 # ---------------------------------------------------------------------
@@ -501,6 +519,268 @@ def files_upload():
 
     return _ok(saved=saved, count=len(saved))
 
+
+@bp.post("/api/ingest/eat_this")
+def ingest_eat_this():
+    """
+    Local-only manual ingestion endpoint.
+
+    Trigger contract:
+      - Only active for localhost requests AND SarahMemoryGlobals.LOCAL_ONLY_MODE=True AND NEOSKYMATRIX=True
+      - Only runs when command text equals 'EAT THIS' (case-insensitive)
+      - Accepts multipart form-data with one or more files under 'files' (or 'file')
+      - NEVER forwards data to any external API; this is a local learn op.
+    """
+    if request.method == "OPTIONS":
+        return _ok()
+
+    if not _local_ingest_enabled():
+        return _err("Not available (local-only ingestion disabled).", 403)
+
+    _ensure_core_dirs()
+
+    # command gating
+    cmd = ""
+    try:
+        cmd = (request.form.get("text") or request.form.get("command") or request.form.get("cmd") or "").strip()
+    except Exception:
+        cmd = ""
+    if cmd.lower() != "eat this":
+        return _err("Ingestion requires explicit 'EAT THIS' command.", 400)
+
+    # gather files
+    files = []
+    try:
+        if request.files:
+            files = request.files.getlist("files") or [request.files.get("file")]
+            files = [f for f in files if f and getattr(f, "filename", "")]
+    except Exception:
+        files = []
+    if not files:
+        return _err("No files uploaded", 400)
+
+    # save into downloads/ingest for traceability
+    ingest_dir = (_downloads_dir() / "ingest").resolve()
+    ingest_dir.mkdir(parents=True, exist_ok=True)
+
+    max_bytes = int(os.getenv("SARAHMEMORY_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+    saved_paths = []
+    saved_meta = []
+
+    for f in files:
+        try:
+            orig_name = _sanitize_filename(getattr(f, "filename", "") or "file.bin")
+            dst_path = _unique_path_in_dir(ingest_dir, orig_name)
+
+            sha256 = hashlib.sha256()
+            total = 0
+            with open(dst_path, "wb") as out_f:
+                while True:
+                    chunk = f.stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > max_bytes:
+                        out_f.close()
+                        try:
+                            dst_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        return _err(f"Upload too large (max {max_bytes} bytes)", 413)
+                    sha256.update(chunk)
+                    out_f.write(chunk)
+
+            st = _safe_stat(str(dst_path))
+            rel_path = str(dst_path.relative_to(_get_base_dir()))
+            saved_paths.append(str(dst_path))
+            saved_meta.append({
+                "name": dst_path.name,
+                "path": rel_path,
+                "size": int(st.get("size", 0)),
+                "sha256": sha256.hexdigest(),
+                "modified": float(st.get("mtime", 0)),
+            })
+
+            log_file_event("eat_this_upload", str(dst_path), details={"size": total, "sha256": sha256.hexdigest()})
+        except Exception as e:
+            logger.exception("EatThis upload failed")
+            return _err(f"Upload failed: {e}", 500)
+
+    # Learn from files immediately (no indexing required)
+    learned = 0
+    errors = []
+    try:
+        import SarahMemorySystemLearn as SML  # type: ignore
+        tuples = []
+        for p in saved_paths:
+            ext = os.path.splitext(p)[1].lower()
+            tuples.append((p, ext))
+        # process_files expects list[(path, type)]
+        SML.process_files(tuples, learn_registry=False)
+        learned = len(tuples)
+    except Exception as e:
+        errors.append(f"{type(e).__name__}: {e}")
+        logger.exception("EatThis learning failed")
+
+    return _ok(
+        ingested=True,
+        learned=learned,
+        files=saved_meta,
+        errors=errors,
+    )
+
+
+
+@bp.post("/api/index/push")
+def index_push():
+    """
+    Local-only "push-to-index" endpoint for Frontend automation.
+
+    Purpose:
+      - Accepts lightweight hints and payloads from UI (ResearchScreen / FilesScreen)
+      - Converts them into indexed artifacts inside system_index.db WITHOUT editing SarahMemorySystemIndexer.py
+      - Enables SarahMemorySelfAware auto-learn loop to detect new rows in system_index.db and trigger learning.
+
+    Security / Governance:
+      - localhost only
+      - requires SarahMemoryGlobals.LOCAL_ONLY_MODE=True AND NEOSKYMATRIX=True
+      - NO extra kill-switch required (NEOSKYMATRIX is the master gate)
+
+    Payload (JSON):
+      { "kind": "web_text", "url": "...", "title": "...", "text": "...", "content_type": "...", "source": "research_screen" }
+      { "kind": "file_event", "op": "upload|rename|move|copy|mkdir|delete", "path": "relative/or/abs", "paths": ["..."], "mime": "...", "size": 123 }
+      { "items": [ ... any of the above ... ] }
+
+    Notes:
+      - For web_text: stores a local .txt artifact under downloads/index_push/web/ then indexes that file.
+      - For file_event: indexes any existing files referenced (dirs are ignored).
+    """
+    if request.method == "OPTIONS":
+        return _ok()
+
+    # Master governance gate: LOCAL_ONLY_MODE + NEOSKYMATRIX + localhost (handled by _local_ingest_enabled)
+    if not _local_ingest_enabled():
+        return _err("Not available (local-only indexing disabled).", 403)
+
+    payload = request.get_json(silent=True) or {}
+
+    items = payload.get("items")
+    if not items:
+        items = [payload]
+    if not isinstance(items, list):
+        items = [payload]
+
+    try:
+        import SarahMemorySystemIndexer as SI  # type: ignore
+        SI.init_db()
+    except Exception as e:
+        logger.exception("Index push failed (indexer init)")
+        return _err(f"Indexer init failed: {type(e).__name__}: {e}", 500)
+
+    stored = []
+    indexed = 0
+    errors = []
+
+    # Where we store "web_text" artifacts
+    base_dir = _downloads_dir().resolve()
+    push_dir = (base_dir / "index_push").resolve()
+    web_dir = (push_dir / "web").resolve()
+    try:
+        web_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    def _index_file(abs_path: str, file_type: str = "") -> bool:
+        nonlocal indexed
+        try:
+            if not abs_path:
+                return False
+            if not os.path.isfile(abs_path):
+                return False
+            ext = os.path.splitext(abs_path)[1].lower()
+            ft = file_type or ext or "file"
+            st = os.stat(abs_path)
+            modified_iso = datetime.datetime.utcfromtimestamp(st.st_mtime).isoformat()
+            sha = SI.compute_sha256(abs_path)
+            SI.insert_file_record(abs_path, ft, int(st.st_size), modified_iso, sha)
+            indexed += 1
+            return True
+        except Exception as e:
+            errors.append(f"index_file {abs_path}: {type(e).__name__}: {e}")
+            return False
+
+    for it in items:
+        try:
+            if not isinstance(it, dict):
+                continue
+            kind = str(it.get("kind") or "").strip().lower()
+
+            # -----------------------------
+            # Research screen web text
+            # -----------------------------
+            if kind == "web_text":
+                url = str(it.get("url") or "").strip()
+                title = str(it.get("title") or "").strip()
+                text = str(it.get("text") or "").strip()
+                content_type = str(it.get("content_type") or "text/plain").strip()
+                source = str(it.get("source") or "ui").strip()
+
+                if not text:
+                    continue
+
+                # create stable-ish filename from url+title hash
+                h = hashlib.sha256()
+                h.update((url + "\n" + title + "\n" + source).encode("utf-8", errors="ignore"))
+                digest = h.hexdigest()[:16]
+                fname = f"web_{digest}_{int(time.time())}.txt"
+                dst = (web_dir / fname).resolve()
+
+                # write artifact
+                header = []
+                if title:
+                    header.append(f"TITLE: {title}")
+                if url:
+                    header.append(f"URL: {url}")
+                if content_type:
+                    header.append(f"CONTENT_TYPE: {content_type}")
+                if source:
+                    header.append(f"SOURCE: {source}")
+                header.append("----")
+                blob = "\n".join(header) + "\n" + text + "\n"
+
+                with open(dst, "w", encoding="utf-8", errors="ignore") as f:
+                    f.write(blob)
+
+                stored.append({"kind": "web_text", "path": str(dst), "url": url, "title": title})
+                _index_file(str(dst), file_type="web_text")
+                continue
+
+            # -----------------------------
+            # Files screen events (path hints)
+            # -----------------------------
+            if kind == "file_event":
+                paths = []
+                if it.get("paths") and isinstance(it.get("paths"), list):
+                    paths = [str(p) for p in it.get("paths") if p]
+                elif it.get("path"):
+                    paths = [str(it.get("path"))]
+
+                for p in paths:
+                    abs_p = _norm_path(p)
+                    if not abs_p:
+                        continue
+                    if os.path.isfile(abs_p):
+                        stored.append({"kind": "file_event", "path": abs_p, "op": it.get("op")})
+                        _index_file(abs_p)
+                continue
+
+            # -----------------------------
+            # Unknown kinds are ignored (forward compatible)
+            # -----------------------------
+        except Exception as e:
+            errors.append(f"item: {type(e).__name__}: {e}")
+
+    return _ok(pushed=True, stored=stored, indexed=indexed, errors=errors)
 
 @bp.post("/api/files/delete")
 def files_delete():
@@ -974,38 +1254,6 @@ def browser_open_external():
     except Exception as e:
         return _err("Open failed", 500, detail=str(e))
 
-
-@bp.post("/api/browser/open_native")
-def browser_open_native():
-    """Alias for /api/browser/open used by the WebUI."""
-    return browser_open_external()
-
-
-@bp.get("/api/dlengine/status")
-def dlengine_status():
-    """
-    Lightweight status endpoint used by DLEngineScreen.tsx.
-
-    This is intentionally minimal: it reports availability + basic context without
-    pulling heavy model runtimes. If you later wire an actual downloader/engine,
-    extend the payload but keep fields stable.
-    """
-    try:
-        info = {
-            "ok": True,
-            "status": "ok",
-            "engine": "local",
-        }
-        try:
-            import SarahMemoryGlobals as G  # type: ignore
-            info["local_only"] = bool(getattr(G, "LOCAL_ONLY_MODE", False))
-            info["multi_model"] = bool(getattr(G, "MULTI_MODEL", False))
-            info["dev_mode"] = bool(getattr(G, "DEVELOPERSMODE", False))
-        except Exception:
-            pass
-        return jsonify(info), 200
-    except Exception as e:
-        return _err("dlengine status failed", 500, detail=str(e))
 
 # ---------------------------------------------------------------------
 # init_app (called by app.py ONCE)
