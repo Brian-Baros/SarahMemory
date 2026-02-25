@@ -48,8 +48,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import warnings
-warnings.filterwarnings("error", category=SyntaxWarning)
 
 # ---------------------------------------------------------------------------
 # Core config import (single source of truth)
@@ -421,6 +419,417 @@ def loop_sleep_seconds() -> int:
     return 10
 
 
+
+# ---------------------------------------------------------------------------
+# System Index -> Learning Bridge (no edits to SystemIndexer.py)
+# ---------------------------------------------------------------------------
+class SystemIndexAutoLearner:
+    """
+    Background bridge:
+      - Uses SarahMemorySystemIndexer helpers to keep system_index.db fresh (bounded scope).
+      - Detects new rows in system_index.db and triggers targeted learning via SarahMemorySystemLearn.
+      - Runs ONLY when SelfAware is ARMED (NEOSKYMATRIX + DEVELOPERSMODE) to match governance intent.
+
+    Notes:
+      - We do NOT modify SarahMemorySystemIndexer.py or SarahMemorySystemLearn.py.
+      - This class is designed to be called from SelfAware's autonomous cycle (tick()).
+    """
+
+    def __init__(self, *, scope_paths: Optional[List[Path]] = None, max_new_per_tick: int = 25):
+        self.index_db = _datasets_dir() / "system_index.db"
+        self.state_path = _datasets_dir() / "system_index_autolearn_state.json"
+        self.max_new_per_tick = int(max_new_per_tick) if int(max_new_per_tick) > 0 else 25
+        self.scope_paths = scope_paths or [ _base_dir(), _data_dir() ]
+        self.last_file_id = 0
+        self.last_reg_id = 0
+        self._load_state()
+
+    def _load_state(self) -> None:
+        try:
+            if self.state_path.exists():
+                obj = json.loads(self.state_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(obj, dict):
+                    self.last_file_id = int(obj.get("last_file_id") or 0)
+                    self.last_reg_id = int(obj.get("last_reg_id") or 0)
+        except Exception:
+            pass
+
+    def _save_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            obj = {
+                "last_file_id": int(self.last_file_id),
+                "last_reg_id": int(self.last_reg_id),
+                "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            }
+            self.state_path.write_text(json.dumps(obj, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _connect_index_db(self) -> Optional[sqlite3.Connection]:
+        try:
+            self.index_db.parent.mkdir(parents=True, exist_ok=True)
+            return sqlite3.connect(str(self.index_db))
+        except Exception:
+            return None
+
+    def _ensure_index_db(self) -> None:
+        try:
+            import SarahMemorySystemIndexer as IDX  # type: ignore
+            # init_db uses its own DB_PATH derived from Globals; that should match this.index_db
+            IDX.init_db()
+        except Exception:
+            pass
+
+    def _bounded_index_scan(self) -> Dict[str, Any]:
+        """Index a bounded set of paths (BASE_DIR + DATA_DIR) to avoid full-drive scans."""
+        stats = {"indexed": 0, "skipped": 0, "errors": 0}
+        try:
+            import SarahMemorySystemIndexer as IDX  # type: ignore
+        except Exception:
+            return stats
+
+        self._ensure_index_db()
+
+        try:
+            exts = getattr(IDX, "FILE_EXTENSIONS", set())
+            if not exts:
+                exts = {".txt", ".md", ".json", ".py"}
+        except Exception:
+            exts = {".txt", ".md", ".json", ".py"}
+
+        for root in self.scope_paths:
+            try:
+                if not root.exists():
+                    continue
+                for dirpath, _, filenames in os.walk(str(root)):
+                    for fn in filenames:
+                        try:
+                            p = os.path.join(dirpath, fn)
+                            ext = os.path.splitext(fn)[1].lower()
+                            if ext not in exts:
+                                continue
+                            st = os.stat(p)
+                            file_size = int(st.st_size)
+                            modified = datetime.fromtimestamp(st.st_mtime).isoformat()
+                            h = IDX.compute_sha256(p)
+                            if not h:
+                                stats["errors"] += 1
+                                continue
+                            if IDX.file_already_indexed(p, h):
+                                stats["skipped"] += 1
+                                continue
+                            IDX.insert_file_record(p, ext, file_size, modified, h)
+                            stats["indexed"] += 1
+                        except Exception:
+                            stats["errors"] += 1
+            except Exception:
+                stats["errors"] += 1
+
+        return stats
+
+    def _fetch_new_files(self) -> List[Tuple[int, str, str]]:
+        con = self._connect_index_db()
+        if not con:
+            return []
+        try:
+            cur = con.cursor()
+            cur.execute(
+                "SELECT id, file_path, file_type FROM file_index WHERE id > ? ORDER BY id ASC LIMIT ?",
+                (int(self.last_file_id), int(self.max_new_per_tick)),
+            )
+            rows = cur.fetchall() or []
+            return [(int(r[0]), str(r[1]), str(r[2])) for r in rows]
+        except Exception:
+            return []
+        finally:
+            try:
+                con.close()
+            except Exception:
+                pass
+
+    def _learn_file(self, file_path: str) -> bool:
+        try:
+            import SarahMemorySystemLearn as SML  # type: ignore
+        except Exception:
+            return False
+
+        try:
+            text = SML.extract_text(file_path)
+            if not text:
+                return False
+            category = SML.categorize_text_by_path_or_content(file_path, text)
+            if not SML.entry_already_learned(category, text, file_path):
+                SML.insert_to_database(category, text, file_path)
+                return True
+            return False
+        except Exception:
+            return False
+
+    def tick(self, cycle_id: str = "") -> None:
+        """Called by SelfAware each cycle. Index (bounded) then learn only NEW index entries."""
+        if not _armed():
+            return
+
+        # Phase A: keep index fresh (bounded)
+        scan_stats = self._bounded_index_scan()
+
+        # Phase B: learn only new records
+        new_files = self._fetch_new_files()
+        learned = 0
+        for fid, path, _typ in new_files:
+            ok = self._learn_file(path)
+            if ok:
+                learned += 1
+            self.last_file_id = max(self.last_file_id, fid)
+
+        if new_files:
+            self._save_state()
+
+        if scan_stats.get("indexed") or new_files:
+            log_event(
+                "SYSINDEX_AUTOLEARN",
+                f"scan_indexed={scan_stats.get('indexed')} new_rows={len(new_files)} learned={learned}",
+                severity="INFO",
+                cycle_id=cycle_id,
+                meta={"scan": scan_stats, "new_rows": len(new_files), "learned": learned},
+            )
+
+
+
+
+# ---------------------------------------------------------------------------
+# Dual-Brain Local Model Forge + Hardware Safety Governor
+# ---------------------------------------------------------------------------
+
+class ThermalResourceGovernor:
+    """
+    Workload governor to prevent GPU overheating / VRAM thrash.
+    Conservative defaults; if telemetry is unavailable -> GPU work is disabled.
+
+    NVIDIA path: NVML (pynvml) if installed.
+    Cross-hardware fallback: CPU-only decisioning.
+    """
+
+    def __init__(self) -> None:
+        self.gpu_temp_soft_c = int(os.getenv("GPU_TEMP_SOFT_C", "78"))
+        self.gpu_temp_hard_c = int(os.getenv("GPU_TEMP_HARD_C", "83"))
+        self.gpu_vram_soft_pct = float(os.getenv("GPU_VRAM_SOFT_PCT", "85"))
+        self.gpu_vram_hard_pct = float(os.getenv("GPU_VRAM_HARD_PCT", "92"))
+
+    def snapshot(self) -> Dict[str, Any]:
+        snap: Dict[str, Any] = {"ok": False, "vendor": "unknown", "ts": int(time.time())}
+
+        # NVIDIA NVML (best)
+        try:
+            import pynvml  # type: ignore
+
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
+            util = pynvml.nvmlDeviceGetUtilizationRates(h)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+
+            snap.update(
+                {
+                    "ok": True,
+                    "vendor": "nvidia",
+                    "gpu_temp_c": int(temp),
+                    "gpu_util_pct": int(getattr(util, "gpu", 0)),
+                    "gpu_mem_used": int(getattr(mem, "used", 0)),
+                    "gpu_mem_total": int(getattr(mem, "total", 0)),
+                }
+            )
+            if snap["gpu_mem_total"] > 0:
+                snap["gpu_mem_pct"] = float(snap["gpu_mem_used"] / snap["gpu_mem_total"] * 100.0)
+            return snap
+        except Exception:
+            pass
+
+        # CPU fallback
+        try:
+            import psutil  # type: ignore
+
+            snap.update({"ok": True, "vendor": "cpu", "cpu_util_pct": float(psutil.cpu_percent(interval=0.0))})
+        except Exception:
+            pass
+
+        return snap
+
+    def gpu_allowed(self) -> bool:
+        snap = self.snapshot()
+        # if we can't see GPU temp, we do NOT allow GPU compute (safety-first)
+        if not snap.get("ok"):
+            return False
+        if snap.get("vendor") != "nvidia":
+            return False
+        t = snap.get("gpu_temp_c")
+        if t is None:
+            return False
+        if int(t) >= int(self.gpu_temp_hard_c):
+            return False
+        mp = snap.get("gpu_mem_pct")
+        if mp is not None and float(mp) >= float(self.gpu_vram_hard_pct):
+            return False
+        return True
+
+
+class DualBrainLocalModelForge:
+    """
+    Two brains in conjunction:
+      - Ledger: ./data/memory/datasets/synapses.db (governance + curated learnables; no spam)
+      - Models: ./data/models/SarahMemory (portable local brain artifacts)
+
+    This class does NOT modify SarahMemoryLLM.py. It stages the local brain
+    foundation so a local responder can exist without OpenAI/3rd-party APIs.
+
+    Responsibilities (lightweight):
+      1) Ensure model directories exist (delegates to SarahMemorySynapes if present).
+      2) Monitor synapses.db growth and schedule safe maintenance checkpoints.
+      3) Maintain a small local embedding index DB placeholder (future wiring),
+         without heavy dependencies.
+
+    Heavy training is intentionally NOT executed here.
+    """
+
+    def __init__(self) -> None:
+        self.base_dir = _base_dir()
+        self.data_dir = _data_dir()
+        self.datasets_dir = _datasets_dir()
+        self.models_root = self.data_dir / "models" / "SarahMemory"
+        self.emb_root = self.models_root / "embeddings"
+        self.emb_db = self.emb_root / "brain_index.db"
+        self.synapses_db = self.datasets_dir / "synapses.db"
+        self.state_path = self.models_root / "forge_state.json"
+        self.gov = ThermalResourceGovernor()
+
+        self._state: Dict[str, Any] = {}
+        self._last_tick = 0.0
+        self._load_state()
+
+        self.models_root.mkdir(parents=True, exist_ok=True)
+        self.emb_root.mkdir(parents=True, exist_ok=True)
+        self._ensure_emb_db()
+
+        # Ensure synapses schema exists (if module available)
+        try:
+            if SYN is not None and hasattr(SYN, "initialize_synapses_database"):
+                SYN.initialize_synapses_database()  # type: ignore
+        except Exception:
+            pass
+
+    def _load_state(self) -> None:
+        self._state = {
+            "synapses_last_size": 0,
+            "synapses_last_vacuum_ts": 0,
+            "forge_version": "1",
+        }
+        try:
+            if self.state_path.exists():
+                obj = json.loads(self.state_path.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(obj, dict):
+                    self._state.update(obj)
+        except Exception:
+            pass
+
+    def _save_state(self) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            self.state_path.write_text(json.dumps(self._state, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _ensure_emb_db(self) -> None:
+        try:
+            con = sqlite3.connect(str(self.emb_db))
+            cur = con.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS embeddings (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  doc_key TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  ref TEXT NOT NULL,
+                  chunk_id INTEGER NOT NULL,
+                  text_hash TEXT NOT NULL,
+                  text TEXT NOT NULL,
+                  vector_json TEXT NOT NULL,
+                  created_ts INTEGER NOT NULL
+                )
+                """
+            )
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_unique ON embeddings(doc_key, chunk_id, text_hash)")
+            con.commit()
+            con.close()
+        except Exception:
+            pass
+
+    def _synapses_size(self) -> int:
+        try:
+            if self.synapses_db.exists():
+                return int(self.synapses_db.stat().st_size)
+        except Exception:
+            pass
+        return 0
+
+    def _maybe_checkpoint_synapses(self, cycle_id: str) -> None:
+        if not self.synapses_db.exists():
+            return
+        now = int(time.time())
+        last_vac = int(self._state.get("synapses_last_vacuum_ts") or 0)
+        if now - last_vac < 6 * 3600:
+            return
+
+        size_b = self._synapses_size()
+        last_size_b = int(self._state.get("synapses_last_size") or 0)
+        if size_b < last_size_b + (256 * 1024 * 1024):
+            return
+
+        # safe checkpoint + vacuum
+        try:
+            con = sqlite3.connect(str(self.synapses_db))
+            con.execute("PRAGMA journal_mode=WAL;")
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            con.execute("VACUUM;")
+            con.close()
+
+            self._state["synapses_last_vacuum_ts"] = now
+            self._state["synapses_last_size"] = size_b
+            self._save_state()
+
+            log_event("SYNAPSES_DB_VACUUM", f"VACUUM ok size_bytes={size_b}", severity="INFO", cycle_id=cycle_id)
+        except Exception as e:
+            log_event("SYNAPSES_DB_VACUUM_FAIL", f"{type(e).__name__}: {e}", severity="WARN", cycle_id=cycle_id)
+
+    def tick(self, cycle_id: str) -> None:
+        if not _armed():
+            return
+
+        now = time.time()
+        if (now - self._last_tick) < 8.0:
+            return
+        self._last_tick = now
+
+        # ensure model dirs exist (idempotent)
+        try:
+            if SYN is not None and hasattr(SYN, "ensure_sarahmemory_model_dirs"):
+                SYN.ensure_sarahmemory_model_dirs()  # type: ignore
+        except Exception:
+            pass
+
+        # thermal visibility logging (only when in soft-zone)
+        try:
+            snap = self.gov.snapshot()
+            if snap.get("vendor") == "nvidia" and snap.get("gpu_temp_c") is not None:
+                if int(snap.get("gpu_temp_c", 0)) >= int(self.gov.gpu_temp_soft_c):
+                    log_event("THERMAL_THROTTLE", f"GPU temp high: {snap.get('gpu_temp_c')}C", severity="WARN", cycle_id=cycle_id, meta=snap)
+        except Exception:
+            pass
+
+        # synapses db hygiene (rare, gated)
+        self._maybe_checkpoint_synapses(cycle_id)
+
+
 def run_autonomous_loop() -> None:
     _ensure_dirs()
 
@@ -434,6 +843,10 @@ def run_autonomous_loop() -> None:
     log_event("SELF_AWARE_START", "Autonomous loop armed.", severity="INFO", meta={"armed": True})
 
     ensure_synapes_bootstrap()
+
+    forge = DualBrainLocalModelForge()
+
+    auto_learner = SystemIndexAutoLearner()
 
     root = _base_dir()
     logs_dir_candidates = [
@@ -455,6 +868,18 @@ def run_autonomous_loop() -> None:
         t0 = time.time()
 
         try:
+            # 0) Dual-brain model forge (local brain + safety + DB hygiene)
+            try:
+                forge.tick(cycle_id)
+            except Exception:
+                pass
+
+            # 0) Index->Learn bridge (bounded)
+            try:
+                auto_learner.tick(cycle_id)
+            except Exception:
+                pass
+
             # 1) Introspect codebase (bounded)
             scans = scan_codebase(root, max_files=220)
             core_count = len(scans)

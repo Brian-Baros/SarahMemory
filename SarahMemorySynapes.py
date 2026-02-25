@@ -383,20 +383,60 @@ def log_dataset_sample(
     """
     Append a single training sample to the dataset ledger with hash + provenance.
     Returns the content hash for traceability.
+
+    BLOAT GUARD (v8):
+      - No novelty -> no insert
+      - Blocks empty/low-signal samples unless verified or scored
+      - Dedupes on (dataset_id, sample_type, source_ref, content_sha256)
     """
     ensure_sarahmemory_model_dirs()
+
+    # Normalize payload deterministically
     try:
         payload = json.dumps(content or {}, ensure_ascii=False, sort_keys=True)
     except Exception:
         payload = "{}"
-    content_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    # Content hash (stable novelty key)
+    content_hash = hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
+
+    # Fast reject: empty or near-empty + low score + not verified
+    try:
+        if (not verified) and float(score or 0.0) <= 0.05:
+            # treat '{}' or very small blobs as non-learning
+            if payload.strip() in ("{}", "null", "[]") or len(payload) < 80:
+                return content_hash
+    except Exception:
+        pass
+
+    # In-process dedupe cache (best-effort, bounded)
+    try:
+        global _DATASET_LEDGER_DEDUPE_CACHE, _DATASET_LEDGER_DEDUPE_LOCK
+    except Exception:
+        _DATASET_LEDGER_DEDUPE_CACHE = {}
+        _DATASET_LEDGER_DEDUPE_LOCK = threading.Lock()
+
+    key = f"{dataset_id}||{sample_type}||{source_ref}||{content_hash}"
+    try:
+        with _DATASET_LEDGER_DEDUPE_LOCK:
+            if key in _DATASET_LEDGER_DEDUPE_CACHE:
+                return content_hash
+            # bound cache size
+            if len(_DATASET_LEDGER_DEDUPE_CACHE) > 20000:
+                # cheap prune: drop oldest ~25%
+                for k in list(_DATASET_LEDGER_DEDUPE_CACHE.keys())[:5000]:
+                    _DATASET_LEDGER_DEDUPE_CACHE.pop(k, None)
+            _DATASET_LEDGER_DEDUPE_CACHE[key] = int(time.time())
+    except Exception:
+        pass
+
+    # Persist (dedupe enforced by UNIQUE index + OR IGNORE)
     try:
         conn = connect_db("synapses.db")
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT INTO dataset_ledger
+            INSERT OR IGNORE INTO dataset_ledger
             (dataset_id, sample_type, source_ref, content_json, content_sha256, score, verified, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -612,6 +652,21 @@ def ingest_sqlite_datasets_to_ledger(
     - writes to dataset_ledger with provenance refs
     """
     ensure_sarahmemory_model_dirs()
+
+    # ------------------------------------------------------------
+    # Ingestion state (prevents repeated ingestion / DB bloat)
+    # ------------------------------------------------------------
+    state_path = os.path.join(SARAHMEMORY_GOV_DIR, "ingest_state.json")
+    os.makedirs(os.path.dirname(state_path), exist_ok=True)
+    ingest_state: Dict[str, Any] = {"tables": {}}
+    try:
+        if os.path.exists(state_path):
+            with open(state_path, "r", encoding="utf-8") as f:
+                ingest_state = json.load(f) or ingest_state
+    except Exception:
+        ingest_state = {"tables": {}}
+
+    tables_state: Dict[str, int] = ingest_state.get("tables", {}) if isinstance(ingest_state.get("tables", {}), dict) else {}
     summary = {"dataset_id": dataset_id, "files": 0, "tables": 0, "rows_ingested": 0, "errors": []}
 
     try:
@@ -651,11 +706,21 @@ def ingest_sqlite_datasets_to_ledger(
                         continue
 
                     # fetch rows bounded
-                    cur.execute(f"SELECT rowid, * FROM {table} LIMIT {int(max_rows_per_table)};")
+                    last_rowid = int(tables_state.get(f"{db_name}::{table}", 0) or 0)
+                    cur.execute(f"SELECT rowid, * FROM {table} WHERE rowid > {last_rowid} ORDER BY rowid ASC LIMIT {int(max_rows_per_table)};")
                     rows = cur.fetchall()
                     for row in rows:
                         d = dict(row)
                         rowid = d.get("rowid")
+
+                        try:
+                            if rowid is not None:
+                                k = f"{db_name}::{table}"
+                                prev = int(tables_state.get(k, 0) or 0)
+                                if int(rowid) > prev:
+                                    tables_state[k] = int(rowid)
+                        except Exception:
+                            pass
                         # compute verified
                         verified = False
                         if verified_col and d.get(verified_col) is not None:
@@ -699,7 +764,17 @@ def ingest_sqlite_datasets_to_ledger(
         except Exception as e:
             summary["errors"].append(f"{db_name}: {e}")
 
-    # update datasets_index.json (transparent)
+    
+    # Persist ingestion state (best-effort)
+    try:
+        ingest_state["tables"] = tables_state
+        ingest_state["updated_at"] = _now_iso()
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(ingest_state, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+# update datasets_index.json (transparent)
     try:
         idx_obj = {"datasets": [], "updated_at": _now_iso()}
         if os.path.exists(DATASETS_INDEX_JSON):
@@ -820,7 +895,42 @@ def synapes_awareness_tick(
                     "ts": str(user_event.get("ts", _now_iso())),
                 }
 
-            observation_hash = log_dataset_sample(
+
+            # Throttle self_observation writes (prevents synapses.db bloat)
+            try:
+                obs_state_path = os.path.join(SARAHMEMORY_MODEL_DIR, "governance", "self_observation_state.json")
+                os.makedirs(os.path.dirname(obs_state_path), exist_ok=True)
+                now_epoch = int(time.time())
+                obs_state = {"last_epoch": 0, "last_hash": ""}
+                try:
+                    if os.path.exists(obs_state_path):
+                        with open(obs_state_path, "r", encoding="utf-8") as f:
+                            obs_state = json.load(f) or obs_state
+                except Exception:
+                    obs_state = {"last_epoch": 0, "last_hash": ""}
+
+                obs_payload = json.dumps(obs, ensure_ascii=False, sort_keys=True)
+                obs_h = hashlib.sha256(obs_payload.encode("utf-8", errors="ignore")).hexdigest()
+
+                last_epoch = int(obs_state.get("last_epoch", 0) or 0)
+                last_hash = str(obs_state.get("last_hash", "") or "")
+                # cadence: at most once per 10 minutes, unless materially changed
+                allow_obs = (now_epoch - last_epoch) >= 600 or last_epoch == 0 or (obs_h and obs_h != last_hash)
+                if not allow_obs:
+                    observation_hash = obs_h
+                else:
+                    obs_state["last_epoch"] = now_epoch
+                    obs_state["last_hash"] = obs_h
+                    try:
+                        with open(obs_state_path, "w", encoding="utf-8") as f:
+                            json.dump(obs_state, f, indent=2)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            if observation_hash is None:
+                observation_hash = log_dataset_sample(
                 dataset_id=dataset_id,
                 sample_type="self_observation",
                 source_ref=f"runtime://{mode}",
@@ -833,7 +943,7 @@ def synapes_awareness_tick(
         # Curiosity prompts (non-annoying, UI surfaced)
         # -----------------------------
         if generate_curiosity:
-            state_path = os.path.join(SM_MODEL_DIR, "governance", "curiosity_state.json")
+            state_path = os.path.join(SARAHMEMORY_MODEL_DIR, "governance", "curiosity_state.json")
             os.makedirs(os.path.dirname(state_path), exist_ok=True)
 
             now_epoch = int(time.time())
@@ -1491,6 +1601,7 @@ def initialize_synapses_database():
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_dataset ON dataset_ledger(dataset_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_type ON dataset_ledger(sample_type)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_dataset_ledger_verified ON dataset_ledger(verified)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_dataset_ledger_dedupe ON dataset_ledger(dataset_id, sample_type, source_ref, content_sha256)")
 
         cursor.execute(r"""
             CREATE TABLE IF NOT EXISTS training_runs (

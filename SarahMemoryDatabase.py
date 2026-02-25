@@ -68,7 +68,7 @@ except Exception:
             "safe_mode":          safe_mode,
             "safe_mode_only":     bool(getattr(G, "MESH_SYNC_SAFE_MODE_ONLY", False)) if G else False,
             "sarahnet_enabled":   bool(getattr(G, "SARAHNET_ENABLED", True)) if G else True,
-            "web_base":           getattr(G, "SARAH_WEB_BASE", "https://www.sarahmemory.com") if G else "https://www.sarahmemory.com",
+            "web_base":           getattr(G, "SARAH_WEB_BASE", "https://ai.sarahmemory.com") if G else "https://ai.sarahmemory.com",
             "remote_sync_enabled":bool(getattr(G, "REMOTE_SYNC_ENABLED", True)) if G else True,
             "heartbeat_sec":      float(getattr(G, "REMOTE_HEARTBEAT_SEC", 30)) if G else 30.0,
             "http_timeout":       float(getattr(G, "REMOTE_HTTP_TIMEOUT", 6.0)) if G else 6.0,
@@ -76,7 +76,7 @@ except Exception:
 
 
 # ============================
-# PHASE A: Identity & Device Awareness (v7.7.5â€“8)
+# PHASE A: Identity & Device Awareness (v7.7.5)
 # ============================
 
 def sm_get_or_create_user(email, display_name=None):
@@ -306,7 +306,7 @@ def get_active_sentence_model():
                 try:
                     return SentenceTransformer(model_name)
                 except Exception as e:
-                    logger.warning(f"âš ï¸ Model load failed: {model_name} â†’ {e}")
+                    logger.warning(f"Model load failed: {model_name} â†’ {e}")
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 # --- Initialization ---
@@ -644,7 +644,7 @@ def embed_and_store_dataset_sentences():
     Extracts text from imported local files, creates vector embeddings,
     and stores them in the voice_logs table with timestamped entries.
 
-    âœ… Expands SarahMemoryâ€™s foundation model with permanent vector memory
+    âœ… Expands SarahMemory foundation model with permanent vector memory
     ðŸ” Safe to call repeatedly; avoids duplicate re-learning based on file mod times.
     """
     try:
@@ -652,7 +652,7 @@ def embed_and_store_dataset_sentences():
         from SarahMemoryGlobals import import_other_data, IMPORT_OTHER_DATA_LEARN, MULTI_MODEL, MODEL_CONFIG
 
         if not IMPORT_OTHER_DATA_LEARN:
-            logger.info("ðŸ›‘ Skipping vector rebuild: IMPORT_OTHER_DATA_LEARN is False.")
+            logger.info("Skipping vector rebuild: IMPORT_OTHER_DATA_LEARN is False.")
             return
 
         def get_active_sentence_model():
@@ -662,10 +662,10 @@ def embed_and_store_dataset_sentences():
                         try:
                             return SentenceTransformer(model_name)
                         except Exception as e:
-                            logger.warning(f"âš ï¸ Model load failed: {model_name} â†’ {e}")
+                            logger.warning(f"Model load failed: {model_name} , {e}")
             return SentenceTransformer('all-MiniLM-L6-v2')
 
-        logger.info("ðŸ§  Starting semantic vector embedding for dataset memory...")
+        logger.info("Starting semantic vector embedding for dataset memory...")
         model = get_active_sentence_model()
         data = import_other_data()
         conn = init_database()
@@ -684,7 +684,7 @@ def embed_and_store_dataset_sentences():
                 except Exception as ve:
                     logger.warning(f"[EMBED ERROR] Skipped line due to embedding failure: {ve}")
         conn.close()
-        logger.info(f"âœ… Vector memory embedding complete. {inserted_count} entries added.")
+        logger.info(f"Vector memory embedding complete. {inserted_count} entries added.")
 
     except Exception as e:
         logger.error(f"[EMBED_FAIL] Dataset vector embedding failed: {e}")
@@ -1052,8 +1052,8 @@ def run_vectoring_with_status_bars(force=True):
     # Check if local data is enabled
     local_enabled = getattr(config, "LOCAL_DATA_ENABLED", True)
     if not local_enabled and not force:
-        logging.info("[v8.0][BOOT][VECTOR] Local dataset embedding skipped – LOCAL_DATA_ENABLED is False.")
-        print("  ⏭ Local dataset embedding skipped (LOCAL_DATA_ENABLED is False)")
+        logging.info("[v8.0][BOOT][VECTOR] Local dataset embedding skipped - LOCAL_DATA_ENABLED is False.")
+        print("Local dataset embedding skipped (LOCAL_DATA_ENABLED is False)")
         return
     
     # ==========================================================================
@@ -1066,7 +1066,7 @@ def run_vectoring_with_status_bars(force=True):
     
     if not db_files:
         logging.warning("[v8.0][BOOT][VECTOR] No .db files found in datasets directory.")
-        print("  ⚠ Warning: No database files found in datasets directory")
+        print("⚠ Warning: No database files found in datasets directory")
         return
     
     # ==========================================================================
