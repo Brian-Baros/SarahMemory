@@ -394,7 +394,7 @@ API_URLS: Dict[str, str] = {
 
 # Default models for each provider
 DEFAULT_MODELS: Dict[str, str] = {
-    "openai": "gpt-4o",
+    "openai": "gpt-5.1",
     "claude": "claude-3-sonnet-20240229",
     "anthropic": "claude-3-sonnet-20240229",
     "mistral": "mistral-large-latest",

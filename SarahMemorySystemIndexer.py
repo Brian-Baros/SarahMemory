@@ -178,7 +178,7 @@ def scan_registry():
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths") as app_paths:
             for i in range(0, winreg.QueryInfoKey(app_paths)[0]):
                 subkey = winreg.EnumKey(app_paths, i)
-                subkey_path = f"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{subkey}"
+                subkey_path = fr"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{subkey}"
                 try:
                     with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, subkey_path) as sub:
                         try:
