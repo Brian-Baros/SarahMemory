@@ -481,6 +481,107 @@ def media_capabilities():
         engines=_probe_engines(),
     )
 
+
+# ---------------------------------------------------------------------------
+# WebUI Convenience Endpoints (v8.0.0)
+# These match the frontend contract used by CreativeToolsPanel.tsx:
+#   POST /api/creative/image | /api/creative/music | /api/creative/video
+# They are thin wrappers over the job system, returning a direct downloadable URL.
+# ---------------------------------------------------------------------------
+
+@bp.post("/api/creative/image")
+def creative_image():
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+
+    payload = _j()
+    prompt = (payload.get("prompt") or "").strip()
+    if not prompt:
+        return _err("missing_prompt", 400)
+
+    job_id = _sanitize_job_id(payload.get("job_id") or _safe_id("imgjob"))
+    jd = _job_dir(job_id)
+
+    width = int(payload.get("width") or 1024)
+    height = int(payload.get("height") or 1024)
+    style = (payload.get("style") or "default")
+    quality = (payload.get("quality") or "standard")
+
+    fmt = (payload.get("format") or "png").strip().lower()
+    if fmt not in ("png", "jpg", "jpeg", "webp"):
+        fmt = "png"
+    filename = _sanitize_filename(payload.get("filename") or f"image.{fmt}", f"image.{fmt}")
+    out_path = os.path.join(jd, filename)
+
+    _ensure_tables()
+    _db_upsert_job(job_id, "running", "image", payload)
+
+    manifest = _read_json(_manifest_path(job_id)) or {
+        "job_id": job_id,
+        "kind": "image",
+        "status": "running",
+        "created_at": _iso(),
+        "updated_at": _iso(),
+        "export_root": _get_export_root(),
+        "job_dir": jd,
+        "request": payload,
+        "artifacts": [],
+        "errors": [],
+        "notes": [],
+        "version": PROJECT_VERSION,
+    }
+    manifest["status"] = "running"
+    manifest["updated_at"] = _iso()
+    manifest["request"] = payload
+
+    try:
+        import SarahMemoryCanvasStudio as CS  # type: ignore
+        studio_cls = getattr(CS, "CanvasStudio", None)
+        if studio_cls is None:
+            raise RuntimeError("CanvasStudio_class_missing")
+        studio = studio_cls()
+
+        canvas = studio.generate_from_prompt(
+            prompt,
+            width=width,
+            height=height,
+            style=style,
+            quality=quality,
+        )
+        if canvas is None:
+            raise RuntimeError("canvas_generation_returned_none")
+
+        ok = studio.export_canvas(canvas, out_path, format=fmt.upper(), quality=int(payload.get("image_quality") or 90), flatten=True)
+        if not ok:
+            raise RuntimeError("canvas_export_failed")
+
+        # Normalize out_path if export_canvas appends extension
+        if not os.path.isfile(out_path):
+            guess = f"{out_path}.{fmt}"
+            if os.path.isfile(guess):
+                out_path = guess
+
+        art = _artifact_from_path("image", out_path, _mime_from_ext(out_path))
+        manifest["artifacts"] = [art]
+        manifest["status"] = "completed"
+        manifest["updated_at"] = _iso()
+        _write_json(_manifest_path(job_id), manifest)
+
+        _db_upsert_job(job_id, "completed", "image", payload, result={"artifacts": manifest["artifacts"]})
+
+        url = f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}"
+        return _ok(job_id=job_id, url=url, preview=url, artifact=art, manifest=manifest)
+
+    except Exception as e:
+        err = str(e)
+        manifest["status"] = "error"
+        manifest["updated_at"] = _iso()
+        manifest["errors"] = list(manifest.get("errors") or []) + [err]
+        _write_json(_manifest_path(job_id), manifest)
+        _db_upsert_job(job_id, "error", "image", payload, result={"error": err})
+        return _err("image_generation_failed", 500, detail=err, job_id=job_id)
+
 @bp.post("/api/media/job/create")
 def media_job_create():
     body = _body_bytes()
