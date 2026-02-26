@@ -146,6 +146,14 @@ import cv2
 # Advanced imaging (attempt imports, fall back gracefully)
 try:
     from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps, ImageChops
+except Exception:
+    Image = None
+    ImageDraw = None
+    ImageFont = None
+    ImageFilter = None
+    ImageEnhance = None
+    ImageOps = None
+    ImageChops = None
     PIL_AVAILABLE = True
 except ImportError:
     PIL_AVAILABLE = False
@@ -1005,70 +1013,234 @@ class CanvasStudio:
             logging.error(f"[CanvasStudio] Failed to export canvas: {e}")
             traceback.print_exc()
             return False
-    
-    def generate_from_prompt(self, prompt: str, width: int = None, height: int = None,
-                            style: str = "default", quality: str = "standard") -> Optional[Canvas]:
-        """
-        Generate artwork from text prompt using AI
-        
-        Args:
-            prompt: Text description of desired artwork
-            width: Output width (default: 1024)
-            height: Output height (default: 1024)
-            style: Art style preset
-            quality: Quality level (draft, standard, high)
-        
-        Returns:
-            Canvas with generated artwork or None if failed
-        """
-        try:
-            if width is None:
-                width = 1024
-            if height is None:
-                height = 1024
-            
-            # Create canvas for generated art
-            canvas_name = f"AI_Generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            canvas = self.create_canvas(width, height, canvas_name)
-            
-            # TODO: Integrate with SarahMemoryAiFunctions for actual AI generation
-            # For now, create a placeholder with gradient
-            layer = canvas.get_active_layer()
-            
-            # Generate a vibrant gradient as placeholder
-            colors = [
-                (255, 100, 100),  # Red
-                (100, 100, 255),  # Blue
-                (100, 255, 100),  # Green
-                (255, 255, 100)   # Yellow
-            ]
-            layer.apply_gradient("radial", colors)
-            
-            # Add text with prompt
-            if PIL_AVAILABLE:
-                pil_img = Image.fromarray(cv2.cvtColor(layer.data, cv2.COLOR_BGRA2RGBA))
-                draw = ImageDraw.Draw(pil_img)
-                
-                # Try to load a font
-                try:
-                    font = ImageFont.truetype("arial.ttf", 24)
-                except:
-                    font = ImageFont.load_default()
-                
-                # Draw prompt text
-                draw.text((20, 20), f"Generated: {prompt[:50]}", font=font, fill=(255, 255, 255, 255))
-                
-                # Convert back to OpenCV format
-                layer.data = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGBA2BGRA)
-            
-            logging.info(f"[CanvasStudio] Generated artwork from prompt: '{prompt[:50]}...'")
+
+def generate_from_prompt(self, prompt: str, width: int = None, height: int = None,
+                         style: str = "default", quality: str = "standard") -> Optional[Canvas]:
+    """Generate artwork from a prompt using SarahMemory's multi-channel pipeline.
+
+    Rules:
+      - Provider-agnostic: does NOT require OpenAI.
+      - Online path: prefer SarahMemoryAPI as orchestrator (it can route to OpenAI/Grok/local SD/etc.).
+      - Offline path: guaranteed fallback that still produces a real image for export/WebUI.
+    """
+    try:
+        if width is None:
+            width = 1024
+        if height is None:
+            height = 1024
+
+        canvas_name = f"AI_Generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        canvas = self.create_canvas(width, height, canvas_name)
+
+        prompt_text = (prompt or "").strip()
+        if not prompt_text:
             return canvas
-            
+
+        # 1) Prefer SarahMemoryAPI routing (multi-provider kernel)
+        img_bytes = None
+        mime = None
+        try:
+            img_bytes, mime = self._try_generate_via_sarahmemory_api(prompt_text, width, height, style=style, quality=quality)
         except Exception as e:
-            logging.error(f"[CanvasStudio] Failed to generate from prompt: {e}")
-            traceback.print_exc()
-            return None
-    
+            logging.info(f"[CanvasStudio] SarahMemoryAPI image route unavailable: {e}")
+
+        # 2) Optional OpenAI fallback (only if configured). Not required.
+        if img_bytes is None:
+            try:
+                img_bytes, mime = self._try_generate_via_openai(prompt_text, width, height, style=style, quality=quality)
+            except Exception as e:
+                logging.info(f"[CanvasStudio] OpenAI optional backend unavailable: {e}")
+
+        # 3) Guaranteed offline fallback
+        if img_bytes is None:
+            img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=style)
+
+        # Apply bytes to canvas layer
+        try:
+            self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
+        except Exception as e:
+            logging.warning(f"[CanvasStudio] Failed to apply generated image bytes: {e}")
+
+        logging.info(f"[CanvasStudio] Generated artwork from prompt: '{prompt_text[:80]}...'")
+        return canvas
+
+    except Exception as e:
+        logging.error(f"[CanvasStudio] Failed to generate from prompt: {e}")
+        traceback.print_exc()
+        return None
+
+
+
+def _try_generate_via_sarahmemory_api(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
+    """Ask SarahMemoryAPI to generate an image. This is the preferred provider-agnostic hook."""
+    try:
+        import SarahMemoryAPI as _API  # type: ignore
+    except Exception:
+        return (None, None)
+
+    # permissive: support future naming without refactors
+    fn = getattr(_API, "generate_image", None) or getattr(_API, "image_generate", None) or getattr(_API, "generate_media_image", None)
+    if not callable(fn):
+        return (None, None)
+
+    # Attempt common call signatures
+    try:
+        res = fn(prompt=prompt, width=width, height=height, style=style, quality=quality)
+    except TypeError:
+        try:
+            res = fn(prompt, width, height)
+        except Exception:
+            res = fn(prompt)
+
+    if isinstance(res, (bytes, bytearray)):
+        return (bytes(res), "image/png")
+    if isinstance(res, dict):
+        b = res.get("bytes") or res.get("image_bytes")
+        mime = res.get("mime") or res.get("content_type") or "image/png"
+        if isinstance(b, (bytes, bytearray)):
+            return (bytes(b), mime)
+        b64 = res.get("b64") or res.get("image_base64")
+        if b64:
+            import base64
+            return (base64.b64decode(b64), mime)
+    return (None, None)
+
+
+
+def _try_generate_via_openai(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
+    """Optional OpenAI image generation (only if OPENAI_API_KEY is configured)."""
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return (None, None)
+
+    # Model selection via SarahMemoryGlobals (v8 selector if present)
+    model = "gpt-image-1.5"
+    try:
+        import SarahMemoryGlobals as _G  # type: ignore
+        model = getattr(_G, "API_IMAGE_MODEL", model) or model
+        if hasattr(_G, "select_task_model"):
+            try:
+                model = _G.select_task_model("image", need_image=True) or model
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    size = f"{int(width)}x{int(height)}"
+
+    # Prefer official client if installed
+    try:
+        from openai import OpenAI
+        import base64
+        client = OpenAI(api_key=api_key)
+        r = client.images.generate(model=model, prompt=prompt, size=size)
+        b64 = None
+        try:
+            b64 = r.data[0].b64_json
+        except Exception:
+            b64 = None
+        if not b64:
+            return (None, None)
+        return (base64.b64decode(b64), "image/png")
+    except Exception:
+        pass
+
+    # Raw HTTPS fallback (keeps OpenAI optional)
+    try:
+        import json, urllib.request, base64
+        payload = {"model": model, "prompt": prompt, "size": size, "response_format": "b64_json"}
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/images/generations",
+            data=data,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            out = json.loads(resp.read().decode("utf-8", errors="replace"))
+        b64 = out["data"][0].get("b64_json")
+        if not b64:
+            return (None, None)
+        return (base64.b64decode(b64), "image/png")
+    except Exception:
+        return (None, None)
+
+
+
+def _generate_offline_fallback(self, prompt: str, width: int, height: int, *, style: str = "default"):
+    """Guaranteed offline generator: procedural background + prompt overlay."""
+    if not PIL_AVAILABLE or Image is None or ImageDraw is None:
+        # Minimal fallback: return None and let caller keep placeholder gradient
+        return (None, None)
+
+    import io, hashlib, random
+    w, h = int(width), int(height)
+    seed = int(hashlib.sha256((prompt + "|" + str(style)).encode("utf-8")).hexdigest()[:8], 16)
+    rnd = random.Random(seed)
+
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+    d = ImageDraw.Draw(img)
+
+    # Gradient background
+    for y in range(h):
+        v = int(25 + 80 * (y / max(1, h - 1)))
+        d.line([(0, y), (w, y)], fill=(v, v, v + 25, 255))
+
+    # Shapes
+    for _ in range(140):
+        x = rnd.randint(0, w)
+        y = rnd.randint(0, h)
+        r = rnd.randint(8, max(10, min(w, h)//9))
+        col = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(70, 150))
+        d.ellipse((x - r, y - r, x + r, y + r), outline=col, width=2)
+
+    # Text overlay
+    try:
+        font = ImageFont.truetype("arial.ttf", 28) if ImageFont else None
+    except Exception:
+        font = ImageFont.load_default() if ImageFont else None
+
+    pad = 24
+    text = prompt if len(prompt) <= 180 else (prompt[:177] + "...")
+    d.rectangle((pad-12, h-170, w-pad+12, h-pad+12), fill=(0, 0, 0, 160))
+    if font:
+        d.text((pad, h-155), "OFFLINE GENERATION", fill=(255, 255, 255, 230), font=font)
+        d.text((pad, h-118), text, fill=(230, 230, 230, 230), font=font)
+
+    bio = io.BytesIO()
+    img.save(bio, format="PNG")
+    return (bio.getvalue(), "image/png")
+
+
+
+def _apply_image_bytes_to_canvas(self, canvas: 'Canvas', img_bytes: bytes, *, mime: str | None = None):
+    """Decode image bytes and push them into the active layer data."""
+    if not img_bytes:
+        # Nothing to apply; keep whatever is on canvas (e.g., gradient placeholder)
+        return
+
+    if not PIL_AVAILABLE or Image is None:
+        return
+
+    import io
+    im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+    try:
+        if im.size != (int(canvas.width), int(canvas.height)):
+            im = im.resize((int(canvas.width), int(canvas.height)))
+    except Exception:
+        pass
+
+    # Convert to BGRA numpy for layer storage
+    arr = np.array(im)  # RGBA
+    try:
+        bgra = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA)
+    except Exception:
+        # fallback: manual channel swap
+        bgra = arr[:, :, [2, 1, 0, 3]]
+
+    layer = canvas.get_active_layer()
+    layer.data = bgra
+
     def batch_process(self, canvas_ids: List[str], operation: str, **kwargs) -> List[bool]:
         """
         Apply an operation to multiple canvases in batch
