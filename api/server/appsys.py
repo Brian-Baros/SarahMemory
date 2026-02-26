@@ -131,20 +131,25 @@ def _files_enabled() -> bool:
     return os.environ.get("SARAHMEMORY_ALLOW_SERVER_FILES", "0").strip().lower() in ("1", "true", "yes", "on")
 
 
-def _local_ingest_enabled() -> bool:
-    """Enable ingestion only when localhost + LOCAL_ONLY_MODE + NEOSKYMATRIX (owner intent)."""
+def _local_ingest_enabled(*, require_local_only_mode: bool = False) -> bool:
+    """Enable local ingestion endpoints under governance.
+
+    Governance contract:
+      - MUST be a localhost request
+      - MUST have SarahMemoryGlobals.NEOSKYMATRIX=True (master kill switch)
+
+    Optional stricter requirement (for high-risk ops like manual file ingestion):
+      - require_local_only_mode=True -> requires SarahMemoryGlobals.LOCAL_ONLY_MODE=True
+    """
     if not _is_local_request():
         return False
     try:
         import SarahMemoryGlobals as _G  # type: ignore
-        if not bool(getattr(_G, "LOCAL_ONLY_MODE", False)):
-            return False
         if not bool(getattr(_G, "NEOSKYMATRIX", False)):
             return False
+        if require_local_only_mode and (not bool(getattr(_G, "LOCAL_ONLY_MODE", False))):
+            return False
     except Exception:
-        return False
-    # Extra safety: allow kill-switch env var
-    if os.environ.get("SARAHMEMORY_DISABLE_EAT_THIS", "0").strip().lower() in ("1","true","yes","on"):
         return False
     return True
 
@@ -534,7 +539,7 @@ def ingest_eat_this():
     if request.method == "OPTIONS":
         return _ok()
 
-    if not _local_ingest_enabled():
+    if not _local_ingest_enabled(require_local_only_mode=True):
         return _err("Not available (local-only ingestion disabled).", 403)
 
     _ensure_core_dirs()
@@ -643,7 +648,7 @@ def index_push():
 
     Security / Governance:
       - localhost only
-      - requires SarahMemoryGlobals.LOCAL_ONLY_MODE=True AND NEOSKYMATRIX=True
+      - requires NEOSKYMATRIX=True
       - NO extra kill-switch required (NEOSKYMATRIX is the master gate)
 
     Payload (JSON):
@@ -658,8 +663,8 @@ def index_push():
     if request.method == "OPTIONS":
         return _ok()
 
-    # Master governance gate: LOCAL_ONLY_MODE + NEOSKYMATRIX + localhost (handled by _local_ingest_enabled)
-    if not _local_ingest_enabled():
+    # Master governance gate: localhost + NEOSKYMATRIX (LOCAL_ONLY_MODE is NOT required for index push)
+    if not _local_ingest_enabled(require_local_only_mode=False):
         return _err("Not available (local-only indexing disabled).", 403)
 
     payload = request.get_json(silent=True) or {}
@@ -700,7 +705,7 @@ def index_push():
             ext = os.path.splitext(abs_path)[1].lower()
             ft = file_type or ext or "file"
             st = os.stat(abs_path)
-            modified_iso = datetime.datetime.utcfromtimestamp(st.st_mtime).isoformat()
+            modified_iso = datetime.utcfromtimestamp(st.st_mtime).isoformat()
             sha = SI.compute_sha256(abs_path)
             SI.insert_file_record(abs_path, ft, int(st.st_size), modified_iso, sha)
             indexed += 1
