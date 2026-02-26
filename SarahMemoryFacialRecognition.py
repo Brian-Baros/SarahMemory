@@ -2,9 +2,9 @@
 File: SarahMemoryFacialRecognition.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2026-02-25
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -35,7 +35,7 @@ from SarahMemoryGlobals import DATASETS_DIR, OBJECT_MODEL_CONFIG, FACIAL_RECOGNI
 
 VSM_DB = os.path.join(DATASETS_DIR, "system_logs.db")
 VECTOR_MEMORY = []
-VECTOR_DIM = 128
+VECTOR_DIM = int(os.getenv('SARAH_VECTOR_DIM', '384'))  # Default aligns with SentenceTransformer MiniLM (384d)
 # Inject YOLO object model support
 YOLO = None
 try:
@@ -55,23 +55,81 @@ if not logger_fr.hasHandlers():
 
 CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"  # Define cascade path
 def add_vector(vector):
+    """Add a vector to the VSM FAISS index (shared across SystemLearn + FacialRecognition).
+
+    v8.0.0 Fixes:
+      - Enforces a single VECTOR_DIM across the platform (default 384).
+      - Normalizes and reshapes vectors to (1, VECTOR_DIM) float32 before indexing.
+      - Writes index to disk atomically and logs events to DATASETS_DIR/system_logs.db.
+    """
     global VECTOR_MEMORY
-    timestamp = datetime.datetime.now().isoformat()
+    timestamp = datetime.now().isoformat()
     try:
+        v = np.asarray(vector, dtype="float32").reshape(-1)
+
+        if v.shape[0] != int(VECTOR_DIM):
+            msg = f"Vector dimension mismatch: Expected {VECTOR_DIM}, got {v.shape[0]}"
+            try:
+                logger_vsm.error(msg)
+            except Exception:
+                pass
+            try:
+                log_vsm_event("Add Vector Error", msg)
+            except Exception:
+                pass
+            return False
+
+        norm = float(np.linalg.norm(v))
+        if norm > 0.0:
+            v = v / norm
+
         if faiss_available:
             index_file = os.path.join(config.DATASETS_DIR, "vector_index.faiss")
+            try:
+                os.makedirs(config.DATASETS_DIR, exist_ok=True)
+            except Exception:
+                pass
+
             if os.path.exists(index_file):
-                index = faiss.read_index(index_file)
+                idx = faiss.read_index(index_file)
             else:
-                index = faiss.IndexFlatL2(VECTOR_DIM)
-            index.add(np.array([vector]).astype(np.float32))
-            faiss.write_index(index, index_file)
+                idx = faiss.IndexFlatL2(int(VECTOR_DIM))
+
+            idx.add(v.reshape(1, -1))
+
+            tmp_file = index_file + ".tmp"
+            faiss.write_index(idx, tmp_file)
+            try:
+                os.replace(tmp_file, index_file)
+            except Exception:
+                faiss.write_index(idx, index_file)
+
             log_event("VSM", f"Vector added via FAISS at {timestamp}")
-        else:
-            VECTOR_MEMORY.append(vector)
-            log_event("VSM", f"Vector added via fallback engine at {timestamp}")
+            try:
+                log_vsm_event("Add Vector", f"Vector added ({VECTOR_DIM}d) at {timestamp}")
+            except Exception:
+                pass
+            return True
+
+        VECTOR_MEMORY.append(v.tolist())
+        log_event("VSM", f"Vector added via fallback engine at {timestamp}")
+        try:
+            log_vsm_event("Add Vector", f"Vector added via fallback ({VECTOR_DIM}d) at {timestamp}")
+        except Exception:
+            pass
+        return True
+
     except Exception as e:
-        log_event("VSM", f"Error adding vector: {e}")
+        try:
+            log_event("VSM", f"Error adding vector: {e}")
+        except Exception:
+            pass
+        try:
+            log_vsm_event("Add Vector Exception", f"Exception: {e}")
+        except Exception:
+            pass
+        return False
+
 
 
 def find_similar_vectors(query_vector, top_k=5):
@@ -117,6 +175,10 @@ def log_facial_event(event, details):
     try:
         db_path = os.path.abspath(os.path.join(config.DATASETS_DIR, "system_logs.db"))
         # db_path = os.path.abspath(config.DATASETS_DIR "system_logs.db"))
+        try:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        except Exception:
+            pass
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -400,7 +462,7 @@ handler_vsm.setFormatter(formatter_vsm)
 if not logger_vsm.hasHandlers():
     logger_vsm.addHandler(handler_vsm)
 
-VECTOR_DIM = 128  # Example dimension
+VECTOR_DIM = int(os.getenv('SARAH_VECTOR_DIM', '384'))  # Default aligns with SentenceTransformer MiniLM (384d)  # Example dimension
 index = None  # Global index object
 
 def log_vsm_event(event, details):
@@ -408,7 +470,11 @@ def log_vsm_event(event, details):
     Logs a VSM-related event to the system_logs.db database.
     """
     try:
-        db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "memory", "datasets", "system_logs.db"))
+        db_path = os.path.join(config.DATASETS_DIR, "system_logs.db")
+        try:
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        except Exception:
+            pass
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("""

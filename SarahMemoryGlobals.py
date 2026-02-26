@@ -469,7 +469,7 @@ EMOTION_TTS_MAP = {
 # These flags enable granular control of heavy features when running on limited resources.
 # SAFE_MODE disables heavy or optional modules, leaving only core functionality active.
 SAFE_MODE = _env_flag("SARAH_SAFE_MODE", "false")
-LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "False")  # When True, bypass all external network research and use local data only.
+LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "false")  # When True, bypass all external network research and use local data only.
 
 # SarahMemory AI-Agent may control your PC, Move,open,close,windows execute programs, and operate as if a they were a standard operator they are not allowed to delete files. or move files.
 
@@ -1906,9 +1906,9 @@ for model_name, config in OBJECT_MODEL_CONFIG.items():
 
 # === v7.2.0 Additions: API Model Controls & Schedules ========================
 # Cost scale: 0 = NOT SET, 1 = Low ... 10 = High
-API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL", "gpt-5")
-API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-4.1-mini")
-API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL", "gpt-4.0-mini")
+API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL", "gpt-5.2")
+API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-5-mini")
+API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL", "gpt-5-mini")
 
 API_PRIMARY_COST    = int(os.getenv("SARAH_OPENAI_PRIMARY_COST", "3"))
 API_SECONDARY_COST  = int(os.getenv("SARAH_OPENAI_SECONDARY_COST", "2"))
@@ -1959,9 +1959,9 @@ SELF_GRADE_THRESHOLD = 0.62
 ENABLE_AUTODOC_WRITEBACK = True
 
 # ===== Consolidated Model Defaults (v7.5) =====
-API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL",   "gpt-5")
-API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-4.1-mini")
-API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL",   "gpt-4.0-mini")
+API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL", "gpt-5.2")
+API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-5-mini")
+API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL", "gpt-5-mini")
 EMBEDDING_MODELS = {
     "primary":   "all-MiniLM-L6-v2",
     "secondary": "paraphrase-MiniLM-L3-v2",
@@ -2787,51 +2787,110 @@ def launch_settings_gui():
         print(f"[Settings GUI] Mainloop error: {e}")
 
 
+# === API Model Registry & Selector (v8.0.0) ==================================
+# Purpose:
+# - Centralize OpenAI model inventory (text/code, image, audio STT/TTS, realtime, video)
+# - Provide deterministic task-based selection with cost tiers + local/offline gating
+# - Remain backward compatible with prior selectors used by SarahMemoryAPI.py
+#
+# Notes:
+# - Text/Coding: gpt-5.2 (default), gpt-5.2-pro (premium), gpt-5-mini (fast/cheap)
+# - Images: gpt-image-1.5
+# - STT: gpt-4o-transcribe (premium) / gpt-4o-mini-transcribe (fast)
+# - TTS: gpt-4o-mini-tts (fast) / tts-1-hd (premium)
+# - Video: sora-2 / sora-2-pro (capability gated; may not be enabled on all accounts)
 
-# === API Model Registry & Selector (v7.7.1) ================================
-# These control which OpenAI models are preferred for different capabilities.
 API_MODEL_AUTO_SELECTOR = globals().get("API_MODEL_AUTO_SELECTOR", True)
 API_TOKEN_SOFT_LIMIT = int(os.getenv("SARAH_API_TOKEN_SOFT_LIMIT", "1024"))
 API_COST_TIER = (os.getenv("SARAH_API_COST_TIER", "balanced") or "balanced").lower()  # low|balanced|max
 
+# v8 defaults (kept override-able via env; older blocks below may re-assign these)
+API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL",   "gpt-5.2")
+API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-5-mini")
+API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL",   "gpt-5-mini")
+
+# Optional per-modality overrides
+API_IMAGE_MODEL     = os.getenv("SARAH_OPENAI_IMAGE_MODEL", "gpt-image-1.5")
+API_STT_MODEL       = os.getenv("SARAH_OPENAI_STT_MODEL",   "gpt-4o-transcribe")
+API_STT_FAST_MODEL  = os.getenv("SARAH_OPENAI_STT_FAST_MODEL","gpt-4o-mini-transcribe")
+API_TTS_MODEL       = os.getenv("SARAH_OPENAI_TTS_MODEL",   "gpt-4o-mini-tts")
+API_TTS_PREMIUM     = os.getenv("SARAH_OPENAI_TTS_PREMIUM", "tts-1-hd")
+API_VIDEO_MODEL     = os.getenv("SARAH_OPENAI_VIDEO_MODEL", "sora-2")
+API_VIDEO_PREMIUM   = os.getenv("SARAH_OPENAI_VIDEO_PREMIUM","sora-2-pro")
+
 # Only allow models explicitly listed here (derived from your enabled set)
+# Keep legacy list but add v8-first class models.
 API_ALLOWED_MODELS = list(dict.fromkeys([
-    # Core chat/reasoning
-    "gpt-4.1","gpt-4.1-mini","gpt-4.1-mini-2025-04-14","gpt-4.1-2025-04-14",
+
+    # === v8 Primary Text/Coding ===
+    "gpt-5.2","gpt-5.2-pro","gpt-5-mini",
+
+    # === Images ===
+    "gpt-image-1.5","gpt-image-1","dall-e-3","dall-e-2",
+
+    # === Audio (STT/TTS/Realtimes) ===
+    "gpt-4o-mini-transcribe","gpt-4o-transcribe","whisper-1",
+    "gpt-4o-mini-tts","tts-1","tts-1-1106","tts-1-hd","tts-1-hd-1106",
+    "gpt-4o-realtime-preview","gpt-4o-realtime-preview-2024-10-01","gpt-4o-realtime-preview-2025-06-03",
+    "gpt-realtime","gpt-realtime-2025-08-28",
+    "gpt-audio","gpt-audio-2025-08-28",
+    "gpt-4o-audio-preview","gpt-4o-audio-preview-2024-10-01","gpt-4o-audio-preview-2024-12-17",
+    "gpt-4o-mini-audio-preview","gpt-4o-mini-audio-preview-2024-12-17",
+
+    # === Video (capability gated) ===
+    "sora-2","sora-2-pro",
+
+    # === Embeddings ===
+    "text-embedding-3-small","text-embedding-3-large","text-embedding-ada-002",
+
+    # === Legacy / Compatibility ===
+    "gpt-4.1","gpt-4.1-mini","gpt-4.1-mini-2025-04-14","gpt-4.1-2025-04-14","gpt-4.1-nano",
     "o4-mini","o4-mini-2025-04-16","o4-mini-deep-research","o4-mini-deep-research-2025-06-26",
     "o3","o3-2025-04-16","o3-mini","o3-mini-2025-01-31",
     "o1","o1-2024-12-17","o1-mini","o1-mini-2024-09-12","o1-pro","o1-pro-2025-03-19",
-    "gpt-4o","gpt-4o-2024-05-13","gpt-4o-2024-08-06","gpt-4o-realtime-preview","gpt-4o-realtime-preview-2024-10-01","gpt-4o-realtime-preview-2025-06-03",
-    "gpt-4o-mini","gpt-4o-mini-2024-07-18","gpt-4o-mini-search-preview","gpt-4o-mini-search-preview-2025-03-11",
-    "gpt-4o-search-preview","gpt-4o-search-preview-2025-03-11","chatgpt-4o-latest",
-    "gpt-4","gpt-4-turbo","gpt-4-turbo-preview","gpt-4-0125-preview","gpt-4-1106-preview","gpt-4-0613","gpt-3.5-turbo","gpt-3.5-turbo-1106","gpt-3.5-turbo-0125","gpt-3.5-turbo-16k","gpt-3.5-turbo-instruct-0914",
-    # Embeddings
-    "text-embedding-3-small","text-embedding-3-large","text-embedding-ada-002",
-    # Audio/vision/tts/stt
-    "gpt-4o-mini-transcribe","gpt-4o-transcribe","whisper-1",
-    "gpt-4o-audio-preview","gpt-4o-audio-preview-2024-10-01","gpt-4o-audio-preview-2024-12-17","gpt-4o-mini-audio-preview","gpt-4o-mini-audio-preview-2024-12-17",
-    "gpt-4o-mini-tts","tts-1","tts-1-1106","tts-1-hd","tts-1-hd-1106",
-    # Images
-    "gpt-image-1","dall-e-3","dall-e-2",
+    "gpt-4o","gpt-4o-2024-05-13","gpt-4o-2024-08-06",
+    "gpt-4o-mini","gpt-4o-mini-2024-07-18",
+    "gpt-4o-mini-search-preview","gpt-4o-mini-search-preview-2025-03-11",
+    "gpt-4o-search-preview","gpt-4o-search-preview-2025-03-11",
+    "chatgpt-4o-latest",
+    "gpt-4","gpt-4-turbo","gpt-4-turbo-preview","gpt-4-0125-preview","gpt-4-1106-preview","gpt-4-0613",
+    "gpt-3.5-turbo","gpt-3.5-turbo-1106","gpt-3.5-turbo-0125","gpt-3.5-turbo-16k","gpt-3.5-turbo-instruct-0914",
+
     # Safety/moderation
     "omni-moderation-latest","omni-moderation-2024-09-26",
+
     # Utility / legacy
     "babbage-002","davinci-002","codex-mini-latest",
-    # Forward-compat flags in your list
-    "gpt-5","gpt-5-mini","gpt-5-mini-2025-08-07","gpt-5-nano","gpt-5-nano-2025-08-07","gpt-5-chat-latest","gpt-realtime","gpt-realtime-2025-08-28","gpt-audio","gpt-audio-2025-08-28","gpt-4.1-nano"
+
+    # Forward-compat (kept from your prior list)
+    "gpt-5","gpt-5-mini-2025-08-07","gpt-5-nano","gpt-5-nano-2025-08-07","gpt-5-chat-latest",
 ]))
+
+# Optional allow/blocklist overrides from env (preserve legacy knobs)
+try:
+    _env_allowed = [m.strip() for m in os.getenv("SARAH_OPENAI_ALLOWED_MODELS", "").split(",") if m.strip()]
+    if _env_allowed:
+        API_ALLOWED_MODELS = list(dict.fromkeys(_env_allowed))
+except Exception:
+    pass
+
+API_BLOCKLIST_MODELS = [m.strip() for m in os.getenv("SARAH_OPENAI_BLOCKLIST_MODELS","").split(",") if m.strip()]
+if API_BLOCKLIST_MODELS:
+    API_ALLOWED_MODELS = [m for m in API_ALLOWED_MODELS if (m.lower() not in [b.lower() for b in API_BLOCKLIST_MODELS])]
 
 def _model_capabilities(model_id: str) -> dict:
     mid = (model_id or "").lower()
     return {
         "vision": ("4o" in mid) or ("realtime" in mid),
-        "search": "search-preview" in mid or "deep-research" in mid,
+        "search": ("search-preview" in mid) or ("deep-research" in mid),
         "stt": ("transcribe" in mid) or (mid == "whisper-1"),
-        "tts": ("tts" in mid),
+        "tts": ("tts" in mid) or ("audio" in mid and "mini" in mid),
         "embedding": ("embedding" in mid),
-        "image": ("gpt-image-1" in mid) or ("dall-e" in mid) or ("image" in mid and "gpt" in mid),
-        "fast": ("mini" in mid) or ("nano" in mid),
-        "premium": any(x in mid for x in ["o4","gpt-4.1","o3"]) and not ("mini" in mid or "nano" in mid),
+        "image": ("gpt-image-1.5" in mid) or ("gpt-image-1" in mid) or ("dall-e" in mid),
+        "video": ("sora" in mid) or ("video" in mid),
+        "realtime": ("realtime" in mid),
+        "fast": any(x in mid for x in ["mini","nano"]),
+        "premium": any(x in mid for x in ["5.2-pro","o4","gpt-4.1","o3"]) and not any(x in mid for x in ["mini","nano"]),
     }
 
 def _model_tier(model_id: str) -> str:
@@ -2840,8 +2899,24 @@ def _model_tier(model_id: str) -> str:
     if caps["fast"]:    return "low"
     return "balanced"
 
-# === Auto Model Candidate Selector (OpenAI chat-safe) =========================
-# These are safe with the /v1/chat/completions endpoint used by SarahMemoryAPI.
+def _allowed(mid: str) -> bool:
+    if not mid:
+        return False
+    try:
+        if API_ALLOWED_MODELS and (mid not in API_ALLOWED_MODELS) and (mid.lower() not in [m.lower() for m in API_ALLOWED_MODELS]):
+            return False
+    except Exception:
+        pass
+    try:
+        if API_BLOCKLIST_MODELS and (mid.lower() in [b.lower() for b in API_BLOCKLIST_MODELS]):
+            return False
+    except Exception:
+        pass
+    return True
+
+# --- Endpoint-family safety shims -------------------------------------------------
+# Legacy code used /v1/chat/completions. Newer stacks may use Responses API.
+# Keep "chat-safe" list strict so older code doesn't break.
 _OPENAI_CHAT_SAFE = [
     "gpt-4o-2024-08-06","gpt-4o-2024-05-13","gpt-4o",
     "gpt-4-turbo","gpt-4-0125-preview","gpt-4-1106-preview",
@@ -2850,72 +2925,142 @@ _OPENAI_CHAT_SAFE = [
 
 def _is_chat_safe(model_id: str) -> bool:
     mid = (model_id or "").lower()
-    if not mid: return False
-    if any(x in mid for x in ["realtime","audio","transcribe","search-preview","deep-research"]):
+    if not mid:
         return False
+    if any(x in mid for x in ["realtime","audio","transcribe","search-preview","deep-research","image","dall-e","sora","video","embedding","tts"]):
+        return False
+    # keep legacy exclusions
     if mid.startswith(("o1","o3","o4","gpt-4.1","gpt-5","whisper","tts")):
         return False
-    # must be allowed in user list if present
-    if "API_ALLOWED_MODELS" in globals():
-        if model_id not in API_ALLOWED_MODELS and mid not in [m.lower() for m in API_ALLOWED_MODELS]:
-            return False
-    # chat-completions compatible short-list
+    if not _allowed(model_id):
+        return False
     return mid in [m.lower() for m in _OPENAI_CHAT_SAFE]
 
 def get_openai_model_candidates(query: str = "", intent: str = "chat", max_n: int = 6) -> list[str]:
-    """Return a prioritized list of OpenAI chat-safe model IDs for the given query/intent.
-    Only models compatible with /v1/chat/completions are returned."""
-    q = (query or "").lower()
-    it = (intent or "chat").lower()
-
-    # Priority buckets
+    """Return a prioritized list of OpenAI chat-safe model IDs for legacy chat-completions."""
     primary = []
     secondary = []
 
-    # Use configured primaries if provided
     for key in ("API_PRIMARY_MODEL","API_SECONDARY_MODEL","API_DEFAULT_MODEL"):
         mid = globals().get(key, None)
         if isinstance(mid, str) and _is_chat_safe(mid):
             primary.append(mid)
 
-    # Heuristics by intent/query
-    if any(k in q for k in ["image","picture","draw","dall-e"]):
-        # still route via chat; API handles actual media elsewhere
-        pass  # do not insert media-only models here
-
-    # Fill from allowed list in a deterministic order
     try:
         for mid in API_ALLOWED_MODELS:
             if _is_chat_safe(mid):
-                if "gpt-4o" in mid or "gpt-4-turbo" in mid:
+                if ("gpt-4o" in mid) or ("gpt-4-turbo" in mid):
                     if mid not in primary: primary.append(mid)
                 else:
                     if mid not in secondary: secondary.append(mid)
     except Exception:
         for mid in _OPENAI_CHAT_SAFE:
             if _is_chat_safe(mid):
-                if "gpt-4o" in mid or "gpt-4-turbo" in mid:
+                if ("gpt-4o" in mid) or ("gpt-4-turbo" in mid):
                     if mid not in primary: primary.append(mid)
                 else:
                     if mid not in secondary: secondary.append(mid)
 
-    # Unique and clipped
     seen = set()
     out = []
     for mid in primary + secondary + _OPENAI_CHAT_SAFE:
-        if _is_chat_safe(mid) and mid not in seen:
-            out.append(mid); seen.add(mid)
+        if _is_chat_safe(mid) and mid.lower() not in seen:
+            out.append(mid); seen.add(mid.lower())
         if len(out) >= max_n: break
     return out
 
 def get_alternate_model(prev_model: str) -> str | None:
-    """Return a different chat-safe model than `prev_model`, for cross-validation."""
     cands = get_openai_model_candidates()
     for mid in cands:
         if prev_model and mid.lower() != (prev_model or "").lower():
             return mid
     return None
 
+# --- v8 Task Selector --------------------------------------------------------
+def select_task_model(task: str = "chat",
+                      *,
+                      cost_tier: str | None = None,
+                      need_vision: bool = False,
+                      need_stt: bool = False,
+                      need_tts: bool = False,
+                      need_image: bool = False,
+                      need_video: bool = False,
+                      prefers_realtime: bool = False,
+                      prefers_search: bool = False) -> str:
+    """Select the best OpenAI model for a task modality.
+
+    task (examples): chat | code | reasoning | search | image | stt | tts | audio | realtime | video
+    """
+    ctier = (cost_tier or API_COST_TIER or "balanced").lower()
+    t = (task or "chat").strip().lower()
+
+    # Hard gating: LOCAL_ONLY_MODE means "do not use external APIs" (selection still returns a name,
+    # but SarahMemoryAPI.py should respect LOCAL_ONLY_MODE and bypass calls).
+    _ = bool(globals().get("LOCAL_ONLY_MODE", False))
+
+    # Modality routing first
+    if need_image or t in ("image","img","picture","art","draw"):
+        mid = API_IMAGE_MODEL
+        return mid if _allowed(mid) else "gpt-image-1.5"
+
+    if need_video or t in ("video","movie","animate","sora"):
+        mid = API_VIDEO_PREMIUM if ctier == "max" else API_VIDEO_MODEL
+        if _allowed(mid): return mid
+        if _allowed(API_VIDEO_MODEL): return API_VIDEO_MODEL
+        return "sora-2"
+
+    if need_stt or t in ("stt","transcribe","speech_to_text","asr"):
+        mid = API_STT_FAST_MODEL if ctier == "low" else API_STT_MODEL
+        return mid if _allowed(mid) else (API_STT_MODEL if _allowed(API_STT_MODEL) else "gpt-4o-transcribe")
+
+    if need_tts or t in ("tts","speak","text_to_speech","voice"):
+        mid = API_TTS_PREMIUM if ctier == "max" else API_TTS_MODEL
+        return mid if _allowed(mid) else (API_TTS_MODEL if _allowed(API_TTS_MODEL) else "gpt-4o-mini-tts")
+
+    if prefers_realtime or t in ("realtime","rt","live","voice_chat"):
+        for cand in ["gpt-realtime-2025-08-28","gpt-realtime","gpt-4o-realtime-preview-2025-06-03","gpt-4o-realtime-preview"]:
+            if _allowed(cand):
+                return cand
+
+    # Text / code / reasoning / search
+    wants_search = prefers_search or t in ("search","lookup","fact","research")
+    priority = [m for m in [API_PRIMARY_MODEL, API_SECONDARY_MODEL, API_DEFAULT_MODEL] if isinstance(m, str) and m.strip()]
+
+    for m in ["gpt-5.2-pro","gpt-5.2","gpt-5-mini","gpt-4.1","gpt-4.1-mini","gpt-4o","gpt-4o-mini"]:
+        if m not in priority:
+            priority.append(m)
+
+    candidates = []
+    for mid in priority:
+        if not _allowed(mid):
+            continue
+        caps = _model_capabilities(mid)
+        if need_vision and not caps["vision"]:
+            continue
+        if wants_search and not (caps["search"] or "search-preview" in (mid or "").lower() or "deep-research" in (mid or "").lower()):
+            pass
+        tier = _model_tier(mid)
+        if ctier == "low" and tier == "max":
+            continue
+        candidates.append((mid, tier))
+
+    if API_MODEL_AUTO_SELECTOR and candidates:
+        if ctier == "max":
+            for mid, tier in candidates:
+                if tier == "max":
+                    return mid
+        if ctier == "low":
+            for mid, tier in candidates:
+                if tier == "low":
+                    return mid
+        return candidates[0][0]
+
+    for mid in priority:
+        if _allowed(mid):
+            return mid
+    return "gpt-5-mini"
+
+# Back-compat: keep the old function name used by SarahMemoryAPI.py
 def select_api_model(intent: str = "chat",
                      need_vision: bool = False,
                      need_stt: bool = False,
@@ -2923,57 +3068,22 @@ def select_api_model(intent: str = "chat",
                      prefers_search: bool = False,
                      cost_tier: str | None = None,
                      token_soft_limit: int | None = None) -> str:
-    """
-    Choose an OpenAI model based on intent/capabilities/cost.
-    Honors API_PRIMARY_MODEL â†’ API_SECONDARY_MODEL â†’ API_DEFAULT_MODEL.
-    """
-    ctier = (cost_tier or API_COST_TIER or "balanced").lower()
-    wants = {
-        "vision": need_vision,
-        "stt": need_stt,
-        "tts": need_tts,
-        "search": prefers_search or intent in ("search","lookup","fact"),
-    }
-    priority = [m for m in [globals().get("API_PRIMARY_MODEL"),
-                            globals().get("API_SECONDARY_MODEL"),
-                            globals().get("API_DEFAULT_MODEL")] if m]
-    for mid in API_ALLOWED_MODELS:
-        if mid not in priority:
-            priority.append(mid)
-
-    candidates = []
-    for mid in priority:
-        if not mid or mid not in API_ALLOWED_MODELS:
-            continue
-        caps = _model_capabilities(mid)
-        if wants["vision"] and not caps["vision"]: continue
-        if wants["stt"] and not caps["stt"]:       continue
-        if wants["tts"] and not caps["tts"]:       continue
-        tier = _model_tier(mid)
-        if ctier == "low" and tier == "max":       continue
-        candidates.append((mid, tier))
-
-    if API_MODEL_AUTO_SELECTOR and candidates:
-        if ctier == "max":
-            for mid, tier in candidates:
-                if tier == "max": return mid
-        elif ctier == "low":
-            for mid, tier in candidates:
-                if tier == "low": return mid
-        return candidates[0][0]
-
-    for mid in priority:
-        if mid in API_ALLOWED_MODELS:
-            return mid
-    return "gpt-4.1-mini"
+    """Back-compat wrapper for older code paths (text model selection)."""
+    if need_stt:
+        return select_task_model("stt", cost_tier=cost_tier, need_stt=True)
+    if need_tts:
+        return select_task_model("tts", cost_tier=cost_tier, need_tts=True)
+    return select_task_model(intent or "chat", cost_tier=cost_tier, need_vision=need_vision, prefers_search=prefers_search)
 
 def get_embedding_model(max_quality: bool = False) -> str:
     return "text-embedding-3-large" if max_quality else "text-embedding-3-small"
-# ===========================================================================
 
-# Fix any accidental older default name
-API_DEFAULT_MODEL = API_DEFAULT_MODEL.replace("gpt-4.0-mini", "gpt-4.1-mini")
-# GUI launch moved to end of file
+try:
+    API_DEFAULT_MODEL = API_DEFAULT_MODEL.replace("gpt-4.0-mini", "gpt-4.1-mini")
+except Exception:
+    pass
+# ============================================================================
+
 
 # === AI-Agent Master Safety & Voice Control (v7.7.2) ===
 # Single master safety gate: when False, Sarah behaves like a normal chatbot (no desktop control).
@@ -3371,11 +3481,11 @@ def agent_permissions_summary() -> dict:
         "device_mode":            globals().get("DEVICE_MODE", "headless"),
         "safe_mode":              bool(globals().get("SAFE_MODE", False)),
         "local_only":             bool(globals().get("LOCAL_ONLY_MODE", False)),
-        "agent_enabled":          bool(globals().get("AI_AGENT_ENABLED", True)),
-        "allow_app_launch":       bool(globals().get("AI_AGENT_ALLOW_APP_LAUNCH", True)),
-        "allow_file_write":       bool(globals().get("AI_AGENT_ALLOW_FILE_WRITE", True)),
-        "allow_remote_control":   bool(globals().get("AI_AGENT_ALLOW_REMOTE_CONTROL", True)),
-        "allow_network_tasks":    bool(globals().get("AI_AGENT_ALLOW_NETWORK_TASKS", True)),
+        "agent_enabled":          bool(globals().get("AI_AGENT_ENABLED", False)),
+        "allow_app_launch":       bool(globals().get("AI_AGENT_ALLOW_APP_LAUNCH", False)),
+        "allow_file_write":       bool(globals().get("AI_AGENT_ALLOW_FILE_WRITE", False)),
+        "allow_remote_control":   bool(globals().get("AI_AGENT_ALLOW_REMOTE_CONTROL", False)),
+        "allow_network_tasks":    bool(globals().get("AI_AGENT_ALLOW_NETWORK_TASKS", False)),
         "user_activity_timeout":  int(globals().get("AI_AGENT_USER_ACTIVITY_TIMEOUT_MS", 2500)),
         "resume_delay_ms":        int(globals().get("AI_AGENT_RESUME_DELAY", 9000)),
     }

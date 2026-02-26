@@ -571,6 +571,10 @@ def log(msg):
     timestamp = datetime.datetime.now().isoformat()
     print(f"[{timestamp}] {msg}")
     try:
+        os.makedirs(DATASETS_DIR, exist_ok=True)
+    except Exception:
+        pass
+    try:
         conn = sqlite3.connect(os.path.join(DATASETS_DIR, "system_logs.db"))
         conn.execute("""
             CREATE TABLE IF NOT EXISTS logs (
@@ -777,12 +781,13 @@ def text_to_vector(text):
         model.to(device)
 
         embedding = model.encode(text, convert_to_tensor=True).cpu().numpy()
+        embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
         return embedding
 
     except Exception as e:
         log(f"⚠️ SentenceTransformer fallback engaged due to error: {e}")
         words = text.lower().split()
-        vector = np.zeros(128, dtype=np.float32)
+        vector = np.zeros(int(os.getenv('SARAH_VECTOR_DIM', '384')), dtype=np.float32)
         for i, word in enumerate(words[:128]):
             vector[i] = float(len(word)) % 10
         norm = np.linalg.norm(vector)
