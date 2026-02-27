@@ -48,6 +48,7 @@ if not logger.hasHandlers():
 REQUIRED_FILES = [
     os.path.join(config.API_DIR, "server", "app.py"), #API LOCAL and CLOUD SERVER
     os.path.join(config.API_DIR, "server", "appnet.py"), #SARAHNET Network for All Nodes, communications, etc
+    os.path.join(config.API_DIR, "server", "appnet2.py"), #SARAHNET Sync Network for Sync'ed Bluetooth/Wifi Nodes and more.
     os.path.join(config.API_DIR, "server", "appsys.py"), #API For System Functions such as FileManager, etc
     os.path.join(config.API_DIR, "server", "appmedia.py"), #API For Media Studios, Image,Video,Music
     os.path.join(config.BASE_DIR, "SarahMemoryAdaptive.py"),
@@ -105,8 +106,6 @@ REQUIRED_FILES = [
     # "SarahMemoryCleanupDaily.py" Stand-Alone Tool, Daily Database Cleaning tool
     # "SarahMemoryDBCreate.py" Stand-Alone Main File that Creates the initial Databases
     # "SarahMemoryLLM.py" Stand-Alone LLM and Object Downloader file. for easy installation.
-    # "SarahMemorySystemIndexer.py" Stand-Alone Tool with built in GUI File that Indexes Entire Systems
-    # "SarahMemorySystemLearn.py" Stand-Alone Tool that populates all created Databases with all information indexed.
     # "SarahMemoryStartup.py" Stand-Alone File in the C:\SarahMe...directory that allows for auto-run on systemboot up via Registry
 ]
 # ============================

@@ -507,7 +507,7 @@ def _normalize_error_text(text: str, max_len: int = 200_000) -> str:
 
     # Normalize paths that include temp random folders (best-effort, keep file name)
     # Example: C:\Users\...\AppData\Local\Temp\tmpabcd\file.py -> <PATH>\file.py
-    s = re.sub(r"\b[A-Za-z]:\\(?:Users\\[^\\]+\\)?AppData\\Local\\Temp\\[^\\\s]+\\", "<TMP>\\", s)
+    s = re.sub(r"\b[A-Za-z]:\\(?:Users\\[^\\]+\\)?AppData\\Local\\Temp\\[^\\\s]+\\", lambda _m: "<TMP>\\", s)
 
     # Normalize repeated whitespace
     s = re.sub(r"[ \t]+", " ", s)

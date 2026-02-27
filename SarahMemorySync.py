@@ -35,6 +35,7 @@ import time
 import sqlite3
 import hashlib
 import json
+import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -111,7 +112,9 @@ def sync_to_dropbox(file_path, dbx):
         relative_path = os.path.relpath(file_path, LOCAL_SYNC_DIR)
         dropbox_path = os.path.join(DROPBOX_SYNC_FOLDER, relative_path).replace(os.sep, '/')
         with open(file_path, 'rb') as f:
-            dbx.files_upload if dbx else (_ for _ in ()).throw(Exception('Dropbox disabled'))(f.read(), dropbox_path, mode=WriteMode('overwrite'))
+            if not dbx:
+                raise Exception('Dropbox disabled')
+            dbx.files_upload(f.read(), dropbox_path, mode=WriteMode('overwrite'))
         success_msg = f"Uploaded '{file_path}' to Dropbox at '{dropbox_path}'."
         logger.info(success_msg)
         log_sync_event("File Upload", success_msg)
@@ -130,7 +133,9 @@ def sync_from_dropbox(file_path, dbx):
     try:
         relative_path = os.path.relpath(file_path, LOCAL_SYNC_DIR)
         dropbox_path = os.path.join(DROPBOX_SYNC_FOLDER, relative_path).replace(os.sep, '/')
-        metadata, res = dbx.files_download if dbx else (_ for _ in ()).throw(Exception('Dropbox disabled'))(dropbox_path)
+        if not dbx:
+            raise Exception('Dropbox disabled')
+        metadata, res = dbx.files_download(dropbox_path)
         with open(file_path, 'wb') as f:
             f.write(res.content)
         success_msg = f"Downloaded '{dropbox_path}' from Dropbox to '{file_path}'."
@@ -860,3 +865,415 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemorySync.py v8.0.0
 # ====================================================================
+
+
+
+# ============================================================================
+# SARAHNET CORE FILE SYNC (v8.0.0) - Broker-based, cross-platform
+# ----------------------------------------------------------------------------
+# Private device-to-device code sync for YOUR trusted SarahNet nodes.
+#
+# Transport: existing broker endpoints (appnet.py):
+#   POST /api/net/file/send
+#   GET  /api/net/file/poll?to_node=...&limit=...
+#   POST /api/net/file/ack
+#
+# Gating: SarahMemoryGlobals.REMOTE_SYNC_ENABLED (already exists, default True)
+# Trust:  only accept inbound "core_sync::" from known peer node_ids
+#         peers = keys of SarahMemoryGlobals.SARAHNET_PEERS (plus SARAHNET_NODE_ID)
+#
+# Allowlist: core python + api/server app*.py (no DBs, logs, .env, memory)
+# Safety: atomic write + backup-on-change
+# ============================================================================
+
+def _sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 256), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def _safe_relpath(path: str, base_dir: str) -> str:
+    base_abs = os.path.abspath(base_dir)
+    p_abs = os.path.abspath(path)
+    if not p_abs.startswith(base_abs):
+        raise ValueError("path escapes base")
+    return os.path.relpath(p_abs, base_abs).replace("\\", "/")
+
+def _sync_db_path() -> str:
+    # Keep state in a durable dataset DB, but do NOT sync this DB itself.
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "memory", "datasets", "device_link.db"))
+
+def _ensure_sync_tables() -> None:
+    try:
+        db_path = _sync_db_path()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS code_sync_state(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                node_id TEXT,
+                peer_id TEXT,
+                relpath TEXT,
+                sha256 TEXT,
+                mtime REAL,
+                size INTEGER,
+                last_sent_ts REAL,
+                last_recv_ts REAL
+            )
+        """)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_code_sync_state_uq ON code_sync_state(node_id, peer_id, relpath)")
+        con.commit()
+        con.close()
+    except Exception as e:
+        logger.error(f"[SYNC] Failed ensuring sync tables: {e}")
+
+def _trusted_peer_ids() -> set:
+    out = set()
+    try:
+        peers = getattr(config, "SARAHNET_PEERS", {}) or {}
+        out |= set(peers.keys())
+    except Exception:
+        pass
+    try:
+        out.add(getattr(config, "SARAHNET_NODE_ID", "local-node"))
+    except Exception:
+        pass
+    return out
+
+def _local_broker_available(host: str = "127.0.0.1", port: int = 8000, timeout: float = 0.35) -> bool:
+    try:
+        import socket
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+def _broker_base_url() -> str:
+    # Prefer localhost when available (LAN/dev; avoids TLS issues).
+    if _local_broker_available():
+        return "http://127.0.0.1:8000"
+    base_url = str(getattr(config, "SARAH_WEB_BASE", "") or "").strip()
+    if not base_url:
+        base_url = "http://127.0.0.1:8000"
+    return base_url.rstrip("/")
+
+def _broker_headers() -> dict:
+    h = {"Content-Type": "application/json"}
+    api_key = getattr(config, "REMOTE_API_KEY", None)
+    if api_key:
+        h["Authorization"] = f"Bearer {api_key}"
+    return h
+
+def _retry_local_on_tls_failure(url: str, err_text: str):
+    try:
+        if "CERTIFICATE_VERIFY_FAILED" not in (err_text or ""):
+            return None
+        if not url.lower().startswith("https://"):
+            return None
+        if not _local_broker_available():
+            return None
+        from urllib.parse import urlparse
+        u = urlparse(url)
+        return "http://127.0.0.1:8000" + (u.path or "") + (("?" + u.query) if u.query else "")
+    except Exception:
+        return None
+
+def _http_post_json(url: str, payload: dict, timeout: float = 12.0):
+    try:
+        import requests  # type: ignore
+        try:
+            r = requests.post(url, json=payload, headers=_broker_headers(), timeout=timeout)
+        except Exception as e:
+            alt = _retry_local_on_tls_failure(url, str(e))
+            if alt:
+                r = requests.post(alt, json=payload, headers=_broker_headers(), timeout=timeout)
+            else:
+                raise
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, {"text": getattr(r, "text", "")}
+    except Exception:
+        import urllib.request
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(url, data=data, headers=_broker_headers(), method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                txt = resp.read().decode("utf-8", "ignore")
+                try:
+                    return resp.getcode(), json.loads(txt)
+                except Exception:
+                    return resp.getcode(), {"text": txt}
+        except Exception as e2:
+            alt = _retry_local_on_tls_failure(url, str(e2))
+            if alt:
+                return _http_post_json(alt, payload, timeout=timeout)
+            return 599, {"error": str(e2)}
+
+def _http_get_json(url: str, timeout: float = 12.0):
+    try:
+        import requests  # type: ignore
+        try:
+            r = requests.get(url, headers=_broker_headers(), timeout=timeout)
+        except Exception as e:
+            alt = _retry_local_on_tls_failure(url, str(e))
+            if alt:
+                r = requests.get(alt, headers=_broker_headers(), timeout=timeout)
+            else:
+                raise
+        try:
+            return r.status_code, r.json()
+        except Exception:
+            return r.status_code, {"text": getattr(r, "text", "")}
+    except Exception:
+        import urllib.request
+        req = urllib.request.Request(url, headers=_broker_headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                txt = resp.read().decode("utf-8", "ignore")
+                try:
+                    return resp.getcode(), json.loads(txt)
+                except Exception:
+                    return resp.getcode(), {"text": txt}
+        except Exception as e2:
+            alt = _retry_local_on_tls_failure(url, str(e2))
+            if alt:
+                return _http_get_json(alt, timeout=timeout)
+            return 599, {"error": str(e2)}
+
+def _collect_core_files(base_dir: str):
+    items = []
+    try:
+        for name in os.listdir(base_dir):
+            if name.startswith("SarahMemory") and name.endswith(".py"):
+                p = os.path.join(base_dir, name)
+                try:
+                    st = os.stat(p)
+                    items.append({"abs": p, "rel": _safe_relpath(p, base_dir), "mtime": st.st_mtime, "size": st.st_size})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    api_dir = os.path.abspath(os.path.join(base_dir, "api", "server"))
+    if os.path.isdir(api_dir):
+        try:
+            for name in os.listdir(api_dir):
+                if name.startswith("app") and name.endswith(".py"):
+                    p = os.path.join(api_dir, name)
+                    try:
+                        st = os.stat(p)
+                        items.append({"abs": p, "rel": _safe_relpath(p, base_dir), "mtime": st.st_mtime, "size": st.st_size})
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    return items
+
+def _atomic_write(path: str, data: bytes) -> None:
+    tmp_path = path + ".tmp_" + str(int(time.time() * 1000))
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    os.replace(tmp_path, path)
+
+def _backup_file(path: str, from_node: str):
+    try:
+        if not os.path.exists(path):
+            return None
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = f"{path}.BAK.{from_node}.{ts}"
+        with open(path, "rb") as f:
+            _atomic_write(bak, f.read())
+        return bak
+    except Exception:
+        return None
+
+def sarahnet_sync_push(peer_id: str, base_dir: str = None, max_bytes: int = 1_900_000):
+    if not getattr(config, "REMOTE_SYNC_ENABLED", False):
+        return {"ok": False, "reason": "REMOTE_SYNC_ENABLED is False"}
+
+    base_dir = base_dir or getattr(config, "BASE_DIR", os.getcwd())
+    node_id = getattr(config, "SARAHNET_NODE_ID", "local-node")
+
+    if peer_id not in _trusted_peer_ids():
+        return {"ok": False, "reason": f"peer_id not trusted: {peer_id}"}
+
+    _ensure_sync_tables()
+    files = _collect_core_files(base_dir)
+
+    sent = 0
+    skipped = 0
+    errors = 0
+    details = []
+
+    con = sqlite3.connect(_sync_db_path())
+    cur = con.cursor()
+
+    for it in files:
+        try:
+            if int(it["size"]) > int(max_bytes):
+                skipped += 1
+                continue
+
+            rel = it["rel"]
+            sha = _sha256_file(it["abs"])
+
+            cur.execute("SELECT sha256, mtime FROM code_sync_state WHERE node_id=? AND peer_id=? AND relpath=? LIMIT 1",
+                        (node_id, peer_id, rel))
+            row = cur.fetchone()
+            prev_sha = row[0] if row else None
+            prev_mtime = float(row[1]) if row else 0.0
+
+            if prev_sha == sha and prev_mtime >= float(it["mtime"]):
+                skipped += 1
+                continue
+
+            with open(it["abs"], "rb") as f:
+                data_b64 = base64.b64encode(f.read()).decode("ascii")
+
+            url = _broker_base_url() + "/api/net/file/send"
+            payload = {
+                "to_node": peer_id,
+                "from_node": node_id,
+                "filename": "core_sync::" + rel,
+                "mime": "application/octet-stream",
+                "data_b64": data_b64,
+                "sha256": sha,
+            }
+            st, resp = _http_post_json(url, payload, timeout=float(getattr(config, "REMOTE_HTTP_TIMEOUT", 12.0)))
+
+            if st == 200 and resp.get("ok"):
+                sent += 1
+                cur.execute(
+                    "INSERT INTO code_sync_state(node_id,peer_id,relpath,sha256,mtime,size,last_sent_ts,last_recv_ts) "
+                    "VALUES(?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(node_id,peer_id,relpath) DO UPDATE SET sha256=excluded.sha256, mtime=excluded.mtime, "
+                    "size=excluded.size, last_sent_ts=excluded.last_sent_ts",
+                    (node_id, peer_id, rel, sha, float(it["mtime"]), int(it["size"]), time.time(), None),
+                )
+            else:
+                errors += 1
+                details.append({"rel": rel, "sent": False, "status": st, "resp": resp})
+        except Exception as e:
+            errors += 1
+            details.append({"rel": it.get("rel"), "sent": False, "error": str(e)})
+
+    con.commit()
+    con.close()
+    return {"ok": True, "node_id": node_id, "peer_id": peer_id, "sent": sent, "skipped": skipped, "errors": errors, "details": details[:25]}
+
+def sarahnet_sync_poll_and_apply(base_dir: str = None, max_items: int = 25):
+    if not getattr(config, "REMOTE_SYNC_ENABLED", False):
+        return {"ok": False, "reason": "REMOTE_SYNC_ENABLED is False"}
+
+    base_dir = base_dir or getattr(config, "BASE_DIR", os.getcwd())
+    node_id = getattr(config, "SARAHNET_NODE_ID", "local-node")
+    trusted = _trusted_peer_ids()
+
+    _ensure_sync_tables()
+
+    url = _broker_base_url() + "/api/net/file/poll?to_node=" + str(node_id) + "&limit=" + str(int(max_items))
+    st, resp = _http_get_json(url, timeout=float(getattr(config, "REMOTE_HTTP_TIMEOUT", 12.0)))
+    if st != 200 or not resp.get("ok"):
+        return {"ok": False, "status": st, "resp": resp}
+
+    items = resp.get("items") or []
+    applied = 0
+    rejected = 0
+    errors = 0
+    acks = 0
+
+    con = sqlite3.connect(_sync_db_path())
+    cur = con.cursor()
+
+    for it in items:
+        try:
+            file_id = it.get("file_id") or it.get("id")
+            from_node = str(it.get("from_node") or "").strip()
+            filename = str(it.get("filename") or "").strip()
+            data_b64 = str(it.get("data_b64") or "").strip()
+            sha_in = str(it.get("sha256") or "").strip()
+
+            if not file_id or not filename.startswith("core_sync::"):
+                continue
+            if from_node not in trusted:
+                rejected += 1
+                continue
+
+            rel = filename.split("core_sync::", 1)[1].strip()
+            if not rel or ".." in rel or rel.startswith(("/", "\\\\")):
+                rejected += 1
+                continue
+
+            raw = base64.b64decode(data_b64.encode("ascii"), validate=False)
+            sha = hashlib.sha256(raw).hexdigest()
+            if sha_in and sha != sha_in:
+                rejected += 1
+                continue
+
+            dst = os.path.abspath(os.path.join(base_dir, rel.replace("/", os.sep)))
+            if not dst.startswith(os.path.abspath(base_dir)):
+                rejected += 1
+                continue
+
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+
+            # Apply with backup if content differs
+            if os.path.exists(dst):
+                try:
+                    if _sha256_file(dst) != sha:
+                        _backup_file(dst, from_node)
+                        _atomic_write(dst, raw)
+                        applied += 1
+                except Exception:
+                    _atomic_write(dst, raw)
+                    applied += 1
+            else:
+                _atomic_write(dst, raw)
+                applied += 1
+
+            cur.execute(
+                "INSERT INTO code_sync_state(node_id,peer_id,relpath,sha256,mtime,size,last_sent_ts,last_recv_ts) "
+                "VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(node_id,peer_id,relpath) DO UPDATE SET sha256=excluded.sha256, mtime=excluded.mtime, "
+                "size=excluded.size, last_recv_ts=excluded.last_recv_ts",
+                (node_id, from_node, rel, sha, time.time(), len(raw), None, time.time()),
+            )
+
+            # Ack (best effort)
+            try:
+                aurl = _broker_base_url() + "/api/net/file/ack"
+                st2, r2 = _http_post_json(aurl, {"file_id": file_id, "to_node": node_id}, timeout=float(getattr(config, "REMOTE_HTTP_TIMEOUT", 12.0)))
+                if st2 == 200 and r2.get("ok"):
+                    acks += 1
+            except Exception:
+                pass
+
+        except Exception:
+            errors += 1
+
+    con.commit()
+    con.close()
+    return {"ok": True, "node_id": node_id, "applied": applied, "rejected": rejected, "errors": errors, "acked": acks, "polled": len(items)}
+
+def sarahnet_sync_tick(peer_ids=None, base_dir: str = None):
+    base_dir = base_dir or getattr(config, "BASE_DIR", os.getcwd())
+    node_id = getattr(config, "SARAHNET_NODE_ID", "local-node")
+
+    if peer_ids is None:
+        try:
+            peer_ids = [k for k in (getattr(config, "SARAHNET_PEERS", {}) or {}).keys() if k != node_id]
+        except Exception:
+            peer_ids = []
+
+    results = {"ok": True, "node_id": node_id, "poll": sarahnet_sync_poll_and_apply(base_dir=base_dir), "push": []}
+    for pid in peer_ids:
+        results["push"].append(sarahnet_sync_push(pid, base_dir=base_dir))
+    return results

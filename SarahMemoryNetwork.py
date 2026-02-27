@@ -593,6 +593,106 @@ class ServerConnection:
             return asyncio.create_task(self.register_node(node_id, meta))
         return __import__("asyncio").run(self.register_node(node_id, meta))
 
+
+    # --- Device Communications (optional dependencies, safe to import) ---
+
+    def list_bluetooth_devices(self) -> list[dict]:
+        """Scan nearby Bluetooth devices. Requires PyBluez (optional)."""
+        try:
+            import bluetooth  # PyBluez
+            devices = bluetooth.discover_devices(duration=6, lookup_names=True)
+            return [{"address": addr, "name": name or ""} for addr, name in devices]
+        except Exception:
+            return []
+
+    def pair_bluetooth(self, address: str, pin: str | None = None) -> bool:
+        """Best-effort pairing; on Windows this may require OS pairing UI."""
+        try:
+            # Note: programmatic pairing varies by OS; we surface intent and log.
+            # Future: use Bleak for BLE characteristics if needed.
+            return True
+        except Exception:
+            return False
+
+    def wifi_scan(self) -> list[dict]:
+        """Return nearby Wi-Fi SSIDs. Windows: netsh; Linux: nmcli/iw."""
+        import subprocess, sys, re
+        try:
+            if sys.platform.startswith("win"):
+                out = subprocess.check_output(["netsh", "wlan", "show", "networks", "mode=Bssid"], encoding="utf-8", errors="ignore")
+                ssids = re.findall(r"SSID \d+ : (.+)", out)
+                return [{"ssid": s.strip()} for s in ssids if s.strip()]
+            else:
+                out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "device", "wifi", "list"], encoding="utf-8", errors="ignore")
+                return [{"ssid": s.strip()} for s in out.splitlines() if s.strip()]
+        except Exception:
+            return []
+
+    def wifi_connect(self, ssid: str, password: str | None = None) -> bool:
+        """Connect to Wi-Fi SSID using OS tools (best effort)."""
+        import subprocess, sys
+        try:
+            if sys.platform.startswith("win"):
+                # Expect an existing profile; adding profiles programmatically requires XML
+                subprocess.check_call(["netsh", "wlan", "connect", f"name={ssid}"])
+                return True
+            else:
+                args = ["nmcli", "device", "wifi", "connect", ssid]
+                if password: args += ["password", password]
+                subprocess.check_call(args)
+                return True
+        except Exception:
+            return False
+
+    def nfc_poll_and_exchange(self, payload: bytes = b"hello") -> bytes | None:
+        """NFC handshake (if nfcpy available and reader attached)."""
+        try:
+            import nfc
+            # Minimal demo pattern; requires hardware and correct permissions
+            # In practice, use nfc.ContactlessFrontend('usb') and exchange NDEF
+            return payload  # placeholder echo
+        except Exception:
+            return None
+
+    def usb_tethering_status(self) -> dict:
+        """Detect common USB tether NICs and trigger sync if they appear."""
+        try:
+            import psutil, time
+            nics = psutil.net_if_addrs().keys()
+            usb_like = [n for n in nics if "usb" in n.lower() or "rndis" in n.lower()]
+            return {"detected": bool(usb_like), "interfaces": list(usb_like)}
+        except Exception:
+            return {"detected": False, "interfaces": []}
+
+    def read_rfid_tag(self) -> Optional[str]:
+        if _nfc is None:
+            return None
+        try:
+            clf = _nfc.ContactlessFrontend('usb')
+            tag = clf.connect(rdwr={'on-connect': lambda tag: False})
+            return getattr(tag, "identifier", b"").hex()
+        except Exception:
+            return None
+
+    def write_rfid_tag(self, data: str) -> bool:
+        if _nfc is None:
+            return False
+        try:
+            clf = _nfc.ContactlessFrontend('usb')
+            clf.connect(rdwr={'on-connect': lambda tag: write_tag(tag, data)})
+            return True
+        except Exception:
+            return False
+
+    def write_tag(tag, data: str) -> None:
+        if _nfc is None:
+            return
+        try:
+            rec = _nfc.ndef.TextRecord(data)
+            tag.ndef.records = [rec]
+        except Exception as e:
+            pass  # ignore tag write errors
+
 def get_default_server_connection() -> "ServerConnection":
     """
     Convenience factory used by modules that want a ready-to-go connector
@@ -601,73 +701,11 @@ def get_default_server_connection() -> "ServerConnection":
     return ServerConnection()
     # --- Device Communications (optional dependencies, safe to import) ---
 
-def list_bluetooth_devices(self) -> list[dict]:
-    """Scan nearby Bluetooth devices. Requires PyBluez (optional)."""
-    try:
-        import bluetooth  # PyBluez
-        devices = bluetooth.discover_devices(duration=6, lookup_names=True)
-        return [{"address": addr, "name": name or ""} for addr, name in devices]
-    except Exception:
-        return []
 
-def pair_bluetooth(self, address: str, pin: str | None = None) -> bool:
-    """Best-effort pairing; on Windows this may require OS pairing UI."""
-    try:
-        # Note: programmatic pairing varies by OS; we surface intent and log.
-        # Future: use Bleak for BLE characteristics if needed.
-        return True
-    except Exception:
-        return False
 
-def wifi_scan(self) -> list[dict]:
-    """Return nearby Wi-Fi SSIDs. Windows: netsh; Linux: nmcli/iw."""
-    import subprocess, sys, re
-    try:
-        if sys.platform.startswith("win"):
-            out = subprocess.check_output(["netsh", "wlan", "show", "networks", "mode=Bssid"], encoding="utf-8", errors="ignore")
-            ssids = re.findall(r"SSID \d+ : (.+)", out)
-            return [{"ssid": s.strip()} for s in ssids if s.strip()]
-        else:
-            out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "device", "wifi", "list"], encoding="utf-8", errors="ignore")
-            return [{"ssid": s.strip()} for s in out.splitlines() if s.strip()]
-    except Exception:
-        return []
 
-def wifi_connect(self, ssid: str, password: str | None = None) -> bool:
-    """Connect to Wi-Fi SSID using OS tools (best effort)."""
-    import subprocess, sys
-    try:
-        if sys.platform.startswith("win"):
-            # Expect an existing profile; adding profiles programmatically requires XML
-            subprocess.check_call(["netsh", "wlan", "connect", f"name={ssid}"])
-            return True
-        else:
-            args = ["nmcli", "device", "wifi", "connect", ssid]
-            if password: args += ["password", password]
-            subprocess.check_call(args)
-            return True
-    except Exception:
-        return False
 
-def nfc_poll_and_exchange(self, payload: bytes = b"hello") -> bytes | None:
-    """NFC handshake (if nfcpy available and reader attached)."""
-    try:
-        import nfc
-        # Minimal demo pattern; requires hardware and correct permissions
-        # In practice, use nfc.ContactlessFrontend('usb') and exchange NDEF
-        return payload  # placeholder echo
-    except Exception:
-        return None
 
-def usb_tethering_status(self) -> dict:
-    """Detect common USB tether NICs and trigger sync if they appear."""
-    try:
-        import psutil, time
-        nics = psutil.net_if_addrs().keys()
-        usb_like = [n for n in nics if "usb" in n.lower() or "rndis" in n.lower()]
-        return {"detected": bool(usb_like), "interfaces": list(usb_like)}
-    except Exception:
-        return {"detected": False, "interfaces": []}
 # RFID/NFC functionality (reading and writing)
 # NFC and RFID reader (requires hardware and nfcpy)
 try:
@@ -675,35 +713,9 @@ try:
 except Exception:
     _nfc = None
 
-def read_rfid_tag(self) -> Optional[str]:
-    if _nfc is None:
-        return None
-    try:
-        clf = _nfc.ContactlessFrontend('usb')
-        tag = clf.connect(rdwr={'on-connect': lambda tag: False})
-        return getattr(tag, "identifier", b"").hex()
-    except Exception:
-        return None
-
-def write_rfid_tag(self, data: str) -> bool:
-    if _nfc is None:
-        return False
-    try:
-        clf = _nfc.ContactlessFrontend('usb')
-        clf.connect(rdwr={'on-connect': lambda tag: write_tag(tag, data)})
-        return True
-    except Exception:
-        return False
 
 
-def write_tag(tag, data: str) -> None:
-    if _nfc is None:
-        return
-    try:
-        rec = _nfc.ndef.TextRecord(data)
-        tag.ndef.records = [rec]
-    except Exception as e:
-        pass  # or: print(f"Error while writing to tag: {e}")
+
 # ========================= Additive Protocol Extensions =========================
 # We don't edit the original class; we extend it at runtime.
 def _extend_protocol():
