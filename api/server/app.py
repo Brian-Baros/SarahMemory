@@ -3759,6 +3759,30 @@ except Exception as _e:
     except Exception:
         pass
 
+# --- v8 appnet2 endpoints (SarahNet Bravo: DNS/Overlay Tunnel/Identity) ---
+try:
+    # If your app.py has this helper, use it; otherwise no-op.
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appnet2 as _appnet2  # type: ignore
+    except Exception:
+        import appnet2 as _appnet2  # type: ignore
+
+    _appnet2.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appnet2 mounted: /api/net2/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appnet2 init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
 
 # ============================================================================
 # UI Event Speech Support (Opt-in)
