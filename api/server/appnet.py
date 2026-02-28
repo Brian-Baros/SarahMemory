@@ -64,6 +64,8 @@ _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 # Safety limits
 MAX_BROKER_FILE_BYTES = int(os.environ.get("SARAHNET_MAX_BROKER_FILE_BYTES", "2000000"))  # 2 MB default (single-shot)
 MAX_GROUP_MEMBERS = int(os.environ.get("SARAHNET_MAX_GROUP_MEMBERS", "200"))
+FILE_SEND_PER_MIN = int(os.environ.get("SARAHNET_FILE_SEND_PER_MIN", "60"))  # default 60/min per sender
+SYNC_FILE_SEND_PER_MIN = int(os.environ.get("SARAHNET_SYNC_FILE_SEND_PER_MIN", "600"))  # default 600/min for sync channel
 
 # File-offer security controls
 REQUIRE_FILE_ACCEPT = os.environ.get("SARAHNET_REQUIRE_FILE_ACCEPT", "true").strip().lower() in ("1","true","yes","on")
@@ -1386,7 +1388,11 @@ def net_file_send_small():
         return _err("Missing to_node/from_node/filename/data_b64")
 
     # Rate limit per sender
-    if not _check_rate_limit(f"file:{from_node}", max_per_min=10):
+    rate_limit_cap = FILE_SEND_PER_MIN
+    # Sync channel: higher throughput (still bounded), used by SarahMemorySync
+    if (request.headers.get("X-SarahNet-Channel") or "").strip().lower() == "sync":
+        rate_limit_cap = SYNC_FILE_SEND_PER_MIN
+    if not _check_rate_limit(f"file:{from_node}", max_per_min=rate_limit_cap):
         return _err("Rate limit exceeded", 429, error_code="rate_limited")
 
     # Privacy / block enforcement (best-effort)
