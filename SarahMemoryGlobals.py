@@ -2,9 +2,9 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 try:
@@ -427,7 +428,7 @@ def get_runtime_meta():
 PROJECT_VERSION = "8.0.0"  # minor: updater scheduling, SR/TTS polish, research order fixes
 AUTHOR = "Brian Lee Baros"
 # --- Runtime/debug flags (unchanged lines may already exist above/below) ---
-REVISION_START_DATE  = "12/21/2025" #Date of System Overhaul
+REVISION_START_DATE  = "03/01/2026" #Date of System Overhaul
 DEBUG_MODE = True # Helps with SarahMemoryCompare and other debugging issues.
 ENABLE_RESEARCH_LOGGING = True # Track Message/query of the GUI from Start to Finished Response/Reply
 # This constant ensures downstream modules interpret API responses
@@ -548,65 +549,460 @@ MODEL_CONFIG = {
 #(OLD v7.0.1 FLAG FOR SarahMemoryReply.py block)
 BLOCK_NARRATIVE_OUTPUTS = True #Keeps AI from making Wacky story outputs, based off of information in some of the NonFineTuned Models.
 
-# ---------------- Object Detection Model Configuration ----v7.0 overhaul enhancements allows 3rd party Object Recognition Models------------
-OBJECT_DETECTION_ENABLED = True # Enable object detection for images if
-#False NONE OF the Following Object Detection Models will Work at all, Regardless of TRUE/FALSE Settings and Object detection will default back to
-#basic hardcode logic in SarahMemoryFacialRecognition.py and SarahMemorySOBJE.py
-# NOTICE----SOME MODELS ARE NOT COMPATIBLE WITH OTHERS - SOME CAN FUNCTION IN CONJUCTION OTHERS CAN NOT.-----
-# Object Detection Model Enable Flags
-ENABLE_YOLOV8 = True       # YOLOv8 - Fast, accurate, with flexible API (Ultralytics) ,dev notes - WORKS default True all others are defaulted as False
-ENABLE_YOLOV7 = False       # YOLOv7 - High performance, popular for real-time apps ,dev notes - NOT TESTED
-ENABLE_YOLOV5 = False       # YOLOv5 - Lightweight, versatile, and widely adopted ,dev notes - WORKS but isn't Forward Compatiable with YOLOv8
-ENABLE_YOLO_NAS = False     # YOLO-NAS - Extremely fast and optimized for edge devices (Deci AI) ,dev notes - NOT TESTED
-ENABLE_YOLOX = False        # YOLOX - Anchor-free, accurate (Megvii) ,dev notes - NOT TESTED
-ENABLE_PP_YOLOV2 = False    # PP-YOLOv2 - Real-time accuracy from Baidu (PaddlePaddle) ,dev notes - NOT TESTED
-ENABLE_EFFICIENTDET = False # EfficientDet - Scalable and lightweight, great for mobile (Google) ,dev notes - NOT TESTED
-ENABLE_DETR = False         # DETR - Transformer-based, complex scenes (Facebook AI) ,dev notes - WORKS
-ENABLE_DINO = False         # DINOv2 - Improved DETR with better object recall (Facebook AI) ,dev notes - WORKS
-ENABLE_CENTERNET = False    # CenterNet - Keypoint-based detection (Microsoft) ,dev notes - NOT TESTED
-ENABLE_SSD = True          #  SSD - Single-shot, real-time on CPUs (Google) ,dev notes - WORKS
-ENABLE_FASTER_RCNN = False  # Faster R-CNN - High accuracy, slower (Facebook AI) ,dev notes - NOT TESTED
-ENABLE_RETINANET = False    # RetinaNet - Best for class imbalance and dense scenes (Facebook AI) ,dev notes - NOT TESTED
 
-# Central object detection model dictionary for logic toggling
-# Updated object detection model config, NOTICE THIS AREA IS still being Researched as Models change
+# ---------------- Category-Based Model Stacking (v8.1.x) ----------------
+# Mission:
+# - Keep MANY downloadable models available, but ONLY use 1 model per job at a time.
+# - Embeddings are the only special case: the chosen embedding model may switch by language/intent,
+#   but still only ONE embedding model is used per request.
+# - Backward compatible with legacy ENABLE_MODEL_* flags and MODEL_CONFIG.
+
+MULTI_STACK_ENABLED = True  # Master switch for category-based routing/selection.
+
+# ---- Primary stack selections (canonical Hugging Face repos) ----
+REASONING_MODEL_REPO      = "Qwen/Qwen3-0.6B"                         # Logic & reasoning (small, reliable)
+CODER_MODEL_REPO          = "Qwen/Qwen2.5-Coder-1.5B-Instruct"         # Coding / self-monkeypatch specialist
+
+EMBEDDING_EN_REPO         = "sentence-transformers/all-MiniLM-L6-v2"                 # Core English retrieval
+EMBEDDING_MULTI_REPO      = "sentence-transformers/distiluse-base-multilingual-cased-v2"  # Multilingual retrieval
+EMBEDDING_SCI_REPO        = "allenai/specter"                                         # Scientific doc retrieval
+EMBEDDING_RECALL_REPO     = "intfloat/e5-base"                                        # High-recall retrieval
+EMBEDDING_PARA_REPO       = "sentence-transformers/paraphrase-MiniLM-L3-v2"           # Paraphrase/rewrites
+
+VISION_PRIMARY_REPO       = "nielsr/yolov12n"                          # YOLOv12 Nano primary
+VISION_BACKUP_REPO        = "ultralytics/yolov8"                       # Stable backup
+VISION_ALT_REPO           = "qualcomm/RF-DETR"                         # Alternative backup
+
+IMAGEGEN_MODEL_REPO       = "Freepik/flux.1-lite-8B"                   # Image generation (heavy; consider API fallback)
+TTS_MODEL_REPO            = "FunAudioLLM/CosyVoice2-0.5B"               # Low-latency TTS
+
+# ---- End-user model catalog tiers (Low / Mid / Beast) ----
+# Keep this list short and high-signal: ~3 choices per tier.
+MODEL_CATALOG = {
+    "reasoning": {
+        "low":   ["Qwen/Qwen3-0.6B"],
+        "mid":   ["microsoft/Phi-4-mini-instruct"],
+        "beast": ["Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"],
+    },
+    "coder": {
+        "low":   ["Qwen/Qwen2.5-Coder-1.5B-Instruct"],
+        "mid":   ["Qwen/Qwen2.5-Coder-3B-Instruct"],
+        "beast": ["Qwen/Qwen2.5-Coder-7B-Instruct"],
+    },
+    "embeddings": {
+        "low":   ["sentence-transformers/all-MiniLM-L6-v2"],
+        "mid":   [
+            "sentence-transformers/distiluse-base-multilingual-cased-v2",
+            "intfloat/e5-base",
+            "allenai/specter",
+            "sentence-transformers/paraphrase-MiniLM-L3-v2",
+        ],
+        "beast": ["BAAI/bge-base-en-v1.5", "BAAI/bge-m3"],
+    },
+    "vision": {
+        "low":   ["nielsr/yolov12n", "ultralytics/yolov8"],
+        "mid":   ["qualcomm/RF-DETR"],
+        "beast": ["ultralytics/yolov8x"],
+    },
+    "image_generation": {
+        "low":   ["black-forest-labs/FLUX.1-schnell"],
+        "mid":   ["Freepik/flux.1-lite-8B"],
+        "beast": ["black-forest-labs/FLUX.1-dev"],
+    },
+    "tts": {
+        "low":   ["FunAudioLLM/CosyVoice2-0.5B"],
+        "mid":   [],
+        "beast": [],
+    },
+}
+
+# ---- Legacy alias -> HF repo mapping (for backwards compatibility) ----
+MODEL_REPO_MAP = {
+    # Embeddings
+    "all-MiniLM-L6-v2": EMBEDDING_EN_REPO,
+    "distiluse-base-multilingual-cased-v2": EMBEDDING_MULTI_REPO,
+    "distiluse-multilingual": EMBEDDING_MULTI_REPO,
+    "allenai-specter": EMBEDDING_SCI_REPO,
+    "intfloat/e5-base": EMBEDDING_RECALL_REPO,
+    "e5-base": EMBEDDING_RECALL_REPO,
+    "paraphrase-MiniLM-L3-v2": EMBEDDING_PARA_REPO,
+    "multi-qa-MiniLM": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
+    # LLMs
+    "phi-1_5": "microsoft/phi-1_5",
+    "phi-2": "microsoft/phi-2",
+    "openchat-3.5": "openchat/openchat-3.5-0106",
+    "Nous-Capybara-7B": "NousResearch/Nous-Capybara-7B",
+    "Mistral-7B-Instruct-v0.2": "mistralai/Mistral-7B-Instruct-v0.2",
+    "TinyLlama-1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    # New stack names (allow either alias or repo)
+    "Qwen3-0.6B": REASONING_MODEL_REPO,
+    "Qwen2.5-Coder-1.5B-Instruct": CODER_MODEL_REPO,
+}
+
+def resolve_model_repo(model_id):
+    """Return canonical Hugging Face repo string for a given model id/alias."""
+    if not model_id:
+        return ""
+    return MODEL_REPO_MAP.get(model_id, model_id)
+
+def _looks_non_english(text):
+    """Minimal heuristic for language routing when meta.lang isn't provided."""
+    if not text:
+        return False
+    try:
+        text.encode("ascii")
+        return False
+    except Exception:
+        return True
+
+def infer_query_language(text, meta=None):
+    """Return coarse language label. Uses meta['lang'] if provided."""
+    meta = meta or {}
+    lang = str(meta.get("lang") or meta.get("language") or "").strip().lower()
+    if lang:
+        return lang
+    return "non-en" if _looks_non_english(text) else "en"
+
+def infer_embedding_job(text, meta=None):
+    """Classify embedding job; ensures only one embedding model is selected."""
+    t = (text or "").lower()
+    if any(k in t for k in ("paraphrase", "rewrite", "rephrase")):
+        return "paraphrase"
+    if any(k in t for k in ("arxiv", "doi", "paper", "citation", "journal", "pubmed")):
+        return "science"
+    if any(k in t for k in ("search everything", "high recall", "broad search", "exhaustive")):
+        return "high_recall"
+    return "general"
+
+def select_embedding_model_repo(text, meta=None):
+    """Return the single best embedding model repo for this request."""
+    lang = infer_query_language(text, meta)
+    job = infer_embedding_job(text, meta)
+    if lang != "en":
+        return EMBEDDING_MULTI_REPO
+    if job == "science":
+        return EMBEDDING_SCI_REPO
+    if job == "high_recall":
+        return EMBEDDING_RECALL_REPO
+    if job == "paraphrase":
+        return EMBEDDING_PARA_REPO
+    return EMBEDDING_EN_REPO
+
+def get_stack_primary_repo(category, text="", meta=None):
+    """Primary repo resolver for category-based routing."""
+    category = (category or "").strip().lower()
+    if category in ("embedding", "embeddings", "semantic", "memory"):
+        return select_embedding_model_repo(text, meta)
+    if category in ("reasoning", "logic"):
+        return REASONING_MODEL_REPO
+    if category in ("coder", "code"):
+        return CODER_MODEL_REPO
+    if category in ("vision", "object", "object_detection"):
+        return VISION_PRIMARY_REPO
+    if category in ("image", "image_generation", "creative"):
+        return IMAGEGEN_MODEL_REPO
+    if category in ("tts", "audio", "voice"):
+        return TTS_MODEL_REPO
+    return ""
+
+# ---------------------------------------------------------------------------
+# Hardware Scoring Metrics (utility-only; no boot-flow changes)
+# ---------------------------------------------------------------------------
+def get_system_metrics(models_dir=None):
+    """Best-effort hardware snapshot for model tiering (never raises)."""
+    models_dir = models_dir or globals().get("MODELS_DIR") or os.path.join(os.getcwd(), "data", "models")
+    out = {
+        "cpu_count": None,
+        "cpu_pct": None,
+        "ram_total_mb": None,
+        "ram_avail_mb": None,
+        "disk_free_gb": None,
+        "disk_total_gb": None,
+        "gpu_name": None,
+        "gpu_vram_total_mb": None,
+        "gpu_vram_free_mb": None,
+        "gpu_temp_c": None,
+        "cpu_temp_c": None,
+    }
+
+    # CPU/RAM/Disk via psutil (optional)
+    try:
+        import psutil  # type: ignore
+        out["cpu_count"] = psutil.cpu_count(logical=True)
+        out["cpu_pct"] = float(psutil.cpu_percent(interval=0.0))
+        vm = psutil.virtual_memory()
+        out["ram_total_mb"] = int(vm.total / (1024 * 1024))
+        out["ram_avail_mb"] = int(vm.available / (1024 * 1024))
+        du = psutil.disk_usage(models_dir if os.path.exists(models_dir) else os.getcwd())
+        out["disk_total_gb"] = float(du.total / (1024**3))
+        out["disk_free_gb"] = float(du.free / (1024**3))
+
+        # Temps (best effort)
+        try:
+            temps = psutil.sensors_temperatures(fahrenheit=False) or {}
+            for key in ("coretemp", "cpu-thermal", "k10temp", "acpitz"):
+                if key in temps and temps[key]:
+                    out["cpu_temp_c"] = float(temps[key][0].current)
+                    break
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # GPU: try torch first, then nvidia-smi
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            idx = 0
+            out["gpu_name"] = torch.cuda.get_device_name(idx)
+            props = torch.cuda.get_device_properties(idx)
+            out["gpu_vram_total_mb"] = int(props.total_memory / (1024 * 1024))
+            try:
+                reserved = int(torch.cuda.memory_reserved(idx) / (1024 * 1024))
+                out["gpu_vram_free_mb"] = max(0, out["gpu_vram_total_mb"] - reserved)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if out.get("gpu_vram_total_mb") is None:
+        try:
+            import subprocess
+            cmd = "nvidia-smi --query-gpu=name,memory.total,memory.free,temperature.gpu --format=csv,noheader,nounits"
+            p = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=2)
+            if p.returncode == 0 and (p.stdout or "").strip():
+                line = (p.stdout or "").strip().splitlines()[0]
+                parts = [x.strip() for x in line.split(",")]
+                if len(parts) >= 4:
+                    out["gpu_name"] = parts[0]
+                    out["gpu_vram_total_mb"] = int(float(parts[1]))
+                    out["gpu_vram_free_mb"] = int(float(parts[2]))
+                    out["gpu_temp_c"] = float(parts[3])
+        except Exception:
+            pass
+
+    return out
+
+def hardware_score(metrics=None):
+    """Compute coarse score + tier from metrics."""
+    m = metrics or get_system_metrics()
+    score = 0.0
+
+    # RAM (0..40)
+    try:
+        ram = float(m.get("ram_total_mb") or 0)
+        if ram >= 32768: score += 40
+        elif ram >= 16384: score += 30
+        elif ram >= 8192: score += 20
+        elif ram >= 4096: score += 10
+        elif ram > 0: score += 5
+    except Exception:
+        pass
+
+    # VRAM (0..40)
+    try:
+        vram = float(m.get("gpu_vram_total_mb") or 0)
+        if vram >= 24000: score += 40
+        elif vram >= 12000: score += 30
+        elif vram >= 8000: score += 20
+        elif vram >= 4000: score += 10
+        elif vram > 0: score += 5
+    except Exception:
+        pass
+
+    # Disk free (0..10)
+    try:
+        free = float(m.get("disk_free_gb") or 0)
+        if free >= 200: score += 10
+        elif free >= 100: score += 7
+        elif free >= 50: score += 5
+        elif free >= 20: score += 3
+        elif free > 0: score += 1
+    except Exception:
+        pass
+
+    # CPU headroom (0..10)
+    try:
+        cpu_pct = float(m.get("cpu_pct") or 0)
+        if cpu_pct <= 20: score += 10
+        elif cpu_pct <= 40: score += 8
+        elif cpu_pct <= 60: score += 6
+        elif cpu_pct <= 80: score += 3
+        else: score += 1
+    except Exception:
+        pass
+
+    tier = "low"
+    if score >= 75: tier = "beast"
+    elif score >= 45: tier = "mid"
+    return {"score": float(score), "tier": tier, "metrics": m}
+
+def recommend_model_tier(category="reasoning", metrics=None):
+    """Return low/mid/beast tier recommendation for a given category."""
+    hs = hardware_score(metrics)
+    cat = (category or "").strip().lower()
+    tier = hs["tier"]
+    try:
+        vram = float(hs["metrics"].get("gpu_vram_total_mb") or 0)
+    except Exception:
+        vram = 0
+
+    if cat in ("image_generation", "image", "creative"):
+        if vram >= 12000:
+            return "beast" if tier == "beast" else "mid"
+        if vram >= 8000:
+            return "mid"
+        return "low"
+
+    if cat in ("vision", "object", "object_detection"):
+        if vram >= 8000 and tier != "low":
+            return tier
+        return "low" if tier == "low" else "mid"
+
+    return tier
+
+def pick_catalog_model(category, tier, fallback_tiers=None):
+    """Pick first model repo from MODEL_CATALOG[category][tier] with tier fallback."""
+    cat = (category or "").strip().lower()
+    t = (tier or "").strip().lower()
+    fb = fallback_tiers or (["mid", "low"] if t == "beast" else ["low"] if t == "mid" else [])
+    try:
+        c = MODEL_CATALOG.get(cat, {})
+        for k in [t] + fb:
+            arr = c.get(k, []) or []
+            if arr:
+                return arr[0]
+    except Exception:
+        return None
+    return None
+
+# ---------------------------------------------------------------------------
+# Model Storage / Bandwidth Policy (utility-only; safe for headless)
+# ---------------------------------------------------------------------------
+SARAH_MODELS_BUDGET_GB = float(os.getenv("SARAH_MODELS_BUDGET_GB", "256") or 256)
+SARAH_MODEL_MAX_SINGLE_GB = float(os.getenv("SARAH_MODEL_MAX_SINGLE_GB", "1.5") or 1.5)
+SARAH_MODEL_PROMPT_LARGE = _env_flag("SARAH_MODEL_PROMPT_LARGE", "true")
+
+def is_headless_runtime():
+    try:
+        dm = str(globals().get("DEVICE_MODE") or "").strip().lower()
+        if dm == DEVICE_MODE_HEADLESS:
+            return True
+        if os.name != "nt" and not (os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY")):
+            return True
+        return False
+    except Exception:
+        return True
+
+def is_interactive_tty():
+    try:
+        import sys
+        return bool(getattr(sys, "stdin", None) and sys.stdin.isatty())
+    except Exception:
+        return False
+
+def get_models_dir_fallback():
+    try:
+        md = globals().get("MODELS_DIR")
+        if isinstance(md, str) and md:
+            return md
+    except Exception:
+        pass
+    return os.path.join(os.getcwd(), "data", "models")
+
+def get_models_storage_usage_bytes(models_dir=None):
+    models_dir = models_dir or get_models_dir_fallback()
+    total = 0
+    try:
+        for root, _, files in os.walk(models_dir):
+            for fn in files:
+                try:
+                    fp = os.path.join(root, fn)
+                    total += os.path.getsize(fp)
+                except Exception:
+                    pass
+    except Exception:
+        return 0
+    return total
+
+def bytes_to_gb(n):
+    try:
+        return float(n) / (1024**3)
+    except Exception:
+        return 0.0
+
+def get_models_storage_usage_gb(models_dir=None):
+    return bytes_to_gb(get_models_storage_usage_bytes(models_dir))
+
+def model_policy_allows_download(expected_size_gb, models_dir=None):
+    models_dir = models_dir or get_models_dir_fallback()
+    used_gb = get_models_storage_usage_gb(models_dir)
+    budget_gb = float(SARAH_MODELS_BUDGET_GB)
+    max_single_gb = float(SARAH_MODEL_MAX_SINGLE_GB)
+
+    if expected_size_gb is None or expected_size_gb <= 0:
+        return {"ok": True, "reason": "unknown_size", "prompt_required": False,
+                "budget_gb": budget_gb, "used_gb": used_gb, "max_single_gb": max_single_gb}
+
+    if (used_gb + expected_size_gb) > budget_gb:
+        return {"ok": False, "reason": "budget_exceeded", "prompt_required": False,
+                "budget_gb": budget_gb, "used_gb": used_gb, "max_single_gb": max_single_gb}
+
+    if SARAH_MODEL_PROMPT_LARGE and expected_size_gb > max_single_gb:
+        return {"ok": True, "reason": "large_model_confirm", "prompt_required": True,
+                "budget_gb": budget_gb, "used_gb": used_gb, "max_single_gb": max_single_gb}
+
+    return {"ok": True, "reason": "ok", "prompt_required": False,
+            "budget_gb": budget_gb, "used_gb": used_gb, "max_single_gb": max_single_gb}
+
+MODEL_META = {
+    "Qwen/Qwen3-0.6B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct": {"tier": "low", "disk_gb_est": 2.0, "vram_gb_est": 4.0, "speed": "medium"},
+    "sentence-transformers/all-MiniLM-L6-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
+    "sentence-transformers/distiluse-base-multilingual-cased-v2": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
+    "allenai/specter": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
+    "intfloat/e5-base": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.7, "speed": "fast"},
+    "sentence-transformers/paraphrase-MiniLM-L3-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
+    "nielsr/yolov12n": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.5, "speed": "fast"},
+    "ultralytics/yolov8": {"tier": "mid", "disk_gb_est": 0.1, "vram_gb_est": 1.0, "speed": "fast"},
+    "qualcomm/RF-DETR": {"tier": "mid", "disk_gb_est": 0.4, "vram_gb_est": 1.5, "speed": "medium"},
+    "Freepik/flux.1-lite-8B": {"tier": "mid", "disk_gb_est": 16.0, "vram_gb_est": 12.0, "speed": "slow"},
+    "FunAudioLLM/CosyVoice2-0.5B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
+}
+
+# ---------------- Object Detection Model Configuration (Spring Clean 2026) ----------------
+# Keep: YOLOv12n + YOLOv8 + SSD
+# Backup option: RF-DETR (disabled by default)
+OBJECT_DETECTION_ENABLED = True
+
+ENABLE_YOLOV12N = True
+ENABLE_YOLOV8 = True
+ENABLE_SSD = True
+ENABLE_RF_DETR = False
+
+# Legacy toggles hard-disabled (kept for compatibility)
+ENABLE_YOLOV5 = False
+ENABLE_YOLOV7 = False
+ENABLE_YOLO_NAS = False
+ENABLE_YOLOX = False
+ENABLE_PP_YOLOV2 = False
+ENABLE_EFFICIENTDET = False
+ENABLE_DETR = False
+ENABLE_DINO = False
+ENABLE_CENTERNET = False
+ENABLE_FASTER_RCNN = False
+ENABLE_RETINANET = False
 
 OBJECT_MODEL_CONFIG = {
-    "YOLOv8": {"enabled": True, "repo": "ultralytics_yolov8", "hf_repo": "ultralytics/yolov8", "require": "ultralytics"},
-    "YOLOv5": {"enabled": False, "repo": "ultralytics_yolov5", "hf_repo": "ultralytics/yolov5", "require": None},
-    "DETR": {"enabled": False, "repo": "facebook_detr", "hf_repo": "facebook/detr-resnet-50", "require": None},
-    "YOLOv7": {"enabled": False, "repo": "ultralytics_yolov7", "hf_repo": "WongKinYiu/yolov7", "require": None},
-    "YOLO-NAS": {"enabled": False,"repo": "Deci-AI_yolo-nas", "hf_repo": "https://github.com/naseemap47/YOLO-NAS", "require": "super-gradients",
+    "YOLOv12n": {"enabled": bool(ENABLE_YOLOV12N), "repo": "yolov12n", "hf_repo": "nielsr/yolov12n", "require": None},
+    "YOLOv8":   {"enabled": bool(ENABLE_YOLOV8),   "repo": "ultralytics_yolov8", "hf_repo": "ultralytics/yolov8", "require": "ultralytics"},
+    "SSD":      {"enabled": bool(ENABLE_SSD),      "repo": "qfgaohao_pytorch-ssd", "hf_repo": "https://github.com/qfgaohao/pytorch-ssd", "require": None,
         "weights": [
-            {
-                "url": "https://deci-pretrained-models.s3.amazonaws.com/yolo_nas/coco/yolo_nas_s.pth",
-                "filename": "yolo_nas_s.pth"
-            }
+            {"url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/mobilenet-v1-ssd-mp-0_675.pth", "filename": "mobilenet-v1-ssd-mp-0_675.pth"},
+            {"url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/voc-model-labels.txt", "filename": "voc-model-labels.txt"},
         ]
     },
-    "YOLOX": {"enabled": False, "repo": "MegviiBaseDetection_YOLOX", "hf_repo": "Megvii-BaseDetection/YOLOX", "require": None},
-    "PP-YOLOv2": {"enabled": False, "repo": "PaddleDetection", "hf_repo": "PaddlePaddle/PaddleDetection", "require": "paddlepaddle"},
-    "EfficientDet": {"enabled": False, "repo": "automl_efficientdet", "hf_repo": "zylo117/Yet-Another-EfficientDet-Pytorch", "require": None},
-    "DINO": {"enabled": False, "repo": "facebook_dinov2", "hf_repo": "facebook/dinov2-base", "require": None},
-    "CenterNet": {"enabled": False, "repo": "CenterNet", "hf_repo": "xingyizhou/CenterNet", "require": None},
-    "SSD": {"enabled": False, "repo": "qfgaohao_pytorch-ssd", "hf_repo": "https://github.com/qfgaohao/pytorch-ssd", "require": None,
-        "weights": [
-            {
-                "url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/mobilenet-v1-ssd-mp-0_675.pth",
-                "filename": "mobilenet-v1-ssd-mp-0_675.pth"
-            },
-            {
-                "url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/voc-model-labels.txt",
-                "filename": "voc-model-labels.txt"
-            }
-        ]
-    },
-    "Faster R-CNN": {"enabled": False, "repo": "facebook_detectron2", "hf_repo": "https://github.com/facebookresearch/detectron2", "require": None,
-        "weights": []
-    },
-    "RetinaNet": {"enabled": False, "repo": "facebook_detectron2", "hf_repo": "https://github.com/facebookresearch/detectron2", "require": None,
-        "weights": []
-    },
+    "RF-DETR":  {"enabled": bool(ENABLE_RF_DETR),  "repo": "rf_detr", "hf_repo": "qualcomm/RF-DETR", "require": None},
 }
 
 #----------------------------------------------------------------------------------------------------------

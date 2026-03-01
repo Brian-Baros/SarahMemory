@@ -1,255 +1,620 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryLLM.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-12-21
-Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
-www.linkedin.com/in/brian-baros-29962a176
-https://www.facebook.com/bbaros
-brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-https://www.sarahmemory.com
-https://api.sarahmemory.com
-https://ai.sarahmemory.com
-===============================================================================
+Purpose: Model verification, download manager, and lightweight routing helpers.
+Notes:
+- Headless-safe: never requires GUI.
+- Only downloads models when missing/invalid locally.
+- Uses category-based stacks + hardware tier recommendations from SarahMemoryGlobals.
 """
 
 import os
+import json
 import logging
 import subprocess
 import time
 import urllib.request
-from transformers import AutoTokenizer, AutoModel
-from sentence_transformers import SentenceTransformer
-from huggingface_hub import snapshot_download
-from SarahMemoryGlobals import BASE_DIR, MODEL_CONFIG, MODELS_DIR
+from typing import Dict, List, Tuple, Optional
 
-# Updated object detection model config
-OBJECT_MODEL_CONFIG = {
-    "YOLOv8 <works>": {"enabled": True, "repo": "ultralytics_yolov8", "hf_repo": "ultralytics/yolov8", "require": "ultralytics"},
-    "YOLOv5 <works>": {"enabled": True, "repo": "ultralytics_yolov5", "hf_repo": "ultralytics/yolov5", "require": None},
-    "DETR <works>": {"enabled": True, "repo": "facebook_detr", "hf_repo": "facebook/detr-resnet-50", "require": None},
-    "YOLOv7 <not tested>": {"enabled": False, "repo": "ultralytics_yolov7", "hf_repo": "WongKinYiu/yolov7", "require": None},
-    "YOLO-NAS <no joy>": {
-        "enabled": False,
-        "repo": "Deci-AI_yolo-nas",
-        "hf_repo": "https://github.com/naseemap47/YOLO-NAS",
-        "require": "super-gradients",
-        "weights": [
-            {
-                "url": "https://deci-pretrained-models.s3.amazonaws.com/yolo_nas/coco/yolo_nas_s.pth",
-                "filename": "yolo_nas_s.pth"
-            }
-        ]
-    },
-    "YOLOX <not tested>": {"enabled": False, "repo": "MegviiBaseDetection_YOLOX", "hf_repo": "Megvii-BaseDetection/YOLOX", "require": None},
-    "PP-YOLOv2 <not tested>": {"enabled": False, "repo": "PaddleDetection", "hf_repo": "PaddlePaddle/PaddleDetection", "require": "paddlepaddle"},
-    "EfficientDet <not tested>": {"enabled": False, "repo": "automl_efficientdet", "hf_repo": "zylo117/Yet-Another-EfficientDet-Pytorch", "require": None},
-    "DINO <works>": {"enabled": True, "repo": "facebook_dinov2", "hf_repo": "facebook/dinov2-base", "require": None},
-    "CenterNet <not tested>": {"enabled": False, "repo": "CenterNet", "hf_repo": "xingyizhou/CenterNet", "require": None},
-    "SSD<works>": {"enabled": True, "repo": "qfgaohao_pytorch-ssd", "hf_repo": "https://github.com/qfgaohao/pytorch-ssd", "require": None,
-                   "weights": [
-            {   "url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/mobilenet-v1-ssd-mp-0_675.pth",
-                "filename": "mobilenet-v1-ssd-mp-0_675.pth"
-            },
-            {   "url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/voc-model-labels.txt",
-                "filename": "voc-model-labels.txt"
-            }
-        ]
-    },
-    "Faster R-CNN <not tested>": {"enabled": False,"repo": "facebook_detectron2", "hf_repo": "https://github.com/facebookresearch/detectron2", "require": None, "weights": []
-    },
-    "RetinaNet <not tested>": {"enabled": False,"repo": "facebook_detectron2","hf_repo": "https://github.com/facebookresearch/detectron2","require": None,"weights": []
-    },
-}
-# [patched] basicConfig moved to SarahMemoryMain.py
+# Optional deps (never hard-crash)
+try:
+    from transformers import AutoTokenizer, AutoModel  # type: ignore
+except Exception:
+    AutoTokenizer = None
+    AutoModel = None
+
+try:
+    from sentence_transformers import SentenceTransformer  # type: ignore
+except Exception:
+    SentenceTransformer = None
+
+try:
+    from huggingface_hub import snapshot_download, HfApi  # type: ignore
+except Exception:
+    snapshot_download = None
+    HfApi = None
+
+import SarahMemoryGlobals as G
+
+BASE_DIR = getattr(G, "BASE_DIR", os.getcwd())
+MODELS_DIR = getattr(G, "MODELS_DIR", os.path.join(BASE_DIR, "data", "models"))
+os.makedirs(MODELS_DIR, exist_ok=True)
+
+# Logging
 LOG_PATH = os.path.join(BASE_DIR, "data", "logs", "model_download.log")
 os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
-try:
-    import hf_xet
-except ImportError:
-    subprocess.run(["pip", "install", "huggingface_hub[hf_xet]"], check=False)
+logger = logging.getLogger("SarahMemoryLLM")
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    _h = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    _h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(_h)
 
-def ensure_directory(path):
-    if not os.path.exists(path):
-        os.makedirs(path)
+# Imports from Globals (safe defaults)
+MODEL_CONFIG = getattr(G, "MODEL_CONFIG", {})
+OBJECT_MODEL_CONFIG = getattr(G, "OBJECT_MODEL_CONFIG", {})
+MODEL_CATALOG = getattr(G, "MODEL_CATALOG", {})
+MODEL_META = getattr(G, "MODEL_META", {})
 
-def log_error(message):
-    with open(LOG_PATH, 'a') as f:
-        f.write(f"[ERROR] {message}\n")
+MULTI_STACK_ENABLED = bool(getattr(G, "MULTI_STACK_ENABLED", False))
+resolve_model_repo = getattr(G, "resolve_model_repo", lambda x: x)
+get_stack_primary_repo = getattr(G, "get_stack_primary_repo", lambda category, text="", meta=None: "")
+recommend_model_tier = getattr(G, "recommend_model_tier", lambda category="reasoning", metrics=None: "low")
 
-def retry(func, retries=8, wait=20):
+model_policy_allows_download = getattr(G, "model_policy_allows_download", lambda size_gb, models_dir=None: {"ok": True, "prompt_required": False})
+get_models_storage_usage_gb = getattr(G, "get_models_storage_usage_gb", lambda models_dir=None: 0.0)
+is_headless_runtime = getattr(G, "is_headless_runtime", lambda: True)
+is_interactive_tty = getattr(G, "is_interactive_tty", lambda: False)
+
+# ---------------------------------------------------------------------------
+# Local model folder conventions
+# ---------------------------------------------------------------------------
+
+def repo_to_local_dir(repo: str) -> str:
+    return os.path.join(MODELS_DIR, (repo or "").replace("/", "_"))
+
+def _nonempty_dir(path: str) -> bool:
+    try:
+        return os.path.isdir(path) and any(os.scandir(path))
+    except Exception:
+        return False
+
+def model_files_valid(local_dir: str) -> bool:
+    """Best-effort: detect a usable local model install without strict assumptions."""
+    try:
+        if not os.path.isdir(local_dir):
+            return False
+
+        # HF snapshot style folders
+        for p in ("snapshots", "refs"):
+            if os.path.isdir(os.path.join(local_dir, p)):
+                return True
+
+        files = [f.name for f in os.scandir(local_dir) if f.is_file()]
+        if not files:
+            return False
+
+        # common weights formats
+        weight_exts = (".bin", ".safetensors", ".pth", ".pt", ".onnx")
+        if any(f.endswith(weight_exts) for f in files):
+            for f in files:
+                fp = os.path.join(local_dir, f)
+                if os.path.isfile(fp) and os.path.getsize(fp) == 0:
+                    return False
+            return True
+
+        # sentence-transformers often has modules.json
+        if "modules.json" in files:
+            return True
+
+        # fall back: if config exists and directory is non-empty
+        if any(f in files for f in ("config.json", "tokenizer.json", "tokenizer_config.json")):
+            return True
+
+        return False
+    except Exception as e:
+        logger.warning("VALIDATION ERROR %s: %s", local_dir, e)
+        return False
+
+def is_repo_installed(repo: str) -> bool:
+    repo = resolve_model_repo(repo)
+    return model_files_valid(repo_to_local_dir(repo))
+
+def local_dir_size_gb(path: str) -> float:
+    total = 0
+    try:
+        for root, _, files in os.walk(path):
+            for fn in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, fn))
+                except Exception:
+                    pass
+    except Exception:
+        return 0.0
+    return float(total) / (1024**3)
+
+# ---------------------------------------------------------------------------
+# Policy + size estimation helpers
+# ---------------------------------------------------------------------------
+
+def _console_confirm(prompt: str) -> bool:
+    try:
+        ans = input(prompt).strip().lower()
+        return ans in ("y", "yes")
+    except Exception:
+        return False
+
+def _safe_confirm_large_model(repo: str, size_gb: float, policy: dict) -> bool:
+    """Confirm large downloads. Headless-safe; no GUI prompts."""
+    if is_headless_runtime():
+        logger.info("[HEADLESS_SKIP_CONFIRM] %s size_gb=%.3f reason=%s", repo, size_gb, policy.get("reason"))
+        return False
+    if is_interactive_tty():
+        return _console_confirm(
+            f"Model {repo} is ~{size_gb:.2f} GB (threshold {policy.get('max_single_gb')} GB). Download? (Y/N): "
+        )
+    return False
+
+def _estimate_hf_repo_size_gb(repo: str) -> Optional[float]:
+    """Best-effort remote repo size estimate using HfApi (if available)."""
+    if HfApi is None:
+        return None
+    try:
+        api = HfApi()
+        info = api.model_info(repo)
+        siblings = getattr(info, "siblings", None) or []
+        total = 0
+        for s in siblings:
+            sz = getattr(s, "size", None)
+            if isinstance(sz, int):
+                total += sz
+        if total <= 0:
+            return None
+        return float(total) / (1024**3)
+    except Exception:
+        return None
+
+def _disk_free_gb(path: str) -> Optional[float]:
+    try:
+        import shutil
+        du = shutil.disk_usage(path)
+        return float(du.free) / (1024**3)
+    except Exception:
+        return None
+
+def _policy_check_before_download(repo: str, local_dir: str) -> bool:
+    """Return True if allowed to download based on budget + large model policy + disk free."""
+    repo = resolve_model_repo(repo)
+    est = _estimate_hf_repo_size_gb(repo)
+    pol = model_policy_allows_download(est, models_dir=MODELS_DIR)
+
+    if not pol.get("ok"):
+        print(f"[SKIP] {repo}: model storage budget exceeded (used {pol.get('used_gb'):.1f} / {pol.get('budget_gb'):.1f} GB).")
+        logger.info("[SKIP_BUDGET] %s used_gb=%.3f budget_gb=%.3f est_gb=%s", repo, pol.get("used_gb",0.0), pol.get("budget_gb",0.0), str(est))
+        return False
+
+    free = _disk_free_gb(MODELS_DIR) or _disk_free_gb(local_dir)
+    if free is not None and est is not None:
+        if free < (est + 5.0):
+            print(f"[SKIP] {repo}: insufficient disk free ({free:.1f} GB free, need ~{est+5.0:.1f} GB).")
+            logger.info("[SKIP_DISK] %s free_gb=%.3f est_gb=%.3f", repo, free, est)
+            return False
+
+    if pol.get("prompt_required") and est is not None:
+        if not _safe_confirm_large_model(repo, est, pol):
+            print(f"[SKIP] {repo}: declined large download.")
+            logger.info("[SKIP_DECLINED] %s est_gb=%.3f", repo, est)
+            return False
+
+    return True
+
+def _meta_line(repo: str) -> str:
+    r = resolve_model_repo(repo)
+    meta = (MODEL_META or {}).get(r) or {}
+    disk = meta.get("disk_gb_est")
+    vram = meta.get("vram_gb_est")
+    tier = meta.get("tier")
+    speed = meta.get("speed")
+    parts = []
+    if tier: parts.append(str(tier))
+    if speed: parts.append(str(speed))
+    if disk is not None: parts.append("disk~%sGB" % disk)
+    if vram is not None: parts.append("vram~%sGB" % vram)
+    return " | ".join(parts) if parts else "n/a"
+
+# ---------------------------------------------------------------------------
+# Download helpers
+# ---------------------------------------------------------------------------
+
+def retry(func, retries: int = 6, wait: int = 15):
     for attempt in range(retries):
         try:
             return func()
         except Exception as e:
-            log_error(f"Retry {attempt + 1} failed: {e}")
+            logger.error("Retry %s/%s failed: %s", attempt + 1, retries, e)
             time.sleep(wait)
     raise Exception("Max retries reached")
 
-def model_files_valid(local_dir):
-    try:
-        if not os.path.isdir(local_dir):
-            return False
-        files = os.listdir(local_dir)
-        if not any(f.endswith(('.bin', '.safetensors', '.pth')) for f in files):
-            return False
-        for f in files:
-            full_path = os.path.join(local_dir, f)
-            if os.path.isfile(full_path) and os.path.getsize(full_path) == 0:
-                return False
-        return True
-    except Exception as e:
-        log_error(f"VALIDATION ERROR {local_dir}: {e}")
-        return False
-
-def pip_install_if_needed(package_name):
+def pip_install_if_needed(package_name: str):
     try:
         subprocess.run(["pip", "install", package_name], check=True)
+        logger.info("[INSTALLED] %s", package_name)
         print(f"[INSTALLED] {package_name}")
-    except subprocess.CalledProcessError as e:
-        log_error(f"Pip install failed for {package_name}: {e}")
+    except Exception as e:
+        logger.error("Pip install failed for %s: %s", package_name, e)
 
-def download_model(model_name, local_dir, use_sentence_transformer=False):
+def download_hf_model(repo: str, local_dir: str, use_sentence_transformer: bool = False):
+    repo = resolve_model_repo(repo)
+
     def inner():
         if model_files_valid(local_dir):
-            print(f"[✔] {model_name} already downloaded.")
-            return
-        print(f"[→] Downloading {model_name} → {local_dir}")
+            print(f"[✔] {repo} already present.")
+            return True
+
+        print(f"[→] Downloading {repo} → {local_dir}")
+
+        if not _policy_check_before_download(repo, local_dir):
+            return False
+
+        os.makedirs(local_dir, exist_ok=True)
+
         if use_sentence_transformer:
-            SentenceTransformer(model_name, cache_folder=local_dir)
+            if SentenceTransformer is None:
+                raise RuntimeError("sentence-transformers not installed.")
+            SentenceTransformer(repo, cache_folder=local_dir)
         else:
-            AutoTokenizer.from_pretrained(model_name, cache_dir=local_dir)
-            AutoModel.from_pretrained(model_name, cache_dir=local_dir)
-        print(f"[✔] Completed {model_name}")
-    retry(inner)
+            if snapshot_download is not None:
+                snapshot_download(repo, local_dir=local_dir, ignore_patterns=["*.md", "*.txt"])
+            else:
+                if AutoTokenizer is None or AutoModel is None:
+                    raise RuntimeError("transformers not installed.")
+                AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
+                AutoModel.from_pretrained(repo, cache_dir=local_dir)
 
-def download_object_model(name, hf_repo_url, local_dir):
+        if not model_files_valid(local_dir):
+            raise RuntimeError(f"Download completed but validation failed: {repo}")
+
+        print(f"[✔] Completed {repo}")
+        return True
+
+    return retry(inner)
+
+def download_object_model(name: str, cfg: dict):
+    repo_dir = (cfg.get("repo") or "").strip()
+    hf_repo = (cfg.get("hf_repo") or "").strip()
+    req = (cfg.get("require") or "").strip() or None
+    weights = cfg.get("weights", []) or []
+
+    if not repo_dir or not hf_repo:
+        print(f"[SKIP] {name} missing repo/hf_repo.")
+        return
+
+    if req:
+        pip_install_if_needed(req)
+
+    local_dir = os.path.join(MODELS_DIR, repo_dir.replace("/", "_"))
+
     def inner():
-        ensure_directory(local_dir)
-        config = OBJECT_MODEL_CONFIG.get(name, {})
+        os.makedirs(local_dir, exist_ok=True)
 
-        if hf_repo_url:
-            print(f"[→] Downloading {name} from {hf_repo_url}")
-            if os.path.exists(local_dir) and os.listdir(local_dir):
-                print(f"[SKIPPED] {name} destination folder already exists and is not empty.")
-            elif hf_repo_url.startswith("http"):
-                subprocess.run(["git", "clone", hf_repo_url, local_dir], check=True)
-            else:
-                snapshot_download(hf_repo_url, local_dir=local_dir, ignore_patterns=['*.md', '*.txt'])
-            print(f"[✔] Completed {name}")
+        if _nonempty_dir(local_dir) and model_files_valid(local_dir):
+            print(f"[✔] {name} already present.")
+            return True
 
-        weights = config.get("weights", [])
+        print(f"[→] Downloading {name} from {hf_repo}")
+
+        if not _policy_check_before_download(hf_repo, local_dir):
+            return False
+
+        if hf_repo.startswith("http"):
+            if not _nonempty_dir(local_dir):
+                subprocess.run(["git", "clone", hf_repo, local_dir], check=False)
+        else:
+            if snapshot_download is None:
+                raise RuntimeError("huggingface_hub not installed.")
+            snapshot_download(hf_repo, local_dir=local_dir, ignore_patterns=["*.md", "*.txt"])
+
         for w in weights:
-            dest_path = os.path.join(local_dir, w["filename"])
-            if not os.path.exists(dest_path):
-                print(f"[↓] Downloading {w['filename']} for {name}")
-                urllib.request.urlretrieve(w["url"], dest_path)
-                print(f"[✔] Downloaded {w['filename']} to {dest_path}")
-            else:
-                print(f"[✔] Weight file {w['filename']} already exists")
-    retry(inner)
+            try:
+                dest_path = os.path.join(local_dir, w["filename"])
+                if not os.path.exists(dest_path):
+                    print(f"[↓] Downloading weight {w['filename']} for {name}")
+                    urllib.request.urlretrieve(w["url"], dest_path)
+            except Exception as e:
+                logger.warning("Weight download failed for %s: %s", name, e)
+
+        print(f"[✔] Completed {name}")
+        return True
+
+    return retry(inner)
+
+# ---------------------------------------------------------------------------
+# Router helpers (lightweight; execution happens elsewhere)
+# ---------------------------------------------------------------------------
+
+def infer_category_from_text(text: str, meta: Optional[dict] = None) -> str:
+    meta = meta or {}
+    t = (text or "").lower()
+
+    if meta.get("image") or meta.get("frame") or meta.get("has_image") or meta.get("has_frame"):
+        return "vision"
+    if any(k in t for k in ["photo", "picture", "image", "screenshot", "what is in this", "what's in this"]):
+        return "vision"
+
+    if any(k in t for k in ["say this", "speak", "read this", "tts", "voice"]):
+        return "tts"
+
+    if any(k in t for k in ["generate an image", "make an image", "create an image", "draw", "render"]):
+        return "image_generation"
+
+    if any(k in t for k in ["code", "bug", "traceback", "stack trace", "error", "patch", "syntaxerror", "exception"]):
+        return "coder"
+
+    if any(k in t for k in ["math", "calculate", "proof", "logic", "reason", "derivative", "integral"]):
+        return "reasoning"
+
+    return "embeddings"
+
+def route_to_primary_model_repo(text: str, meta: Optional[dict] = None) -> Tuple[str, str]:
+    category = infer_category_from_text(text, meta)
+    repo = get_stack_primary_repo(category, text=text, meta=meta) if MULTI_STACK_ENABLED else ""
+    repo = resolve_model_repo(repo)
+    return category, repo
+
+def route_to_best_available_model_repo(text: str, meta: Optional[dict] = None) -> Tuple[str, str]:
+    category, primary = route_to_primary_model_repo(text, meta)
+    if primary and is_repo_installed(primary):
+        return category, primary
+
+    tier = recommend_model_tier(category)
+    cat = category.lower()
+    if cat in ("embedding", "embeddings", "semantic", "memory"):
+        cat = "embeddings"
+
+    c = (MODEL_CATALOG or {}).get(cat, {})
+    tier_order = [tier] + (["mid", "low"] if tier == "beast" else ["low"] if tier == "mid" else [])
+    for t in tier_order:
+        for repo in (c.get(t, []) or []):
+            repo = resolve_model_repo(repo)
+            if is_repo_installed(repo):
+                return category, repo
+
+    return category, primary
+
+# ---------------------------------------------------------------------------
+# Update checks (HF best-effort)
+# ---------------------------------------------------------------------------
+
+_STAMP_FILE = os.path.join(MODELS_DIR, "_hf_model_stamps.json")
+
+def _load_stamps() -> dict:
+    try:
+        if os.path.exists(_STAMP_FILE):
+            with open(_STAMP_FILE, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+def _save_stamps(stamps: dict) -> None:
+    try:
+        with open(_STAMP_FILE, "w", encoding="utf-8") as f:
+            json.dump(stamps, f, indent=2, sort_keys=True)
+    except Exception:
+        pass
+
+def check_hf_updates(repos: List[str]) -> Dict[str, dict]:
+    out: Dict[str, dict] = {}
+    if HfApi is None:
+        return out
+    api = HfApi()
+    stamps = _load_stamps()
+    for r in repos:
+        repo = resolve_model_repo(r)
+        local_dir = repo_to_local_dir(repo)
+        installed = model_files_valid(local_dir)
+
+        remote_last = None
+        try:
+            info = api.model_info(repo)
+            remote_last = getattr(info, "lastModified", None) or getattr(info, "last_modified", None)
+            remote_last = str(remote_last) if remote_last is not None else None
+        except Exception:
+            remote_last = None
+
+        local_seen = stamps.get(repo, {}).get("lastModified")
+        update_avail = bool(installed and remote_last and local_seen and (remote_last != local_seen))
+
+        out[repo] = {
+            "installed": installed,
+            "remote_last_modified": remote_last,
+            "local_last_seen": local_seen,
+            "update_available": update_avail,
+        }
+    return out
+
+def stamp_installed_repo(repo: str) -> None:
+    if HfApi is None:
+        return
+    repo = resolve_model_repo(repo)
+    stamps = _load_stamps()
+    try:
+        api = HfApi()
+        info = api.model_info(repo)
+        remote_last = getattr(info, "lastModified", None) or getattr(info, "last_modified", None)
+        if remote_last is not None:
+            stamps[repo] = {"lastModified": str(remote_last), "stamped_at": time.time()}
+            _save_stamps(stamps)
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+# CLI Menu (categorized; headless-safe)
+# ---------------------------------------------------------------------------
+
+CATEGORY_ORDER = ["reasoning", "coder", "embeddings", "vision", "image_generation", "tts"]
+
+def _print_hardware_summary():
+    try:
+        hs = getattr(G, "hardware_score", lambda: {"score": None, "tier": None, "metrics": {}})()
+        m = hs.get("metrics", {}) or {}
+        print("\n--- Hardware Score ---")
+        print("Score: %s  Tier: %s" % (hs.get("score"), hs.get("tier")))
+        print("RAM:  %s MB (avail %s MB)" % (m.get("ram_total_mb"), m.get("ram_avail_mb")))
+        print("VRAM: %s MB (free %s MB) GPU: %s" % (m.get("gpu_vram_total_mb"), m.get("gpu_vram_free_mb"), m.get("gpu_name")))
+        print("Disk free: %s GB  CPU%%: %s" % (m.get("disk_free_gb"), m.get("cpu_pct")))
+        print("Models used: %.1f GB / budget %.1f GB" % (get_models_storage_usage_gb(MODELS_DIR), float(getattr(G, "SARAH_MODELS_BUDGET_GB", 0) or 0)))
+        print("")
+    except Exception:
+        pass
 
 def cli_menu():
-    print("""
-===== SarahMemory Model Setup Menu by Brian Baros =====
-[1] Download ALL Models
-[2] Download SELECTED LLM Models
-[3] Download SELECTED Object Detection Models
-[4] Install from requirements.txt
-[5] Exit
+    _print_hardware_summary()
+    print("""===== SarahMemory Model Manager (Categorized) =====
+[1] Auto: Download Recommended Stack (per hardware tier)
+[2] Download by Category (Low/Mid/Beast options)
+[3] Legacy: Download SELECTED Models (MODEL_CONFIG toggles)
+[4] Download Vision/Object Models (OBJECT_MODEL_CONFIG toggles)
+[5] Check HF updates (best-effort)
+[6] Exit
 """)
-    return input("Enter your choice (1-5): ").strip()
+    return input("Enter choice (1-6): ").strip()
 
-def list_models(config_dict):
-    print("\nAvailable Models:")
-    selected = []
-    for i, (name, enabled) in enumerate(config_dict.items(), 1):
-        status = "✔" if model_files_valid(os.path.join(MODELS_DIR, name.replace('/', '_'))) else "❌"
-        print(f"[{i}] {name} ({status})")
-    print("[0] Done\n")
+def _format_installed(repo: str) -> str:
+    return "✔" if is_repo_installed(repo) else "❌"
+
+def choose_one(title: str, items: List[str]) -> Optional[str]:
+    if not items:
+        return None
+    print("\n" + title)
+    for i, it in enumerate(items, 1):
+        print("[%d] %s (%s) - %s" % (i, it, _format_installed(it), _meta_line(it)))
+    print("[0] Cancel\n")
     while True:
-        choice = input("Select model # (0 to finish): ").strip()
-        if choice == '0':
-            break
+        c = input("Select #: ").strip()
+        if c == "0":
+            return None
         try:
-            idx = int(choice) - 1
-            key = list(config_dict.keys())[idx]
-            selected.append(key)
-        except:
-            print("Invalid selection.")
-    return selected
+            idx = int(c) - 1
+            if 0 <= idx < len(items):
+                return items[idx]
+        except Exception:
+            pass
+        print("Invalid selection.")
+
+def download_recommended_stack():
+    # categories to ensure are present: reasoning, coder, embeddings, vision, image_generation, tts
+    for cat in CATEGORY_ORDER:
+        tier = recommend_model_tier(cat)
+        repo = get_stack_primary_repo(cat, text="", meta=None)
+        repo = resolve_model_repo(repo)
+        if repo and is_repo_installed(repo):
+            print("[✔] %s primary already installed." % repo)
+            continue
+
+        # if primary missing, try catalog pick based on tier
+        pick = getattr(G, "pick_catalog_model", lambda c,t, fallback_tiers=None: None)(cat if cat!="image_generation" else "image_generation", tier)
+        repo_to_get = resolve_model_repo(pick or repo)
+        if not repo_to_get:
+            continue
+
+        use_st = (cat == "embeddings")
+        ok = download_hf_model(repo_to_get, repo_to_local_dir(repo_to_get), use_sentence_transformer=use_st)
+        if ok:
+            stamp_installed_repo(repo_to_get)
+
+def download_by_category():
+    print("\nCategories:")
+    for i, c in enumerate(CATEGORY_ORDER, 1):
+        print("[%d] %s" % (i, c))
+    print("[0] Cancel\n")
+    c = input("Select category #: ").strip()
+    if c == "0":
+        return
+    try:
+        cat = CATEGORY_ORDER[int(c)-1]
+    except Exception:
+        print("Invalid.")
+        return
+
+    tiers = ["low","mid","beast"]
+    print("\nTiers:")
+    for i, t in enumerate(tiers, 1):
+        print("[%d] %s" % (i, t))
+    tc = input("Select tier #: ").strip()
+    try:
+        tier = tiers[int(tc)-1]
+    except Exception:
+        print("Invalid.")
+        return
+
+    cat_key = "embeddings" if cat == "embeddings" else cat
+    choices = (MODEL_CATALOG or {}).get(cat_key, {}).get(tier, []) or []
+    repo = choose_one("Models for %s / %s:" % (cat, tier), choices)
+    if not repo:
+        return
+
+    use_st = (cat == "embeddings")
+    ok = download_hf_model(repo, repo_to_local_dir(repo), use_sentence_transformer=use_st)
+    if ok:
+        stamp_installed_repo(repo)
+
+def legacy_download_selected():
+    # sentence-transformers models in legacy list
+    for name, enabled in (MODEL_CONFIG or {}).items():
+        if not enabled:
+            continue
+        repo = resolve_model_repo(name)
+        use_st = True  # legacy list are embeddings in your current config
+        ok = download_hf_model(repo, repo_to_local_dir(repo), use_sentence_transformer=use_st)
+        if ok:
+            stamp_installed_repo(repo)
+
+def download_object_enabled():
+    for name, cfg in (OBJECT_MODEL_CONFIG or {}).items():
+        if not cfg.get("enabled"):
+            continue
+        download_object_model(name, cfg)
+
+def check_updates_menu():
+    repos = []
+    # stack primaries + catalog
+    for cat in CATEGORY_ORDER:
+        r = resolve_model_repo(get_stack_primary_repo(cat, text="", meta=None))
+        if r:
+            repos.append(r)
+    for cat, tiers in (MODEL_CATALOG or {}).items():
+        for t, arr in (tiers or {}).items():
+            repos.extend(arr or [])
+    repos = sorted(set(repos))
+    updates = check_hf_updates(repos)
+    if not updates:
+        print("[INFO] No update data available (huggingface_hub not installed or offline).")
+        return
+    print("\n--- HF Update Check ---")
+    for repo, info in updates.items():
+        if info.get("installed"):
+            flag = "UPDATE" if info.get("update_available") else "OK"
+            print("%s: %s (remote %s / local %s)" % (repo, flag, info.get("remote_last_modified"), info.get("local_last_seen")))
+    print("")
 
 def main():
-    print("""
---- SarahMemory Unified Model Loader ---
-""")
-
-    choice = cli_menu()
-
-    if choice == '1':
-        selected_llms = [k for k, v in MODEL_CONFIG.items() if v]
-        selected_objects = [k for k, v in OBJECT_MODEL_CONFIG.items() if isinstance(v, dict) and v.get("enabled")]
-    elif choice == '2':
-        selected_llms = list_models(MODEL_CONFIG)
-        selected_objects = []
-    elif choice == '3':
-        selected_llms = []
-        selected_objects = list_models(OBJECT_MODEL_CONFIG)
-    elif choice == '4':
-        os.system(f"pip install -r {os.path.join(BASE_DIR, 'requirements.txt')}")
-        return
-    else:
-        print("[EXITED] No models downloaded.")
-        return
-
-    model_alias_map = {
-        "phi-1_5": "microsoft/phi-1_5",
-        "phi-2": "microsoft/phi-2",
-        "all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
-        "multi-qa-MiniLM": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
-        "paraphrase-MiniLM-L3-v2": "sentence-transformers/paraphrase-MiniLM-L3-v2",
-        "distiluse-multilingual": "sentence-transformers/distiluse-base-multilingual-cased-v2",
-        "allenai-specter": "allenai/specter",
-        "e5-base": "intfloat/e5-base",
-        "falcon-rw-1b": "tiiuae/falcon-rw-1b",
-        "openchat-3.5": "openchat/openchat-3.5-0106",
-        "Nous-Capybara-7B": "NousResearch/Nous-Capybara-7B",
-        "Mistral-7B-Instruct-v0.2": "mistralai/Mistral-7B-Instruct-v0.2",
-        "TinyLlama-1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    }
-
-    for name in selected_llms:
-        full_repo = model_alias_map.get(name, name)
-        local_dir = os.path.join(MODELS_DIR, full_repo.replace('/', '_'))
-        use_sentence_transformer = name in [
-            "all-MiniLM-L6-v2", "multi-qa-MiniLM", "paraphrase-MiniLM-L3-v2",
-            "distiluse-multilingual", "allenai-specter", "e5-base"
-        ]
-        download_model(full_repo, local_dir, use_sentence_transformer)
-
-    for name in selected_objects:
-        config = OBJECT_MODEL_CONFIG.get(name, {})
-        repo = config.get("repo")
-        hf_repo_url = config.get("hf_repo")
-        pip_package = config.get("require")
-        if not hf_repo_url:
-            print(f"[SKIP] {name} has no hf_repo defined. Skipping.")
-            continue
-        if pip_package:
-            pip_install_if_needed(pip_package)
-        local_dir = os.path.join(MODELS_DIR, repo.replace('/', '_'))
-        download_object_model(name, hf_repo_url, local_dir)
-
-    print("""
-✅ [FINISHED] All selected models processed.
-""")
+    while True:
+        choice = cli_menu()
+        if choice == "1":
+            download_recommended_stack()
+        elif choice == "2":
+            download_by_category()
+        elif choice == "3":
+            legacy_download_selected()
+        elif choice == "4":
+            download_object_enabled()
+        elif choice == "5":
+            check_updates_menu()
+        elif choice == "6":
+            break
+        else:
+            print("Invalid choice.")
 
 if __name__ == "__main__":
     main()
-
-# ====================================================================
-# END OF SarahMemoryLLM.py v8.0.0
-# ====================================================================
