@@ -13,6 +13,7 @@ import logging
 import subprocess
 import time
 import urllib.request
+import zlib
 from typing import Dict, List, Tuple, Optional
 
 # Optional deps (never hard-crash)
@@ -85,6 +86,10 @@ def model_files_valid(local_dir: str) -> bool:
         if not os.path.isdir(local_dir):
             return False
 
+        # Optional integrity check (best-effort)
+        if not verify_model_manifest(local_dir):
+            return False
+
         # HF snapshot style folders
         for p in ("snapshots", "refs"):
             if os.path.isdir(os.path.join(local_dir, p)):
@@ -132,6 +137,100 @@ def local_dir_size_gb(path: str) -> float:
     except Exception:
         return 0.0
     return float(total) / (1024**3)
+
+# ---------------------------------------------------------------------------
+# Optional integrity verification (CRC32) for local model installs
+# ---------------------------------------------------------------------------
+# NOTE:
+# - CRC32 is best-effort and bounded to avoid hashing multi-GB weights by default.
+# - Enable with: SARAH_MODEL_VERIFY_CRC32=1
+# - Limit hashed file size with: SARAH_MODEL_CRC32_MAX_MB=64  (default)
+# - Manifest stored per-model as: _sarah_manifest.json
+#
+# This is NOT a cryptographic guarantee; it is a lightweight corruption detector.
+
+CRC32_VERIFY_ENABLED = str(os.getenv("SARAH_MODEL_VERIFY_CRC32", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+CRC32_MAX_MB = float(os.getenv("SARAH_MODEL_CRC32_MAX_MB", "64") or 64)
+_MANIFEST_NAME = "_sarah_manifest.json"
+
+def _crc32_stream(path: str, max_mb: float) -> Optional[int]:
+    """Compute CRC32 for a file up to max_mb. Returns None if skipped."""
+    try:
+        size = os.path.getsize(path)
+        if size <= 0:
+            return None
+        if (size / (1024**2)) > max_mb:
+            return None
+        crc = 0
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                crc = zlib.crc32(chunk, crc)
+        return crc & 0xFFFFFFFF
+    except Exception:
+        return None
+
+def _manifest_path(local_dir: str) -> str:
+    return os.path.join(local_dir, _MANIFEST_NAME)
+
+def write_model_manifest(local_dir: str) -> None:
+    if not CRC32_VERIFY_ENABLED:
+        return
+    try:
+        man = {"version": 1, "max_mb": CRC32_MAX_MB, "files": {}}
+        for root, _, files in os.walk(local_dir):
+            for fn in files:
+                if fn == _MANIFEST_NAME:
+                    continue
+                fp = os.path.join(root, fn)
+                rel = os.path.relpath(fp, local_dir).replace("\\", "/")
+                try:
+                    st = os.stat(fp)
+                    crc = _crc32_stream(fp, CRC32_MAX_MB)
+                    man["files"][rel] = {
+                        "size": int(st.st_size),
+                        "mtime": float(st.st_mtime),
+                        "crc32": crc,
+                    }
+                except Exception:
+                    pass
+        with open(_manifest_path(local_dir), "w", encoding="utf-8") as f:
+            json.dump(man, f, indent=2, sort_keys=True)
+    except Exception as e:
+        logger.warning("Manifest write failed for %s: %s", local_dir, e)
+
+def verify_model_manifest(local_dir: str) -> bool:
+    """Verify files in a model dir against its manifest (best-effort)."""
+    if not CRC32_VERIFY_ENABLED:
+        return True
+    mp = _manifest_path(local_dir)
+    if not os.path.isfile(mp):
+        return True  # no manifest => do not fail installs
+    try:
+        with open(mp, "r", encoding="utf-8") as f:
+            man = json.load(f) or {}
+        files = man.get("files") or {}
+        max_mb = float(man.get("max_mb") or CRC32_MAX_MB)
+        for rel, meta in files.items():
+            fp = os.path.join(local_dir, rel.replace("/", os.sep))
+            if not os.path.isfile(fp):
+                return False
+            try:
+                st = os.stat(fp)
+                if int(meta.get("size") or -1) != int(st.st_size):
+                    return False
+                expected_crc = meta.get("crc32", None)
+                if expected_crc is not None:
+                    got = _crc32_stream(fp, max_mb)
+                    if got is None or int(expected_crc) != int(got):
+                        return False
+            except Exception:
+                return False
+        return True
+    except Exception:
+        return True
 
 # ---------------------------------------------------------------------------
 # Policy + size estimation helpers
@@ -227,13 +326,26 @@ def _meta_line(repo: str) -> str:
 # ---------------------------------------------------------------------------
 
 def retry(func, retries: int = 6, wait: int = 15):
+    """
+    Retry helper for downloads.
+
+    IMPORTANT:
+    - Never raises on max retries; returns False instead.
+    - Keeps the CLI menu alive (no hard exit).
+    """
+    last_err = None
     for attempt in range(retries):
         try:
             return func()
         except Exception as e:
+            last_err = e
             logger.error("Retry %s/%s failed: %s", attempt + 1, retries, e)
-            time.sleep(wait)
-    raise Exception("Max retries reached")
+            try:
+                time.sleep(wait)
+            except Exception:
+                pass
+    logger.error("Max retries reached: %s", last_err)
+    return False
 
 def pip_install_if_needed(package_name: str):
     try:
@@ -274,6 +386,7 @@ def download_hf_model(repo: str, local_dir: str, use_sentence_transformer: bool 
         if not model_files_valid(local_dir):
             raise RuntimeError(f"Download completed but validation failed: {repo}")
 
+        write_model_manifest(local_dir)
         print(f"[✔] Completed {repo}")
         return True
 
@@ -323,6 +436,7 @@ def download_object_model(name: str, cfg: dict):
             except Exception as e:
                 logger.warning("Weight download failed for %s: %s", name, e)
 
+        write_model_manifest(local_dir)
         print(f"[✔] Completed {name}")
         return True
 
@@ -503,7 +617,6 @@ def choose_one(title: str, items: List[str]) -> Optional[str]:
         print("Invalid selection.")
 
 def download_recommended_stack():
-    # categories to ensure are present: reasoning, coder, embeddings, vision, image_generation, tts
     for cat in CATEGORY_ORDER:
         tier = recommend_model_tier(cat)
         repo = get_stack_primary_repo(cat, text="", meta=None)
@@ -512,7 +625,6 @@ def download_recommended_stack():
             print("[✔] %s primary already installed." % repo)
             continue
 
-        # if primary missing, try catalog pick based on tier
         pick = getattr(G, "pick_catalog_model", lambda c,t, fallback_tiers=None: None)(cat if cat!="image_generation" else "image_generation", tier)
         repo_to_get = resolve_model_repo(pick or repo)
         if not repo_to_get:
@@ -522,6 +634,8 @@ def download_recommended_stack():
         ok = download_hf_model(repo_to_get, repo_to_local_dir(repo_to_get), use_sentence_transformer=use_st)
         if ok:
             stamp_installed_repo(repo_to_get)
+        else:
+            print(f"[ERROR] Failed to download {repo_to_get}. Returning to menu.")
 
 def download_by_category():
     print("\nCategories:")
@@ -558,27 +672,31 @@ def download_by_category():
     ok = download_hf_model(repo, repo_to_local_dir(repo), use_sentence_transformer=use_st)
     if ok:
         stamp_installed_repo(repo)
+    else:
+        print(f"[ERROR] Failed to download {repo}. Returning to menu.")
 
 def legacy_download_selected():
-    # sentence-transformers models in legacy list
     for name, enabled in (MODEL_CONFIG or {}).items():
         if not enabled:
             continue
         repo = resolve_model_repo(name)
-        use_st = True  # legacy list are embeddings in your current config
+        use_st = True
         ok = download_hf_model(repo, repo_to_local_dir(repo), use_sentence_transformer=use_st)
         if ok:
             stamp_installed_repo(repo)
+        else:
+            print(f"[ERROR] Failed to download {repo}. Continuing.")
 
 def download_object_enabled():
     for name, cfg in (OBJECT_MODEL_CONFIG or {}).items():
         if not cfg.get("enabled"):
             continue
-        download_object_model(name, cfg)
+        ok = download_object_model(name, cfg)
+        if ok is False:
+            print(f"[ERROR] Failed to download object model {name}. Continuing.")
 
 def check_updates_menu():
     repos = []
-    # stack primaries + catalog
     for cat in CATEGORY_ORDER:
         r = resolve_model_repo(get_stack_primary_repo(cat, text="", meta=None))
         if r:
@@ -600,21 +718,30 @@ def check_updates_menu():
 
 def main():
     while True:
-        choice = cli_menu()
-        if choice == "1":
-            download_recommended_stack()
-        elif choice == "2":
-            download_by_category()
-        elif choice == "3":
-            legacy_download_selected()
-        elif choice == "4":
-            download_object_enabled()
-        elif choice == "5":
-            check_updates_menu()
-        elif choice == "6":
-            break
-        else:
-            print("Invalid choice.")
+        try:
+            choice = cli_menu()
+        except Exception as e:
+            logger.error('Menu error: %s', e)
+            print('[ERROR] Menu error. Returning to menu.')
+            continue
+        try:
+            if choice == "1":
+                download_recommended_stack()
+            elif choice == "2":
+                download_by_category()
+            elif choice == "3":
+                legacy_download_selected()
+            elif choice == "4":
+                download_object_enabled()
+            elif choice == "5":
+                check_updates_menu()
+            elif choice == "6":
+                break
+            else:
+                print("Invalid choice.")
+        except Exception as e:
+            logger.error('Action error: %s', e)
+            print('[ERROR] Action failed. Returning to menu.')
 
 if __name__ == "__main__":
     main()
