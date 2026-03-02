@@ -2,9 +2,9 @@
 File: SarahMemoryCanvasStudio.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 SarahMemory Canvas Studio -Art & Graphics Editing Engine
@@ -1036,6 +1037,42 @@ def generate_from_prompt(self, prompt: str, width: int = None, height: int = Non
         if not prompt_text:
             return canvas
 
+        # 0) Governance gate: POOR-tier disables auto 3rd-party model usage.
+        #    User can still manually enable image_generation models in SarahMemoryGlobals.MODEL_CONFIG.
+        third_party_allowed = True
+        try:
+            import SarahMemoryGlobals as _G  # type: ignore
+            hs = _G.hardware_score() if hasattr(_G, 'hardware_score') else {}
+            tier_rating = str(hs.get('tier_rating') or '')
+            third_party_allowed = bool(hs.get('third_party_autoload_allowed', tier_rating != 'Poor'))
+            # If POOR and user didn't enable any image_generation candidates, go offline immediately.
+            if tier_rating == 'Poor' and hasattr(_G, 'resolve_model'):
+                r = _G.resolve_model('image_generation', text=prompt_text, meta={'task':'image_generation'})
+                if not r or not r.get('selected'):
+                    third_party_allowed = False
+        except Exception:
+            pass
+
+        # LOCAL_ONLY_MODE also blocks external generation backends (web/API).
+        try:
+            import SarahMemoryGlobals as _G2  # type: ignore
+            if bool(getattr(_G2, 'LOCAL_ONLY_MODE', False)):
+                # local-only: only allow local engines (if any). We treat external backends as disabled.
+                # CanvasStudio offline fallback remains available and reliable.
+                third_party_allowed = False
+        except Exception:
+            pass
+
+        if not third_party_allowed:
+            # Guaranteed offline fallback (core-only) for POOR tier or local-only mode.
+            img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=style)
+            try:
+                self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
+            except Exception as e:
+                logging.warning(f"[CanvasStudio] Failed to apply offline fallback image bytes: {e}")
+            logging.info(f"[CanvasStudio] Generated offline artwork from prompt: '{prompt_text[:80]}...'")
+            return canvas
+
         # 1) Prefer SarahMemoryAPI routing (multi-provider kernel)
         img_bytes = None
         mime = None
@@ -1114,7 +1151,7 @@ def _try_generate_via_openai(self, prompt: str, width: int, height: int, *, styl
         return (None, None)
 
     # Model selection via SarahMemoryGlobals (v8 selector if present)
-    model = "gpt-image-1.5"
+    model = None  # pulled from SarahMemoryGlobals; no hardcoded model IDs here
     try:
         import SarahMemoryGlobals as _G  # type: ignore
         model = getattr(_G, "API_IMAGE_MODEL", model) or model
@@ -1125,6 +1162,10 @@ def _try_generate_via_openai(self, prompt: str, width: int, height: int, *, styl
                 pass
     except Exception:
         pass
+
+    if not model:
+        # No configured OpenAI image model; keep OpenAI optional.
+        return (None, None)
 
     size = f"{int(width)}x{int(height)}"
 

@@ -2,9 +2,9 @@
 File: SarahMemorySystemLearn.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 
@@ -59,26 +60,92 @@ config.LEARNING_PHASE_ACTIVE = True  # Only TRUE during indexing/learning
 from SarahMemoryGlobals import MODEL_CONFIG, MULTI_MODEL
 
 def get_active_sentence_model():
-    from sentence_transformers import SentenceTransformer
-    if MULTI_MODEL:
-        for model_name, enabled in MODEL_CONFIG.items():
-            if enabled:
+    """
+    Resolver-driven embedding model selector for learning/vectorization.
+    - No hardcoded model IDs here; model catalog lives in SarahMemoryGlobals.py.
+    - POOR tier with no user overrides => LiteEmbedder (core-only, deterministic).
+    - LOCAL_ONLY/SAFE/offline => local-only load attempts, else LiteEmbedder.
+    """
+    class _LiteEmbedder:
+        def encode(self, text, convert_to_tensor=False):
+            import hashlib
+            import numpy as np
+            h = hashlib.sha1((text or "").encode("utf-8")).digest()
+            v = np.frombuffer(h * 6, dtype=np.uint8)[:384].astype("float32")
+            return v
+
+    offline = bool(
+        SAFE_MODE or
+        LOCAL_ONLY_MODE or
+        is_offline() or
+        os.getenv("HF_HUB_OFFLINE") == "1" or
+        os.getenv("TRANSFORMERS_OFFLINE") == "1"
+    )
+
+    # Preferred: Globals resolver
+    candidates = []
+    try:
+        if hasattr(config, "resolve_model") and callable(getattr(config, "resolve_model")):
+            res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+            selected = res.get("selected")
+            fallbacks = res.get("fallbacks") or []
+            candidates = [c for c in ([selected] + list(fallbacks)) if c]
+            if res.get("tier_rating") == "Poor" and res.get("source") == "none":
+                candidates = []
+    except Exception:
+        candidates = []
+
+    # Legacy: MULTI_MODEL + MODEL_CONFIG (back-compat), but still NO hardcoded fallback
+    if not candidates and MULTI_MODEL and isinstance(MODEL_CONFIG, dict):
+        try:
+            for model_name, enabled in MODEL_CONFIG.items():
+                if not enabled:
+                    continue
                 try:
-                    return SentenceTransformer(model_name)
-                except Exception as e:
-                    print(f"[MODEL LOAD ERROR] {model_name} failed: {e}")
-    return SentenceTransformer("all-MiniLM-L6-v2")  # Fallback default
+                    repo = config.resolve_model_repo(model_name) if hasattr(config, "resolve_model_repo") else model_name
+                except Exception:
+                    repo = model_name
+                if repo and repo not in candidates:
+                    candidates.append(repo)
+        except Exception:
+            pass
+
+    if not candidates:
+        return _LiteEmbedder()
+
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return _LiteEmbedder()
+
+    for repo in candidates:
+        try:
+            return SentenceTransformer(repo, local_files_only=bool(offline))
+        except Exception as e:
+            print(f"[MODEL LOAD ERROR] {repo} failed: {e}")
+
+    return _LiteEmbedder()
 
 try:
     import torch
     import faiss
+
     # Initialize the vector model and FAISS index only if the system is not in
-    # safe mode, local-only mode, or offline. Heavy GPU/CPU allocation is
-    # skipped otherwise.
+    # safe mode, local-only mode, or offline AND a third-party model is allowed/available.
     if not (SAFE_MODE or LOCAL_ONLY_MODE or is_offline()):
-        model = get_active_sentence_model()
-        model.to("cuda" if torch.cuda.is_available() else "cpu")
-        vector_index = faiss.IndexFlatL2(384)
+        _m = get_active_sentence_model()
+        # If selector returns LiteEmbedder, treat as core-only and skip FAISS engine allocation.
+        if _m is None or _m.__class__.__name__ == "_LiteEmbedder":
+            model = None
+            vector_index = None
+            print("⚠️ Vector engine disabled (core-only embeddings / POOR tier / no user override).")
+        else:
+            model = _m
+            try:
+                model.to("cuda" if torch.cuda.is_available() else "cpu")
+            except Exception:
+                pass
+            vector_index = faiss.IndexFlatL2(384)
     else:
         model = None
         vector_index = None
@@ -760,33 +827,35 @@ def categorize_text_by_path_or_content(path, text):
 # Vector conversion (basic)
 
 def text_to_vector(text):
+    """
+    Convert text to an embedding vector for learning/indexing.
+    Uses Globals resolver-driven embedding selection.
+    Falls back to deterministic core vector when models are unavailable or disabled.
+    """
     try:
-        from sentence_transformers import SentenceTransformer
-        from SarahMemoryGlobals import MODEL_CONFIG, MULTI_MODEL
-
-        # Dynamically choose active sentence model
-        def get_active_sentence_model():
-            if MULTI_MODEL:
-                for model_name, enabled in MODEL_CONFIG.items():
-                    if enabled:
-                        try:
-                            return SentenceTransformer(model_name)
-                        except Exception as e:
-                            print(f"[MODEL LOAD ERROR] {model_name} failed: {e}")
-            return SentenceTransformer("all-MiniLM-L6-v2")  # Fallback default
-
-        import torch
+        import numpy as np
+        # Use the shared selector (resolver-driven)
         model = get_active_sentence_model()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model.to(device)
 
-        embedding = model.encode(text, convert_to_tensor=True).cpu().numpy()
-        embedding = np.asarray(embedding, dtype=np.float32).reshape(-1)
-        return embedding
+        # If a transformer is returned, it will have .encode supporting convert_to_tensor
+        try:
+            emb = model.encode(text, convert_to_tensor=True)
+            try:
+                import torch
+                if hasattr(torch, "is_tensor") and torch.is_tensor(emb):
+                    emb = emb.detach().cpu().numpy()
+            except Exception:
+                pass
+        except Exception:
+            # Some lightweight embedders return numpy directly
+            emb = model.encode(text)
+
+        emb = np.asarray(emb, dtype=np.float32).reshape(-1)
+        return emb
 
     except Exception as e:
-        log(f"⚠️ SentenceTransformer fallback engaged due to error: {e}")
-        words = text.lower().split()
+        log(f"⚠️ Embedding fallback engaged due to error: {e}")
+        words = (text or "").lower().split()
         vector = np.zeros(int(os.getenv('SARAH_VECTOR_DIM', '384')), dtype=np.float32)
         for i, word in enumerate(words[:128]):
             vector[i] = float(len(word)) % 10

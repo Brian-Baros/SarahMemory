@@ -3,7 +3,7 @@
 File: SarahMemoryNeuron.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-20
+Date: 2025-03-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ==============================================================================================================================================================
 
 PURPOSE:
@@ -678,6 +679,31 @@ def _try_websym(text: str) -> Optional[str]:
 def _try_api(text: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
     if _is_local_only():
         return None
+    if not _SMAPI:
+        return None
+    try:
+        # Inject resolver hints (no hardcoded repos here; all canonical names live in SarahMemoryGlobals.py).
+        meta2 = dict(meta or {})
+        try:
+            if config and hasattr(config, "resolve_model"):
+                rm = config.resolve_model("reasoning", text=text, meta=meta2)  # type: ignore[attr-defined]
+                # Lightweight, non-breaking hint packet for downstream routing/logging.
+                meta2.setdefault("sm_model_resolve", {})["reasoning"] = rm
+                if isinstance(rm, dict) and rm.get("selected"):
+                    meta2.setdefault("preferred_model_repo", rm.get("selected"))
+        except Exception:
+            pass
+
+        fn = getattr(_SMAPI, "send_to_api", None)
+        if callable(fn):
+            resp = fn(text, **meta2)
+            if isinstance(resp, str) and resp.strip():
+                return resp
+            if isinstance(resp, dict) and resp.get("reply"):
+                return str(resp["reply"])
+    except Exception:
+        return None
+    return None
     if not _SMAPI:
         return None
     try:

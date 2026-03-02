@@ -2,9 +2,9 @@
 File: SarahMemoryLyricsToSong.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 SarahMemory Lyrics To Song - Vocal Synthesis & Performance Engine
@@ -896,26 +897,70 @@ class VocalSynthesizer:
         logger.info(f"[LyricsToSong] Available TTS engines: {[k for k, v in TTS_ENGINES_AVAILABLE.items() if v]}")
     
     def _init_tts_engine(self):
-        """Initialize the preferred TTS engine"""
+        """Initialize the preferred TTS engine.
+
+        Resolver policy:
+          - Tier Rating POOR + no user override => do NOT auto-enable any online/heavy engines.
+            Prefer pyttsx3 only (core-safe, offline).
+          - Otherwise:
+              1) pyttsx3 (offline, fast) always preferred when available
+              2) edge-tts (online) if available and not LOCAL_ONLY_MODE
+              3) gTTS (online) if available and not LOCAL_ONLY_MODE
+        """
         self.tts_engine = None
         self.tts_type = None
-        
-        # Try pyttsx3 first (offline, fast)
-        if TTS_ENGINES_AVAILABLE.get('pyttsx3'):
+
+        # Determine tier policy (fail-soft).
+        tier_rating = "Low"
+        third_party_allowed = True
+        try:
+            if GLOBALS_AVAILABLE and SMG is not None:
+                hs = getattr(SMG, "hardware_score", None)
+                if callable(hs):
+                    hso = hs() or {}
+                    tier_rating = str(hso.get("tier_rating") or tier_rating)
+                    third_party_allowed = bool(hso.get("third_party_autoload_allowed", True))
+                # resolve_model may encode POOR policy as well; used for consistency
+                rfn = getattr(SMG, "resolve_model", None)
+                if callable(rfn):
+                    r = rfn("tts") or {}
+                    tier_rating = str(r.get("tier_rating") or tier_rating)
+                    # If resolver says none and we are POOR, keep third_party_allowed=False.
+                    if str(tier_rating).strip().lower() == "poor":
+                        third_party_allowed = bool(r.get("source") == "user")
+        except Exception:
+            pass
+
+        tier_is_poor = str(tier_rating).strip().lower() == "poor"
+
+        # Always try pyttsx3 first (offline, fast)
+        if TTS_ENGINES_AVAILABLE.get("pyttsx3"):
             try:
                 self.tts_engine = pyttsx3.init()
-                self.tts_type = 'pyttsx3'
+                self.tts_type = "pyttsx3"
                 logger.info("[LyricsToSong] Using pyttsx3 TTS engine")
                 return
             except Exception as e:
                 logger.warning(f"[LyricsToSong] Failed to initialize pyttsx3: {e}")
-        
-        # Fallback to gTTS (online)
-        if TTS_ENGINES_AVAILABLE.get('gtts') and not LOCAL_ONLY_MODE:
-            self.tts_type = 'gtts'
-            logger.info("[LyricsToSong] Using gTTS engine (requires internet)")
+
+        # POOR tier policy: no auto online engines unless user explicitly overrides model selection elsewhere.
+        if tier_is_poor and (not third_party_allowed):
+            logger.warning("[LyricsToSong] Tier=POOR: online TTS engines are disabled by policy (core-only).")
             return
-        
+
+        # Online engines allowed only when not LOCAL_ONLY_MODE.
+        if not LOCAL_ONLY_MODE:
+            # Prefer edge-tts when present (higher quality) 
+            if TTS_ENGINES_AVAILABLE.get("edge_tts"):
+                self.tts_type = "edge_tts"
+                logger.info("[LyricsToSong] Using edge-tts engine (requires internet)")
+                return
+            # Fallback to gTTS
+            if TTS_ENGINES_AVAILABLE.get("gtts"):
+                self.tts_type = "gtts"
+                logger.info("[LyricsToSong] Using gTTS engine (requires internet)")
+                return
+
         logger.warning("[LyricsToSong] No TTS engine available - synthesis will be limited")
     
     # ========================================================================

@@ -123,9 +123,9 @@ try:
 except Exception as _e:
     class _Config:
         # Minimal defaults when Globals is unavailable (offline-safe)
-        API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL", "gpt-4.1")
-        API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL", "gpt-4.1-mini")
-        API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL", "gpt-4.1-mini")
+        API_PRIMARY_MODEL   = os.getenv("SARAH_OPENAI_PRIMARY_MODEL") or os.getenv("OPENAI_MODEL") or "default"
+        API_SECONDARY_MODEL = os.getenv("SARAH_OPENAI_SECONDARY_MODEL") or os.getenv("OPENAI_MODEL_SECONDARY") or "default"
+        API_DEFAULT_MODEL   = os.getenv("SARAH_OPENAI_DEFAULT_MODEL") or os.getenv("OPENAI_MODEL_DEFAULT") or "default"
         API_RESEARCH_ENABLED = True
         WEB_RESEARCH_ENABLED = True
         GUI_ALLOW_IMAGES = True

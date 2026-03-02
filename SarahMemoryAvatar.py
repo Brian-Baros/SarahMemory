@@ -27,9 +27,17 @@ from SarahMemoryAdaptive import load_emotional_state
 import SarahMemoryGlobals as config
 from SarahMemoryGlobals import DATASETS_DIR  # for consistent pathing
 import subprocess
-import sqlite3
 
 DB_FILENAME = "avatar.db"
+
+
+# Setup logger (must exist before any init functions use it)
+logger = logging.getLogger("SarahMemoryAvatar")
+logger.setLevel(logging.DEBUG)
+_handler = logging.NullHandler()
+_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+if not logger.hasHandlers():
+    logger.addHandler(_handler)
 
 def _ensure_avatar_state_table():
     """Ensure avatar_state table and default row exist (v8.0 safe init)."""
@@ -60,13 +68,6 @@ def _ensure_avatar_state_table():
 _ensure_avatar_state_table()
 
 
-# Setup logger
-logger = logging.getLogger("SarahMemoryAvatar")
-logger.setLevel(logging.DEBUG)
-handler = logging.NullHandler()
-handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-if not logger.hasHandlers():
-    logger.addHandler(handler)
 
 # ─────────────────────────────────────────────
 # 2D AVATAR CONTROL
@@ -91,14 +92,25 @@ MOOD_MAP = {
     # Add more mappings as needed
 }
 
+
+def _hardware_tier_rating() -> str:
+    """Return current tier_rating from SarahMemoryGlobals.hardware_score() (best-effort)."""
+    try:
+        hs_fn = getattr(config, "hardware_score", None)
+        if callable(hs_fn):
+            hs = hs_fn() or {}
+            tr = str(hs.get("tier_rating") or "").strip()
+            return tr if tr else "Unknown"
+    except Exception:
+        pass
+    return "Unknown"
+
 def log_avatar_event(event, details):
     """
     Logs an avatar-related event to the avatar.db database.
     """
     try:
         db_path = os.path.abspath(os.path.join(config.DATASETS_DIR, DB_FILENAME))
-        conn = sqlite3.connect(db_path)
-        db_path = os.path.abspath(os.path.join(config.DATASETS_DIR, "avatar.db"))
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("""
@@ -148,13 +160,20 @@ def draw_2d_avatar(expression, extra_overlay=None):
     img.show()
     return img
 #---------------Tkinter GUI Integration (if needed)------------------
-def load_sprite_frames(sprite_sheet_path, frame_width, frame_height):
+def load_sprite_frames(sprite_sheet_path, frame_width, frame_height, tk_root=None):
+    """Load sprite frames from a sheet.
+    NOTE: tk_root is optional; pass your Tk() root to avoid PhotoImage GC issues.
+    """
     sprite_sheet = Image.open(sprite_sheet_path)
     frames = []
     for y in range(0, sprite_sheet.height, frame_height):
         for x in range(0, sprite_sheet.width, frame_width):
-            frame = sprite_sheet.crop((x, y, x+frame_width, y+frame_height))
-            frames.append(ImageTk.PhotoImage(frame, master=self.root))
+            frame = sprite_sheet.crop((x, y, x + frame_width, y + frame_height))
+            try:
+                frames.append(ImageTk.PhotoImage(frame, master=tk_root) if tk_root else ImageTk.PhotoImage(frame))
+            except Exception:
+                # If Tk context is not available, return raw PIL frames
+                frames.append(frame.copy())
     return frames
 
 def animate_walk(self):
@@ -346,6 +365,11 @@ def interact_with_gui(mood, face_repr):
     log_avatar_event("GUI Interaction", f"Mood: {mood} | Face: {face_repr}")
 
 def trigger_3d_animation(emotion):
+    tier_rating = _hardware_tier_rating().lower()
+    if tier_rating == "poor":
+        logger.info("[3D] Skipped 3D animation (tier_rating=Poor).")
+        log_avatar_event("Trigger 3D Animation Skipped", "tier_rating=Poor")
+        return None
     logger.info(f"[3D] Triggering 3D animation for emotion: {emotion}")
     log_avatar_event("Trigger 3D Animation", f"3D animation for emotion: {emotion}")
 #--------------------------------Tinkering with subprocess to run 3D animation
@@ -366,6 +390,11 @@ def trigger_3d_animation(emotion):
 
 def display_interactive_3d_avatar(filepath, engine="Blender"):
     try:
+        tier_rating = _hardware_tier_rating().lower()
+        if tier_rating == "poor":
+            logger.info("[3D] Skipped interactive 3D avatar (tier_rating=Poor).")
+            return False
+
         logger.info(f"Launching 3D avatar from: {filepath} with engine: {engine}")
         if engine.lower() == "blender":
             subprocess.run([

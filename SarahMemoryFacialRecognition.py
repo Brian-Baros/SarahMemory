@@ -2,7 +2,7 @@
 File: SarahMemoryFacialRecognition.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-25
+Date: 2025-03-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 
@@ -43,6 +44,99 @@ try:
 except ImportError:
     pass
 USE_DL_MODELS = any(model_cfg.get("enabled") for model_cfg in OBJECT_MODEL_CONFIG.values())
+
+# ---------------------------------------------------------------------------
+# v8.0 Resolver Enhancement:
+# - Respect SarahMemoryGlobals.resolve_model("vision") ordering when possible.
+# - POOR tier: do NOT auto-enable models; only user-enabled OBJECT_MODEL_CONFIG entries run.
+# - Still enforces "one model at a time": we try models in priority order and return on first success.
+# ---------------------------------------------------------------------------
+
+_VISION_RESOLVE_CACHE = {"ts": 0.0, "ordered": []}
+
+def _norm_repo_dir(repo: str) -> str:
+    # Repo ids may be HF-like (a/b). Local dirs are commonly stored as a_b.
+    r = (repo or "").strip()
+    return r.replace("/", "_")
+
+def _repo_matches(cfg_repo: str, repo: str) -> bool:
+    a = (cfg_repo or "").strip()
+    b = (repo or "").strip()
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    # normalize / -> _
+    if a == _norm_repo_dir(b) or _norm_repo_dir(a) == b:
+        return True
+    # tolerate suffix matches (folder name vs full id)
+    try:
+        if a.endswith("/" + b) or b.endswith("/" + a):
+            return True
+    except Exception:
+        pass
+    return False
+
+def _ordered_object_models(max_cache_age_sec: float = 5.0):
+    """Return enabled OBJECT_MODEL_CONFIG items ordered by Globals resolver (best-effort)."""
+    now = time.time()
+    try:
+        if _VISION_RESOLVE_CACHE["ordered"] and (now - float(_VISION_RESOLVE_CACHE.get("ts") or 0)) <= max_cache_age_sec:
+            return list(_VISION_RESOLVE_CACHE["ordered"])
+    except Exception:
+        pass
+
+    enabled = []
+    try:
+        for name, info in (OBJECT_MODEL_CONFIG or {}).items():
+            if isinstance(info, dict) and info.get("enabled"):
+                enabled.append((name, info))
+    except Exception:
+        enabled = []
+
+    # Default: preserve configured order
+    ordered = list(enabled)
+
+    # If resolver picks a specific repo, move matching config(s) to the front (selected first, then fallbacks)
+    try:
+        if hasattr(config, "resolve_model") and callable(getattr(config, "resolve_model")):
+            res = config.resolve_model("vision") or {}
+            selected = res.get("selected")
+            fallbacks = res.get("fallbacks") or []
+            prefs = [selected] + list(fallbacks) if selected else list(fallbacks)
+
+            if prefs:
+                front = []
+                rest = []
+                for name, info in enabled:
+                    cfg_repo = str((info or {}).get("repo") or "")
+                    if any(_repo_matches(cfg_repo, p) for p in prefs if p):
+                        front.append((name, info))
+                    else:
+                        rest.append((name, info))
+
+                # Order the front list in the same order as prefs
+                front_sorted = []
+                for p in prefs:
+                    if not p:
+                        continue
+                    for item in list(front):
+                        cfg_repo = str((item[1] or {}).get("repo") or "")
+                        if _repo_matches(cfg_repo, p):
+                            front_sorted.append(item)
+                            try:
+                                front.remove(item)
+                            except Exception:
+                                pass
+                front_sorted.extend(front)
+                ordered = front_sorted + rest
+    except Exception:
+        # Fail-soft: keep config order
+        ordered = list(enabled)
+
+    _VISION_RESOLVE_CACHE["ts"] = now
+    _VISION_RESOLVE_CACHE["ordered"] = list(ordered)
+    return ordered
 # ------------------------- Facial Recognition Module -------------------------
 # Setup logging for the facial recognition module
 logger_fr = logging.getLogger('SarahMemoryFacialRecognition')
@@ -246,9 +340,11 @@ def detect_faces_dnn(frame):
     CONFIDENCE_THRESHOLD = 0.4
     TARGET_LABELS = ["person", "face"]
 
-    if USE_DL_MODELS:
-        for model_name, model_info in OBJECT_MODEL_CONFIG.items():
-            if model_info.get("enabled"):
+    # NOTE: do NOT auto-enable models here; 'enabled' remains the user-control plane.
+    # We only reorder enabled models based on Globals resolver (best-effort).
+    ordered_models = _ordered_object_models()
+    if ordered_models:
+        for model_name, model_info in ordered_models:
                 try:
                     model_path = MODEL_PATHS.get(model_name)
                     if not model_path or not os.path.exists(model_path):

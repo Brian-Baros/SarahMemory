@@ -3,9 +3,9 @@
 File: SarahMemoryGUI.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -13,6 +13,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 
@@ -224,18 +225,58 @@ if not theme_logger.hasHandlers():
     theme_logger.addHandler(th)
 
 def get_active_sentence_model():
+    """
+    Resolver-driven embedding model selector for the GUI.
+    - No hardcoded model IDs in core files.
+    - POOR tier with no user overrides => LiteEmbedder (core-only).
+    - LOCAL_ONLY/SAFE/offline => local-only load attempt then LiteEmbedder.
+    """
+    # Last-resort lightweight embedder to keep UI responsive
+    class _LiteEmbedder:
+        def encode(self, text):
+            import hashlib
+            import numpy as np
+            h = hashlib.sha1((text or "").encode("utf-8")).digest()
+            return np.frombuffer(h[:64], dtype=np.uint8).astype("float32")
+
+    # offline guard
+    offline = bool(
+        getattr(config, "LOCAL_ONLY_MODE", False) or
+        getattr(config, "SAFE_MODE", False) or
+        os.getenv("HF_HUB_OFFLINE") == "1" or
+        os.getenv("TRANSFORMERS_OFFLINE") == "1"
+    )
+
+    # Resolve candidates via Globals resolver (preferred)
+    candidates = []
     try:
-        # Prefer local-only to avoid network stalls when HF token isn’t present
-        return SentenceTransformer('all-MiniLM-L6-v2', local_files_only=True)
+        if hasattr(config, "resolve_model") and callable(getattr(config, "resolve_model")):
+            res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+            selected = res.get("selected")
+            fallbacks = res.get("fallbacks") or []
+            candidates = [c for c in ([selected] + list(fallbacks)) if c]
     except Exception:
-        # Last-resort lightweight embedder to keep UI responsive
-        class _LiteEmbedder:
-            def encode(self, text):
-                # tiny, deterministic embedding; enough for routing
-                import hashlib, numpy as np
-                h = hashlib.sha1(text.encode('utf-8')).digest()
-                return np.frombuffer(h[:64], dtype=np.uint8).astype('float32')
+        candidates = []
+
+    # POOR tier with no user overrides => core-only
+    if not candidates:
         return _LiteEmbedder()
+
+    # Try to import sentence-transformers
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception:
+        return _LiteEmbedder()
+
+    # Prefer local-only when offline/safe
+    for repo in candidates:
+        try:
+            return SentenceTransformer(repo, local_files_only=bool(offline))
+        except Exception:
+            continue
+
+    return _LiteEmbedder()
+
 def apply_theme_from_choice(css_filename):
     """
     Applies the chosen theme by parsing the CSS file and applying styles to ttk widgets.

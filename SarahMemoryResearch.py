@@ -2,9 +2,9 @@
 File: SarahMemoryResearch.py - World-Class Research Engine
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 WORLD-CLASS ENTERPRISE RESEARCH ENGINE
@@ -1083,6 +1084,55 @@ class WebResearch:
 
 
 # ============================================================================
+
+# -----------------------------------------------------------------------------
+# Resolver-aware API call shim (keeps model names centralized in SarahMemoryGlobals.py)
+# -----------------------------------------------------------------------------
+def _send_to_api_with_resolver(query: str, *, provider: str, intent: str, tone: str = "neutral", complexity: str = "adult") -> Optional[Dict[str, Any]]:
+    """Call SarahMemoryAPI.send_to_api with non-breaking resolver hints.
+    - Adds meta.sm_model_resolve + meta.preferred_model_repo when possible.
+    - Never assumes send_to_api signature; retries without extra kwargs on TypeError.
+    """
+    meta2: Dict[str, Any] = {}
+    try:
+        rm_fn = getattr(config, "resolve_model", None)
+        if callable(rm_fn):
+            rm = rm_fn("reasoning", text=query, meta={}) or {}
+            meta2.setdefault("sm_model_resolve", {})["reasoning"] = rm
+            if isinstance(rm, dict) and rm.get("selected"):
+                meta2["preferred_model_repo"] = rm.get("selected")
+    except Exception:
+        pass
+
+    # Attempt: send meta (newer signature)
+    try:
+        return send_to_api(
+            query,
+            provider=provider,
+            intent=intent,
+            tone=tone,
+            complexity=complexity,
+            meta=meta2,
+        )
+    except TypeError:
+        pass
+    except Exception:
+        # allow caller to handle provider fallback
+        return None
+
+    # Fallback: legacy signature
+    try:
+        return send_to_api(
+            query,
+            provider=provider,
+            intent=intent,
+            tone=tone,
+            complexity=complexity,
+        )
+    except Exception:
+        return None
+
+
 # API RESEARCH ENGINE
 # ============================================================================
 
@@ -1133,7 +1183,7 @@ class APIResearch:
                 try:
                     logger.info(f"[API] Attempting provider: {provider}")
                     
-                    result = send_to_api(
+                    result = _send_to_api_with_resolver(
                         query,
                         provider=provider,
                         intent=intent,

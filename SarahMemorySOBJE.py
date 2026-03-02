@@ -2,9 +2,9 @@
 File: SarahMemorySOBJE.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 
@@ -31,26 +32,117 @@ from SarahMemoryGlobals import DATASETS_DIR, OBJECT_MODEL_CONFIG, OBJECT_DETECTI
 #from SarahMemoryGlobals import run_async
 #from SarahMemoryHi import async_update_network_state
 
-YOLO_MODELS = {}
-if OBJECT_DETECTION_ENABLED:
-    from ultralytics import YOLO
-    for model_name, model_cfg in OBJECT_MODEL_CONFIG.items():
-        if model_cfg.get("enabled"):
-            model_dir = MODEL_PATHS.get(model_name)
-            if model_dir:
-                model_files = [f for f in os.listdir(model_dir) if f.endswith(".pt")]
-                if model_files:
-                    model_path = os.path.join(model_dir, model_files[0])
-                    try:
-                        YOLO_MODELS[model_name] = YOLO(model_path)
-                    except Exception as e:
-                        logging.warning(f"[YOLO Init Fail] {model_name} @ {model_path}: {e}")
-                else:
-                    logging.warning(f"[YOLO Load Skip] {model_name}: No .pt file found in {model_dir}")
-            else:
-                logging.warning(f"[YOLO Load Skip] {model_name}: Model path missing in MODEL_PATHS")
 
+# -----------------------------------------------------------------------------
+# YOLO model loading (LAZY) — do NOT load heavyweight models at import time.
+# - Respects OBJECT_MODEL_CONFIG[*].enabled as the "user override" control plane.
+# - POOR tier: if user enabled nothing, we stay core-only (no 3rd-party load).
+# - Avoids CPU/GPU spikes during boot; models load only when inference is requested.
+# -----------------------------------------------------------------------------
+_YOLO_LOCK = threading.RLock()
+_YOLO_CACHE = {}  # model_name -> YOLO instance
+_YOLO_IMPORT_ERR = None
 
+def _enabled_yolo_model_names() -> list:
+    try:
+        return [n for n, cfg in (OBJECT_MODEL_CONFIG or {}).items() if (cfg or {}).get("enabled")]
+    except Exception:
+        return []
+
+def _hardware_tier_rating() -> str:
+    """Best-effort tier rating from SarahMemoryGlobals.hardware_score()."""
+    try:
+        hs_fn = getattr(config, "hardware_score", None)
+        if callable(hs_fn):
+            hs = hs_fn() or {}
+            # prefer Tier Rating wording if present, else tier, else empty
+            tr = hs.get("tier_rating") or hs.get("tier") or ""
+            return str(tr).strip()
+    except Exception:
+        pass
+    return ""
+
+def _resolve_preferred_yolo_model() -> str | None:
+    """If Globals has a resolver, try to get the preferred *vision* model name (if it matches configured YOLO keys)."""
+    try:
+        rm_fn = getattr(config, "resolve_model", None)
+        if callable(rm_fn):
+            rm = rm_fn("vision") or {}
+            if isinstance(rm, dict):
+                sel = rm.get("selected")
+                if sel:
+                    return str(sel)
+    except Exception:
+        pass
+    return None
+
+def _yolo_priority_order() -> list:
+    enabled = _enabled_yolo_model_names()
+    if not enabled:
+        return []
+
+    # If tier is POOR and user didn't enable any YOLO models, core-only stays intact.
+    # (The actual enforcement is: enabled list is empty => we load none.)
+    pref = _resolve_preferred_yolo_model()
+    if pref and pref in enabled:
+        return [pref] + [x for x in enabled if x != pref]
+    return enabled
+
+def _load_yolo_model(model_name: str):
+    global _YOLO_IMPORT_ERR
+    with _YOLO_LOCK:
+        if model_name in _YOLO_CACHE:
+            return _YOLO_CACHE.get(model_name)
+
+        # Gate: if nothing is enabled, don't load anything.
+        enabled = _enabled_yolo_model_names()
+        if model_name not in enabled:
+            return None
+
+        # Import ultralytics only on-demand.
+        try:
+            from ultralytics import YOLO  # type: ignore
+        except Exception as e:
+            _YOLO_IMPORT_ERR = e
+            logging.warning(f"[YOLO Import Fail] ultralytics unavailable: {e}")
+            return None
+
+        model_dir = MODEL_PATHS.get(model_name)
+        if not model_dir:
+            logging.warning(f"[YOLO Load Skip] {model_name}: Model path missing in MODEL_PATHS")
+            return None
+
+        try:
+            model_files = [f for f in os.listdir(model_dir) if f.endswith(".pt")]
+        except Exception:
+            model_files = []
+
+        if not model_files:
+            logging.warning(f"[YOLO Load Skip] {model_name}: No .pt file found in {model_dir}")
+            return None
+
+        model_path = os.path.join(model_dir, model_files[0])
+        try:
+            _YOLO_CACHE[model_name] = YOLO(model_path)
+            return _YOLO_CACHE[model_name]
+        except Exception as e:
+            logging.warning(f"[YOLO Init Fail] {model_name} @ {model_path}: {e}")
+            return None
+
+def _get_yolo_models_for_inference() -> dict:
+    """Return {model_name: YOLO} for currently enabled models, in priority order."""
+    models = {}
+    # If OBJECT_DETECTION_ENABLED is off, we load nothing.
+    if not OBJECT_DETECTION_ENABLED:
+        return models
+
+    # POOR tier policy: do not auto-enable anything here. Only honor enabled flags.
+    order = _yolo_priority_order()
+    for name in order:
+        m = _load_yolo_model(name)
+        if m is not None:
+            models[name] = m
+    return models
 def smart_interest_crop(bgr):
     """Return a high-detail crop using Laplacian-variance scoring.
     Keeps aspect ~4:3 and searches a few scales. Safe if anything fails."""
@@ -208,9 +300,10 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
     # === [ADDED] YOLO + real observations + DB logging ===
     real_detections = []  # (label, (x1,y1,x2,y2), conf, model_name)
     try:
-        if YOLO_MODELS:
+        models = _get_yolo_models_for_inference()
+        if models:
             # choose first loaded model (or loop models)
-            for mname, model in YOLO_MODELS.items():
+            for mname, model in models.items():
                 results = model.predict(frame, imgsz=640, conf=0.25, verbose=False)
                 for r in results:
                     for b in r.boxes:
@@ -863,25 +956,24 @@ def answer_visual_question(question, frame):
                 break
         crop = None
         try:
-            if YOLO_MODELS:
+            models = _get_yolo_models_for_inference()
+            if models:
                 # pick first model and run a quick inference
-                model = list(YOLO_MODELS.values())[0]
+                model = list(models.values())[0]
                 results = model(frame)
                 best = None
                 for r in results:
                     for b in r.boxes:
                         cls = int(b.cls[0])
                         label = (r.names or {}).get(cls, "").lower()
-                        if not label: 
+                        if not label:
                             continue
                         if (target and target in label) or (not target and label in ("couch","sofa","person","shirt","jacket","hat")):
                             x1,y1,x2,y2 = map(int, b.xyxy[0].tolist())
-                            area = (x2-x1)*(y2-y1)
-                            if not best or area>best[0]:
-                                best = (area,(x1,y1,x2,y2))
-                if best:
-                    x1,y1,x2,y2 = best[1]
-                    crop = frame[max(0,y1):y2, max(0,x1):x2]
+                            crop = frame[y1:y2, x1:x2].copy()
+                            break
+                    if crop is not None:
+                        break
         except Exception:
             crop = None
         if crop is None:

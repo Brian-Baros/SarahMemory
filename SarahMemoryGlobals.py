@@ -518,8 +518,8 @@ ENABLE_MODEL_B = True   #all-MiniLM-L6-v2 - Fast, accurate general-purpose embed
 ENABLE_MODEL_C = False  #multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search optimized, default False
 ENABLE_MODEL_D = True  #paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
 ENABLE_MODEL_E = False #distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default AS OF 03/01/2026 now False
-ENABLE_MODEL_F = True  #allenai-specter - Scientific document embedding specialist,default True
-ENABLE_MODEL_G = True #intfloat/e5-base - Retrieval-focused high-recall embedding,default True
+ENABLE_MODEL_F = False  #allenai-specter - Scientific document embedding specialist,default True
+ENABLE_MODEL_G = False #intfloat/e5-base - Retrieval-focused high-recall embedding,default True
 ENABLE_MODEL_H = False  #microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
 ENABLE_MODEL_I = False  #tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
 ENABLE_MODEL_J = False # openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
@@ -644,6 +644,161 @@ def resolve_model_repo(model_id):
     if not model_id:
         return ""
     return MODEL_REPO_MAP.get(model_id, model_id)
+
+
+
+# -----------------------------------------------------------------------------
+# Model Resolver (v8.0) — Single-model-per-category selection with fallbacks
+# - NO model repo strings should be hardcoded in core modules; they live here.
+# - POOR tier: auto-selection disabled (core-only) unless user manually enables models.
+# -----------------------------------------------------------------------------
+
+def _repo_to_local_dir(repo: str, models_dir: str) -> str:
+    """Match SarahMemoryLLM.py local convention: MODELS_DIR/<repo with / replaced by _>."""
+    safe = (repo or "").strip().replace("/", "_")
+    return os.path.join(models_dir, safe) if safe else ""
+
+def _model_available_locally(repo: str, models_dir: str) -> bool:
+    """Best-effort local presence check (directory exists and non-empty)."""
+    try:
+        p = _repo_to_local_dir(repo, models_dir)
+        return bool(p and os.path.isdir(p) and any(os.scandir(p)))
+    except Exception:
+        return False
+
+def _catalog_repos_for_category(category: str) -> list:
+    cat = (category or "").strip().lower()
+    out = []
+    try:
+        tiers = MODEL_CATALOG.get(cat) or {}
+        for tlist in tiers.values():
+            for r in (tlist or []):
+                if r and r not in out:
+                    out.append(r)
+    except Exception:
+        pass
+    return out
+
+def _enabled_repos_for_category(category: str) -> list:
+    """Return user-enabled repos for this category (resolved via MODEL_REPO_MAP when needed)."""
+    cat_repos = set(_catalog_repos_for_category(category))
+    enabled = []
+    try:
+        cfg = MODEL_CONFIG if isinstance(MODEL_CONFIG, dict) else {}
+        for k, v in cfg.items():
+            if not v:
+                continue
+            repo = resolve_model_repo(k)
+            if not repo:
+                repo = str(k)
+            if repo in cat_repos and repo not in enabled:
+                enabled.append(repo)
+    except Exception:
+        pass
+    return enabled
+
+def _auto_candidates_for_category(category: str, tier_rating: str) -> list:
+    """Return ordered candidates for auto-selection by tier_rating."""
+    cat = (category or "").strip().lower()
+    tiers = MODEL_CATALOG.get(cat) or {}
+    low = list(tiers.get("low") or [])
+    mid = list(tiers.get("mid") or [])
+    beast = list(tiers.get("beast") or [])
+
+    # order: highest first, then down
+    if tier_rating == "BEAST" or tier_rating == "High":
+        return [*beast, *mid, *low]
+    if tier_rating == "Mid":
+        return [*mid, *low]
+    if tier_rating == "Low":
+        return [*low]
+    # Poor: no auto candidates
+    return []
+
+def resolve_model(category: str, text: str = "", meta: dict | None = None, models_dir: str | None = None) -> dict:
+    """Resolve the primary model + fallbacks for a category.
+
+    Returns:
+      {
+        selected: <repo str or None>,
+        fallbacks: [<repo str>, ...],
+        source: "user" | "auto" | "none",
+        score: float,
+        tier: "low|mid|beast",
+        tier_rating: "Poor|Low|Mid|High|BEAST",
+        third_party_autoload_allowed: bool
+      }
+    """
+    ms_dir = (models_dir or getattr(sys.modules.get(__name__), "MODELS_DIR", None) or "").strip()
+    if not ms_dir:
+        # default portable location
+        try:
+            ms_dir = os.path.join(BASE_DIR, "data", "models")
+        except Exception:
+            ms_dir = os.path.join(os.getcwd(), "data", "models")
+
+    hs = hardware_score()
+    tier_rating = str(hs.get("tier_rating") or "Poor")
+    tier = str(hs.get("tier") or "low")
+    allowed = bool(hs.get("third_party_autoload_allowed", tier_rating != "Poor"))
+    score = float(hs.get("score") or 0.0)
+
+    # 1) user-enabled candidates (manual override lane)
+    user_candidates = _enabled_repos_for_category(category)
+
+    # POOR: auto disabled unless user explicitly enabled
+    if tier_rating == "Poor" and not user_candidates:
+        return {
+            "selected": None,
+            "fallbacks": [],
+            "source": "none",
+            "score": score,
+            "tier": tier,
+            "tier_rating": tier_rating,
+            "third_party_autoload_allowed": False,
+        }
+
+    # 2) auto candidates lane (if allowed)
+    auto_candidates = _auto_candidates_for_category(category, tier_rating) if allowed else []
+
+    # Merge: user first, then auto (dedupe, preserve order)
+    merged = []
+    for r in [*user_candidates, *auto_candidates]:
+        if r and r not in merged:
+            merged.append(r)
+
+    if not merged:
+        return {
+            "selected": None,
+            "fallbacks": [],
+            "source": "none",
+            "score": score,
+            "tier": tier,
+            "tier_rating": tier_rating,
+            "third_party_autoload_allowed": allowed,
+        }
+
+    # Prefer locally available as primary, otherwise keep order and let loaders attempt local_files_only.
+    selected = None
+    fallbacks = []
+    for r in merged:
+        if selected is None and _model_available_locally(r, ms_dir):
+            selected = r
+        else:
+            fallbacks.append(r)
+    if selected is None:
+        selected = merged[0]
+        fallbacks = [r for r in merged[1:]]
+
+    return {
+        "selected": selected,
+        "fallbacks": fallbacks,
+        "source": "user" if selected in user_candidates else "auto",
+        "score": score,
+        "tier": tier,
+        "tier_rating": tier_rating,
+        "third_party_autoload_allowed": allowed,
+    }
 
 def _looks_non_english(text):
     """Minimal heuristic for language routing when meta.lang isn't provided."""
@@ -783,156 +938,103 @@ def get_system_metrics(models_dir=None):
 
     return out
 
-def _tier_rating_from_score(score: float | None) -> str:
-    """Map numeric hardware score to Tier Rating per v8 policy."""
-    try:
-        s = float(score) if score is not None else 0.0
-    except Exception:
-        s = 0.0
-
-    # Policy:
-    #  <= 69.9 -> Poor
-    #  70.0-75.0 -> Low
-    #  75.1-80.0 -> Mid
-    #  80.1-90.0 -> High
-    #  >= 90.1 -> BEAST
-    if s <= 69.9:
-        return "Poor"
-    if 70.0 <= s <= 75.0:
-        return "Low"
-    if 75.1 <= s <= 80.0:
-        return "Mid"
-    if 80.1 <= s <= 90.0:
-        return "High"
-    return "BEAST"
-
-
-def _legacy_tier_from_rating(tier_rating: str) -> str:
-    """Back-compat: collapse Tier Rating to legacy low/mid/beast buckets."""
-    tr = (tier_rating or "").strip().lower()
-    if tr in ("poor", "low"):
-        return "low"
-    if tr == "mid":
-        return "mid"
-    # High + BEAST map to legacy beast so older code can safely pick stronger defaults.
-    return "beast"
-
-
 def hardware_score(metrics=None):
-    """Compute score + Tier Rating + legacy tier from metrics.
-
-    Returns dict:
-      {
-        "score": float,
-        "tier_rating": "Poor|Low|Mid|High|BEAST",
-        "tier": "low|mid|beast"   # legacy back-compat
-        "third_party_autoload_allowed": bool,
-        "metrics": {...}
-      }
-    """
+    """Compute coarse score + tier from metrics."""
     m = metrics or get_system_metrics()
     score = 0.0
 
     # RAM (0..40)
     try:
         ram = float(m.get("ram_total_mb") or 0)
-        if ram >= 32768:
-            score += 40
-        elif ram >= 16384:
-            score += 30
-        elif ram >= 8192:
-            score += 20
-        elif ram >= 4096:
-            score += 10
-        elif ram > 0:
-            score += 5
+        if ram >= 32768: score += 40
+        elif ram >= 16384: score += 30
+        elif ram >= 8192: score += 20
+        elif ram >= 4096: score += 10
+        elif ram > 0: score += 5
     except Exception:
         pass
 
     # VRAM (0..40)
     try:
         vram = float(m.get("gpu_vram_total_mb") or 0)
-        if vram >= 24000:
-            score += 40
-        elif vram >= 12000:
-            score += 30
-        elif vram >= 8000:
-            score += 20
-        elif vram >= 4000:
-            score += 10
-        elif vram > 0:
-            score += 5
+        if vram >= 24000: score += 40
+        elif vram >= 12000: score += 30
+        elif vram >= 8000: score += 20
+        elif vram >= 4000: score += 10
+        elif vram > 0: score += 5
     except Exception:
         pass
 
     # Disk free (0..10)
     try:
         free = float(m.get("disk_free_gb") or 0)
-        if free >= 200:
-            score += 10
-        elif free >= 100:
-            score += 7
-        elif free >= 50:
-            score += 5
-        elif free >= 20:
-            score += 3
-        elif free > 0:
-            score += 1
+        if free >= 200: score += 10
+        elif free >= 100: score += 7
+        elif free >= 50: score += 5
+        elif free >= 20: score += 3
+        elif free > 0: score += 1
     except Exception:
         pass
 
     # CPU headroom (0..10)
     try:
         cpu_pct = float(m.get("cpu_pct") or 0)
-        if cpu_pct <= 20:
-            score += 10
-        elif cpu_pct <= 40:
-            score += 8
-        elif cpu_pct <= 60:
-            score += 6
-        elif cpu_pct <= 80:
-            score += 3
-        else:
-            score += 1
+        if cpu_pct <= 20: score += 10
+        elif cpu_pct <= 40: score += 8
+        elif cpu_pct <= 60: score += 6
+        elif cpu_pct <= 80: score += 3
+        else: score += 1
     except Exception:
         pass
 
-    score_f = float(score)
-    tier_rating = _tier_rating_from_score(score_f)
-    tier_legacy = _legacy_tier_from_rating(tier_rating)
+        # Tier Rating (owner policy)
+    # Poor: <= 69.9
+    # Low:  70.0 - 75.0
+    # Mid:  75.1 - 80.0
+    # High: 80.1 - 90.0
+    # BEAST:>= 90.1
+    tier_rating = "Poor"
+    try:
+        s = float(score)
+        if s >= 90.1:
+            tier_rating = "BEAST"
+        elif 80.1 <= s <= 90.0:
+            tier_rating = "High"
+        elif 75.1 <= s <= 80.0:
+            tier_rating = "Mid"
+        elif 70.0 <= s <= 75.0:
+            tier_rating = "Low"
+        else:
+            tier_rating = "Poor"
+    except Exception:
+        tier_rating = "Poor"
 
-    # POOR disables all 3rd-party model AUTO selection. User can still manually enable models.
-    third_party_autoload_allowed = (tier_rating.lower() != "poor")
+    # Legacy 3-tier mapping for backward compatibility
+    # Poor/Low -> low, Mid -> mid, High/BEAST -> beast
+    tier = "low"
+    if tier_rating == "Mid":
+        tier = "mid"
+    elif tier_rating in ("High", "BEAST"):
+        tier = "beast"
 
+    third_party_autoload_allowed = (tier_rating != "Poor")
     return {
-        "score": score_f,
+        "score": float(score),
+        "tier": tier,
         "tier_rating": tier_rating,
-        "tier": tier_legacy,  # legacy bucket
-        "third_party_autoload_allowed": bool(third_party_autoload_allowed),
+        "third_party_autoload_allowed": third_party_autoload_allowed,
         "metrics": m,
     }
 
-
 def recommend_model_tier(category="reasoning", metrics=None):
-    """Return legacy low/mid/beast tier recommendation for a given category.
-
-    NOTE:
-      - When Tier Rating is POOR, this returns "none" to signal: do not auto-enable 3rd party models.
-      - User overrides (manual TRUE) should bypass this upstream.
-    """
+    """Return low/mid/beast tier recommendation for a given category."""
     hs = hardware_score(metrics)
     cat = (category or "").strip().lower()
-
-    # Hard policy: POOR => no auto-selection of 3rd party models.
-    if not hs.get("third_party_autoload_allowed", True):
-        return "none"
-
-    tier = str(hs.get("tier") or "low").strip().lower()
-
+    tier = hs["tier"]
     try:
-        vram = float((hs.get("metrics") or {}).get("gpu_vram_total_mb") or 0)
+        vram = float(hs["metrics"].get("gpu_vram_total_mb") or 0)
     except Exception:
-        vram = 0.0
+        vram = 0
 
     if cat in ("image_generation", "image", "creative"):
         if vram >= 12000:
@@ -948,17 +1050,10 @@ def recommend_model_tier(category="reasoning", metrics=None):
 
     return tier
 
-
 def pick_catalog_model(category, tier, fallback_tiers=None):
-    """Pick first model repo from MODEL_CATALOG[category][tier] with tier fallback.
-
-    tier may be: low|mid|beast|none
-    """
+    """Pick first model repo from MODEL_CATALOG[category][tier] with tier fallback."""
     cat = (category or "").strip().lower()
     t = (tier or "").strip().lower()
-    if t == "none":
-        return None
-
     fb = fallback_tiers or (["mid", "low"] if t == "beast" else ["low"] if t == "mid" else [])
     try:
         c = MODEL_CATALOG.get(cat, {})
@@ -969,156 +1064,6 @@ def pick_catalog_model(category, tier, fallback_tiers=None):
     except Exception:
         return None
     return None
-
-
-def _model_exists_locally(repo_or_id: str, models_dir: str | None = None) -> bool:
-    """Best-effort check if a model appears present in ./data/models/<model_name>."""
-    try:
-        if not repo_or_id:
-            return False
-        base = models_dir or globals().get("MODELS_DIR") or os.path.join(os.getcwd(), "data", "models")
-        # local folder names in your environment commonly replace '/' with '_' in model dirs
-        candidates = [
-            repo_or_id,
-            repo_or_id.replace("/", "_"),
-            repo_or_id.split("/")[-1],
-        ]
-        for c in candidates:
-            p = os.path.join(base, c)
-            if os.path.isdir(p):
-                return True
-        return False
-    except Exception:
-        return False
-
-
-def get_user_enabled_models_by_category() -> dict:
-    """Return enabled model repos grouped by category (from legacy MODEL_CONFIG flags).
-
-    This does NOT auto-enable anything; it only reads existing booleans.
-    """
-    out = {"reasoning": [], "coder": [], "embeddings": [], "vision": [], "image_generation": [], "tts": []}
-    try:
-        cfg = globals().get("MODEL_CONFIG") or {}
-        for model_id, enabled in (cfg or {}).items():
-            if not enabled:
-                continue
-            repo = resolve_model_repo(model_id)
-            if not repo:
-                continue
-            rl = repo.lower()
-
-            # Lightweight category inference
-            if any(x in rl for x in ["sentence-transformers", "allenai", "intfloat", "bge", "specter", "e5-"]):
-                out["embeddings"].append(repo)
-            elif any(x in rl for x in ["yolo", "ultralytics", "detr", "ssd"]):
-                out["vision"].append(repo)
-            elif any(x in rl for x in ["cosyvoice", "tts"]):
-                out["tts"].append(repo)
-            elif "coder" in rl:
-                out["coder"].append(repo)
-            else:
-                out["reasoning"].append(repo)
-    except Exception:
-        pass
-    return out
-
-
-def resolve_model(category: str,
-                  *,
-                  text: str = "",
-                  meta: dict | None = None,
-                  models_dir: str | None = None) -> dict:
-    """Resolve exactly ONE model to use per category, plus ordered fallbacks.
-
-    Rules:
-      - POOR tier => auto selection disabled for 3rd party models.
-        Only user-enabled models (legacy flags / settings) can be selected.
-      - For non-POOR tiers:
-          1) User-enabled candidates (TRUE) that exist locally
-          2) Auto-selected catalog candidate for this tier (if present locally)
-          3) Fallback catalog candidates (tier fallback) if present locally
-      - Always returns a deterministic choice; may return selected=None (core-only).
-
-    Returns:
-      {
-        "category": str,
-        "selected": str|None,     # canonical HF repo id
-        "fallbacks": list[str],
-        "source": "user|auto|none",
-        "tier_rating": str,
-        "score": float
-      }
-    """
-    meta = meta or {}
-    cat = (category or "").strip().lower()
-    hs = hardware_score()
-    tier_rating = str(hs.get("tier_rating") or "Low")
-    score = float(hs.get("score") or 0.0)
-
-    # Determine auto tier (legacy buckets) unless poor
-    rec_tier = recommend_model_tier(cat)
-    user_enabled = (get_user_enabled_models_by_category().get(cat) or [])
-
-    # Filter to locally present models (redundancy + avoid churn)
-    user_enabled_present = [r for r in user_enabled if _model_exists_locally(r, models_dir=models_dir)]
-
-    # Auto candidates (catalog) - tier fallback order
-    if rec_tier == "beast":
-        tier_order = ["beast", "mid", "low"]
-    elif rec_tier == "mid":
-        tier_order = ["mid", "low"]
-    elif rec_tier == "low":
-        tier_order = ["low"]
-    else:
-        tier_order = []
-
-    auto_candidates = []
-    if hs.get("third_party_autoload_allowed", True):
-        try:
-            catalog = MODEL_CATALOG.get(cat, {}) or {}
-            for t in tier_order:
-                for repo in (catalog.get(t, []) or []):
-                    auto_candidates.append(repo)
-        except Exception:
-            auto_candidates = []
-
-    auto_present = [r for r in auto_candidates if _model_exists_locally(r, models_dir=models_dir)]
-
-    # Selection order
-    if user_enabled_present:
-        selected = user_enabled_present[0]
-        fallbacks = user_enabled_present[1:] + auto_present
-        source = "user"
-    elif auto_present:
-        selected = auto_present[0]
-        fallbacks = auto_present[1:]
-        source = "auto"
-    else:
-        selected = None
-        fallbacks = []
-        source = "none"
-
-    # Ensure uniqueness (case-insensitive)
-    seen = set()
-    uniq_fallbacks = []
-    for r in (fallbacks or []):
-        k = (r or "").lower()
-        if not k or k == (selected or "").lower():
-            continue
-        if k in seen:
-            continue
-        seen.add(k)
-        uniq_fallbacks.append(r)
-
-    return {
-        "category": cat,
-        "selected": selected,
-        "fallbacks": uniq_fallbacks,
-        "source": source,
-        "tier_rating": tier_rating,
-        "score": score,
-    }
 
 # ---------------------------------------------------------------------------
 # Model Storage / Bandwidth Policy (utility-only; safe for headless)
@@ -2283,54 +2228,10 @@ def is_offline(host: str = "8.8.8.8", port: int = 53, timeout: float = 1.5) -> b
 
 def get_active_model() -> str:
     """
-    Determine and return the active LEGACY model id based on enabled flags and hardware tier.
-
-    Governance:
-      - Model naming remains centralized in SarahMemoryGlobals.py.
-      - POOR tier disables AUTO third-party model selection. User-enabled flags may still select a model.
-      - Returns a legacy model id (key from MODEL_CONFIG) when possible for backward compatibility.
-
-    Notes:
-      - Historically used as a generic "active model" selector; we now drive it via resolve_model("embeddings")
-        to keep selection consistent across the platform.
+    Determine and return the name of the first available model based on enabled flags.
+    If AUTO_MODEL_SELECTOR is disabled, returns the first explicitly enabled model in priority order.
+    If no model flags are true, returns 'all-MiniLM-L6-v2' (default fallback).
     """
-    try:
-        hs = hardware_score()
-        if not hs.get("third_party_autoload_allowed", True):
-            # POOR: only user-enabled models may be returned
-            try:
-                for k, v in (MODEL_CONFIG or {}).items():
-                    if v:
-                        return str(k)
-            except Exception:
-                pass
-            return "none"
-    except Exception:
-        pass
-
-    # Resolver-driven embeddings selection
-    try:
-        resolved = resolve_model("embeddings", text="", meta=None, models_dir=MODELS_DIR)
-        sel = (resolved or {}).get("selected")
-        if sel:
-            # Map canonical repo -> legacy id if possible
-            try:
-                for legacy_id, repo in (MODEL_REPO_MAP or {}).items():
-                    if str(repo).lower() == str(sel).lower():
-                        return str(legacy_id)
-            except Exception:
-                pass
-            # If it's already a legacy id, return as-is
-            try:
-                if sel in (MODEL_CONFIG or {}):
-                    return str(sel)
-            except Exception:
-                pass
-            return str(sel)
-    except Exception:
-        pass
-
-    # Final fallback: first enabled in priority list (legacy behavior)
     model_priority = [
         ("openchat-3.5", ENABLE_MODEL_J),
         ("Nous-Capybara-7B", ENABLE_MODEL_K),
@@ -2346,10 +2247,22 @@ def get_active_model() -> str:
         ("multi-qa-MiniLM", ENABLE_MODEL_C),
         ("all-MiniLM-L6-v2", ENABLE_MODEL_B),
     ]
+    # If auto selector is enabled, prefer models with GPU if available (simple placeholder logic)
+    if AUTO_MODEL_SELECTOR:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                for name, flag in model_priority:
+                    if flag and "MiniLM" not in name:  # prefer non-MiniLM heavy models on GPU
+                        return name
+        except ImportError:
+            pass
+    # Default: return first enabled in priority
     for name, flag in model_priority:
         if flag:
-            return str(name)
-    return "none"
+            return name
+    return "all-MiniLM-L6-v2"
+
 def get_active_api() -> str:
     """
     Return the currently selected primary API provider or 'none' if none are enabled.

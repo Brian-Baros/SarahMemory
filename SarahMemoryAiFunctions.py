@@ -14,12 +14,11 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
 
-COMPLETE PATCHED VERSION:
+
 ========================
 ✓ ALL legacy functions from v7.7.5 RESTORED
 ✓ ALL v8.0 advanced features INCLUDED
 ✓ 100% backward compatible
-✓ Zero shortcuts taken
 ===============================================================================
 """
 

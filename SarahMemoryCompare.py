@@ -191,26 +191,33 @@ class _LiteEmbedder:
 # =============================================================================
 # SENTENCE MODEL SELECTOR - v8.0 Enhanced
 # =============================================================================
+
 def get_active_sentence_model():
     """
     Offline-first sentence embedding model selector.
-    v8.0: Enhanced with better model selection and caching.
-    
-    Returns:
-        Sentence embedding model (SentenceTransformer or _LiteEmbedder)
+
+    Contract:
+      - Exactly ONE model is selected per call (plus fallbacks) via SarahMemoryGlobals.resolve_model().
+      - POOR tier: returns _LiteEmbedder unless the user explicitly enabled an embeddings model.
+      - Never hardcodes model repo strings in this module.
     """
     # Check offline mode
     offline = bool(
-        getattr(config, "LOCAL_ONLY_MODE", False) or
-        getattr(config, "SAFE_MODE", False) or
-        os.getenv("HF_HUB_OFFLINE") == "1" or
-        os.getenv("TRANSFORMERS_OFFLINE") == "1"
+        getattr(config, "LOCAL_ONLY_MODE", False)
+        or getattr(config, "SAFE_MODE", False)
+        or os.getenv("HF_HUB_OFFLINE") == "1"
+        or os.getenv("TRANSFORMERS_OFFLINE") == "1"
     )
 
-
     # Resolve exactly one embeddings model (plus fallbacks) via Globals resolver
+    candidates: list[str] = []
     try:
-        res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+        res = config.resolve_model(
+            "embeddings",
+            text="",
+            meta=None,
+            models_dir=getattr(config, "MODELS_DIR", None),
+        ) or {}
         selected = res.get("selected")
         fallbacks = res.get("fallbacks") or []
         candidates = [c for c in ([selected] + list(fallbacks)) if c]
@@ -232,37 +239,19 @@ def get_active_sentence_model():
         logger.warning(f"[v8.0][Embedder] sentence-transformers unavailable → {e}")
         return _LiteEmbedder()
 
-    # Try local models in priority order
-    local_models = [
-        "all-MiniLM-L6-v2",
-        "paraphrase-MiniLM-L6-v2",
-        "all-mpnet-base-v2"
-    ]
-    
-    for model_name in local_models:
+    # Try local models in priority order (resolver order)
+    for repo in candidates:
         try:
-            logger.debug(f"[v8.0][Embedder] Attempting to load {model_name}...")
-            model = SentenceTransformer(model_name, local_files_only=True)
-            logger.info(f"[v8.0][Embedder] Loaded local model: {model_name}")
+            logger.debug(f"[v8.0][Embedder] Attempting to load: {repo}")
+            model = SentenceTransformer(repo, local_files_only=True)
+            logger.info(f"[v8.0][Embedder] Loaded local model: {repo}")
             return model
         except Exception as e:
-            logger.debug(f"[v8.0][Embedder] {model_name} not available locally: {e}")
+            logger.debug(f"[v8.0][Embedder] Load failed ({repo}): {e}")
 
-    # Try MULTI_MODEL configuration
-    if getattr(config, "MULTI_MODEL", False) and isinstance(getattr(config, "MODEL_CONFIG", {}), dict):
-        for model_name, enabled in config.MODEL_CONFIG.items():
-            if not enabled:
-                continue
-            try:
-                model = SentenceTransformer(model_name, local_files_only=True)
-                logger.info(f"[v8.0][Embedder] Loaded configured model: {model_name}")
-                return model
-            except Exception as e:
-                logger.debug(f"[v8.0][Embedder] Configured model {model_name} failed: {e}")
-
-    # Fallback to LiteEmbedder
     logger.info("[v8.0][Embedder] No local models found → using LiteEmbedder")
     return _LiteEmbedder()
+
 
 # =============================================================================
 # SOURCE FETCHING - v8.0 Enhanced
