@@ -1,10 +1,10 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAiFunctions.py
 Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0-COMPLETE-PATCHED
-Date: 2025-12-21
-Time: 22:30:00
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Version: v8.0.0
+Date: 2025-03-01
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
 COMPLETE PATCHED VERSION:
 ========================
@@ -2114,39 +2115,162 @@ def handle_ai_agent_command(command_text):
 
 def select_sentence_transformer(preferred: list = None):
     """
-    Factory: tries Globals MODEL_CONFIG or explicit list; returns object with .encode(list|str)->np.ndarray
-    Falls back to a deterministic hash embed (from SarahMemoryAdvCU) if ST unavailable.
+    Factory: returns object with .encode(list|str)->np.ndarray.
+
+    Selection priority:
+      1) explicit `preferred` list
+      2) user-enabled models in SarahMemoryGlobals.MODEL_CONFIG (manual overrides)
+      3) auto-selected resolver recommendation (only if Tier Rating != POOR)
+      4) deterministic hash embed fallback (always works offline)
+
+    IMPORTANT:
+      - Never hardcode specific model repo IDs here.
+      - Never download models implicitly; only load if present on disk.
     """
+    import os
     import numpy as np
+
+    # Safe globals
+    try:
+        import SarahMemoryGlobals as G
+    except Exception:
+        G = None
+
     try:
         from SarahMemoryGlobals import MODEL_CONFIG
     except Exception:
         MODEL_CONFIG = {}
-    tried = []
-    # Preferred list first
+
+    def _is_cloud() -> bool:
+        try:
+            return bool(getattr(G, "RUN_MODE", "local") == "cloud")
+        except Exception:
+            return False
+
+    def _models_root() -> str:
+        try:
+            base_dir = getattr(G, "BASE_DIR", os.getcwd())
+            models_dir = getattr(G, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
+            return os.path.join(models_dir, "SarahMemory")
+        except Exception:
+            return os.path.join(os.getcwd(), "data", "models", "SarahMemory")
+
+    def _local_candidates(name: str) -> list:
+        root = _models_root()
+        n = str(name or "").strip()
+        if not n:
+            return []
+        return [
+            os.path.join(root, n),
+            os.path.join(root, n.replace("/", "_")),
+            os.path.join(root, n.replace("-", "_")),
+            os.path.join(root, n.replace("/", os.sep)),
+        ]
+
+    def _pick_auto_from_resolver() -> list:
+        """
+        Ask Globals.resolve_model('embeddings') for an ordered list.
+        If Tier Rating == POOR and user didn't enable anything, this returns [].
+        """
+        out = []
+        try:
+            resolve_fn = getattr(G, "resolve_model", None)
+            if callable(resolve_fn):
+                res = resolve_fn("embeddings", text="", meta={"caller": "select_sentence_transformer"}) or {}
+                sel = res.get("selected")
+                fbs = res.get("fallbacks") or []
+                if sel:
+                    out.append(str(sel))
+                out.extend([str(x) for x in fbs if x])
+        except Exception:
+            pass
+        # de-dupe preserving order
+        seen = set()
+        ordered = []
+        for x in out:
+            if x and x not in seen:
+                seen.add(x)
+                ordered.append(x)
+        return ordered
+
+    # Build candidate list (ordered, de-duped)
+    tried: list = []
+
     if isinstance(preferred, (list, tuple)) and preferred:
-        tried.extend([m for m in preferred])
-    # Enabled in globals next
-    tried.extend([m for m, en in (MODEL_CONFIG or {}).items() if en and m not in tried])
-    tried.append("all-MiniLM-L6-v2")
+        for x in preferred:
+            x = str(x or "").strip()
+            if x and x not in tried:
+                tried.append(x)
+
+    # Manual/user-enabled flags always apply, even on POOR
+    try:
+        for name, en in (MODEL_CONFIG or {}).items():
+            if en:
+                n = str(name or "").strip()
+                if n and n not in tried:
+                    tried.append(n)
+    except Exception:
+        pass
+
+    # Auto-selection only when allowed (resolver encodes POOR policy)
+    if not tried:
+        tried.extend(_pick_auto_from_resolver())
+
+    # If cloud or no candidates, go straight to hash embed fallback
+    if _is_cloud() or not tried:
+        from SarahMemoryAdvCU import embed_text as _adv_embed
+
+        class _HashWrap:
+            def encode(self, x):
+                if isinstance(x, str):
+                    x = [x]
+                # advcu embed_text supports list input in newer builds; fallback to per-item if needed
+                try:
+                    vecs = _adv_embed(x)  # type: ignore
+                    return np.array(vecs)
+                except Exception:
+                    return np.vstack([np.array(_adv_embed(t)) for t in x])  # type: ignore
+
+        return _HashWrap()
+
+    # Try SentenceTransformer from local disk only
     for name in tried:
         try:
-            from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(name)
+            from sentence_transformers import SentenceTransformer  # type: ignore
+        except Exception:
+            break
+
+        local_paths = _local_candidates(name)
+        local_path = next((p for p in local_paths if os.path.exists(p)), None)
+
+        # If repo string isn't present on disk, skip (prevents downloads)
+        if not local_path:
+            continue
+
+        try:
+            model = SentenceTransformer(local_path)
+
             class _Wrap:
                 def encode(self, x):
                     return model.encode(x)
+
             return _Wrap()
         except Exception:
             continue
-    # Fallback: hash embed
+
+    # Fallback: deterministic hash embed (offline-safe)
     from SarahMemoryAdvCU import embed_text as _adv_embed
+
     class _HashWrap:
         def encode(self, x):
-            import numpy as np
             if isinstance(x, str):
                 x = [x]
-            return np.vstack([_adv_embed(t, dim=128) for t in x])
+            try:
+                vecs = _adv_embed(x)  # type: ignore
+                return np.array(vecs)
+            except Exception:
+                return np.vstack([np.array(_adv_embed(t)) for t in x])  # type: ignore
+
     return _HashWrap()
 
 

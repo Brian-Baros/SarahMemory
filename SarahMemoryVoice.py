@@ -2,9 +2,17 @@
 # File: SarahMemoryVoice.py
 # Part of the SarahMemory Companion AI-bot Platform
 # Version: v8.0.0
-# Date: 2026-01-16
-# Author: © 2025-2026 Brian Lee Baros. All Rights Reserved.
-#
+# Date: 2025-03-01
+# Time: 10:11:54
+# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+# www.linkedin.com/in/brian-baros-29962a176
+# https://www.facebook.com/bbaros
+# brian.baros@sarahmemory.com
+###'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+# https://www.sarahmemory.com
+# https://api.sarahmemory.com
+# https://ai.sarahmemory.com
+# https://store.sarahmemory.com
 # SarahMemory v8.0 - Voice & Sound Synthesis Module
 #
 # CORE GOALS
@@ -741,6 +749,42 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
         return False
 
     _start_tts_worker()
+
+    # Resolver-driven default engine selection (no hardcoded model names)
+    # - If user sets tts_engine explicitly (pyttsx3/gtts/edge), we obey.
+    # - If user sets tts_engine="auto", we select the best available enhancer via Globals.resolve_model("tts").
+    # - POOR tier => core-only defaults (pyttsx3) unless user explicitly selects another engine.
+    try:
+        if engine_pref is None:
+            _user_engine = str(current_settings.get("tts_engine", "pyttsx3") or "pyttsx3").strip().lower()
+            if _user_engine == "auto":
+                _engine_choice = "pyttsx3"
+                try:
+                    resolved = None
+                    if hasattr(config, "resolve_model"):
+                        resolved = config.resolve_model("tts", text=text or "", meta={"lang": str(current_settings.get("language", "en") or "en")}, models_dir=getattr(config, "MODELS_DIR", None))
+                    sel = (resolved or {}).get("selected") if isinstance(resolved, dict) else None
+                    tier_rating = str((resolved or {}).get("tier_rating") or "").strip().lower() if isinstance(resolved, dict) else ""
+                    # If POOR and nothing user-forced, stay on core engine.
+                    if tier_rating == "poor" and not sel:
+                        _engine_choice = "pyttsx3"
+                    else:
+                        # Prefer edge if available, else gTTS if available, else pyttsx3.
+                        if _HAS_EDGE_TTS:
+                            _engine_choice = "edge"
+                        elif _HAS_GTTS and not bool(getattr(config, "LOCAL_ONLY_MODE", False)):
+                            _engine_choice = "gtts"
+                        else:
+                            _engine_choice = "pyttsx3"
+                except Exception:
+                    _engine_choice = "pyttsx3"
+                engine_pref = _engine_choice
+            else:
+                engine_pref = _user_engine
+    except Exception:
+        # Never block speech; default to pyttsx3
+        if engine_pref is None:
+            engine_pref = "pyttsx3"
 
     ev: Optional[threading.Event] = threading.Event() if blocking else None
     task = _TTSTask(

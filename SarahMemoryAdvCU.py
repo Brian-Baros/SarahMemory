@@ -2,9 +2,9 @@
 File: SarahMemoryAdvCU.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 ADVANCED CONTEXT UNIT (AdvCU) 
@@ -585,10 +586,43 @@ def _get_local_st() -> Optional[Any]:
                 return None
 
             # Try to load local model only (no network)
-            _ST_EMBEDDER = SentenceTransformer(
-                "all-MiniLM-L6-v2",
-                local_files_only=True
-            )
+            # Select embedding model via Globals resolver (exactly one per category + fallbacks)
+            try:
+                res = {}
+                try:
+                    res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+                except Exception:
+                    res = {}
+                selected = res.get("selected")
+                fallbacks = res.get("fallbacks") or []
+                candidates = [c for c in ([selected] + list(fallbacks)) if c]
+            except Exception:
+                candidates = []
+
+            if not candidates:
+                # POOR tier with no user overrides => core-only embeddings
+                _ST_EMBEDDER = None
+                logger.info("[AdvCU] Embeddings: core-only (no 3rd-party model selected)")
+                _ST_EMBEDDER_LOADED = True
+                return None
+
+            # Try candidates in order; prefer local folder under MODELS_DIR
+            models_dir = getattr(config, "MODELS_DIR", None) or os.path.join(os.getcwd(), "data", "models")
+            for repo in candidates:
+                try:
+                    local_dir1 = os.path.join(models_dir, repo.replace("/", "_"))
+                    local_dir2 = os.path.join(models_dir, repo)
+                    if os.path.isdir(local_dir1):
+                        _ST_EMBEDDER = SentenceTransformer(local_dir1, local_files_only=True)
+                    elif os.path.isdir(local_dir2):
+                        _ST_EMBEDDER = SentenceTransformer(local_dir2, local_files_only=True)
+                    else:
+                        _ST_EMBEDDER = SentenceTransformer(repo, local_files_only=True)
+                    logger.info(f"[AdvCU] Loaded SentenceTransformer model: {repo}")
+                    break
+                except Exception as e:
+                    logger.debug(f"[AdvCU] ST load failed for {repo}: {e}")
+                    _ST_EMBEDDER = None
             logger.info("[AdvCU] Loaded SentenceTransformer model")
 
         except Exception as e:

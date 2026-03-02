@@ -2,9 +2,9 @@
 File: SarahMemoryInitialization.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,8 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
 ===============================================================================
 SarahMemory v8.0 - Initialization & System Checks
 Bootup Sequence with Enhanced Status Reporting
@@ -36,6 +38,7 @@ import signal
 import sys
 import json
 import platform
+import shutil
 from datetime import datetime
 from SarahMemoryGlobals import run_async
 
@@ -581,70 +584,221 @@ def startup_info():
     
     time.sleep(0.5)
     
-    # v8.0 Patch: Provide real CPU/RAM details instead of generic "OK" (best-effort, cross-platform)
+# ---------------------------------------------------------------------
+# v8.0 Patch: Provide real CPU/RAM details instead of generic "OK"
+# + Extended hardware summary (CPU%/Temps/VRAM/GPU Temp/Disk/Score)
+# (best-effort, cross-platform)
+# ---------------------------------------------------------------------
+try:
+    uname = platform.uname()
+    cpu_model = (platform.processor() or getattr(uname, "processor", "") or getattr(uname, "machine", "") or "Unknown CPU").strip()
+
+    phys_cores = None
+    log_cores = None
+    freq_str = ""
+    ram_str = ""
+
+    cpu_pct_now = None
     try:
-        uname = platform.uname()
-        cpu_model = (platform.processor() or getattr(uname, "processor", "") or getattr(uname, "machine", "") or "Unknown CPU").strip()
-        phys_cores = None
-        log_cores = None
-        freq_str = ""
-        ram_str = ""
+        import psutil  # type: ignore
 
+        # cores
         try:
-            import psutil  # type: ignore
-            try:
-                phys_cores = psutil.cpu_count(logical=False)
-            except Exception:
-                phys_cores = None
-            try:
-                log_cores = psutil.cpu_count(logical=True)
-            except Exception:
-                log_cores = None
-            try:
-                freq = psutil.cpu_freq()
-                if freq:
-                    # Show max when available; fallback to current
-                    mhz = freq.max or freq.current
-                    if mhz:
-                        freq_str = f" @ {int(round(mhz))} MHz"
-            except Exception:
-                freq_str = ""
-
-            try:
-                vm = psutil.virtual_memory()
-                if vm:
-                    total_gb = vm.total / (1024**3)
-                    avail_gb = vm.available / (1024**3)
-                    ram_str = f"{total_gb:.1f} GB total, {avail_gb:.1f} GB available ({vm.percent:.1f}% used)"
-            except Exception:
-                ram_str = ""
+            phys_cores = psutil.cpu_count(logical=False)
         except Exception:
-            psutil = None  # noqa: F841
+            phys_cores = None
+        try:
+            log_cores = psutil.cpu_count(logical=True)
+        except Exception:
+            log_cores = None
 
-        core_str = ""
-        if phys_cores is not None or log_cores is not None:
-            core_str = f" | Cores: {phys_cores if phys_cores is not None else '?'} / Threads: {log_cores if log_cores is not None else '?'}"
+        # freq
+        try:
+            freq = psutil.cpu_freq()
+            if freq:
+                mhz = freq.max or freq.current
+                if mhz:
+                    freq_str = f" @ {int(round(mhz))} MHz"
+        except Exception:
+            freq_str = ""
 
-        cpu_details = f"{cpu_model}{core_str}{freq_str}".strip()
-        print_status_line("CPU", "✓", cpu_details if cpu_details else "OK")
-        if ram_str:
-            print_status_line("RAM", "✓", ram_str)
+        # cpu usage (instant-ish)
+        try:
+            cpu_pct_now = psutil.cpu_percent(interval=0.2)
+        except Exception:
+            cpu_pct_now = None
+
+        # RAM
+        try:
+            vm = psutil.virtual_memory()
+            if vm:
+                total_gb = vm.total / (1024**3)
+                avail_gb = vm.available / (1024**3)
+                ram_str = f"{total_gb:.1f} GB total, {avail_gb:.1f} GB available ({vm.percent:.1f}% used)"
+        except Exception:
+            ram_str = ""
+
+    except Exception:
+        psutil = None  # noqa: F841
+
+    core_str = ""
+    if phys_cores is not None or log_cores is not None:
+        core_str = f" | Cores: {phys_cores if phys_cores is not None else '?'} / Threads: {log_cores if log_cores is not None else '?'}"
+
+    cpu_details = f"{cpu_model}{core_str}{freq_str}".strip()
+
+    print_status_line("CPU", "✓", cpu_details if cpu_details else "OK")
+
+    # CPU current usage
+    if cpu_pct_now is not None:
+        print_status_line("CPU Current usage", "✓", f"{cpu_pct_now:.1f}%")
+    else:
+        print_status_line("CPU Current usage", "✓", "N/A")
+
+    # CPU temp
+    #if cpu_temp_c is not None:
+    #    cpu_temp_f = (cpu_temp_c * 9.0 / 5.0) + 32.0
+    #    print_status_line("CPU Temp", "✓", f"{cpu_temp_c:.1f} C / {cpu_temp_f:.1f} F")
+    #else:
+    #    print_status_line("CPU Temp", "✓", "N/A")
+
+    # RAM
+    if ram_str:
+        print_status_line("RAM", "✓", ram_str)
+    else:
+        print_status_line("RAM", "✓", "OK")
+
+    # -----------------------------------------------------------------
+    # Extended hardware summary:
+    # Prefer SarahMemoryGlobals.hardware_score() for GPU/VRAM/Disk/Score/Tier (+ optional GPU temp)
+    # -----------------------------------------------------------------
+    gpu_name = None
+    vram_total = None
+    vram_free = None
+    gpu_temp_c = None
+    disk_free_gb = None
+    score = None
+    tier = None
+
+    # 1) Prefer your centralized hardware scoring source
+    try:
+        import SarahMemoryGlobals as G  # local import to avoid hard dependency ordering
+        hs_fn = getattr(G, "hardware_score", None)
+        if callable(hs_fn):
+            hs = hs_fn() or {}
+            m = hs.get("metrics", {}) or {}
+
+            score = hs.get("score", None)
+            tier = hs.get("tier", None)
+
+            gpu_name = m.get("gpu_name", None)
+            vram_total = m.get("gpu_vram_total_mb", None)
+            vram_free = m.get("gpu_vram_free_mb", None)
+
+            disk_free_gb = m.get("disk_free_gb", None)
+
+            # optional (only if your hardware_score() provides it)
+            gpu_temp_c = m.get("gpu_temp_c", None) or m.get("gpu_temperature_c", None)
+    except Exception as _e:
+        logger.debug(f"[v8.0] hardware_score() unavailable or failed: {_e}")
+
+    # 2) If GPU temp missing, try NVML (NVIDIA) best-effort
+    if gpu_temp_c is None:
+        try:
+            import pynvml  # type: ignore
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+            gpu_temp_c = float(pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU))
+            # also fill name/vram if absent
+            if not gpu_name:
+                try:
+                    gpu_name = pynvml.nvmlDeviceGetName(h).decode("utf-8", "ignore")
+                except Exception:
+                    pass
+            if vram_total is None or vram_free is None:
+                try:
+                    mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+                    # NVML uses bytes; convert to MB
+                    vram_total = int(mem.total / (1024**2))
+                    vram_free = int(mem.free / (1024**2))
+                except Exception:
+                    pass
+            try:
+                pynvml.nvmlShutdown()
+            except Exception:
+                pass
+        except Exception:
+            gpu_temp_c = None
+
+    # VRAM line
+    if gpu_name and vram_total is not None:
+        if vram_free is not None:
+            print_status_line("VRAM", "✓", f"{vram_total} MB (free {vram_free} MB) GPU: {gpu_name}")
         else:
-            print_status_line("RAM", "✓", "OK")
+            print_status_line("VRAM", "✓", f"{vram_total} MB GPU: {gpu_name}")
 
-        logger.info(f"[v8.0] CPU Details: {cpu_details}")
-        logger.info(f"[v8.0] RAM Details: {ram_str or 'OK'}")
+    # GPU temp line
+    if gpu_temp_c is not None:
+        gpu_temp_f = (float(gpu_temp_c) * 9.0 / 5.0) + 32.0
+        print_status_line("GPU Current Temp", "✓", f"{float(gpu_temp_c):.1f} C / {gpu_temp_f:.1f} F")
+    else:
+        print_status_line("GPU Current Temp", "✓", "N/A")
 
-    except Exception as e:
-        # Never block boot banner if hardware probing fails
-        print("  ✓ CPU/RAM Check: OK. AI subsystems online.")
-        logger.info("[v8.0] CPU/RAM Check: OK. AI subsystems online.")
-        logger.warning(f"[v8.0] Detailed CPU/RAM report failed: {e}")
-    
-    print("  ✓ Awaiting SarahMemory Integration Menu...\n")
-    logger.info("[v8.0] Awaiting SarahMemory Integration Menu...")
+    # Disk free line (fallback to shutil if missing)
+    if disk_free_gb is None:
+        try:
+            disk_free_gb = shutil.disk_usage(os.getcwd()).free / (1024**3)
+        except Exception:
+            disk_free_gb = None
 
+    if disk_free_gb is not None:
+        print_status_line("Disk free", "✓", f"{float(disk_free_gb):.2f} GB")
+    # Tier Rating line (prefer Globals tier_rating; fallback derives from score)
+    tier_rating = None
+    try:
+        if isinstance(hs, dict):
+            tr = hs.get("tier_rating", None)
+            if isinstance(tr, str) and tr.strip():
+                tier_rating = tr.strip()
+    except Exception:
+        tier_rating = None
 
+    if tier_rating is None:
+        # Derive rating from score if needed
+        try:
+            s = float(score) if score is not None else None
+            if s is not None:
+                if s <= 69.9:
+                    tier_rating = "Poor"
+                elif 70.0 <= s <= 75.0:
+                    tier_rating = "Low"
+                elif 75.1 <= s <= 80.0:
+                    tier_rating = "Mid"
+                elif 80.1 <= s <= 90.0:
+                    tier_rating = "High"
+                else:
+                    tier_rating = "BEAST"
+        except Exception:
+            tier_rating = None
+
+    if score is not None:
+        if tier_rating:
+            print_status_line("Tier Rating", "✓", f"{float(score):.1f} -> {tier_rating}")
+        else:
+            print_status_line("Tier Rating", "✓", f"{score}")
+
+    logger.info(f"[v8.0] CPU Details: {cpu_details}")
+
+    logger.info(f"[v8.0] RAM Details: {ram_str or 'OK'}")
+
+except Exception as e:
+    # Never block boot banner if hardware probing fails
+    print("  ✓ CPU/RAM Check: OK. AI subsystems online.")
+    logger.info("[v8.0] CPU/RAM Check: OK. AI subsystems online.")
+    logger.warning(f"[v8.0] Detailed CPU/RAM report failed: {e}")
+
+print("  ✓ Awaiting SarahMemory Integration Menu...\n")
+logger.info("[v8.0] Awaiting SarahMemory Integration Menu...")
 # =============================================================================
 # ASYNCHRONOUS INITIALIZATION WRAPPER
 # =============================================================================

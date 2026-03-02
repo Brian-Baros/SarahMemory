@@ -2,9 +2,9 @@
 File: SarahMemoryAdaptive.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 ADAPTIVE BEHAVIOR ENGINE
@@ -934,31 +935,67 @@ def analyze_sentiment(text: str) -> InteractionMetrics:
     )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Hardware tier snapshot (delegates to SarahMemoryGlobals.hardware_score)
+# - Does NOT load any 3rd party models. Pure telemetry for adaptive throttling.
+# ---------------------------------------------------------------------------
+def _get_hardware_tier_snapshot() -> Dict[str, Any]:
+    """Return {'score': float|None, 'tier_rating': str|None, 'tier': str|None}.
+
+    Best-effort: if Globals does not provide hardware_score(), returns empty.
+    """
+    try:
+        hs_fn = getattr(config, "hardware_score", None)
+        if callable(hs_fn):
+            hs = hs_fn() or {}
+            return {
+                "score": hs.get("score", None),
+                "tier_rating": hs.get("tier_rating", None),
+                "tier": hs.get("tier", None),
+            }
+    except Exception:
+        pass
+    return {}
 def determine_system_mode(cpu: float, memory: float) -> SystemMode:
     """
     Determine the appropriate system mode based on resource usage.
-    
-    Args:
-        cpu: Current CPU usage percentage
-        memory: Current memory usage percentage
-    
-    Returns:
-        SystemMode enum value
+
+    v8.0 policy:
+      - SAFE_MODE always forces SAFE
+      - POOR hardware tier (from Globals.hardware_score) biases to LIGHTWEIGHT even if idle,
+        to protect responsiveness on low-end systems.
+      - Otherwise: CPU/MEM thresholds drive Lightweight/Balanced/Enhanced.
     """
     # Check for safe mode flag in config
     if getattr(config, 'SAFE_MODE', False):
         return SystemMode.SAFE
-    
+
+    # Hardware tier gating (best-effort; does not require any model loads)
+    snap = _get_hardware_tier_snapshot()
+    tier_rating = str(snap.get("tier_rating") or "").strip().lower()
+
+    # Hard policy: POOR tier defaults to lightweight to preserve stability/latency.
+    # User can still override models elsewhere; this only controls adaptive compute intensity.
+    if tier_rating == "poor":
+        # If the machine is *very* idle, allow balanced (keeps UX less "flat")
+        if cpu < 20 and memory < 40:
+            return SystemMode.BALANCED
+        return SystemMode.LIGHTWEIGHT
+
     # High resource usage - lightweight mode
     if cpu > 80 or memory > 85:
         return SystemMode.LIGHTWEIGHT
-    
+
     # Low resource usage - enhanced mode
     if cpu < 50 and memory < 60:
         return SystemMode.ENHANCED
-    
+
     # Normal operation
     return SystemMode.BALANCED
+
+
 
 
 # ============================================================================
@@ -992,6 +1029,16 @@ def advanced_emotional_learning(user_input: str) -> Dict[str, Any]:
         cpu, memory = _get_system_resources()
         STATE["cpu"] = cpu
         STATE["memory"] = memory
+
+        # Capture hardware tier snapshot (no model loads)
+        try:
+            _hs = _get_hardware_tier_snapshot()
+            if _hs:
+                STATE["hw_score"] = _hs.get("score", None)
+                STATE["hw_tier_rating"] = _hs.get("tier_rating", None)
+                STATE["hw_tier"] = _hs.get("tier", None)
+        except Exception:
+            pass
         
         # Determine system mode
         mode = determine_system_mode(cpu, memory)

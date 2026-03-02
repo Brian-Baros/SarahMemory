@@ -2,7 +2,7 @@
 File: SarahMemoryAPI.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-17
+Date: 2025-03-01
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 MULTI-PROVIDER API ORCHESTRATION MODULE 
@@ -217,77 +218,97 @@ def _is_cloud() -> bool:
     return getattr(config, "RUN_MODE", "local") == "cloud"
 
 def _enabled_model_names() -> Dict[str, bool]:
-    # Source of truth is MODEL_CONFIG in Globals
+    """Return user-enabled local model names from SarahMemoryGlobals.MODEL_CONFIG.
+
+    IMPORTANT:
+    - This function must NOT hardcode model repository names.
+    - The single source of truth for model identifiers is SarahMemoryGlobals.py.
+    """
     model_cfg = getattr(config, "MODEL_CONFIG", {}) or {}
-    multi_model = _safe_bool(getattr(config, "MULTI_MODEL", False))
-    if not multi_model:
-        # MODE B: if multi-model off, use primary embedding model only
-        primary = (getattr(config, "EMBEDDING_MODELS", {}) or {}).get("primary", "all-MiniLM-L6-v2")
-        return {primary: True}
+    return {str(k): _safe_bool(v) for k, v in model_cfg.items() if _safe_bool(v)}
 
-    # Multi-model on: return the dict as-is (enabled flags)
-    return {k: _safe_bool(v) for k, v in model_cfg.items() if _safe_bool(v)}
+def pick_embedding_model(
+    requested: Optional[str] = None,
+    *,
+    text: str = "",
+    meta: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[str], List[str], str]:
+    """Pick exactly ONE embedding model (plus ordered fallbacks) using the global resolver.
 
-def _probe_local_model_availability() -> Dict[str, bool]:
+    Selection precedence:
+      1) Caller-requested model (if user-enabled and present on disk)
+      2) SarahMemoryGlobals.resolve_model('embeddings') selection + fallbacks
+      3) First enabled model found on disk (deterministic)
+
+    Returns: (selected, fallbacks, source)
+      - selected may be None (e.g., Tier Rating = POOR and user did not enable any models)
+      - source is a small string for diagnostics ('requested'|'resolver'|'enabled_first'|'none')
     """
-    Checks if the enabled models appear to be installed locally.
-    MODE B policy: cloud mode returns 'not available' for local models.
-    """
-    global __MODEL_AVAIL_CACHE
-    if __MODEL_AVAIL_CACHE is not None:
-        return __MODEL_AVAIL_CACHE
+    meta = meta or {}
 
+    # 1) Requested override: only if user-enabled
     enabled = _enabled_model_names()
-    avail: Dict[str, bool] = {k: False for k in enabled.keys()}
 
-    if _is_cloud():
-        __MODEL_AVAIL_CACHE = avail
-        return avail
+    def _is_installed_local(name: str) -> bool:
+        try:
+            if _is_cloud():
+                return False
+            root = _models_root()
+            candidates = [
+                os.path.join(root, name),
+                os.path.join(root, name.replace("/", "_")),
+                os.path.join(root, name.replace("-", "_")),
+                os.path.join(root, f"{name}.json"),
+            ]
+            return any(os.path.exists(p) for p in candidates)
+        except Exception:
+            return False
 
-    root = _models_root()
-    # Lightweight heuristic: model folder exists or a manifest exists
-    for name in enabled.keys():
-        # allow either "all-MiniLM-L6-v2" as folder, or a sanitized folder name
-        candidates = [
-            os.path.join(root, name),
-            os.path.join(root, name.replace("/", "_")),
-            os.path.join(root, name.replace("-", "_")),
-            os.path.join(root, f"{name}.json"),
-        ]
-        avail[name] = any(os.path.exists(p) for p in candidates)
+    if requested and enabled.get(str(requested), False) and _is_installed_local(str(requested)):
+        return str(requested), [], "requested"
 
-    __MODEL_AVAIL_CACHE = avail
-    return avail
+    # 2) Canonical resolver in Globals
+    try:
+        resolve_fn = getattr(config, "resolve_model", None)
+        if callable(resolve_fn):
+            res = resolve_fn("embeddings", text=text or "", meta=meta or {}) or {}
+            sel = res.get("selected")
+            fbs = res.get("fallbacks") or []
+            sel = str(sel) if sel else None
+            fbs = [str(x) for x in fbs if x]
+            if sel:
+                return sel, fbs, "resolver"
+            # If resolver returns no model (e.g. POOR tier), honor it.
+            if fbs:
+                return fbs[0], fbs[1:], "resolver"
+            return None, [], "none"
+    except Exception:
+        pass
 
-def pick_embedding_model(requested: Optional[str] = None) -> str:
+    # 3) Deterministic fallback: first enabled model that exists on disk
+    try:
+        for name in sorted(enabled.keys()):
+            if _is_installed_local(name):
+                return name, [], "enabled_first"
+    except Exception:
+        pass
+
+    return None, [], "none"
+
+def get_embedder(model_name: Optional[str] = None, *, text: str = "", meta: Optional[Dict[str, Any]] = None):
+    """Lazy-load a local SentenceTransformer embedder using the global resolver.
+
+    - Picks ONE model per request (plus fallbacks) via pick_embedding_model().
+    - If no model is selected (e.g., Tier Rating = POOR and user has not enabled any),
+      this returns None and callers should fall back to core-only embeddings.
     """
-    MODE B selection:
-    1) If caller requests a model and it's enabled, honor it.
-    2) Else use Globals EMBEDDING_MODELS.primary if enabled.
-    3) Else pick the first enabled model.
-    """
-    enabled = _enabled_model_names()
-    if requested and enabled.get(requested):
-        return requested
-
-    emb_cfg = getattr(config, "EMBEDDING_MODELS", {}) or {}
-    primary = emb_cfg.get("primary", "all-MiniLM-L6-v2")
-    if enabled.get(primary):
-        return primary
-
-    # deterministic fallback
-    return sorted(enabled.keys())[0] if enabled else "all-MiniLM-L6-v2"
-
-def get_embedder(model_name: Optional[str] = None):
-    """
-    Lazy-load SentenceTransformer only when actually used.
-    Falls back cleanly if sentence-transformers isn't installed.
-    """
-    chosen = pick_embedding_model(model_name)
+    selected, fallbacks, _src = pick_embedding_model(model_name, text=text or "", meta=meta or {})
+    if not selected:
+        return None
 
     with __EMBEDDER_LOCK:
-        if chosen in __EMBEDDER_CACHE:
-            return __EMBEDDER_CACHE[chosen]
+        if selected in __EMBEDDER_CACHE:
+            return __EMBEDDER_CACHE[selected]
 
         # In cloud mode, do not try to load local models
         if _is_cloud():
@@ -298,23 +319,49 @@ def get_embedder(model_name: Optional[str] = None):
         except Exception as e:
             raise RuntimeError(f"sentence-transformers not available: {e}")
 
-        # MODE B: allow HF cache/model dir to be the SarahMemory models folder
         local_root = _models_root()
         os.makedirs(local_root, exist_ok=True)
 
-        # SentenceTransformer can pull from HF if available; it will also use local cache.
-        embedder = SentenceTransformer(chosen, cache_folder=local_root)
-        __EMBEDDER_CACHE[chosen] = embedder
-        return embedder
+        # Try primary then fallbacks (all are repo strings from Globals, not hardcoded here)
+        last_err: Optional[Exception] = None
+        for repo in [selected] + list(fallbacks or []):
+            try:
+                emb = SentenceTransformer(repo, cache_folder=local_root)
+                __EMBEDDER_CACHE[repo] = emb
+                return emb
+            except Exception as e:
+                last_err = e
+                continue
 
-def embed_text(text: str, model_name: Optional[str] = None):
+        raise RuntimeError(f"Failed to load any enabled embedding model: {last_err}")
+
+
+def _fallback_embed(text: str, dim: int = 64) -> List[float]:
+    """Deterministic core-only embedding (no downloads, never throws)."""
+    import hashlib, math
+    h = hashlib.sha256((text or "").encode("utf-8")).digest()
+    out: List[float] = []
+    for i in range(int(dim)):
+        b = h[i % len(h)]
+        out.append(float(math.sin((b + i) * 0.0174533)))
+    return out
+
+
+def embed_text(text: str, model_name: Optional[str] = None, *, meta: Optional[Dict[str, Any]] = None):
+    """Single, reusable embedding function for the whole stack.
+
+    - Uses selected local embedder when available.
+    - Core-only fallback (hash projection) when no model is available/allowed.
     """
-    Single, reusable embedding function for the whole stack.
-    Use this inside /api/local/brain, vector DB writes, similarity checks, etc.
-    """
-    emb = get_embedder(model_name)
-    vec = emb.encode([text], normalize_embeddings=True)
-    return vec[0].tolist()
+    dim = int(getattr(config, "EMBEDDING_DIMENSION", 64) or 64)
+    try:
+        emb = get_embedder(model_name, text=text or "", meta=meta or {})
+        if emb is None:
+            return _fallback_embed(text, dim=dim)
+        vec = emb.encode([text], normalize_embeddings=True)
+        return vec[0].tolist()
+    except Exception:
+        return _fallback_embed(text, dim=dim)
 
 # API Disabled flag
 API_DISABLED = not getattr(config, 'API_RESEARCH_ENABLED', True)

@@ -2,9 +2,9 @@
 File: SarahMemoryReply.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ==============================================================================="""
 # =============================================================================
 #  Description:
@@ -341,7 +342,18 @@ def _try_api(text: str) -> Optional[str]:
     # Primary path: direct SarahMemoryAPI -> send_to_api
     try:
         if send_to_api is not None:
-            resp = send_to_api(user_input=text, provider="openai", intent="chat")
+            # Choose provider from Globals (single source of truth); default to current primary if available.
+            try:
+                _prov = None
+                if hasattr(config, "get_active_api"):
+                    _prov = config.get_active_api()  # type: ignore[attr-defined]
+                if not _prov:
+                    _prov = getattr(config, "PRIMARY_API", None)
+                if not _prov:
+                    _prov = "openai"
+            except Exception:
+                _prov = "openai"
+            resp = send_to_api(user_input=text, provider=_prov, intent="chat")
 
             # Track which model was actually used, if any
             try:

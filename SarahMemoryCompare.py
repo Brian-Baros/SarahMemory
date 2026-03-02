@@ -2,9 +2,9 @@
 File: SarahMemoryCompare.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 RESPONSE COMPARISON ENGINE v8.0.0
@@ -205,6 +206,20 @@ def get_active_sentence_model():
         os.getenv("HF_HUB_OFFLINE") == "1" or
         os.getenv("TRANSFORMERS_OFFLINE") == "1"
     )
+
+
+    # Resolve exactly one embeddings model (plus fallbacks) via Globals resolver
+    try:
+        res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+        selected = res.get("selected")
+        fallbacks = res.get("fallbacks") or []
+        candidates = [c for c in ([selected] + list(fallbacks)) if c]
+    except Exception:
+        candidates = []
+
+    # POOR tier with no user overrides => core-only embeddings
+    if not candidates:
+        return _LiteEmbedder()
 
     if offline:
         logger.info("[v8.0][Embedder] Offline mode → using LiteEmbedder")

@@ -2,9 +2,9 @@
 File: SarahMemoryDatabase.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-05
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 """
@@ -298,16 +299,86 @@ DB_PATH = os.path.join(config.DATASETS_DIR, 'ai_learning.db')
 USER_DB_PATH = os.path.join(config.DATASETS_DIR, 'user_profile.db')
 
 def get_active_sentence_model():
-    from sentence_transformers import SentenceTransformer
-    from SarahMemoryGlobals import MULTI_MODEL, MODEL_CONFIG
-    if MULTI_MODEL:
-        for model_name, enabled in MODEL_CONFIG.items():
-            if enabled:
+    """Return the active embedding model (one per category), with offline-safe fallback.
+
+    Policy:
+      - Tier Rating POOR => auto 3rd-party selection is disabled.
+        Only user-enabled models may be selected; otherwise return _LiteEmbedder.
+      - For non-POOR tiers: select exactly ONE model for category 'embeddings',
+        and keep ordered fallbacks. Never ensembles by default.
+    """
+    try:
+        from sentence_transformers import SentenceTransformer  # type: ignore
+    except Exception:
+        SentenceTransformer = None  # type: ignore
+
+    import SarahMemoryGlobals as config
+
+    class _LiteEmbedder:
+        """Always-works local embedder (hash projection)."""
+        def __init__(self, dim: int = 64):
+            self.dim = int(dim)
+
+        def encode(self, texts, convert_to_numpy=True, normalize_embeddings=True, **kwargs):
+            if isinstance(texts, str):
+                texts = [texts]
+            out = []
+            for t in (texts or []):
+                h = hashlib.sha256((t or "").encode("utf-8")).digest()
+                vec = []
+                for i in range(self.dim):
+                    b = h[i % len(h)]
+                    vec.append(math.sin((b + i) * 0.0174533))
+                # L2 normalize if requested
+                if normalize_embeddings:
+                    s = math.sqrt(sum(v*v for v in vec)) or 1.0
+                    vec = [v/s for v in vec]
+                out.append(vec)
+            if convert_to_numpy:
                 try:
-                    return SentenceTransformer(model_name)
-                except Exception as e:
-                    logger.warning(f"Model load failed: {model_name} â†’ {e}")
-    return SentenceTransformer('all-MiniLM-L6-v2')
+                    import numpy as np  # type: ignore
+                    return np.array(out, dtype=float)
+                except Exception:
+                    return out
+            return out
+
+    # If SentenceTransformer isn't available, fall back immediately.
+    if SentenceTransformer is None:
+        return _LiteEmbedder()
+
+    # Resolve ONE model via Globals resolver (plus fallbacks)
+    try:
+        res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+        selected = res.get("selected")
+        fallbacks = res.get("fallbacks") or []
+        candidates = [c for c in ([selected] + list(fallbacks)) if c]
+    except Exception:
+        candidates = []
+
+    # If nothing selected, core-only fallback (POOR tier with no user overrides)
+    if not candidates:
+        return _LiteEmbedder()
+
+    models_dir = getattr(config, "MODELS_DIR", None) or os.path.join(os.getcwd(), "data", "models")
+
+    for repo in candidates:
+        try:
+            local_dir1 = os.path.join(models_dir, repo.replace("/", "_"))
+            local_dir2 = os.path.join(models_dir, repo)
+            if os.path.isdir(local_dir1):
+                return SentenceTransformer(local_dir1, local_files_only=True)
+            if os.path.isdir(local_dir2):
+                return SentenceTransformer(local_dir2, local_files_only=True)
+            # As a final attempt, rely on HF local cache only
+            return SentenceTransformer(repo, local_files_only=True)
+        except Exception as e:
+            try:
+                logger.warning(f"Model load failed: {repo} -> {e}")
+            except Exception:
+                pass
+
+    # All candidates failed
+    return _LiteEmbedder()
 
 # --- Initialization ---
 def init_database():
