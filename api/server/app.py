@@ -2,7 +2,7 @@
 # File: /app/server/app.py
 # ULTIMATE merged Flask server for SarahMemory (v8.0.0)
 # Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025 Brian Lee Baros. All Rights Reserved.
+# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 # www.linkedin.com/in/brian-baros-29962a176
 # https://www.facebook.com/bbaros
 # brian.baros@sarahmemory.com
@@ -10,6 +10,8 @@
 # https://www.sarahmemory.com
 # https://api.sarahmemory.com
 # https://ai.sarahmemory.com
+# https://store.sarahmemory.com
+#==============================================================================================
 # - Serves Web UI
 # - Hub (HMAC) endpoints
 # - Node registration / embeddings / context / jobs
@@ -751,11 +753,11 @@ try:
 except Exception as e:
     app_logger.warning(f"CognitiveServices not available: {e}")
     cog = None
-    COG_AVAILABLE = True
+    COG_AVAILABLE = False
 
 @app.before_request
 def _cognitive_guard():
-    if not COG_AVAILABLE:
+    if (not COG_AVAILABLE) or (cog is None):
         return None
 
     # Only guard API endpoints (avoid slowing static/template hits)

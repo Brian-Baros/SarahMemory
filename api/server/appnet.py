@@ -2,7 +2,7 @@
 # File: /app/server/appnet.py
 # Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
 # Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025 Brian Lee Baros. All Rights Reserved.
+# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 # www.linkedin.com/in/brian-baros-29962a176
 # https://www.facebook.com/bbaros
 # brian.baros@sarahmemory.com
@@ -10,7 +10,8 @@
 # https://www.sarahmemory.com
 # https://api.sarahmemory.com
 # https://ai.sarahmemory.com
-
+# https://store.sarahmemory.com
+#==============================================================================================
 # Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
 # Design goals:
 # - NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
