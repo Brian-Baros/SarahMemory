@@ -769,15 +769,15 @@ try:
             s = float(score) if score is not None else None
             if s is not None:
                 if s <= 69.9:
-                    tier_rating = "Poor"
+                    tier_rating = "Poor" # No 3rd party models used unless USER Manually SET a particular model to 'True' in SarahMemoryGlobals.py (Edge Computering/Cloud)
                 elif 70.0 <= s <= 75.0:
-                    tier_rating = "Low"
+                    tier_rating = "Low" # May Only Use None and Low Models, if User Manually Turns  on/off 'True/False' a Particular model in SarahMemoryGlobals.py (Mobile Devices/Laptops)
                 elif 75.1 <= s <= 80.0:
-                    tier_rating = "Mid"
+                    tier_rating = "Mid" # May Only Use None/Low/Mid Models unless, USER Manually disables all and sets High range Model(s) to TRUE in SarahMemoryGlobals.py (Legency Hardware Old Systems)
                 elif 80.1 <= s <= 90.0:
-                    tier_rating = "High"
+                    tier_rating = "High" # May Use None/Low/Mid and High Models Only, Unless USER Manually enables some BEAST Model to True in SarahMemoryGlobals.py (High End Gamming PC's and Servers)
                 else:
-                    tier_rating = "BEAST"
+                    tier_rating = "BEAST" # May use NONE/Low/Mid/High and BEAST Model(s) most advanced 3rd party mega models, Unless ADMIN/USER sets certain Models to 'False' in SarahMemoryGlobals.py THIS MODE IS RESERVED FOR DATACENTERS
         except Exception:
             tier_rating = None
 
