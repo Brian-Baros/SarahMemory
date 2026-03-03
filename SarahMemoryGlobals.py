@@ -1469,7 +1469,7 @@ MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahme
 # ---------------------------------------------------------------------------
 
 API_PROVIDER_FLAGS = {
-    "local_llm":   LOCAL_LLM_API,  # Auto/Manual selected 3rd-party local LLM from MODEL_CATALOG
+    "local_llm":  LOCAL_LLM_API, # Needs to be the AUTO or MANUAL SELECTED Local MODEL 
     "local":       LOCAL_API,
     "openai":      OPEN_AI_API,
     "claude":      CLAUDE_API,
@@ -2770,14 +2770,14 @@ def _sm_get_default_settings():
         "DEEPSEEK_API": False,
         "GROQ_API": False,
         "COHERE_API": False,
-        "OLLAMA_API": True,
+        "LOCAL_LLM_API": True,
         "LOCAL_API": True,
         "MESH_API": True,
         "API_TIMEOUT": 20,
         
         # Models
-        "AUTO_MODEL_SELECTOR": False,
-        "MULTI_MODEL": True,
+        "AUTO_MODEL_SELECTOR": True,
+        "MULTI_MODEL": False,
         "ENABLE_MODEL_A": False,
         "ENABLE_MODEL_B": True,
         "ENABLE_MODEL_C": False,
@@ -2791,6 +2791,11 @@ def _sm_get_default_settings():
         "ENABLE_MODEL_K": False,
         "ENABLE_MODEL_L": False,
         "ENABLE_MODEL_M": False,
+        "ENABLE_MODEL_N": True,
+        "ENABLE_MODEL_O": True,
+        "ENABLE_MODEL_P": True,
+        "ENABLE_MODEL_Q": False,
+        "ENABLE_MODEL_R": False,
         
         # Vision
         "OBJECT_DETECTION_ENABLED": True,

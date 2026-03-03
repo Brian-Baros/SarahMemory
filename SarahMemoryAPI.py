@@ -215,14 +215,11 @@ def _safe_bool(x: Any) -> bool:
         return False
 
 def _models_root() -> str:
-# Use MODELS_DIR from Globals if present, else <BASE_DIR>/data/models.
-base_dir = getattr(config, "BASE_DIR", os.getcwd())
-models_dir = getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
-
-# Some installs store models under ./data/models/SarahMemory. Prefer it only if it exists.
-sm_dir = os.path.join(models_dir, "SarahMemory")
-return sm_dir if os.path.isdir(sm_dir) else models_dir
-
+    # Prefer Globals MODELS_DIR if present, else BASE_DIR/data/models
+    base_dir = getattr(config, "BASE_DIR", os.getcwd())
+    models_dir = getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
+    # Your convention mentioned: ./data/models/SarahMemory/...
+    return os.path.join(models_dir, "SarahMemory")
 
 def _is_cloud() -> bool:
     # RUN_MODE exists in Globals (auto-detects PythonAnywhere)
@@ -401,7 +398,7 @@ class APIProvider(Enum):
     DEEPSEEK = "deepseek"
     GROQ = "groq"
     COHERE = "cohere"
-    LOCAL_LLM_API = "local_llm"
+    LOCAL_LLM = "local_llm"
     LOCAL_API = "local"
     MESH = "mesh"
 
@@ -422,7 +419,7 @@ API_KEYS: Dict[str, Optional[str]] = {
     "groq": os.getenv("GROQ_API_KEY"),
     "cohere": os.getenv("COHERE_API_KEY") or os.getenv("CO_API_KEY"),
     "local": os.getenv("LOCAL_BRAIN"),
-    MODEL_CATALOG: os.getenv("LOCAL_LLM_API"),
+    "local_llm": os.getenv("LOCAL_LLM_API"),
     "mesh": os.getenv("MESH_API"),
 }
 
@@ -446,7 +443,7 @@ API_URLS: Dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "cohere": "https://api.cohere.ai/v1/chat",
     "local": "http://127.0.0.1:8000/api/local/chat",
-    MODEL_CATALOG: "http://127.0.0.1:8000/api/chat",
+    "local_llm": "local-runtime",
     "mesh": "https://api.sarahmemory.com/api/chat",
 }
 
@@ -462,14 +459,14 @@ DEFAULT_MODELS: Dict[str, str] = {
     "groq": "llama-3.1-70b-versatile",
     "cohere": "command-r-plus",
     "local": "synapses-micro-brain",
-    MODEL_CATALOG: MODEL_CATALOG, #SELECTED LLMS AFTER HARDWARE CHECKS WHEN BOOTING
+    "local_llm": "auto",  # auto-selected local model
     "mesh": "auto",
 }
 
 # Provider priority for fallback
 PROVIDER_PRIORITY: List[str] = [
     "local",       # Synapses micro-brain (deterministic + retrieval + tool routing)
-    MODEL_CATALOG,      # Local 3rd Party LLM runtime
+    "local_llm",      # Local 3rd Party LLM runtime
     "openai",
     "claude",
     "mistral",
@@ -815,26 +812,22 @@ def log_cognitive_event(provider: str, input_text: str, result: str) -> None:
 # Provider enablement + key-gating (backed by SarahMemoryGlobals toggles)
 # ---------------------------------------------------------------------------
 def _provider_flag_attr(provider: str) -> Optional[str]:
-"""Map provider name -> SarahMemoryGlobals flag attribute name."""
-p = (provider or "").strip().lower()
-return {
-    "openai": "OPEN_AI_API",
-    "claude": "CLAUDE_API",
-    "anthropic": "ANTHROPIC_API",
-    "mistral": "MISTRAL_API",
-    "gemini": "GEMINI_API",
-    "huggingface": "HUGGINGFACE_API",
-    "deepseek": "DEEPSEEK_API",
-    "groq": "GROQ_API",
-    "cohere": "COHERE_API",
-    # Local 3rd-party LLM lane (auto/manual selection from Globals MODEL_CATALOG)
-    "local_llm": "LOCAL_LLM_API",
-    "localmodels": "LOCAL_LLM_API",   # legacy alias
-    "model_catalog": "LOCAL_LLM_API", # legacy alias
-    "local": "LOCAL_API",
-    "mesh": "MESH_API",
-}.get(p)
-
+    """Map provider name -> SarahMemoryGlobals flag attribute name."""
+    p = (provider or "").strip().lower()
+    return {
+        "openai": "OPEN_AI_API",
+        "claude": "CLAUDE_API",
+        "anthropic": "ANTHROPIC_API",
+        "mistral": "MISTRAL_API",
+        "gemini": "GEMINI_API",
+        "huggingface": "HUGGINGFACE_API",
+        "deepseek": "DEEPSEEK_API",
+        "groq": "GROQ_API",
+        "cohere": "COHERE_API",
+        "local_llm": "LOCAL_LLM_API",
+        "local": "LOCAL_API",
+        "mesh": "MESH_API",
+    }.get(p)
 
 def _provider_is_enabled(provider: str) -> bool:
     p = (provider or "").strip().lower()
@@ -845,9 +838,7 @@ def _provider_is_enabled(provider: str) -> bool:
 
 def _provider_requires_key(provider: str) -> bool:
     p = (provider or "").strip().lower()
-    # Local lanes do not require API keys
-    return p not in {"local", "local_llm", "localmodels", "model_catalog", "mesh"}
-
+    return p not in {"local", "local_llm", "mesh"}
 
 def _provider_has_credentials(provider: str) -> bool:
     p = (provider or "").strip().lower()
@@ -1717,7 +1708,7 @@ def _call_local_llm(prompt: str,
 
 
 
-def _call_MODEL_CATALOG(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+def _call_local_llm(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
     """Back-compat alias: MODEL_CATALOG provider now routes to LOCAL_LLM_API resolver."""
     return _call_local_llm(prompt=prompt, intent="chat", user_text=prompt, meta=None, max_tokens=512, temperature=0.7)
 
@@ -1743,7 +1734,7 @@ def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str]
 
 def send_to_api(
     user_input: str,
-    provider: str = "auto",
+    provider: str = "openai",
     intent: str = "question",
     tone: str = "friendly",
     complexity: str = "adult",
@@ -1850,7 +1841,7 @@ def send_to_api(
         provider = "claude"
 
     # Normalize legacy/local provider aliases
-    if provider in ("ollama", "MODEL_CATALOG"):
+    if provider in ("ollama", "local_llm", "model_catalog"):
         provider = "local_llm"
 
 
@@ -1914,7 +1905,7 @@ def send_to_api(
             content, error = _call_local(prompt, model)
         elif provider in ("local_llm", "localmodels", "local_llm_api"):
             content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
-        elif provider == "MODEL_CATALOG":
+        elif provider == "local_llm":
             # Legacy string provider name some callers used
             content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
         elif provider == "mesh":
@@ -2169,7 +2160,18 @@ def get_provider_status() -> Dict[str, Dict[str, Any]]:
 
 # Alias for legacy code
 def send_to_openai(user_input: str, **kwargs) -> Dict[str, Any]:
-    """Legacy alias for send_to_api with OpenAI."""
+    """Legacy alias.
+
+    IMPORTANT:
+    - If OPEN_AI_API is disabled in SarahMemoryGlobals, this MUST NOT call OpenAI.
+    - In that case we route to the local 3rd-party model lane (provider='local_llm').
+    """
+    try:
+        if not bool(getattr(config, "OPEN_AI_API", False)):
+            return send_to_api(user_input, provider="local_llm", **kwargs)
+    except Exception:
+        return send_to_api(user_input, provider="local_llm", **kwargs)
+
     return send_to_api(user_input, provider="openai", **kwargs)
 
 
