@@ -658,7 +658,7 @@ ROLE_CATEGORIES: Dict[str, List[str]] = {
 class APIRequest:
     """Structured API request."""
     user_input: str
-    provider: str = "openai"
+    provider: str = "auto"
     intent: str = "question"
     tone: str = "friendly"
     complexity: str = "adult"
@@ -1739,7 +1739,7 @@ def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str]
 
 def send_to_api(
     user_input: str,
-    provider: str = "openai",
+    provider: str = "auto",
     intent: str = "question",
     tone: str = "friendly",
     complexity: str = "adult",
@@ -1881,21 +1881,20 @@ def send_to_api(
 
 
 
-# Enforce provider flags from SarahMemoryGlobals (hard gate)
-# If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
-if provider == "openai" and not bool(getattr(config, "OPEN_AI_API", False)):
-    if bool(getattr(config, "LOCAL_LLM_API", False)):
-        provider = "local_llm"
-    elif bool(getattr(config, "LOCAL_API", False)):
-        provider = "local"
-    elif bool(getattr(config, "MESH_API", False)):
-        provider = "mesh"
-    # else: keep as openai, but it will fail the enabled check below
+    # Enforce provider flags from SarahMemoryGlobals (hard gate)
+    # If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
+    if provider == "openai" and not bool(getattr(config, "OPEN_AI_API", False)):
+        if bool(getattr(config, "LOCAL_LLM_API", False)):
+            provider = "local_llm"
+        elif bool(getattr(config, "LOCAL_API", False)):
+            provider = "local"
+        elif bool(getattr(config, "MESH_API", False)):
+            provider = "mesh"
+        # else: keep as openai, but it will fail the enabled check below
 
-# If chosen provider is disabled, pick best enabled provider for intent.
-if not _provider_is_enabled(provider):
-    provider = get_best_provider_for_intent(intent)
-
+    # If chosen provider is disabled, pick best enabled provider for intent.
+    if not _provider_is_enabled(provider):
+        provider = get_best_provider_for_intent(intent)
 
     # Get API key
     key = API_KEYS.get(provider)
