@@ -447,7 +447,7 @@ API_URLS: Dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "cohere": "https://api.cohere.ai/v1/chat",
-    "local": "http://127.0.0.1:8000/api/local/chat",
+    "local": "http://127.0.0.1:8000/api/chat",
     "local_llm": "local-runtime",
     "mesh": "https://api.sarahmemory.com/api/chat",
 }
@@ -658,7 +658,7 @@ ROLE_CATEGORIES: Dict[str, List[str]] = {
 class APIRequest:
     """Structured API request."""
     user_input: str
-    provider: str = "auto"
+    provider: str = "openai"
     intent: str = "question"
     tone: str = "friendly"
     complexity: str = "adult"
@@ -1808,11 +1808,11 @@ def send_to_api(
         # We will reroute to local lanes if possible; otherwise return a clear error.
         requested = (provider or "").strip().lower()
         if requested in ("", "unknown", "auto", "primary", "default"):
-            # Prefer LOCAL_API first (DB/tool/retrieval), then LOCAL_LLM (3rd-party model runtime).
-            if _provider_is_enabled("local"):
-                provider = "local"
-            elif _provider_is_enabled("local_llm"):
+            # Prefer LOCAL_LLM first (3rd-party model runtime), then LOCAL_API (DB/tool/retrieval).
+            if _provider_is_enabled("local_llm"):
                 provider = "local_llm"
+            elif _provider_is_enabled("local"):
+                provider = "local"
             else:
                 return {
                     "source": requested or "auto",
@@ -1877,12 +1877,12 @@ def send_to_api(
 
     # Normalize legacy/local provider aliases
     if provider in ("ollama", "local_llm", "model_catalog"):
-        provider = "local_llm"
+            provider = "local_llm"
 
 
 
-    # Enforce provider flags from SarahMemoryGlobals (hard gate)
-    # If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
+# Enforce provider flags from SarahMemoryGlobals (hard gate)
+# If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
     if provider == "openai" and not bool(getattr(config, "OPEN_AI_API", False)):
         if bool(getattr(config, "LOCAL_LLM_API", False)):
             provider = "local_llm"
@@ -1895,6 +1895,7 @@ def send_to_api(
     # If chosen provider is disabled, pick best enabled provider for intent.
     if not _provider_is_enabled(provider):
         provider = get_best_provider_for_intent(intent)
+
 
     # Get API key
     key = API_KEYS.get(provider)
