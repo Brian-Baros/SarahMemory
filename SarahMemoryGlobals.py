@@ -1440,7 +1440,7 @@ OPENLIBRARY_RESEARCH_ENABLED = False #Set to False until further notice
 INTERNET_ARCHIVE_RESEARCH_ENABLED = False #Set True/False for testing purposes
 
 #Multiple AI API Research Connections For SarahMemoryResearch.py - Class 3 - Learning for other AI's
-API_RESEARCH_ENABLED = False #False = Disable from Learning from An Ai API.
+API_RESEARCH_ENABLED = True #False = Disable from Learning from An Ai API.
 #Allows End User to select which AI API to be used for SarahMemoryResearch.py - Class 3 when query is passed through SarahMemoryAPI.py
 #WARNING: AS OF VERSION 7.0 CURRENTLY ONLY ONE (1) OF THE FOLLOWING API's MAY BE SET TO TRUE AND ALL OTHERS MUST BE SET TO FALSE
 # ============================================================================

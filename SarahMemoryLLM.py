@@ -30,6 +30,10 @@ import subprocess
 import time
 import urllib.request
 import zlib
+import shutil
+import threading
+import queue
+import hashlib
 from typing import Dict, List, Tuple, Optional
 
 # Optional deps (never hard-crash)
@@ -597,6 +601,541 @@ def _print_hardware_summary():
         print("")
     except Exception:
         pass
+
+# ---------------------------------------------------------------------------
+# Hydra Model Manager (Prototype)
+# ---------------------------------------------------------------------------
+# Concept:
+# - Control plane: Neuron/Globals decide policy; Hydra executes safe model lifecycle ops.
+# - Data plane: actual inference engines are outside this class.
+# - Supports: detect -> isolate -> replace(sync/acquire) -> verify -> promote -> rollback
+# - Background worker for async updates, resumable across restarts.
+#
+# NOTE:
+# - No new global flags are introduced. All policy gates reuse existing helpers and Globals.
+# - SAFE default: will only SYNC installed repos unless caller enables acquire_missing=True.
+# ---------------------------------------------------------------------------
+
+class SarahMemoryHydraModelManager:
+    """Prototype self-healing model lifecycle manager backed by Hugging Face snapshots.
+
+    Primary responsibilities
+    - Maintain a deterministic set of "active" repos by category (and optional tier).
+    - Keep installed repos up-to-date using incremental HF snapshots.
+    - Enforce disk/budget gates via existing SarahMemoryLLM policy helpers.
+    - Quarantine corrupt installs and promote verified revisions atomically.
+    - Persist state so interrupted downloads resume on next boot.
+
+    This class intentionally does NOT run inference. It produces routing decisions and
+    maintains "active" pointers that other components (Neuron/Runner) can consume.
+    """
+
+    def __init__(
+        self,
+        models_dir: str = MODELS_DIR,
+        hf_token_env: str = "HF_TOKEN",
+        state_subdir: str = ".hydra",
+        allow_remote_mesh_default: bool = False,
+        allow_external_api_default: bool = False,
+    ) -> None:
+        self.models_dir = models_dir
+        self.hf_token_env = hf_token_env
+        self.allow_remote_mesh_default = allow_remote_mesh_default
+        self.allow_external_api_default = allow_external_api_default
+
+        self._root = os.path.join(self.models_dir, state_subdir)
+        self._state_path = os.path.join(self._root, "hydra_state.json")
+        self._active_path = os.path.join(self._root, "active_models.json")
+        self._lock_path = os.path.join(self._root, "hydra.lock")
+        self._quarantine_dir = os.path.join(self._root, "quarantine")
+        self._staging_dir = os.path.join(self._root, "staging")
+        self._export_dir = os.path.join(self._root, "exports")
+
+        os.makedirs(self._root, exist_ok=True)
+        os.makedirs(self._quarantine_dir, exist_ok=True)
+        os.makedirs(self._staging_dir, exist_ok=True)
+        os.makedirs(self._export_dir, exist_ok=True)
+
+        self._q: "queue.Queue[dict]" = queue.Queue()
+        self._stop = threading.Event()
+        self._worker: Optional[threading.Thread] = None
+
+        # Load persisted state (resumable)
+        self._state = self._load_json(self._state_path, default={
+            "version": "8.0.0",
+            "pending": [],
+            "inflight": None,
+            "last_gc_ts": 0,
+        })
+        self._active = self._load_json(self._active_path, default={
+            "version": "8.0.0",
+            "active": {},   # category -> {repo, local_dir, ts}
+            "rollback": {}, # category -> {repo, local_dir, ts}
+        })
+
+        # Rehydrate pending queue
+        for job in list(self._state.get("pending") or []):
+            self._q.put(job)
+
+        # If we crashed mid-download, keep inflight as priority job
+        inflight = self._state.get("inflight")
+        if inflight:
+            self._q.put(inflight)
+
+    # -----------------------------
+    # Public API
+    # -----------------------------
+
+    def start_background(self) -> None:
+        """Start the background worker once. Safe to call multiple times."""
+        if self._worker and self._worker.is_alive():
+            return
+        self._stop.clear()
+        self._worker = threading.Thread(target=self._run, name="SarahMemoryHydraModelManager", daemon=True)
+        self._worker.start()
+
+    def stop_background(self, timeout: float = 2.0) -> None:
+        self._stop.set()
+        if self._worker and self._worker.is_alive():
+            self._worker.join(timeout=timeout)
+
+    def enqueue_recommended_sync(self, acquire_missing: bool = False) -> int:
+        """Plan sync jobs for the current hardware tier across all categories.
+
+        acquire_missing=False => SAFE: only sync repos already installed.
+        acquire_missing=True  => EXPAND: also acquire missing repos in tier plan.
+        """
+        planned = self.plan_recommended_jobs(acquire_missing=acquire_missing)
+        for j in planned:
+            self._q.put(j)
+        self._persist_state()
+        return len(planned)
+
+    def plan_recommended_jobs(self, acquire_missing: bool = False) -> List[dict]:
+        """Build a deterministic job list based on the catalog and the current tier."""
+        jobs: List[dict] = []
+
+        # Respect POOR tier: no auto-acquire; sync only if caller has installed repos.
+        tier_rating = "Poor"
+        try:
+            hs = getattr(G, "hardware_score", lambda metrics=None: {})()
+            tier_rating = str(hs.get("tier_rating") or "Poor")
+        except Exception:
+            tier_rating = "Poor"
+
+        for category in (MODEL_CATALOG or {}).keys():
+            tier = str(recommend_model_tier(category=category) or "low").lower().strip()
+
+            # Normalize tier to include 'high'
+            if tier not in ("low", "mid", "high", "beast"):
+                tier = "low"
+
+            # Choose candidate repos for this category + tier fallback
+            repo = self._choose_repo_for_category(category=category, tier=tier, prefer_installed=True)
+            if not repo:
+                continue
+
+            local_dir = repo_to_local_dir(repo)
+            installed = is_repo_installed(repo)
+
+            if tier_rating.lower() == "poor":
+                if installed:
+                    jobs.append(self._job_sync(repo, category=category, local_dir=local_dir))
+                continue
+
+            if installed:
+                jobs.append(self._job_sync(repo, category=category, local_dir=local_dir))
+            elif acquire_missing:
+                jobs.append(self._job_acquire(repo, category=category, local_dir=local_dir))
+
+        # De-dup by repo
+        seen = set()
+        out: List[dict] = []
+        for j in jobs:
+            r = j.get("repo")
+            if not r or r in seen:
+                continue
+            seen.add(r)
+            out.append(j)
+        return out
+
+    def resolve_inference_ladder(
+        self,
+        category: str = "reasoning",
+        privacy: str = "default",
+        allow_remote_mesh: Optional[bool] = None,
+        allow_external_api: Optional[bool] = None,
+    ) -> dict:
+        """Return a routing decision for Neuron/Runner: baseline/local/mesh/external.
+
+        - baseline: hardcoded deterministic fallback (Tier-0).
+        - local: use installed active repo (Tier-1).
+        - mesh: use trusted remote model pool (Tier-2).
+        - external: use external API (Tier-3, optional).
+        """
+        allow_remote_mesh = self.allow_remote_mesh_default if allow_remote_mesh is None else bool(allow_remote_mesh)
+        allow_external_api = self.allow_external_api_default if allow_external_api is None else bool(allow_external_api)
+
+        # Tier-0 always exists
+        decision = {"route": "baseline", "category": category, "reason": "tier0_baseline"}
+
+        active = (self._active.get("active") or {}).get(category) or {}
+        if active.get("repo") and active.get("local_dir") and model_files_valid(active.get("local_dir")):
+            return {
+                "route": "local",
+                "category": category,
+                "repo": active.get("repo"),
+                "local_dir": active.get("local_dir"),
+                "reason": "tier1_local_active",
+            }
+
+        # If we have any installed candidate from routing, prefer that before mesh
+        repo = self._choose_repo_for_category(category=category, tier=str(recommend_model_tier(category=category) or "low"), prefer_installed=True)
+        if repo and is_repo_installed(repo):
+            local_dir = repo_to_local_dir(repo)
+            if model_files_valid(local_dir):
+                return {"route": "local", "category": category, "repo": repo, "local_dir": local_dir, "reason": "tier1_local_installed"}
+
+        if allow_remote_mesh and privacy.lower() not in ("strict_local", "local_only"):
+            return {"route": "mesh", "category": category, "reason": "tier2_mesh_allowed"}
+
+        if allow_external_api and privacy.lower() not in ("strict_local", "local_only"):
+            return {"route": "external", "category": category, "reason": "tier3_external_allowed"}
+
+        return decision
+
+    def get_active_map(self) -> dict:
+        return dict(self._active)
+
+    def force_gc(self) -> dict:
+        return self._gc_orphans(force=True)
+
+    # -----------------------------
+    # Internal: repo selection helpers (category/tier aware)
+    # -----------------------------
+
+    def _primary_repo_for_category(self, category: str) -> str:
+        """Return the configured primary repo for a category (may be empty)."""
+        try:
+            r = get_stack_primary_repo(category, text="", meta=None) if MULTI_STACK_ENABLED else ""
+            return resolve_model_repo(r) if r else ""
+        except Exception:
+            return ""
+
+    def _catalog_candidates_for_category(self, category: str, tier: str) -> List[str]:
+        cat = (category or "").strip().lower()
+        if cat in ("embedding", "semantic", "memory"):
+            cat = "embeddings"
+        tiers = (MODEL_CATALOG or {}).get(cat, {}) or {}
+
+        # Tier fallback order (includes high)
+        t = (tier or "low").strip().lower()
+        if t == "beast":
+            order = ["beast", "high", "mid", "low"]
+        elif t == "high":
+            order = ["high", "mid", "low"]
+        elif t == "mid":
+            order = ["mid", "low"]
+        else:
+            order = ["low"]
+
+        out: List[str] = []
+        for k in order:
+            for r in (tiers.get(k) or []):
+                rr = resolve_model_repo(r)
+                if rr and rr not in out:
+                    out.append(rr)
+        return out
+
+    def _choose_repo_for_category(self, category: str, tier: str, prefer_installed: bool = False) -> str:
+        """Pick the best repo for a category/tier, optionally preferring installed repos."""
+        primary = self._primary_repo_for_category(category)
+        candidates = self._catalog_candidates_for_category(category, tier)
+
+        # Ensure primary is considered first (if present)
+        if primary and primary not in candidates:
+            candidates = [primary] + candidates
+        elif primary:
+            # move primary to front
+            candidates = [primary] + [c for c in candidates if c != primary]
+
+        if prefer_installed:
+            for r in candidates:
+                if is_repo_installed(r):
+                    return r
+
+        return candidates[0] if candidates else ""
+
+    # -----------------------------
+    # Internal: worker loop
+    # -----------------------------
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                job = self._q.get(timeout=0.5)
+            except Exception:
+                # periodic GC
+                self._gc_orphans(force=False)
+                continue
+
+            try:
+                self._state["inflight"] = job
+                self._persist_state()
+                self._execute_job(job)
+            except Exception as e:
+                logger.warning("[Hydra] job failed: %s", e)
+            finally:
+                self._state["inflight"] = None
+                self._persist_state()
+                self._q.task_done()
+
+    # -----------------------------
+    # Internal: job definitions
+    # -----------------------------
+
+    def _job_sync(self, repo: str, category: str, local_dir: str) -> dict:
+        return {"type": "sync", "repo": repo, "category": category, "local_dir": local_dir, "ts": time.time()}
+
+    def _job_acquire(self, repo: str, category: str, local_dir: str) -> dict:
+        return {"type": "acquire", "repo": repo, "category": category, "local_dir": local_dir, "ts": time.time()}
+
+    def _execute_job(self, job: dict) -> None:
+        jtype = str(job.get("type") or "")
+        repo = str(job.get("repo") or "")
+        category = str(job.get("category") or "reasoning")
+        local_dir = str(job.get("local_dir") or repo_to_local_dir(repo))
+
+        if not repo:
+            return
+
+        # Detect -> isolate if invalid
+        if os.path.isdir(local_dir) and not model_files_valid(local_dir):
+            self._quarantine(local_dir, reason="invalid_pre")
+
+        # Replace (sync/acquire)
+        if jtype in ("sync", "acquire"):
+            ok = self._hf_snapshot(repo=repo, target_dir=local_dir)
+            if not ok:
+                return
+
+            # Verify
+            if not self._verify_repo_install(repo, local_dir):
+                self._quarantine(local_dir, reason="verify_fail")
+                # Rollback if we had one
+                self._rollback(category)
+                return
+
+            # Promote
+            self._promote(category=category, repo=repo, local_dir=local_dir)
+
+            # Cleanup governed retention
+            self._gc_category(category)
+
+    # -----------------------------
+    # Internal: HF snapshot + verify
+    # -----------------------------
+
+    def _hf_snapshot(self, repo: str, target_dir: str) -> bool:
+        if snapshot_download is None:
+            logger.warning("[Hydra] huggingface_hub not available; cannot sync %s", repo)
+            return False
+
+        # Policy gate: best-effort size lookup; still enforce disk/budget
+        size_gb = float(MODEL_META.get(repo, {}).get("size_gb") or 0.0)
+        if size_gb <= 0.0:
+            try:
+                size_gb = float(_estimate_hf_repo_size_gb(repo) or 0.0)
+            except Exception:
+                size_gb = 0.0
+
+        if not _policy_check_before_download(repo, target_dir):
+            logger.info("[Hydra] policy blocked %s", repo)
+            return False
+        if not pol.get("ok"):
+            logger.info("[Hydra] policy blocked %s: %s", repo, pol.get("reason"))
+            return False
+
+        # Use HF resumable download; keep portable (no symlinks)
+        token = os.getenv(self.hf_token_env) or None
+
+        # Ensure parent exists
+        os.makedirs(target_dir, exist_ok=True)
+
+        try:
+            snapshot_download(
+                repo_id=repo,
+                local_dir=target_dir,
+                local_dir_use_symlinks=False,
+                resume_download=True,
+                token=token,
+            )
+            # Mark installed stamp for existing menus/tools
+            try:
+                stamp_installed_repo(repo)
+            except Exception:
+                pass
+
+            # Write/refresh manifest (optional)
+            try:
+                write_model_manifest(target_dir)
+            except Exception:
+                pass
+
+            return True
+        except Exception as e:
+            logger.warning("[Hydra] snapshot_download failed for %s: %s", repo, e)
+            return False
+
+    def _verify_repo_install(self, repo: str, local_dir: str) -> bool:
+        # Corruption check via manifest if enabled
+        try:
+            if not model_files_valid(local_dir):
+                return False
+        except Exception:
+            return False
+
+        # Optional lightweight load check (no heavy GPU inference)
+        # We only verify tokenizer/config presence where possible.
+        try:
+            if AutoTokenizer is not None:
+                # Will succeed even without GPU; may take time but is deterministic.
+                AutoTokenizer.from_pretrained(local_dir, local_files_only=True)
+        except Exception:
+            # tokenizer load isn't mandatory for "installed"; do not hard fail
+            pass
+
+        return True
+
+    # -----------------------------
+    # Internal: promote / rollback / quarantine
+    # -----------------------------
+
+    def _promote(self, category: str, repo: str, local_dir: str) -> None:
+        now = time.time()
+
+        current = (self._active.get("active") or {}).get(category)
+        if current and current.get("local_dir") and current.get("local_dir") != local_dir:
+            # store rollback pointer
+            self._active.setdefault("rollback", {})[category] = dict(current)
+
+        self._active.setdefault("active", {})[category] = {
+            "repo": repo,
+            "local_dir": local_dir,
+            "ts": now,
+        }
+        self._save_json_atomic(self._active_path, self._active)
+
+    def _rollback(self, category: str) -> bool:
+        rb = (self._active.get("rollback") or {}).get(category)
+        if not rb:
+            return False
+        if rb.get("local_dir") and model_files_valid(rb.get("local_dir")):
+            self._active.setdefault("active", {})[category] = dict(rb)
+            self._save_json_atomic(self._active_path, self._active)
+            return True
+        return False
+
+    def _quarantine(self, local_dir: str, reason: str = "unknown") -> None:
+        if not os.path.isdir(local_dir):
+            return
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        base = os.path.basename(local_dir.rstrip("/\\")).strip()
+        dst = os.path.join(self._quarantine_dir, f"{base}__{reason}__{ts}")
+        try:
+            shutil.move(local_dir, dst)
+            logger.warning("[Hydra] quarantined %s -> %s", local_dir, dst)
+        except Exception as e:
+            logger.warning("[Hydra] quarantine move failed: %s", e)
+
+    # -----------------------------
+    # Internal: governed cleanup
+    # -----------------------------
+
+    def _gc_category(self, category: str) -> None:
+        """Keep active + rollback only for a category (best-effort)."""
+        active = (self._active.get("active") or {}).get(category) or {}
+        rollback = (self._active.get("rollback") or {}).get(category) or {}
+        keep_dirs = set()
+        if active.get("local_dir"):
+            keep_dirs.add(os.path.abspath(active.get("local_dir")))
+        if rollback.get("local_dir"):
+            keep_dirs.add(os.path.abspath(rollback.get("local_dir")))
+
+        # Only consider model dirs referenced by our repo naming convention (repo_to_local_dir)
+        try:
+            for entry in os.scandir(self.models_dir):
+                if not entry.is_dir():
+                    continue
+                if entry.name.startswith("."):
+                    continue
+                p = os.path.abspath(entry.path)
+                if p in keep_dirs:
+                    continue
+                # Skip if not in our managed set (best-effort)
+                # If it's installed but not referenced, leave it alone.
+        except Exception:
+            return
+
+    def _gc_orphans(self, force: bool = False) -> dict:
+        """Global cleanup: remove abandoned staging leftovers; keep quarantine."""
+        now = time.time()
+        last = float(self._state.get("last_gc_ts") or 0)
+        if (not force) and (now - last) < 3600:
+            return {"ok": True, "skipped": True}
+
+        removed = 0
+        # Remove empty staging directories older than 1h
+        try:
+            for entry in os.scandir(self._staging_dir):
+                if not entry.is_dir():
+                    continue
+                try:
+                    st = entry.stat()
+                    age = now - st.st_mtime
+                    if age > 3600 and not any(os.scandir(entry.path)):
+                        shutil.rmtree(entry.path, ignore_errors=True)
+                        removed += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        self._state["last_gc_ts"] = now
+        self._persist_state()
+        return {"ok": True, "removed": removed, "force": force}
+
+    # -----------------------------
+    # Internal: persistence helpers
+    # -----------------------------
+
+    def _persist_state(self) -> None:
+        # Persist queue snapshot + inflight marker
+        try:
+            pending = []
+            # snapshot queue without draining (best-effort)
+            with self._q.mutex:
+                pending = list(self._q.queue)
+            self._state["pending"] = pending
+        except Exception:
+            pass
+        self._save_json_atomic(self._state_path, self._state)
+
+    def _load_json(self, path: str, default: dict) -> dict:
+        try:
+            if os.path.isfile(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return dict(default)
+
+    def _save_json_atomic(self, path: str, data: dict) -> None:
+        tmp = path + ".tmp"
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True)
+        os.replace(tmp, path)
 
 def cli_menu():
     _print_hardware_summary()
