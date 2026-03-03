@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-03-01
+Date: 2025-03-02
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -585,7 +585,7 @@ VISION_ALT_REPO           = "qualcomm/RF-DETR"                         # Alterna
 IMAGEGEN_MODEL_REPO       = "Freepik/flux.1-lite-8B"                   # Image generation (heavy; consider API fallback)
 TTS_MODEL_REPO            = "FunAudioLLM/CosyVoice2-0.5B"               # Low-latency TTS
 
-# ---- End-user model catalog tiers (Low / Mid / Beast) ----
+# ---- End-user model catalog tiers (Low / Mid / High/ Beast) ----
 # Keep this list short and high-signal: ~3 choices per tier.
 MODEL_CATALOG = {
     "reasoning": {
@@ -642,6 +642,7 @@ MODEL_REPO_MAP = {
     "e5-base": EMBEDDING_RECALL_REPO,
     "paraphrase-MiniLM-L3-v2": EMBEDDING_PARA_REPO,
     "multi-qa-MiniLM": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
+    
     # LLMs
     "phi-1_5": "microsoft/phi-1_5",
     "phi-2": "microsoft/phi-2",
@@ -649,6 +650,7 @@ MODEL_REPO_MAP = {
     "Nous-Capybara-7B": "NousResearch/Nous-Capybara-7B",
     "Mistral-7B-Instruct-v0.2": "mistralai/Mistral-7B-Instruct-v0.2",
     "TinyLlama-1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    
     # New stack names (allow either alias or repo)
     "Qwen3-0.6B": REASONING_MODEL_REPO,
     "Qwen2.5-Coder-1.5B-Instruct": CODER_MODEL_REPO,
@@ -968,53 +970,73 @@ def hardware_score(metrics=None):
     # RAM (0..40)
     try:
         ram = float(m.get("ram_total_mb") or 0)
-        if ram >= 32768: score += 40
-        elif ram >= 16384: score += 30
-        elif ram >= 8192: score += 20
-        elif ram >= 4096: score += 10
-        elif ram > 0: score += 5
+        if ram >= 32768:
+            score += 40
+        elif ram >= 16384:
+            score += 30
+        elif ram >= 8192:
+            score += 20
+        elif ram >= 4096:
+            score += 10
+        elif ram > 0:
+            score += 5
     except Exception:
         pass
 
     # VRAM (0..40)
     try:
         vram = float(m.get("gpu_vram_total_mb") or 0)
-        if vram >= 24000: score += 40
-        elif vram >= 12000: score += 30
-        elif vram >= 8000: score += 20
-        elif vram >= 4000: score += 10
-        elif vram > 0: score += 5
+        if vram >= 24000:
+            score += 40
+        elif vram >= 12000:
+            score += 30
+        elif vram >= 8000:
+            score += 20
+        elif vram >= 4000:
+            score += 10
+        elif vram > 0:
+            score += 5
     except Exception:
         pass
 
     # Disk free (0..10)
     try:
         free = float(m.get("disk_free_gb") or 0)
-        if free >= 200: score += 10
-        elif free >= 100: score += 7
-        elif free >= 50: score += 5
-        elif free >= 20: score += 3
-        elif free > 0: score += 1
+        if free >= 200:
+            score += 10
+        elif free >= 100:
+            score += 7
+        elif free >= 50:
+            score += 5
+        elif free >= 20:
+            score += 3
+        elif free > 0:
+            score += 1
     except Exception:
         pass
 
     # CPU headroom (0..10)
     try:
         cpu_pct = float(m.get("cpu_pct") or 0)
-        if cpu_pct <= 20: score += 10
-        elif cpu_pct <= 40: score += 8
-        elif cpu_pct <= 60: score += 6
-        elif cpu_pct <= 80: score += 3
-        else: score += 1
+        if cpu_pct <= 20:
+            score += 10
+        elif cpu_pct <= 40:
+            score += 8
+        elif cpu_pct <= 60:
+            score += 6
+        elif cpu_pct <= 80:
+            score += 3
+        else:
+            score += 1
     except Exception:
         pass
 
-        # Tier Rating (owner policy)
-    # Poor: <= 69.9
-    # Low:  70.0 - 75.0
-    # Mid:  75.1 - 80.0
-    # High: 80.1 - 90.0
-    # BEAST:>= 90.1
+    # Tier Rating (owner policy)
+    # Poor:  <= 69.9
+    # Low:    70.0 - 75.0
+    # Mid:    75.1 - 80.0
+    # High:   80.1 - 90.0
+    # BEAST:  >= 90.1
     tier_rating = "Poor"
     try:
         s = float(score)
@@ -1032,7 +1054,7 @@ def hardware_score(metrics=None):
         tier_rating = "Poor"
 
     # Tier mapping for model catalogs
-    # We keep a normalized tier string for selectors: low|mid|high|beast
+    # Normalized tier string for selectors: low|mid|high|beast
     tier = "low"
     if tier_rating == "Mid":
         tier = "mid"
@@ -1041,15 +1063,14 @@ def hardware_score(metrics=None):
     elif tier_rating == "BEAST":
         tier = "beast"
 
-        third_party_autoload_allowed = (tier_rating != "Poor")
-        return {
+    third_party_autoload_allowed = (tier_rating != "Poor")
+    return {
         "score": float(score),
         "tier": tier,
         "tier_rating": tier_rating,
         "third_party_autoload_allowed": third_party_autoload_allowed,
         "metrics": m,
     }
-
 def recommend_model_tier(category="reasoning", metrics=None):
     """Return low/mid/beast tier recommendation for a given category."""
     hs = hardware_score(metrics)
@@ -1419,15 +1440,16 @@ OPENLIBRARY_RESEARCH_ENABLED = False #Set to False until further notice
 INTERNET_ARCHIVE_RESEARCH_ENABLED = False #Set True/False for testing purposes
 
 #Multiple AI API Research Connections For SarahMemoryResearch.py - Class 3 - Learning for other AI's
-API_RESEARCH_ENABLED = True #False = Disable from Learning from An Ai API.
+API_RESEARCH_ENABLED = False #False = Disable from Learning from An Ai API.
 #Allows End User to select which AI API to be used for SarahMemoryResearch.py - Class 3 when query is passed through SarahMemoryAPI.py
 #WARNING: AS OF VERSION 7.0 CURRENTLY ONLY ONE (1) OF THE FOLLOWING API's MAY BE SET TO TRUE AND ALL OTHERS MUST BE SET TO FALSE
 # ============================================================================
 # API PROVIDER CONFIGURATION (v8.0 Expanded Selection Logic)
 # ============================================================================
 
-# Individual Provider Toggles
-OPEN_AI_API     = True
+# Individual Provider Toggles 
+# Should only work if API_RESEARCH_ENABLE flag on line 1443 is set to 'True'
+OPEN_AI_API     = False
 CLAUDE_API      = False
 ANTHROPIC_API   = False
 MISTRAL_API     = False
@@ -1437,9 +1459,11 @@ DEEPSEEK_API    = False
 GROQ_API        = False
 COHERE_API      = False
 
-OLLAMA_API      = False
-LOCAL_API       = True
-MESH_API        = True
+OLLAMA_API      = True # LOCAL BRAIN
+LOCAL_API       = True # LOCAL_API is the SYSTEM NOT A 3rd Party API
+MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahmemory.net
+# MESH_API is the NODE NETWORK of other systems running the SARAHMEMORY AiOS systems
+
 # ---------------------------------------------------------------------------
 # Unified Provider Registry
 # ---------------------------------------------------------------------------
@@ -2746,7 +2770,7 @@ def _sm_get_default_settings():
         "DEEPSEEK_API": False,
         "GROQ_API": False,
         "COHERE_API": False,
-        "OOLAMA_API": True,
+        "OLLAMA_API": True,
         "LOCAL_API": True,
         "MESH_API": True,
         "API_TIMEOUT": 20,
