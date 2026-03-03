@@ -65,7 +65,6 @@ INTEGRATION POINTS:
 - SarahMemoryReply.py: Uses send_to_api for response generation
 - SarahMemoryResearch.py: Uses send_to_api for research queries
 - SarahMemoryCompare.py: Uses send_to_api for comparisons
-- SarahMemory-local_api_server.py: Uses send_to_api_async
 - SarahMemoryWebSYM.py: Uses send_to_openai (deprecated alias)
 - app.py: Uses send_to_api for web interface
 - SarahMemoryUpdater.py: Uses API module for updates
@@ -88,6 +87,15 @@ import sys
 import sqlite3
 import threading
 import time
+# Local LLM (3rd-party models) runtime
+try:
+    import torch
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+except Exception:
+    torch = None
+    AutoTokenizer = None
+    AutoModelForCausalLM = None
+
 import queue
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any, Callable, Union
@@ -390,8 +398,8 @@ class APIProvider(Enum):
     DEEPSEEK = "deepseek"
     GROQ = "groq"
     COHERE = "cohere"
-    OLLAMA = "ollama"
-    LOCAL = "local"
+    LOCAL_LLM_API = "local_llm"
+    LOCAL_API = "local"
     MESH = "mesh"
 
 
@@ -411,7 +419,7 @@ API_KEYS: Dict[str, Optional[str]] = {
     "groq": os.getenv("GROQ_API_KEY"),
     "cohere": os.getenv("COHERE_API_KEY") or os.getenv("CO_API_KEY"),
     "local": os.getenv("LOCAL_BRAIN"),
-    "ollama": os.getenv("OLLAMA_API"),
+    "local_llm": os.getenv("LOCAL_LLM_API"),
     "mesh": os.getenv("MESH_API"),
 }
 
@@ -435,7 +443,7 @@ API_URLS: Dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "cohere": "https://api.cohere.ai/v1/chat",
     "local": "http://127.0.0.1:8000/api/local/chat",
-    "ollama": "http://127.0.0.1:11434/api/chat",
+    "local_llm": "http://127.0.0.1:8000/api/chat",
     "mesh": "https://api.sarahmemory.com/api/chat",
 }
 
@@ -451,14 +459,14 @@ DEFAULT_MODELS: Dict[str, str] = {
     "groq": "llama-3.1-70b-versatile",
     "cohere": "command-r-plus",
     "local": "synapses-micro-brain",
-    "ollama": "llama3",
+    "local_llm": "auto", #SELECTED LLMS AFTER HARDWARE CHECKS WHEN BOOTING
     "mesh": "auto",
 }
 
 # Provider priority for fallback
 PROVIDER_PRIORITY: List[str] = [
     "local",       # Synapses micro-brain (deterministic + retrieval + tool routing)
-    "ollama",      # Local LLM runtime
+    "local_llm",      # Local 3rd Party LLM runtime
     "openai",
     "claude",
     "mistral",
@@ -816,7 +824,7 @@ def _provider_flag_attr(provider: str) -> Optional[str]:
         "deepseek": "DEEPSEEK_API",
         "groq": "GROQ_API",
         "cohere": "COHERE_API",
-        "ollama": "OLLAMA_API",
+        "local_llm": "LOCAL_LLM_API",
         "local": "LOCAL_API",
         "mesh": "MESH_API",
     }.get(p)
@@ -830,7 +838,7 @@ def _provider_is_enabled(provider: str) -> bool:
 
 def _provider_requires_key(provider: str) -> bool:
     p = (provider or "").strip().lower()
-    return p not in {"local", "ollama", "mesh"}
+    return p not in {"local", "local_llm", "mesh"}
 
 def _provider_has_credentials(provider: str) -> bool:
     p = (provider or "").strip().lower()
@@ -1492,7 +1500,7 @@ def _call_cohere(
 # ============================================================================
 
 # ---------------------------------------------------------------------------
-# LOCAL / OLLAMA / MESH backends
+# LOCAL / LLM from MODEL_CATALOG / MESH backends
 # ---------------------------------------------------------------------------
 def _call_local(prompt: str, model: Optional[str] = None, timeout: int = 8) -> Tuple[Optional[str], Optional[str]]:
     """Call the local SarahMemory API chat endpoint (POST /api/chat)."""
@@ -1509,38 +1517,201 @@ def _call_local(prompt: str, model: Optional[str] = None, timeout: int = 8) -> T
     except Exception as e:
         return None, str(e)
 
-def _call_ollama(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
-    """Call a local Ollama runtime via /api/chat."""
-    url = API_URLS.get("ollama")
-    if not url:
-        return None, "OLLAMA endpoint not configured"
-    payload = {
-        "model": model or DEFAULT_MODELS.get("ollama") or "llama3",
-        "messages": [
-            {"role": "system", "content": "You are SarahMemory local runtime."},
-            {"role": "user", "content": prompt},
-        ],
-        "stream": False,
-    }
-    headers = {"Content-Type": "application/json"}
-    key = API_KEYS.get("ollama")
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
+# ---------------------------------------------------------------------------
+# Local 3rd-party LLM runtime (MODEL_CATALOG routing)
+# ---------------------------------------------------------------------------
+
+_LOCAL_LLM_CACHE = {
+    "repo": None,
+    "model": None,
+    "tokenizer": None,
+    "device": None,
+    "dtype": None,
+}
+
+def _normalize_local_repo_to_dir(repo: str) -> str:
+    """
+    Convert HF repo id -> local directory name convention used by SarahMemoryLLM:
+      Qwen/Qwen3-0.6B -> Qwen_Qwen3-0.6B
+    """
+    return (repo or "").strip().replace("/", "_")
+
+def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = None) -> Tuple[Optional[str], list, str]:
+    """
+    Resolve best local 3rd-party model repo using SarahMemoryGlobals MODEL_CATALOG + MODEL_CONFIG.
+    Returns (selected_repo, fallbacks, source_lane)
+    """
     try:
-        r = requests.post(url, json=payload, headers=headers, timeout=timeout, verify=False)
-        if r.status_code >= 400:
-            return None, f"Ollama HTTP {r.status_code}: {r.text[:400]}"
-        data = r.json() if r.content else {}
-        msg = (data.get("message") or {})
-        content = msg.get("content")
-        if content is not None:
-            return content, None
-        choices = data.get("choices")
-        if isinstance(choices, list) and choices:
-            return (choices[0].get("message") or {}).get("content"), None
-        return "", None
+        # Prefer the newer resolver if present
+        category = None
+        try:
+            import SarahMemoryLLM as _SMLLM
+            category = _SMLLM.infer_category_from_text(user_text or "")
+        except Exception:
+            category = None
+
+        if not category:
+            it = (intent or "").lower()
+            if "code" in it or "coder" in it:
+                category = "coder"
+            else:
+                category = "reasoning"
+
+        if hasattr(config, "resolve_model") and callable(getattr(config, "resolve_model")):
+            r = config.resolve_model(category, text=user_text or "", meta=meta or {}, models_dir=getattr(config, "MODELS_DIR", None))
+            selected = r.get("selected")
+            fallbacks = r.get("fallbacks") or []
+            source = r.get("source") or "none"
+            return selected, fallbacks, source
+    except Exception:
+        pass
+
+    # Fallback: use stack primary repo
+    try:
+        if hasattr(config, "get_stack_primary_repo"):
+            cat = "coder" if ("code" in (intent or "").lower() or "coder" in (intent or "").lower()) else "reasoning"
+            sel = config.get_stack_primary_repo(cat, text=user_text or "", meta=meta or {})
+            return sel, [], "fallback"
+    except Exception:
+        pass
+
+    return None, [], "none"
+
+def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
+    """
+    Load (or reuse cached) local HF/Transformers model from ./data/models/<repo_underscored>/.
+    """
+    if not repo:
+        return None, None, "No repo selected"
+
+    if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
+        return None, None, "Local LLM runtime not available (missing torch/transformers)"
+
+    # Resolve local path
+    models_dir = getattr(config, "MODELS_DIR", None)
+    if not models_dir:
+        try:
+            base = getattr(config, "BASE_DIR", os.getcwd())
+            models_dir = os.path.join(base, "data", "models")
+        except Exception:
+            models_dir = os.path.join(os.getcwd(), "data", "models")
+
+    local_dir = os.path.join(models_dir, _normalize_local_repo_to_dir(repo))
+
+    if not os.path.isdir(local_dir):
+        return None, None, f"Local model directory not found: {local_dir}"
+
+    # Reuse cache if same repo
+    if _LOCAL_LLM_CACHE.get("repo") == repo and _LOCAL_LLM_CACHE.get("model") is not None and _LOCAL_LLM_CACHE.get("tokenizer") is not None:
+        return _LOCAL_LLM_CACHE["model"], _LOCAL_LLM_CACHE["tokenizer"], None
+
+    # Decide device/dtype
+    device = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
+    dtype = torch.float16 if (device == "cuda") else torch.float32
+
+    try:
+        tok = AutoTokenizer.from_pretrained(local_dir, local_files_only=True, use_fast=True)
+        # Some models need pad token
+        if tok.pad_token is None and tok.eos_token is not None:
+            tok.pad_token = tok.eos_token
+
+        model = AutoModelForCausalLM.from_pretrained(
+            local_dir,
+            local_files_only=True,
+            torch_dtype=dtype,
+            device_map=("auto" if device == "cuda" else None),
+        )
+
+        if device == "cpu":
+            model.to("cpu")
+
+        model.eval()
+
+        _LOCAL_LLM_CACHE.update({
+            "repo": repo,
+            "model": model,
+            "tokenizer": tok,
+            "device": device,
+            "dtype": str(dtype),
+        })
+
+        return model, tok, None
     except Exception as e:
-        return None, str(e)
+        return None, None, f"Failed to load local model ({repo}): {e}"
+
+def _call_local_llm(prompt: str,
+                    intent: str,
+                    user_text: str,
+                    meta: Optional[dict] = None,
+                    max_tokens: int = 512,
+                    temperature: float = 0.7) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Execute local inference via Transformers using the Auto/Manual selected repo from MODEL_CATALOG.
+    No model name hardcoding here: selection is delegated to SarahMemoryGlobals.resolve_model().
+    """
+    selected, fallbacks, source_lane = _resolve_local_llm_repo(intent=intent, user_text=user_text, meta=meta)
+    tried = []
+    for repo in [selected, *fallbacks]:
+        if not repo:
+            continue
+        tried.append(repo)
+        model, tok, err = _load_local_llm(repo)
+        if err:
+            continue
+
+        try:
+            # Build a minimal chat-style prompt if tokenizer supports it
+            messages = [
+                {"role": "system", "content": "You are SarahMemory. Answer clearly and helpfully."},
+                {"role": "user", "content": prompt},
+            ]
+
+            if hasattr(tok, "apply_chat_template"):
+                text_in = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            else:
+                # Plain fallback
+                text_in = f"System: You are SarahMemory.\nUser: {prompt}\nAssistant:"
+
+            inputs = tok(text_in, return_tensors="pt", truncation=True, max_length=4096)
+            if torch and torch.cuda.is_available():
+                inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+            gen_kwargs = {
+                "max_new_tokens": int(max_tokens),
+                "do_sample": float(temperature) > 0.0,
+                "temperature": float(max(0.0, temperature)),
+                "top_p": 0.95,
+                "eos_token_id": tok.eos_token_id,
+                "pad_token_id": tok.pad_token_id,
+            }
+
+            with torch.inference_mode():
+                out = model.generate(**inputs, **gen_kwargs)
+
+            decoded = tok.decode(out[0], skip_special_tokens=True)
+
+            # Best-effort: strip the input prefix
+            if decoded.startswith(text_in):
+                decoded = decoded[len(text_in):].strip()
+
+            if not decoded:
+                # sometimes the decode returns full conversation; try heuristic
+                decoded = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
+
+            if decoded:
+                return decoded, None
+        except Exception as e:
+            continue
+
+    return None, f"Local LLM failed. Tried: {tried or ['<none>']} (selection={selected}, lane={source_lane})"
+
+
+
+
+def _call_MODEL_CATALOG(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+    """Back-compat alias: MODEL_CATALOG provider now routes to LOCAL_LLM_API resolver."""
+    return _call_local_llm(prompt=prompt, intent="chat", user_text=prompt, meta=None, max_tokens=512, temperature=0.7)
+
 
 def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str] = None, timeout: int = 45) -> Tuple[Optional[str], Optional[str]]:
     """Call the distributed mesh tier (cloud broker)."""
@@ -1669,6 +1840,11 @@ def send_to_api(
     if provider == "anthropic":
         provider = "claude"
 
+    # Normalize legacy/local provider aliases
+    if provider in ("ollama", "MODEL_CATALOG"):
+        provider = "local_llm"
+
+
     # Get API key
     key = API_KEYS.get(provider)
     if _provider_requires_key(provider) and not key:
@@ -1727,13 +1903,15 @@ def send_to_api(
             content, error = _call_cohere(prompt, model, key)
         elif provider == "local":
             content, error = _call_local(prompt, model)
-        elif provider == "ollama":
-            content, error = _call_ollama(prompt, model)
+        elif provider in ("local_llm", "localmodels", "local_llm_api"):
+            content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
+        elif provider == "MODEL_CATALOG":
+            # Legacy string provider name some callers used
+            content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
         elif provider == "mesh":
             content, error = _call_mesh(prompt, provider=None, model=model)
         else:
             error = f"Unknown provider: {provider}"
-
     except Exception as e:
         error = str(e)
 
