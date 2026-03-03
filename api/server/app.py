@@ -1361,10 +1361,19 @@ def api_chat():
                 try:
                     import SarahMemoryGlobals as _G
                     from SarahMemoryAPI import send_to_api as _send_to_api
-                    prov = (getattr(_G, "PRIMARY_API", None) or (getattr(_G, "get_active_api", None)() if hasattr(_G, "get_active_api") else None) or "local_llm")
-                    # Hard block: never call OpenAI when OPEN_AI_API is False
-                    if str(prov).lower() == "openai" and not bool(getattr(_G, "OPEN_AI_API", False)):
-                        prov = "local_llm" if bool(getattr(_G, "LOCAL_LLM_API", False)) else ("local" if bool(getattr(_G, "LOCAL_API", False)) else "mesh")
+
+                    # Provider must follow Globals flags (PRIMARY_API) and must not bypass OPEN_AI_API=False.
+                    prov = str(getattr(_G, "PRIMARY_API", "local_llm") or "local_llm").strip().lower()
+
+                    # Hard block OpenAI when disabled, even if PRIMARY_API or defaults point there.
+                    if prov == "openai" and not bool(getattr(_G, "OPEN_AI_API", False)):
+                        if bool(getattr(_G, "LOCAL_LLM_API", False)):
+                            prov = "local_llm"
+                        elif bool(getattr(_G, "LOCAL_API", False)):
+                            prov = "local"
+                        else:
+                            prov = "mesh"
+
                     api_res = _send_to_api(
                         text,
                         provider=prov,
@@ -1373,10 +1382,10 @@ def api_chat():
                         complexity=complexity,
                     )
                     if isinstance(api_res, dict):
-                        reply_str = str(api_res.get("data") or "").strip()
+                        reply_str = str(api_res.get("data") or api_res.get("reply") or "").strip()
                     else:
                         reply_str = str(api_res).strip()
-                    engine_source = "direct_api_fallback"
+                    engine_source = f"direct_api_fallback:{prov}"
                 except ImportError:
                     app_logger.warning("SarahMemoryAPI module not found. Cannot perform direct API call fallback.")
                 except Exception as api_e:
