@@ -10,8 +10,10 @@
 * Created using:** Using Visual Studios Code, on Windows 10, On an AMD 8350FX ,32gb DDR3 and Nvidia 3060 RTX,/Ryzen 3 with 8gb DDR4 with Radeon Vega Laptop /Samsung Galaxy S20+ / Apple iPhone 14. Entire design is to allow full - partial functionality in under 256gb of storage locallay. - NOTE This system was purposly designed to operate and function on older Legancy Systems. Performance may and should increase highly with newer, faster hardware, and updated LM/LLM models(optional). 
 ---
 ![SarahMemory Web UI](documents/version8-ui-test.png)
-
-
+---
+KNOW EXCATLY how the Data flows from the moment you submit it all the way till it gives a response back.
+---
+![SarahMemory DATAFLOW](documents/Input-dataflow-mermaid-diagram.png)
 
 ---
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
