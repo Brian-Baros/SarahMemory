@@ -3,7 +3,7 @@
 * Version:** 8.0.0  
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** Febuary  24, 2026  
+* Last Update Date:** March 03, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
@@ -767,7 +767,7 @@ Feb 17th, 2026 - Updated - Core Files again so Bootup Process can run smoothly w
 
 Feb 18th, 2026 - Updated - Core File SarahMemoryDiagnostics.py with smarter functions and removed string bugs that was giving false failure report results. Updated default Flast/React FrontEnd and Updated ./api/server/app.py so the health checks/heartbeats work better with the new diagnostics blueprints. 
 
-Feb 20-24th, 20226 - Updated - Added new core file SarahMemoryNeuron.py - Since this project has it's own logic core, SarahMemoryNeuron is a cognitive axis module.
+Feb 20-24th, 2026 - Updated - Added new core file SarahMemoryNeuron.py - Since this project has it's own logic core, SarahMemoryNeuron is a cognitive axis module.
 It consolidates:
 - Meta-cognition (confidence, self-check, contradiction detection)
 - Cross-domain synthesis (math/chem/physics/code/system constraints)
@@ -787,3 +787,6 @@ It consolidates:
 - SarahMemoryCompare.py: QA gate (post-check)
 - SarahMemoryAPI.py: multi-provider LLM routing (Tier-3)
 - SarahMemoryCognitiveServices.py: orchestration/awareness bridge (optional)
+
+Feb 26-March 03rd, 2026 - Updated - Many Core Features have been updated, including SarahMemoryLLM.py with New 3rd Party Models that may be downloaded, Updated SarahMemoryConfig.py file allows the software now to Auto-Selecting 3rd party models depending on Hardware in which this system is set upon. ./api/server/app.py updated to accept new model inputs, No all core files that had 3rd Party models hardcoded into them have been removed making SarahMemoryGlobals.py configurations now the source of truth for operations. Faster and Cleaner boot process now includes Hardware ranking in levels such as [poor,low,mid,high,beast] for all types of systems from edge computing to Massive datacenters. Users are able to push or lower the limits of their systems by adjusting or switching bool : True/False values in the SarahMemoryGlobals.py configuration file. Upcoming updates allows for SarahMemoryLLM.py to auto update and/or rollback versions of a 3rd party models being selected and used by the user. this system is currently designed to accept up to 25+ models, but may extend further now due to this update. Models can now be multi-stacked pending the category of the model, example 1 for reasoning, 1 for video, 1 for audio, 1 for embedding,1 for coding, etc. etc. it is preferred 1 model for each category set to True in SarahMemoryGlobals.py to reduced CPU cycle time. 
+
