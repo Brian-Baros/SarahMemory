@@ -22,6 +22,7 @@ except Exception as e:
     print(f"[WARN] python-dotenv unavailable or failed, .env not loaded: {e}")
     
 import os
+import sys
 import logging
 import sqlite3
 import csv
@@ -510,25 +511,29 @@ PATTERN_HISTORY_DAYS = 30
 
 # ---------------- Model Selection & Multi-Model Configuration -New for v7.0-----Allows 3rd party models to be incorporated----------
 # Full Model Integration Flag
-MULTI_MODEL = True  # When True, allows multiple models to be enabled and used in logic checks. If False, only DEFAULT fallback model will load.
+MULTI_MODEL = False  # When True, allows multiple models to be enabled and used in logic checks. If False, only DEFAULT fallback model will load.
+AUTO_MODEL_SELECTOR = True # Automatic model selector flag (v7.1.3). When True, the system picks the best available model based on enabled flags.
 
 # Model Enable Flags (Used across modules for routing queries or embeddings)
-ENABLE_MODEL_A = False   #microsoft/phi-1_5 - Large reasoning/code model (6â€“8 GB+ RAM recommended)default=False
-ENABLE_MODEL_B = True   #all-MiniLM-L6-v2 - Fast, accurate general-purpose embedding model (DEFAULT fallback)True
-ENABLE_MODEL_C = False  #multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search optimized, default False
-ENABLE_MODEL_D = True  #paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
-ENABLE_MODEL_E = False #distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default AS OF 03/01/2026 now False
-ENABLE_MODEL_F = False  #allenai-specter - Scientific document embedding specialist,default True
-ENABLE_MODEL_G = False #intfloat/e5-base - Retrieval-focused high-recall embedding,default True
-ENABLE_MODEL_H = False  #microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
-ENABLE_MODEL_I = False  #tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
-ENABLE_MODEL_J = False # openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
+ENABLE_MODEL_A = False  # microsoft/phi-1_5 - Large reasoning/code model (6â€“8 GB+ RAM recommended)default=False
+ENABLE_MODEL_B = True   # all-MiniLM-L6-v2 - Fast, accurate general-purpose embedding model (DEFAULT fallback)True
+ENABLE_MODEL_C = False  # multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search optimized, default False
+ENABLE_MODEL_D = True   # paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
+ENABLE_MODEL_E = True   # distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default True
+ENABLE_MODEL_F = True   # allenai-specter - Scientific document embedding specialist,default True
+ENABLE_MODEL_G = True   # intfloat/e5-base - Retrieval-focused high-recall embedding,default True
+ENABLE_MODEL_H = False  # microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
+ENABLE_MODEL_I = False  # tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
+ENABLE_MODEL_J = False  # openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
 ENABLE_MODEL_K = False  # NousResearch/Nous-Capybara-7B - Helpful assistant-tuned model,default True
 ENABLE_MODEL_L = False  # mistralai/Mistral-7B-Instruct-v0.2 - Reasoning & smart generalist <Errors>,default False
 ENABLE_MODEL_M = False  # TinyLlama/TinyLlama-1.1B-Chat-v1.0 - For low-resource machines <Errors>,default False
+ENABLE_MODEL_N = True   # Qwen/Qwen3-0.6B — small reasoning LLM (local-friendly) default True
+ENABLE_MODEL_O = True   # Qwen/Qwen2.5-Coder-1.5B-Instruct — code assistant (low tier) default True
+ENABLE_MODEL_P = True   # Qwen/Qwen2.5-Coder-3B-Instruct — code assistant (mid tier) default True
+ENABLE_MODEL_Q = False  # Qwen/Qwen2.5-7B-Instruct — general LLM (high tier) default False
+ENABLE_MODEL_R = False  # BAAI/bge-base-en-v1.5 — stronger English embeddings (high tier) default False
 
-# Automatic model selector flag (v7.1.3). When True, the system picks the best available model based on enabled flags.
-AUTO_MODEL_SELECTOR = True
 
 # Central model dictionary map for iteration/logic control (accessed from other modules)
 MODEL_CONFIG = {
@@ -544,11 +549,15 @@ MODEL_CONFIG = {
     "openchat-3.5": ENABLE_MODEL_J,
     "Nous-Capybara-7B": ENABLE_MODEL_K,
     "Mistral-7B-Instruct-v0.2": ENABLE_MODEL_L,
-    "TinyLlama-1.1B": ENABLE_MODEL_M
+    "TinyLlama-1.1B": ENABLE_MODEL_M,
+    "Qwen3-0.6B": ENABLE_MODEL_N,
+    "Qwen2.5-Coder-1.5B-Instruct": ENABLE_MODEL_O,
+    "Qwen2.5-Coder-3B-Instruct": ENABLE_MODEL_P,
+    "Qwen2.5-7B-Instruct": ENABLE_MODEL_Q,
+    "BAAI/bge-base-en-v1.5": ENABLE_MODEL_R,
 }
 #(OLD v7.0.1 FLAG FOR SarahMemoryReply.py block)
 BLOCK_NARRATIVE_OUTPUTS = True #Keeps AI from making Wacky story outputs, based off of information in some of the NonFineTuned Models.
-
 
 # ---------------- Category-Based Model Stacking (v8.1.x) ----------------
 # Mission:
@@ -582,11 +591,13 @@ MODEL_CATALOG = {
     "reasoning": {
         "low":   ["Qwen/Qwen3-0.6B"],
         "mid":   ["microsoft/Phi-4-mini-instruct"],
+        "high":  ["microsoft/Phi-4-mini-instruct"],
         "beast": ["Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"],
     },
     "coder": {
         "low":   ["Qwen/Qwen2.5-Coder-1.5B-Instruct"],
         "mid":   ["Qwen/Qwen2.5-Coder-3B-Instruct"],
+        "high":  ["Qwen/Qwen2.5-Coder-3B-Instruct"],
         "beast": ["Qwen/Qwen2.5-Coder-7B-Instruct"],
     },
     "embeddings": {
@@ -597,21 +608,25 @@ MODEL_CATALOG = {
             "allenai/specter",
             "sentence-transformers/paraphrase-MiniLM-L3-v2",
         ],
+        "high":  ["BAAI/bge-base-en-v1.5"],
         "beast": ["BAAI/bge-base-en-v1.5", "BAAI/bge-m3"],
     },
     "vision": {
         "low":   ["nielsr/yolov12n", "ultralytics/yolov8"],
         "mid":   ["qualcomm/RF-DETR"],
+        "high":  ["ultralytics/yolov8x"],
         "beast": ["ultralytics/yolov8x"],
     },
     "image_generation": {
         "low":   ["black-forest-labs/FLUX.1-schnell"],
         "mid":   ["Freepik/flux.1-lite-8B"],
+        "high":  ["Freepik/flux.1-lite-8B"],
         "beast": ["black-forest-labs/FLUX.1-dev"],
     },
     "tts": {
         "low":   ["FunAudioLLM/CosyVoice2-0.5B"],
         "mid":   [],
+        "high":  [],
         "beast": [],
     },
 }
@@ -637,6 +652,10 @@ MODEL_REPO_MAP = {
     # New stack names (allow either alias or repo)
     "Qwen3-0.6B": REASONING_MODEL_REPO,
     "Qwen2.5-Coder-1.5B-Instruct": CODER_MODEL_REPO,
+    "Qwen2.5-Coder-3B-Instruct": "Qwen/Qwen2.5-Coder-3B-Instruct",
+    "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
+    "Phi-4-mini-instruct": "microsoft/Phi-4-mini-instruct",
 }
 
 def resolve_model_repo(model_id):
@@ -703,11 +722,14 @@ def _auto_candidates_for_category(category: str, tier_rating: str) -> list:
     tiers = MODEL_CATALOG.get(cat) or {}
     low = list(tiers.get("low") or [])
     mid = list(tiers.get("mid") or [])
+    high = list(tiers.get("high") or [])
     beast = list(tiers.get("beast") or [])
 
-    # order: highest first, then down
-    if tier_rating == "BEAST" or tier_rating == "High":
-        return [*beast, *mid, *low]
+    # Order: highest first, then down
+    if tier_rating == "BEAST":
+        return [*beast, *high, *mid, *low]
+    if tier_rating == "High":
+        return [*high, *mid, *low]
     if tier_rating == "Mid":
         return [*mid, *low]
     if tier_rating == "Low":
@@ -724,7 +746,7 @@ def resolve_model(category: str, text: str = "", meta: dict | None = None, model
         fallbacks: [<repo str>, ...],
         source: "user" | "auto" | "none",
         score: float,
-        tier: "low|mid|beast",
+        tier: "low|mid|high|beast",
         tier_rating: "Poor|Low|Mid|High|BEAST",
         third_party_autoload_allowed: bool
       }
@@ -1009,16 +1031,18 @@ def hardware_score(metrics=None):
     except Exception:
         tier_rating = "Poor"
 
-    # Legacy 3-tier mapping for backward compatibility
-    # Poor/Low -> low, Mid -> mid, High/BEAST -> beast
+    # Tier mapping for model catalogs
+    # We keep a normalized tier string for selectors: low|mid|high|beast
     tier = "low"
     if tier_rating == "Mid":
         tier = "mid"
-    elif tier_rating in ("High", "BEAST"):
+    elif tier_rating == "High":
+        tier = "high"
+    elif tier_rating == "BEAST":
         tier = "beast"
 
-    third_party_autoload_allowed = (tier_rating != "Poor")
-    return {
+        third_party_autoload_allowed = (tier_rating != "Poor")
+        return {
         "score": float(score),
         "tier": tier,
         "tier_rating": tier_rating,
@@ -1157,6 +1181,16 @@ MODEL_META = {
     "qualcomm/RF-DETR": {"tier": "mid", "disk_gb_est": 0.4, "vram_gb_est": 1.5, "speed": "medium"},
     "Freepik/flux.1-lite-8B": {"tier": "mid", "disk_gb_est": 16.0, "vram_gb_est": 12.0, "speed": "slow"},
     "FunAudioLLM/CosyVoice2-0.5B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
+    "Qwen/Qwen2.5-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
+    "Qwen/Qwen2.5-Coder-3B-Instruct": {"tier": "mid", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "medium"},
+    "Qwen/Qwen2.5-Coder-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "slow"},
+    "microsoft/Phi-4-mini-instruct": {"tier": "mid", "disk_gb_est": 3.0, "vram_gb_est": 4.0, "speed": "fast"},
+    "mistralai/Mistral-7B-Instruct-v0.2": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
+    "BAAI/bge-base-en-v1.5": {"tier": "high", "disk_gb_est": 1.0, "vram_gb_est": 1.0, "speed": "fast"},
+    "BAAI/bge-m3": {"tier": "beast", "disk_gb_est": 2.0, "vram_gb_est": 2.0, "speed": "medium"},
+    "ultralytics/yolov8x": {"tier": "high", "disk_gb_est": 0.3, "vram_gb_est": 2.0, "speed": "medium"},
+    "black-forest-labs/FLUX.1-schnell": {"tier": "low", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "fast"},
+    "black-forest-labs/FLUX.1-dev": {"tier": "beast", "disk_gb_est": 20.0, "vram_gb_est": 16.0, "speed": "slow"},
 }
 
 # ---------------- Object Detection Model Configuration (Spring Clean 2026) ----------------
