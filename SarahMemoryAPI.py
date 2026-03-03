@@ -2,7 +2,7 @@
 File: SarahMemoryAPI.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-03-01
+Date: 2025-03-03
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -20,15 +20,19 @@ MULTI-PROVIDER API ORCHESTRATION MODULE
 
 PURPOSE:
 --------
-SarahMemoryAPI is the central API orchestration layer for SarahMemory.
-It manages connections to multiple AI providers (OpenAI, Claude, Mistral,
-Gemini, HuggingFace, etc.) and provides intelligent failover, caching,
+SarahMemoryAPI is the central API orchestration layer for SarahMemory with multi=redundancies
+It manages connections to multiple AI providers including Local Downloaded Models, 
+API keys must be set in the .env file or system enviorments, API providers must be selected 
+to 'True' in the SarahMemoryGlobals.py file approx line number (1446-1466)
+(OpenAI, Claude, Mistral,Gemini, HuggingFace, etc.) 
+and provides intelligent failover, caching,
 and context-aware prompt building.
+The SarahMemory 'SarahNET' Network node mesh is the "Last Resort Endpoint" if all else fails.
 
 KEY CAPABILITIES:
 -----------------
 1. MULTI-PROVIDER SUPPORT
-   - OpenAI (GPT-4, GPT-4o, GPT-4.1, o1, o3, etc.)
+   - OpenAI (GPT-5[.0,.1,.2,etc], GPT-4, GPT-4o, GPT-4.1, o1, o3, etc.)
    - Anthropic Claude (claude-3-opus, claude-3-sonnet, etc.)
    - Mistral AI (mistral-large, mistral-medium, etc.)
    - Google Gemini (gemini-pro, gemini-1.5-pro, etc.)
@@ -217,9 +221,10 @@ def _safe_bool(x: Any) -> bool:
 def _models_root() -> str:
     # Prefer Globals MODELS_DIR if present, else BASE_DIR/data/models
     base_dir = getattr(config, "BASE_DIR", os.getcwd())
-    models_dir = getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
+    # models_dir = getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
     # Your convention mentioned: ./data/models/SarahMemory/...
-    return os.path.join(models_dir, "SarahMemory")
+    #return os.path.join(models_dir, "SarahMemory")
+    return getattr(config, "MODELS_DIR", os.path.join(base_dir, "data", "models"))
 
 def _is_cloud() -> bool:
     # RUN_MODE exists in Globals (auto-detects PythonAnywhere)
@@ -465,17 +470,17 @@ DEFAULT_MODELS: Dict[str, str] = {
 
 # Provider priority for fallback
 PROVIDER_PRIORITY: List[str] = [
-    "local",       # Synapses micro-brain (deterministic + retrieval + tool routing)
-    "local_llm",      # Local 3rd Party LLM runtime
-    "openai",
-    "claude",
-    "mistral",
-    "gemini",
-    "deepseek",
-    "groq",
-    "cohere",
-    "huggingface",
-    "mesh",        # Distributed tier LAST unless explicitly requested
+    "local",        # SarahMemory AiOS Synapses/Neuron micro-brain fully local .db files, LM (deterministic + retrieval + tool routing)
+    "local_llm",    # Local 3rd Party LLM MODEL runtime
+    "openai",       #OPEN AI API, Set API key in either .env or Local system enviorment settings
+    "claude",       #CLAUDE AI API, Set API key in either .env or local system enviorment settings
+    "mistral",      #MISTRAL AI API
+    "gemini",       #GOOGLE GEMINI AI API
+    "deepseek",     #DEEPSEEK AI API
+    "groq",         #GROK AI API
+    "cohere",       #COHERE AI API
+    "huggingface",  #HUGGING FACE API
+    "mesh",         # SarahMemory ONLINE CLOUD Server/Distributed/AiOS NETWORK NODES/ tier LAST unless explicitly requested LAST RESORT, P2P ,node, 
 ]
 # ============================================================================
 # ENHANCED ROLE MAP (60+ SPECIALIZED ROLES)
