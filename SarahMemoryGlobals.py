@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-03-03
+Date: 2025-03-02
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -1459,9 +1459,9 @@ DEEPSEEK_API    = False
 GROQ_API        = False
 COHERE_API      = False
 
-LOCAL_LLM_API   = True # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
-LOCAL_API       = True # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
-MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahmemory.net
+LOCAL_LLM_API   = True  # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
+LOCAL_API       = True  # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
+MESH_API        = False # MESH_API is the SarahMemory Network https://api.sarahmemory.net
 # MESH_API is the NODE NETWORK of other systems running the SARAHMEMORY AiOS systems
 
 # ---------------------------------------------------------------------------
@@ -2207,13 +2207,13 @@ AVATAR_REFRESH_RATE = 10
 # Then think about Scifi the Matrix/SkyNet/HAL this AI system may surpass imagination or even be uploaded into
 # a robotic form one day or later on, it is designed to evolve afterall.
 
-NEOSKYMATRIX = True 
+NEOSKYMATRIX = False 
 #When True NeoskyMatrix will be enabled and allow the system to run in a fully autonomious mode, default False. 
 # This is a joke flag but also a reminder if the system ever evolves beyond control, it may be best to have 
 # a kill switch or at least a warning system in place for the user to know if the system has reached 
 # a point of no return or is doing something it shouldn't be doing.
 
-DEVELOPERSMODE = True #When True DevelopersMode will be enabled and allow access.
+DEVELOPERSMODE = False #When True DevelopersMode will be enabled and allow access.
 #to more advanced features and tools, default False
  
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
@@ -2304,6 +2304,11 @@ def get_active_model() -> str:
         ("TinyLlama-1.1B", ENABLE_MODEL_M),
         ("multi-qa-MiniLM", ENABLE_MODEL_C),
         ("all-MiniLM-L6-v2", ENABLE_MODEL_B),
+        ("Qwen3-0.6B", ENABLE_MODEL_N),
+        ("Qwen2.5-Coder-1.5B-Instruct", ENABLE_MODEL_O),
+        ("Qwen2.5-Coder-3B-Instruct", ENABLE_MODEL_P),
+        ("Qwen2.5-7B-Instruct", ENABLE_MODEL_Q),
+        ("BAAI/bge-base-en-v1.5", ENABLE_MODEL_R),
     ]
     # If auto selector is enabled, prefer models with GPU if available (simple placeholder logic)
     if AUTO_MODEL_SELECTOR:
