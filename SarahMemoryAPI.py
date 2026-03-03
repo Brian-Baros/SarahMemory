@@ -1801,33 +1801,63 @@ def send_to_api(
         f"LOCAL_ONLY_MODE={LOCAL_ONLY_MODE}, run_mode={run_mode}, offline={offline}"
     )
 
-    # Check safety modes
+
+    # Check safety / offline modes
     if SAFE_MODE or LOCAL_ONLY_MODE or (offline and run_mode not in ("cloud", "server")):
-        logger.warning("API call blocked by safety mode; attempting mesh fallback.")
-        mesh_res = _mesh_fallback_request(user_input)
-        if mesh_res:
-            return mesh_res
-        return {
-            "source": provider,
-            "data": None,
-            "prompt": None,
-            "intent": intent,
-            "error": "Blocked by safety mode"
-        }
+        # In local-only / safe / offline modes we MUST NOT call external providers (including mesh).
+        # We will reroute to local lanes if possible; otherwise return a clear error.
+        requested = (provider or "").strip().lower()
+        if requested in ("", "unknown", "auto", "primary", "default"):
+            # Prefer LOCAL_API first (DB/tool/retrieval), then LOCAL_LLM (3rd-party model runtime).
+            if _provider_is_enabled("local"):
+                provider = "local"
+            elif _provider_is_enabled("local_llm"):
+                provider = "local_llm"
+            else:
+                return {
+                    "source": requested or "auto",
+                    "data": None,
+                    "prompt": None,
+                    "intent": intent,
+                    "error": "Blocked by safety/local-only mode (no local providers enabled)"
+                }
+        else:
+            # If caller explicitly asked for an external provider, force-reroute to local.
+            if requested not in ("local", "local_llm"):
+                if _provider_is_enabled("local_llm"):
+                    provider = "local_llm"
+                elif _provider_is_enabled("local"):
+                    provider = "local"
+                else:
+                    return {
+                        "source": requested,
+                        "data": None,
+                        "prompt": None,
+                        "intent": intent,
+                        "error": "Blocked by safety/local-only mode (no local providers enabled)"
+                    }
+            else:
+                provider = requested
+
+
 
     # Check if API research is disabled
+    # NOTE: This flag is intended to gate *external* research/API calls. Local lanes are always allowed.
     if not getattr(config, 'API_RESEARCH_ENABLED', True):
-        logger.warning("[BLOCKED] API research disabled in Globals.")
-        return {
-            "source": provider,
-            "data": None,
-            "prompt": None,
-            "intent": "n/a",
-            "error": "API research disabled"
-        }
+        req = (provider or "").strip().lower()
+        if req in ("openai","claude","anthropic","mistral","gemini","huggingface","deepseek","groq","cohere","mesh"):
+            logger.warning("[BLOCKED] API research disabled in Globals (external provider blocked).")
+            return {
+                "source": req,
+                "data": None,
+                "prompt": None,
+                "intent": intent,
+                "error": "API research disabled (external providers blocked)"
+            }
+
 
     # Auto-select provider if not specified
-    if not provider or provider == "unknown":
+    if (provider is None) or (str(provider).strip().lower() in ("", "unknown", "auto", "primary", "default")):
         try:
             selected = get_active_api(
                 getattr(config, "PRIMARY_API", None),
@@ -1850,14 +1880,45 @@ def send_to_api(
         provider = "local_llm"
 
 
+
+# Enforce provider flags from SarahMemoryGlobals (hard gate)
+# If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
+if provider == "openai" and not bool(getattr(config, "OPEN_AI_API", False)):
+    if bool(getattr(config, "LOCAL_LLM_API", False)):
+        provider = "local_llm"
+    elif bool(getattr(config, "LOCAL_API", False)):
+        provider = "local"
+    elif bool(getattr(config, "MESH_API", False)):
+        provider = "mesh"
+    # else: keep as openai, but it will fail the enabled check below
+
+# If chosen provider is disabled, pick best enabled provider for intent.
+if not _provider_is_enabled(provider):
+    provider = get_best_provider_for_intent(intent)
+
+
     # Get API key
     key = API_KEYS.get(provider)
     if _provider_requires_key(provider) and not key:
+        # If missing credentials, try fallback rather than hard-fail.
+        fb = fallback_provider(provider)
+        if fb:
+            logger.warning(f"[Fallback Triggered] Missing credentials for {provider}; switching to {fb}")
+            return send_to_api(
+                user_input,
+                provider=fb,
+                intent=intent,
+                tone=tone,
+                complexity=complexity,
+                model=model,
+                **kwargs
+            )
         return {
             "source": provider,
             "data": None,
             "error": f"API key missing for {provider}"
         }
+
 
     # Get model
     model = model or DEFAULT_MODELS.get(provider, "gpt-4o")
@@ -1909,9 +1970,6 @@ def send_to_api(
         elif provider == "local":
             content, error = _call_local(prompt, model)
         elif provider in ("local_llm", "localmodels", "local_llm_api"):
-            content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
-        elif provider == "local_llm":
-            # Legacy string provider name some callers used
             content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
         elif provider == "mesh":
             content, error = _call_mesh(prompt, provider=None, model=model)
