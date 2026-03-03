@@ -1359,10 +1359,15 @@ def api_chat():
                 engine_source = "local_only_block"
             else:
                 try:
+                    import SarahMemoryGlobals as _G
                     from SarahMemoryAPI import send_to_api as _send_to_api
+                    prov = (getattr(_G, "PRIMARY_API", None) or (getattr(_G, "get_active_api", None)() if hasattr(_G, "get_active_api") else None) or "local_llm")
+                    # Hard block: never call OpenAI when OPEN_AI_API is False
+                    if str(prov).lower() == "openai" and not bool(getattr(_G, "OPEN_AI_API", False)):
+                        prov = "local_llm" if bool(getattr(_G, "LOCAL_LLM_API", False)) else ("local" if bool(getattr(_G, "LOCAL_API", False)) else "mesh")
                     api_res = _send_to_api(
                         text,
-                        provider="openai",
+                        provider=prov,
                         intent=intent,
                         tone=tone,
                         complexity=complexity,
