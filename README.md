@@ -9,7 +9,7 @@
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
 * Created using:** Using Visual Studios Code, on Windows 10, On an AMD 8350FX ,32gb DDR3 and Nvidia 3060 RTX,/Ryzen 3 with 8gb DDR4 with Radeon Vega Laptop /Samsung Galaxy S20+ / Apple iPhone 14. Entire design is to allow full - partial functionality in under 256gb of storage locallay. - NOTE This system was purposly designed to operate and function on older Legancy Systems. Performance may and should increase highly with newer, faster hardware, and updated LM/LLM models(optional). 
 ---
-![SarahMemory Web UI](docs/images/version8-ui-test.png)
+![SarahMemory Web UI](documents/version8-ui-test.png)
 
 
 
