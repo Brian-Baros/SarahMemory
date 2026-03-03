@@ -1469,7 +1469,7 @@ MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahme
 # ---------------------------------------------------------------------------
 
 API_PROVIDER_FLAGS = {
-    "local_llm":  LOCAL_LLM_API, # Needs to be the AUTO or MANUAL SELECTED Local MODEL 
+    "local_llm":   LOCAL_LLM_API,  # Auto/Manual selected 3rd-party local LLM from MODEL_CATALOG
     "local":       LOCAL_API,
     "openai":      OPEN_AI_API,
     "claude":      CLAUDE_API,
