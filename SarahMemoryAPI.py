@@ -1708,7 +1708,7 @@ def _call_local_llm(prompt: str,
 
 
 
-def _call_MODEL_CATALOG(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
+def _call_model_catalog(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
     """Back-compat alias: MODEL_CATALOG provider now routes to LOCAL_LLM_API resolver."""
     return _call_local_llm(prompt=prompt, intent="chat", user_text=prompt, meta=None, max_tokens=512, temperature=0.7)
 
@@ -1841,7 +1841,24 @@ def send_to_api(
         provider = "claude"
 
     # Normalize legacy/local provider aliases
-    if provider in ("ollama", "MODEL_CATALOG"):
+
+    # Enforce Globals flags even when provider is explicitly passed
+    if not _provider_is_enabled(provider):
+        try:
+            provider = get_best_provider_for_intent(intent)
+        except Exception:
+            provider = PRIMARY_PROVIDER
+        if not _provider_is_enabled(provider):
+            return {
+                "source": provider,
+                "data": None,
+                "prompt": None,
+                "intent": intent,
+                "error": f"Provider disabled by flags: {provider}"
+            }
+
+
+    if provider in ("ollama", "model_catalog", "MODEL_CATALOG"):
         provider = "local_llm"
 
 

@@ -350,9 +350,11 @@ def _try_api(text: str) -> Optional[str]:
                 if not _prov:
                     _prov = getattr(config, "PRIMARY_API", None)
                 if not _prov:
-                    _prov = "openai"
+                    _prov = "local_llm"
             except Exception:
-                _prov = "openai"
+                _prov = "local_llm"
+            if not isinstance(_prov, str):
+                _prov = str(_prov)
             resp = send_to_api(user_input=text, provider=_prov, intent="chat")
 
             # Track which model was actually used, if any
