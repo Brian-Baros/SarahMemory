@@ -91,7 +91,6 @@ import sys
 import sqlite3
 import threading
 import time
-import re
 # Local LLM (3rd-party models) runtime
 try:
     import torch
@@ -1736,70 +1735,6 @@ def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[s
             )
         return None, None, f"Failed to load local model ({repo}): {e}"
 
-
-# -----------------------------------------------------------------------------
-# Local LLM output sanitization
-# -----------------------------------------------------------------------------
-# Many local "reasoning" models emit <think>...</think> (or analysis) blocks and may
-# echo chat transcripts (system/user/assistant). The WebUI should only display the
-# final answer. This sanitizer enforces that contract at the API boundary.
-_THINK_BLOCK_RE = re.compile(r"(?is)<think>.*?</think>")
-_ANALYSIS_BLOCK_RE = re.compile(r"(?is)<analysis>.*?</analysis>")
-
-def _clean_local_llm_output(text: str) -> str:
-    if not text:
-        return text
-    t = str(text).strip()
-
-    # Strip explicit reasoning tags
-    t = _THINK_BLOCK_RE.sub("", t)
-    t = _ANALYSIS_BLOCK_RE.sub("", t)
-
-    # If the model echoed a transcript, keep only content after the last 'assistant' header line.
-    m = list(re.finditer(r"(?im)^assistant\s*$", t))
-    if m:
-        t = t[m[-1].end():].lstrip()
-
-    # Remove any remaining standalone role headers at the top
-    t = re.sub(r"(?im)^(system|user)\s*$\n?", "", t).strip()
-
-    # Drop common metadata echoes at the beginning (ROLE/INTENT/TONE/...).
-    lines = t.splitlines()
-    out_lines = []
-    skipping = True
-    for line in lines:
-        s = line.strip()
-
-        if skipping and not s:
-            continue
-
-        if skipping and s.lower() in ("system", "user", "assistant"):
-            continue
-
-        if skipping and (
-            s.upper().startswith("ROLE:") or
-            s.upper().startswith("INTENT:") or
-            s.upper().startswith("TONE:") or
-            s.upper().startswith("COMPLEXITY:") or
-            s.upper().startswith("MOOD PROFILE:") or
-            s.upper().startswith("CONTEXT:") or
-            s.upper().startswith("QUERY:") or
-            s.lower().startswith("respond clearly")
-        ):
-            continue
-
-        skipping = False
-        out_lines.append(line)
-
-    t = "\n".join(out_lines).strip()
-
-    # If an unclosed <think> block exists, drop it and anything after.
-    idx = t.lower().find("<think")
-    if idx != -1:
-        t = t[:idx].strip()
-
-    return t
-
 def _call_local_llm(
     prompt: str,
     model: Optional[str] = None,
@@ -1820,8 +1755,6 @@ def _call_local_llm(
     Notes:
       - 'timeout' is accepted for compatibility but is not currently used (local inference is in-process).
       - If 'model' is provided, it is treated as a forced repo/alias (bypassing auto selection).
-      - Output is sanitized to remove <think>/<analysis> blocks and transcript echoes so the UI only
-        shows the final answer.
     """
     # Normalize inputs
     user_text = (user_text if user_text is not None else prompt) or ""
@@ -1847,37 +1780,6 @@ def _call_local_llm(
     else:
         selected, fallbacks, source_lane = _resolve_local_llm_repo(intent=intent, user_text=user_text, meta=meta)
 
-    # Build a clean system directive (avoid passing the full formatted prompt as user text)
-    try:
-        role = get_role_for_intent(intent)
-    except Exception:
-        role = "helpful assistant"
-
-    tone = str(meta.get("tone", "friendly"))
-    complexity = str(meta.get("complexity", "adult"))
-
-    # Light recent context (best-effort)
-    recent_context = ""
-    try:
-        ctx_snips = get_context() or []
-        # ctx entries are dicts: {"input": "...", "output": "..."} per your stack
-        recent_context = "\n".join([str(c.get("input", "")) for c in ctx_snips[-3:]]).strip()
-    except Exception:
-        recent_context = ""
-
-    system_parts = [
-        "You are SarahMemory. Answer clearly and helpfully.",
-        f"ROLE: You are a {role}.",
-        f"INTENT: {str(intent).upper()}",
-        f"TONE: {tone}",
-        f"COMPLEXITY: {complexity}",
-        (f"CONTEXT: {recent_context}" if recent_context else "CONTEXT: None"),
-        "OUTPUT POLICY: Provide ONLY the final answer to the user's query.",
-        "Do NOT include chain-of-thought, reasoning steps, analysis, or tags like <think>...</think> or <analysis>...</analysis>.",
-        "Do NOT echo system/user/assistant labels and do NOT repeat the prompt.",
-    ]
-    system_content = "\n".join(system_parts).strip()
-
     for repo in [selected, *(fallbacks or [])]:
         if not repo:
             continue
@@ -1889,16 +1791,16 @@ def _call_local_llm(
             continue
 
         try:
-            # Chat template path if supported
+            # Build a minimal chat-style prompt if tokenizer supports it
             messages = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": user_text.strip()},
+                {"role": "system", "content": "You are SarahMemory. Answer clearly and helpfully."},
+                {"role": "user", "content": prompt},
             ]
 
             if hasattr(tok, "apply_chat_template"):
                 text_in = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             else:
-                text_in = f"{system_content}\n\nUser: {user_text.strip()}\nAssistant:"
+                text_in = f"System: You are SarahMemory.\nUser: {prompt}\nAssistant:"
 
             inputs = tok(text_in, return_tensors="pt", truncation=True, max_length=4096)
 
@@ -1929,16 +1831,11 @@ def _call_local_llm(
             if decoded.startswith(text_in):
                 decoded = decoded[len(text_in):].strip()
 
-            cleaned = _clean_local_llm_output(decoded)
-            if cleaned:
-                return cleaned, None
+            if not decoded:
+                decoded = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
 
-            # Fallback heuristic if cleaning stripped too much
-            cleaned2 = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
-            cleaned2 = _clean_local_llm_output(cleaned2)
-            if cleaned2:
-                return cleaned2, None
-
+            if decoded:
+                return decoded, None
         except Exception as e:
             last_err = str(e)
             continue
@@ -1947,6 +1844,7 @@ def _call_local_llm(
         f"Local LLM failed. Tried: {tried or ['<none>']} "
         f"(selection={selected}, lane={source_lane}) | last_error={last_err}"
     )
+
 
 def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str] = None, timeout: int = 45) -> Tuple[Optional[str], Optional[str]]:
     """Call the distributed mesh tier (cloud broker)."""
@@ -2199,10 +2097,7 @@ def send_to_api(
         elif provider == "local":
             content, error = _call_local(prompt, model)
         elif provider in ("local_llm", "localmodels", "local_llm_api"):
-            meta_local = dict(kwargs.get('meta') or {})
-            meta_local.setdefault("tone", tone)
-            meta_local.setdefault("complexity", complexity)
-            content, error = _call_local_llm(prompt=prompt, model=model, intent=intent, user_text=user_input, meta=meta_local, max_tokens=max_tokens, temperature=temperature)
+            content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
         elif provider == "mesh":
             content, error = _call_mesh(prompt, provider=None, model=model)
         else:
