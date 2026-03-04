@@ -439,8 +439,47 @@ def _try_web(text: str) -> Tuple[Optional[str], Optional[str], List[str]]:
         logger.debug("Image fetch failed: %s", e)
     return summary, image, links
 
+
+# -----------------------------------------------------------------------------
+# Output sanitation (final-answer only)
+# -----------------------------------------------------------------------------
+# Some local LLMs echo role transcripts (system/user/assistant) and hidden thought tags.
+# This scrubber ensures the GUI/TTS sees only the final answer.
+
+def _sm_sanitize_user_text(text: str) -> str:
+    if not text:
+        return ""
+    t = str(text).replace("
+", "
+").replace("", "
+").strip()
+
+    # Strip hidden reasoning blocks
+    t = re.sub(r"(?is)<\s*(think|analysis)\s*>.*?<\s*/\s*\1\s*>", "", t)
+
+    # Keep only what follows the LAST assistant marker if present
+    matches = list(re.finditer(r"(?im)^(assistant)\s*:?\s*$", t))
+    if matches:
+        t = t[matches[-1].end():].strip("
+ ")
+    else:
+        if re.search(r"(?im)^assistant\s*:\s*", t):
+            parts = re.split(r"(?im)^assistant\s*:\s*", t)
+            if parts:
+                t = parts[-1].strip()
+
+    # Remove remaining role header lines and common scaffold headers
+    t = re.sub(r"(?im)^(system|user)\s*:?\s*$", "", t)
+    t = re.sub(r"(?im)^(role|intent|tone|complexity|context|query|mood profile)\s*:\s*.*$", "", t)
+
+    t = re.sub(r"
+{3,}", "
+
+", t).strip()
+    return t
+
 def _finalize_text(raw, meta):
-    txt = (raw or "").strip()
+    txt = _sm_sanitize_user_text((raw or "").strip())
     if not txt:
         return ""
     if (meta or {}).get("intent") in {"identity", "math", "image", "web", "local"}:

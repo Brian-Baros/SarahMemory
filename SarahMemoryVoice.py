@@ -48,6 +48,22 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+
+# -----------------------------------------------------------------------------
+# Output Sanitization (hide system prompts / chain-of-thought from TTS)
+# -----------------------------------------------------------------------------
+def _sm_sanitize_llm_text_local(text: str) -> str:
+    if text is None:
+        return ""
+    t = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    t = re.sub(r"(?is)<think>.*?</think>", "", t)
+    t = re.sub(r"(?is)<analysis>.*?</analysis>", "", t)
+    t = re.sub(r"(?im)^\s*(system|user|assistant)\s*:\s*.*$", "", t)
+    t = re.sub(r"(?im)^\s*\[(system|user|assistant)\]\s*.*$", "", t)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    if "Assistant:" in t:
+        t = t.split("Assistant:")[-1].strip()
+    return t
 # =============================================================================
 # GLOBAL CONFIG (safe import)
 # =============================================================================
@@ -747,6 +763,15 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
     # In SAFE_MODE we still allow silent operation (skip TTS)
     if SAFE_MODE:
         return False
+
+    
+
+    # Speak final-only output (never speak system/thinking scaffolding)
+    try:
+        from SarahMemoryAPI import _sm_sanitize_llm_text as _san
+        text = _san(text)
+    except Exception:
+        text = _sm_sanitize_llm_text_local(text)
 
     _start_tts_worker()
 

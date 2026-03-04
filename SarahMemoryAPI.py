@@ -85,6 +85,7 @@ DATABASE TABLES (system_logs.db):
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 import sys
@@ -1835,7 +1836,7 @@ def _call_local_llm(
                 decoded = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
 
             if decoded:
-                return decoded, None
+                return _sm_sanitize_llm_text(decoded), None
         except Exception as e:
             last_err = str(e)
             continue
@@ -2110,6 +2111,7 @@ def send_to_api(
 
     # Handle success
     if content and not error:
+        content = _sm_sanitize_llm_text(content)
         # Cache response
         with _cache_lock:
             _response_cache[prompt] = content
@@ -2536,4 +2538,43 @@ __all__ = [
 
 # ====================================================================
 # END OF SarahMemoryAPI.py v8.0.0
-# ====================================================================
+# ===================================================================
+# -----------------------------------------------------------------------------
+# Output Sanitization (hide system prompts / chain-of-thought from UI & TTS)
+# -----------------------------------------------------------------------------
+_SANITIZE_RE_BLOCKS = [
+    re.compile(r"(?is)<think>.*?</think>"),
+    re.compile(r"(?is)<analysis>.*?</analysis>"),
+    re.compile(r"(?is)<system>.*?</system>"),
+]
+_SANITIZE_RE_LINES = [
+    re.compile(r"(?im)^\s*(system|user|assistant)\s*:\s*.*$"),
+    re.compile(r"(?im)^\s*(role|tone|complexity|recent context|context|intent)\s*:\s*.*$"),
+    re.compile(r"(?im)^\s*\[(system|user|assistant)\]\s*.*$"),
+]
+def _sm_sanitize_llm_text(text: str) -> str:
+    """
+    Remove internal prompt scaffolding and model 'thinking' from user-visible output.
+    This is a best-effort filter; it does NOT change model reasoning, only display.
+    """
+    if text is None:
+        return ""
+    t = str(text)
+    # drop common tag blocks
+    for rx in _SANITIZE_RE_BLOCKS:
+        t = rx.sub("", t)
+    # If the model echoed a chat transcript, remove leading role lines.
+    # We only remove these line types; keep remaining content.
+    # First normalize newlines
+    t = t.replace("\r\n", "\n").replace("\r", "\n")
+    # Remove fenced "system/user/assistant" transcript lines anywhere
+    for rx in _SANITIZE_RE_LINES:
+        t = rx.sub("", t)
+    # Remove common token markers
+    t = re.sub(r"(?im)^\s*<\|?(system|user|assistant)\|?>\s*$", "", t)
+    # Collapse excessive blank lines
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    # If still contains an 'Assistant:' delimiter, keep the last segment
+    if "Assistant:" in t:
+        t = t.split("Assistant:")[-1].strip()
+    return t
