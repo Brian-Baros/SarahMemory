@@ -91,14 +91,23 @@ import sys
 import sqlite3
 import threading
 import time
+import re
 # Local LLM (3rd-party models) runtime
 try:
     import torch
     from transformers import AutoTokenizer, AutoModelForCausalLM
+    # Optional helpers for model-type inspection / seq2seq fallback
+    try:
+        from transformers import AutoConfig, AutoModelForSeq2SeqLM
+    except Exception:
+        AutoConfig = None
+        AutoModelForSeq2SeqLM = None
 except Exception:
     torch = None
     AutoTokenizer = None
     AutoModelForCausalLM = None
+    AutoConfig = None
+    AutoModelForSeq2SeqLM = None
 
 import queue
 from datetime import datetime
@@ -447,7 +456,7 @@ API_URLS: Dict[str, str] = {
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "cohere": "https://api.cohere.ai/v1/chat",
-    "local": "http://127.0.0.1:8000/api/chat",
+    "local": "http://127.0.0.1:8000/api/local/chat",
     "local_llm": "local-runtime",
     "mesh": "https://api.sarahmemory.com/api/chat",
 }
@@ -658,7 +667,7 @@ ROLE_CATEGORIES: Dict[str, List[str]] = {
 class APIRequest:
     """Structured API request."""
     user_input: str
-    provider: str = "openai"
+    provider: str = "auto"
     intent: str = "question"
     tone: str = "friendly"
     complexity: str = "adult"
@@ -1543,8 +1552,14 @@ def _normalize_local_repo_to_dir(repo: str) -> str:
 
 def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = None) -> Tuple[Optional[str], list, str]:
     """
-    Resolve best local 3rd-party model repo using SarahMemoryGlobals MODEL_CATALOG + MODEL_CONFIG.
-    Returns (selected_repo, fallbacks, source_lane)
+    Resolve best local 3rd-party *text generation* model repo using SarahMemoryGlobals MODEL_CATALOG + MODEL_CONFIG.
+
+    Returns (selected_repo, fallbacks, source_lane).
+
+    IMPORTANT:
+    - This resolver is for LOCAL_LLM text generation only.
+    - Embedding / vision / tts categories are explicitly rejected here so we do not accidentally
+      route an encoder-only model (e.g., sentence-transformers, e5) into a CausalLM loader.
     """
     try:
         # Prefer the newer resolver if present
@@ -1553,6 +1568,16 @@ def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = 
             import SarahMemoryLLM as _SMLLM
             category = _SMLLM.infer_category_from_text(user_text or "")
         except Exception:
+            category = None
+
+        # Normalize / constrain categories: LOCAL_LLM lane is generation only.
+        cat = (category or "").strip().lower()
+        if cat in (
+            "embedding", "embeddings", "semantic", "memory", "retrieval", "vector",
+            "vision", "object", "object_detection",
+            "image", "image_generation", "creative",
+            "audio", "voice", "tts", "stt",
+        ):
             category = None
 
         if not category:
@@ -1584,7 +1609,11 @@ def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = 
 
 def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
     """
-    Load (or reuse cached) local HF/Transformers model from ./data/models/<repo_underscored>/.
+    Load (or reuse cached) local HF/Transformers *text generation* model from ./data/models/<repo_underscored>/.
+
+    Notes:
+    - This loader is for generation models only (CausalLM/Seq2SeqLM).
+    - Encoder-only / SentenceTransformer directories are rejected with a clear message.
     """
     if not repo:
         return None, None, "No repo selected"
@@ -1607,28 +1636,82 @@ def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[s
         return None, None, f"Local model directory not found: {local_dir}"
 
     # Reuse cache if same repo
-    if _LOCAL_LLM_CACHE.get("repo") == repo and _LOCAL_LLM_CACHE.get("model") is not None and _LOCAL_LLM_CACHE.get("tokenizer") is not None:
+    if (
+        _LOCAL_LLM_CACHE.get("repo") == repo
+        and _LOCAL_LLM_CACHE.get("model") is not None
+        and _LOCAL_LLM_CACHE.get("tokenizer") is not None
+    ):
         return _LOCAL_LLM_CACHE["model"], _LOCAL_LLM_CACHE["tokenizer"], None
+
+    # SentenceTransformer-style directories are *not* generation models.
+    # Common indicator: modules.json in the root.
+    st_modules_path = os.path.join(local_dir, "modules.json")
+    if os.path.isfile(st_modules_path):
+        return None, None, (
+            f"Local repo '{repo}' appears to be a SentenceTransformer/embedding model (modules.json present). "
+            f"It cannot be used as a text-generation LLM. Download/select a chat/instruct model from MODEL_CATALOG['reasoning'/'coder']."
+        )
 
     # Decide device/dtype
     device = "cuda" if (torch and torch.cuda.is_available()) else "cpu"
     dtype = torch.float16 if (device == "cuda") else torch.float32
 
+    # Inspect config when possible to block encoder-only models and optionally support seq2seq.
+    model_kind = "causal"
     try:
-        tok = AutoTokenizer.from_pretrained(local_dir, local_files_only=True, use_fast=True)
+        if AutoConfig is not None:
+            cfg = AutoConfig.from_pretrained(local_dir, local_files_only=True, trust_remote_code=True)
+            mt = str(getattr(cfg, "model_type", "") or "").lower()
+            # Block common encoder-only types (not suitable for generation via CausalLM)
+            if mt in {
+                "bert", "roberta", "mpnet", "distilbert", "electra", "xlnet",
+                "deberta", "deberta-v2", "albert", "camembert", "flaubert",
+                "sentence-transformers",
+            }:
+                return None, None, (
+                    f"Local repo '{repo}' is an encoder/embedding model (model_type='{mt}'). "
+                    f"It cannot be used for chat text generation. Select a causal/instruct model (e.g., Qwen/Phi/Mistral)."
+                )
+
+            # Seq2Seq models can generate (T5/BART/etc). Support when available.
+            if bool(getattr(cfg, "is_encoder_decoder", False)) and AutoModelForSeq2SeqLM is not None:
+                model_kind = "seq2seq"
+    except Exception:
+        # If config can't be read, we'll attempt to load and catch errors.
+        model_kind = "causal"
+
+    try:
+        # Tokenizer: try fast first, then fall back.
+        try:
+            tok = AutoTokenizer.from_pretrained(local_dir, local_files_only=True, use_fast=True, trust_remote_code=True)
+        except Exception:
+            tok = AutoTokenizer.from_pretrained(local_dir, local_files_only=True, use_fast=False, trust_remote_code=True)
+
         # Some models need pad token
         if tok.pad_token is None and tok.eos_token is not None:
             tok.pad_token = tok.eos_token
 
-        model = AutoModelForCausalLM.from_pretrained(
-            local_dir,
-            local_files_only=True,
-            torch_dtype=dtype,
-            device_map=("auto" if device == "cuda" else None),
-        )
+        if model_kind == "seq2seq" and AutoModelForSeq2SeqLM is not None:
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                local_dir,
+                local_files_only=True,
+                torch_dtype=dtype,
+                trust_remote_code=True,
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                local_dir,
+                local_files_only=True,
+                torch_dtype=dtype,
+                trust_remote_code=True,
+            )
 
-        if device == "cpu":
-            model.to("cpu")
+        # Move to device explicitly (avoid accelerate/device_map dependency).
+        try:
+            model.to(device)
+        except Exception:
+            # Some models already place themselves; ignore best-effort
+            pass
 
         model.eval()
 
@@ -1638,48 +1721,195 @@ def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[s
             "tokenizer": tok,
             "device": device,
             "dtype": str(dtype),
+            "model_kind": model_kind,
         })
 
         return model, tok, None
     except Exception as e:
+        # Improve common confusion: trying to load embedding models as LLMs.
+        msg = str(e)
+        if "Unrecognized model" in msg or "model_type" in msg:
+            return None, None, (
+                f"Failed to load local model '{repo}' as a text-generation LLM. "
+                f"This usually means the directory is not a HF generation model (often a SentenceTransformer/embedding export) "
+                f"or the download is incomplete. Under: {local_dir}. Error: {msg}"
+            )
         return None, None, f"Failed to load local model ({repo}): {e}"
 
-def _call_local_llm(prompt: str,
-                    intent: str,
-                    user_text: str,
-                    meta: Optional[dict] = None,
-                    max_tokens: int = 512,
-                    temperature: float = 0.7) -> Tuple[Optional[str], Optional[str]]:
+
+# -----------------------------------------------------------------------------
+# Local LLM output sanitization
+# -----------------------------------------------------------------------------
+# Many local "reasoning" models emit <think>...</think> (or analysis) blocks and may
+# echo chat transcripts (system/user/assistant). The WebUI should only display the
+# final answer. This sanitizer enforces that contract at the API boundary.
+_THINK_BLOCK_RE = re.compile(r"(?is)<think>.*?</think>")
+_ANALYSIS_BLOCK_RE = re.compile(r"(?is)<analysis>.*?</analysis>")
+
+def _clean_local_llm_output(text: str) -> str:
+    if not text:
+        return text
+    t = str(text).strip()
+
+    # Strip explicit reasoning tags
+    t = _THINK_BLOCK_RE.sub("", t)
+    t = _ANALYSIS_BLOCK_RE.sub("", t)
+
+    # If the model echoed a transcript, keep only content after the last 'assistant' header line.
+    m = list(re.finditer(r"(?im)^assistant\s*$", t))
+    if m:
+        t = t[m[-1].end():].lstrip()
+
+    # Remove any remaining standalone role headers at the top
+    t = re.sub(r"(?im)^(system|user)\s*$\n?", "", t).strip()
+
+    # Drop common metadata echoes at the beginning (ROLE/INTENT/TONE/...).
+    lines = t.splitlines()
+    out_lines = []
+    skipping = True
+    for line in lines:
+        s = line.strip()
+
+        if skipping and not s:
+            continue
+
+        if skipping and s.lower() in ("system", "user", "assistant"):
+            continue
+
+        if skipping and (
+            s.upper().startswith("ROLE:") or
+            s.upper().startswith("INTENT:") or
+            s.upper().startswith("TONE:") or
+            s.upper().startswith("COMPLEXITY:") or
+            s.upper().startswith("MOOD PROFILE:") or
+            s.upper().startswith("CONTEXT:") or
+            s.upper().startswith("QUERY:") or
+            s.lower().startswith("respond clearly")
+        ):
+            continue
+
+        skipping = False
+        out_lines.append(line)
+
+    t = "\n".join(out_lines).strip()
+
+    # If an unclosed <think> block exists, drop it and anything after.
+    idx = t.lower().find("<think")
+    if idx != -1:
+        t = t[:idx].strip()
+
+    return t
+
+def _call_local_llm(
+    prompt: str,
+    model: Optional[str] = None,
+    timeout: int = 30,
+    *,
+    intent: str = "chat",
+    user_text: Optional[str] = None,
+    meta: Optional[dict] = None,
+    max_tokens: int = 512,
+    temperature: float = 0.7
+) -> Tuple[Optional[str], Optional[str]]:
+    """Execute local inference via Transformers using the Auto/Manual selected repo from MODEL_CATALOG.
+
+    Compatibility:
+      - Legacy callers may call: _call_local_llm(prompt, model=None, timeout=30)
+      - Newer callers may pass: intent=..., user_text=..., meta=..., max_tokens=..., temperature=...
+
+    Notes:
+      - 'timeout' is accepted for compatibility but is not currently used (local inference is in-process).
+      - If 'model' is provided, it is treated as a forced repo/alias (bypassing auto selection).
+      - Output is sanitized to remove <think>/<analysis> blocks and transcript echoes so the UI only
+        shows the final answer.
     """
-    Execute local inference via Transformers using the Auto/Manual selected repo from MODEL_CATALOG.
-    No model name hardcoding here: selection is delegated to SarahMemoryGlobals.resolve_model().
-    """
-    selected, fallbacks, source_lane = _resolve_local_llm_repo(intent=intent, user_text=user_text, meta=meta)
-    tried = []
-    for repo in [selected, *fallbacks]:
+    # Normalize inputs
+    user_text = (user_text if user_text is not None else prompt) or ""
+    meta = meta or {}
+
+    tried: list[str] = []
+    last_err: Optional[str] = None
+
+    # Optional forced repo/alias override
+    forced_repo: Optional[str] = None
+    if model:
+        forced_repo = str(model).strip()
+        try:
+            if hasattr(config, "resolve_model_repo") and callable(getattr(config, "resolve_model_repo")):
+                forced_repo = config.resolve_model_repo(forced_repo) or forced_repo
+            else:
+                forced_repo = (getattr(config, "MODEL_REPO_MAP", {}) or {}).get(forced_repo, forced_repo)
+        except Exception:
+            pass
+
+    if forced_repo:
+        selected, fallbacks, source_lane = forced_repo, [], "forced"
+    else:
+        selected, fallbacks, source_lane = _resolve_local_llm_repo(intent=intent, user_text=user_text, meta=meta)
+
+    # Build a clean system directive (avoid passing the full formatted prompt as user text)
+    try:
+        role = get_role_for_intent(intent)
+    except Exception:
+        role = "helpful assistant"
+
+    tone = str(meta.get("tone", "friendly"))
+    complexity = str(meta.get("complexity", "adult"))
+
+    # Light recent context (best-effort)
+    recent_context = ""
+    try:
+        ctx_snips = get_context() or []
+        # ctx entries are dicts: {"input": "...", "output": "..."} per your stack
+        recent_context = "\n".join([str(c.get("input", "")) for c in ctx_snips[-3:]]).strip()
+    except Exception:
+        recent_context = ""
+
+    system_parts = [
+        "You are SarahMemory. Answer clearly and helpfully.",
+        f"ROLE: You are a {role}.",
+        f"INTENT: {str(intent).upper()}",
+        f"TONE: {tone}",
+        f"COMPLEXITY: {complexity}",
+        (f"CONTEXT: {recent_context}" if recent_context else "CONTEXT: None"),
+        "OUTPUT POLICY: Provide ONLY the final answer to the user's query.",
+        "Do NOT include chain-of-thought, reasoning steps, analysis, or tags like <think>...</think> or <analysis>...</analysis>.",
+        "Do NOT echo system/user/assistant labels and do NOT repeat the prompt.",
+    ]
+    system_content = "\n".join(system_parts).strip()
+
+    for repo in [selected, *(fallbacks or [])]:
         if not repo:
             continue
-        tried.append(repo)
-        model, tok, err = _load_local_llm(repo)
+        tried.append(str(repo))
+
+        llm, tok, err = _load_local_llm(str(repo))
         if err:
+            last_err = err
             continue
 
         try:
-            # Build a minimal chat-style prompt if tokenizer supports it
+            # Chat template path if supported
             messages = [
-                {"role": "system", "content": "You are SarahMemory. Answer clearly and helpfully."},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_text.strip()},
             ]
 
             if hasattr(tok, "apply_chat_template"):
                 text_in = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             else:
-                # Plain fallback
-                text_in = f"System: You are SarahMemory.\nUser: {prompt}\nAssistant:"
+                text_in = f"{system_content}\n\nUser: {user_text.strip()}\nAssistant:"
 
             inputs = tok(text_in, return_tensors="pt", truncation=True, max_length=4096)
+
             if torch and torch.cuda.is_available():
-                inputs = {k: v.to(model.device) for k, v in inputs.items()}
+                try:
+                    dev = getattr(llm, "device", None)
+                    if dev is None:
+                        dev = next(llm.parameters()).device
+                    inputs = {k: v.to(dev) for k, v in inputs.items()}
+                except Exception:
+                    pass
 
             gen_kwargs = {
                 "max_new_tokens": int(max_tokens),
@@ -1687,11 +1917,11 @@ def _call_local_llm(prompt: str,
                 "temperature": float(max(0.0, temperature)),
                 "top_p": 0.95,
                 "eos_token_id": tok.eos_token_id,
-                "pad_token_id": tok.pad_token_id,
+                "pad_token_id": (tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id),
             }
 
             with torch.inference_mode():
-                out = model.generate(**inputs, **gen_kwargs)
+                out = llm.generate(**inputs, **gen_kwargs)
 
             decoded = tok.decode(out[0], skip_special_tokens=True)
 
@@ -1699,24 +1929,24 @@ def _call_local_llm(prompt: str,
             if decoded.startswith(text_in):
                 decoded = decoded[len(text_in):].strip()
 
-            if not decoded:
-                # sometimes the decode returns full conversation; try heuristic
-                decoded = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
+            cleaned = _clean_local_llm_output(decoded)
+            if cleaned:
+                return cleaned, None
 
-            if decoded:
-                return decoded, None
+            # Fallback heuristic if cleaning stripped too much
+            cleaned2 = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
+            cleaned2 = _clean_local_llm_output(cleaned2)
+            if cleaned2:
+                return cleaned2, None
+
         except Exception as e:
+            last_err = str(e)
             continue
 
-    return None, f"Local LLM failed. Tried: {tried or ['<none>']} (selection={selected}, lane={source_lane})"
-
-
-
-
-def _call_local_llm(prompt: str, model: Optional[str] = None, timeout: int = 30) -> Tuple[Optional[str], Optional[str]]:
-    """Back-compat alias: MODEL_CATALOG provider now routes to LOCAL_LLM_API resolver."""
-    return _call_local_llm(prompt=prompt, intent="chat", user_text=prompt, meta=None, max_tokens=512, temperature=0.7)
-
+    return None, (
+        f"Local LLM failed. Tried: {tried or ['<none>']} "
+        f"(selection={selected}, lane={source_lane}) | last_error={last_err}"
+    )
 
 def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str] = None, timeout: int = 45) -> Tuple[Optional[str], Optional[str]]:
     """Call the distributed mesh tier (cloud broker)."""
@@ -1808,11 +2038,11 @@ def send_to_api(
         # We will reroute to local lanes if possible; otherwise return a clear error.
         requested = (provider or "").strip().lower()
         if requested in ("", "unknown", "auto", "primary", "default"):
-            # Prefer LOCAL_LLM first (3rd-party model runtime), then LOCAL_API (DB/tool/retrieval).
-            if _provider_is_enabled("local_llm"):
-                provider = "local_llm"
-            elif _provider_is_enabled("local"):
+            # Prefer LOCAL_API first (DB/tool/retrieval), then LOCAL_LLM (3rd-party model runtime).
+            if _provider_is_enabled("local"):
                 provider = "local"
+            elif _provider_is_enabled("local_llm"):
+                provider = "local_llm"
             else:
                 return {
                     "source": requested or "auto",
@@ -1877,12 +2107,12 @@ def send_to_api(
 
     # Normalize legacy/local provider aliases
     if provider in ("ollama", "local_llm", "model_catalog"):
-            provider = "local_llm"
+        provider = "local_llm"
 
 
 
-# Enforce provider flags from SarahMemoryGlobals (hard gate)
-# If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
+    # Enforce provider flags from SarahMemoryGlobals (hard gate)
+    # If OpenAI is disabled, NEVER allow an OpenAI call even if an API key exists.
     if provider == "openai" and not bool(getattr(config, "OPEN_AI_API", False)):
         if bool(getattr(config, "LOCAL_LLM_API", False)):
             provider = "local_llm"
@@ -1895,7 +2125,6 @@ def send_to_api(
     # If chosen provider is disabled, pick best enabled provider for intent.
     if not _provider_is_enabled(provider):
         provider = get_best_provider_for_intent(intent)
-
 
     # Get API key
     key = API_KEYS.get(provider)
@@ -1970,7 +2199,10 @@ def send_to_api(
         elif provider == "local":
             content, error = _call_local(prompt, model)
         elif provider in ("local_llm", "localmodels", "local_llm_api"):
-            content, error = _call_local_llm(prompt=prompt, intent=intent, user_text=user_input, meta=kwargs.get('meta'), max_tokens=max_tokens, temperature=temperature)
+            meta_local = dict(kwargs.get('meta') or {})
+            meta_local.setdefault("tone", tone)
+            meta_local.setdefault("complexity", complexity)
+            content, error = _call_local_llm(prompt=prompt, model=model, intent=intent, user_text=user_input, meta=meta_local, max_tokens=max_tokens, temperature=temperature)
         elif provider == "mesh":
             content, error = _call_mesh(prompt, provider=None, model=model)
         else:
