@@ -1383,6 +1383,14 @@ def api_chat():
                     )
                     if isinstance(api_res, dict):
                         reply_str = str(api_res.get("data") or api_res.get("reply") or "").strip()
+                        if not reply_str:
+                            try:
+                                _dbg = bool(getattr(_G, "DEBUG_MODE", False))
+                            except Exception:
+                                _dbg = True
+                            _err = api_res.get("error") or api_res.get("message")
+                            if _err and _dbg:
+                                reply_str = f"[{prov} error] {_err}"
                     else:
                         reply_str = str(api_res).strip()
                     engine_source = f"direct_api_fallback:{prov}"
@@ -1401,6 +1409,13 @@ def api_chat():
 
 # Final safety: never return None; if still empty, provide general fallback
         reply_str = reply_str or "I'm sorry, I couldn't generate a response at this time."
+
+        # Final output hygiene: strip system/thinking scaffolding before returning to UI
+        try:
+            from SarahMemoryAPI import _sm_sanitize_llm_text as _san
+            reply_str = _san(reply_str)
+        except Exception:
+            pass
 
         meta_out = {
             "source": engine_source,
