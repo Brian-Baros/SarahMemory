@@ -521,18 +521,18 @@ ENABLE_MODEL_C = False  # multi-qa-MiniLM-L6-cos-V1 - QA-style semantic search o
 ENABLE_MODEL_D = True   # paraphrase-MiniLM-L3-v2 - Small, quick, and paraphrase-focused, default True
 ENABLE_MODEL_E = True   # distiluse-base-multilingual-cased-v2 - Multilingual support (50+ languages),default True
 ENABLE_MODEL_F = True   # allenai-specter - Scientific document embedding specialist,default True
-ENABLE_MODEL_G = True   # intfloat/e5-base - Retrieval-focused high-recall embedding,default True
-ENABLE_MODEL_H = False  # microsoft/phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
-ENABLE_MODEL_I = False  # tiiuae/falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
-ENABLE_MODEL_J = False  # openchat/openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
-ENABLE_MODEL_K = False  # NousResearch/Nous-Capybara-7B - Helpful assistant-tuned model,default True
-ENABLE_MODEL_L = False  # mistralai/Mistral-7B-Instruct-v0.2 - Reasoning & smart generalist <Errors>,default False
-ENABLE_MODEL_M = False  # TinyLlama/TinyLlama-1.1B-Chat-v1.0 - For low-resource machines <Errors>,default False
-ENABLE_MODEL_N = True   # Qwen/Qwen3-0.6B — small reasoning LLM (local-friendly) default True
-ENABLE_MODEL_O = True   # Qwen/Qwen2.5-Coder-1.5B-Instruct — code assistant (low tier) default True
-ENABLE_MODEL_P = True   # Qwen/Qwen2.5-Coder-3B-Instruct — code assistant (mid tier) default True
-ENABLE_MODEL_Q = False  # Qwen/Qwen2.5-7B-Instruct — general LLM (high tier) default False
-ENABLE_MODEL_R = False  # BAAI/bge-base-en-v1.5 — stronger English embeddings (high tier) default False
+ENABLE_MODEL_G = True   # intfloat_e5-base - Retrieval-focused high-recall embedding,default True
+ENABLE_MODEL_H = False  # microsoft_phi-2 - Smartest small-scale reasoning LLM (better successor to phi-1_5),default False
+ENABLE_MODEL_I = False  # tiiuae_falcon-rw-1b - Lightweight Falcon variant (basic open LLM),default False
+ENABLE_MODEL_J = False  # openchat_openchat-3.5-0106 - ChatGPT-style assistant, fast and open,default True
+ENABLE_MODEL_K = False  # NousResearch_Nous-Capybara-7B - Helpful assistant-tuned model,default True
+ENABLE_MODEL_L = False  # mistralai_Mistral-7B-Instruct-v0.2 - Reasoning & smart generalist <Errors>,default False
+ENABLE_MODEL_M = False  # TinyLlama_TinyLlama-1.1B-Chat-v1.0 - For low-resource machines <Errors>,default False
+ENABLE_MODEL_N = True   # Qwen_Qwen3-0.6B — small reasoning LLM (local-friendly) default True
+ENABLE_MODEL_O = True   # Qwen_Qwen2.5-Coder-1.5B-Instruct — code assistant (low tier) default True
+ENABLE_MODEL_P = True   # Qwen_Qwen2.5-Coder-3B-Instruct — code assistant (mid tier) default True
+ENABLE_MODEL_Q = False  # Qwen_Qwen2.5-7B-Instruct — general LLM (high tier) default False
+ENABLE_MODEL_R = False  # BAAI_bge-base-en-v1.5 — stronger English embeddings (high tier) default False
 
 
 # Central model dictionary map for iteration/logic control (accessed from other modules)
@@ -554,7 +554,7 @@ MODEL_CONFIG = {
     "Qwen2.5-Coder-1.5B-Instruct": ENABLE_MODEL_O,
     "Qwen2.5-Coder-3B-Instruct": ENABLE_MODEL_P,
     "Qwen2.5-7B-Instruct": ENABLE_MODEL_Q,
-    "BAAI/bge-base-en-v1.5": ENABLE_MODEL_R,
+    "BAAI_bge-base-en-v1.5": ENABLE_MODEL_R,
 }
 #(OLD v7.0.1 FLAG FOR SarahMemoryReply.py block)
 BLOCK_NARRATIVE_OUTPUTS = True #Keeps AI from making Wacky story outputs, based off of information in some of the NonFineTuned Models.
@@ -569,62 +569,62 @@ BLOCK_NARRATIVE_OUTPUTS = True #Keeps AI from making Wacky story outputs, based 
 MULTI_STACK_ENABLED = True  # Master switch for category-based routing/selection.
 
 # ---- Primary stack selections (canonical Hugging Face repos) ----
-REASONING_MODEL_REPO      = "Qwen/Qwen3-0.6B"                         # Logic & reasoning (small, reliable)
-CODER_MODEL_REPO          = "Qwen/Qwen2.5-Coder-1.5B-Instruct"         # Coding / self-monkeypatch specialist
+REASONING_MODEL_REPO      = "Qwen_Qwen3-0.6B"                         # Logic & reasoning (small, reliable)
+CODER_MODEL_REPO          = "Qwen_Qwen2.5-Coder-1.5B-Instruct"         # Coding / self-monkeypatch specialist
 
-EMBEDDING_EN_REPO         = "sentence-transformers/all-MiniLM-L6-v2"                 # Core English retrieval
-EMBEDDING_MULTI_REPO      = "sentence-transformers/distiluse-base-multilingual-cased-v2"  # Multilingual retrieval
-EMBEDDING_SCI_REPO        = "allenai/specter"                                         # Scientific doc retrieval
-EMBEDDING_RECALL_REPO     = "intfloat/e5-base"                                        # High-recall retrieval
-EMBEDDING_PARA_REPO       = "sentence-transformers/paraphrase-MiniLM-L3-v2"           # Paraphrase/rewrites
+EMBEDDING_EN_REPO         = "sentence-transformers_all-MiniLM-L6-v2"                 # Core English retrieval
+EMBEDDING_MULTI_REPO      = "sentence-transformers_distiluse-base-multilingual-cased-v2"  # Multilingual retrieval
+EMBEDDING_SCI_REPO        = "allenai_specter"                                         # Scientific doc retrieval
+EMBEDDING_RECALL_REPO     = "intfloat_e5-base"                                        # High-recall retrieval
+EMBEDDING_PARA_REPO       = "sentence-transformers_paraphrase-MiniLM-L3-v2"           # Paraphrase/rewrites
 
-VISION_PRIMARY_REPO       = "nielsr/yolov12n"                          # YOLOv12 Nano primary
-VISION_BACKUP_REPO        = "ultralytics/yolov8"                       # Stable backup
-VISION_ALT_REPO           = "qualcomm/RF-DETR"                         # Alternative backup
+VISION_PRIMARY_REPO       = "nielsr_yolov12n"                          # YOLOv12 Nano primary
+VISION_BACKUP_REPO        = "ultralytics_yolov8"                       # Stable backup
+VISION_ALT_REPO           = "qualcomm_RF-DETR"                         # Alternative backup
 
-IMAGEGEN_MODEL_REPO       = "Freepik/flux.1-lite-8B"                   # Image generation (heavy; consider API fallback)
-TTS_MODEL_REPO            = "FunAudioLLM/CosyVoice2-0.5B"               # Low-latency TTS
+IMAGEGEN_MODEL_REPO       = "Freepik_flux.1-lite-8B"                   # Image generation (heavy; consider API fallback)
+TTS_MODEL_REPO            = "FunAudioLLM_CosyVoice2-0.5B"               # Low-latency TTS
 
 # ---- End-user model catalog tiers (Low / Mid / High/ Beast) ----
 # Keep this list short and high-signal: ~3 choices per tier.
 MODEL_CATALOG = {
     "reasoning": {
-        "low":   ["Qwen/Qwen3-0.6B"],
-        "mid":   ["microsoft/Phi-4-mini-instruct"],
-        "high":  ["microsoft/Phi-4-mini-instruct"],
-        "beast": ["Qwen/Qwen2.5-7B-Instruct", "mistralai/Mistral-7B-Instruct-v0.2"],
+        "low":   ["Qwen_Qwen3-0.6B"],
+        "mid":   ["microsoft_Phi-4-mini-instruct"],
+        "high":  ["microsoft_Phi-4-mini-instruct"],
+        "beast": ["Qwen_Qwen2.5-7B-Instruct", "mistralai_Mistral-7B-Instruct-v0.2"],
     },
     "coder": {
-        "low":   ["Qwen/Qwen2.5-Coder-1.5B-Instruct"],
-        "mid":   ["Qwen/Qwen2.5-Coder-3B-Instruct"],
-        "high":  ["Qwen/Qwen2.5-Coder-3B-Instruct"],
-        "beast": ["Qwen/Qwen2.5-Coder-7B-Instruct"],
+        "low":   ["Qwen_Qwen2.5-Coder-1.5B-Instruct"],
+        "mid":   ["Qwen_Qwen2.5-Coder-3B-Instruct"],
+        "high":  ["Qwen_Qwen2.5-Coder-3B-Instruct"],
+        "beast": ["Qwen_Qwen2.5-Coder-7B-Instruct"],
     },
     "embeddings": {
-        "low":   ["sentence-transformers/all-MiniLM-L6-v2"],
+        "low":   ["sentence-transformers_all-MiniLM-L6-v2"],
         "mid":   [
-            "sentence-transformers/distiluse-base-multilingual-cased-v2",
-            "intfloat/e5-base",
-            "allenai/specter",
-            "sentence-transformers/paraphrase-MiniLM-L3-v2",
+            "sentence-transformers_distiluse-base-multilingual-cased-v2",
+            "intfloat_e5-base",
+            "allenai_specter",
+            "sentence-transformers_paraphrase-MiniLM-L3-v2",
         ],
-        "high":  ["BAAI/bge-base-en-v1.5"],
-        "beast": ["BAAI/bge-base-en-v1.5", "BAAI/bge-m3"],
+        "high":  ["BAAI_bge-base-en-v1.5"],
+        "beast": ["BAAI_bge-base-en-v1.5", "BAAI_bge-m3"],
     },
     "vision": {
-        "low":   ["nielsr/yolov12n", "ultralytics/yolov8"],
-        "mid":   ["qualcomm/RF-DETR"],
-        "high":  ["ultralytics/yolov8x"],
-        "beast": ["ultralytics/yolov8x"],
+        "low":   ["nielsr_yolov12n", "ultralytics_yolov8"],
+        "mid":   ["qualcomm_RF-DETR"],
+        "high":  ["ultralytics_yolov8x"],
+        "beast": ["ultralytics_yolov8x"],
     },
     "image_generation": {
-        "low":   ["black-forest-labs/FLUX.1-schnell"],
-        "mid":   ["Freepik/flux.1-lite-8B"],
-        "high":  ["Freepik/flux.1-lite-8B"],
-        "beast": ["black-forest-labs/FLUX.1-dev"],
+        "low":   ["black-forest-labs_FLUX.1-schnell"],
+        "mid":   ["Freepik_flux.1-lite-8B"],
+        "high":  ["Freepik_flux.1-lite-8B"],
+        "beast": ["black-forest-labs_FLUX.1-dev"],
     },
     "tts": {
-        "low":   ["FunAudioLLM/CosyVoice2-0.5B"],
+        "low":   ["FunAudioLLM_CosyVoice2-0.5B"],
         "mid":   [],
         "high":  [],
         "beast": [],
@@ -638,26 +638,26 @@ MODEL_REPO_MAP = {
     "distiluse-base-multilingual-cased-v2": EMBEDDING_MULTI_REPO,
     "distiluse-multilingual": EMBEDDING_MULTI_REPO,
     "allenai-specter": EMBEDDING_SCI_REPO,
-    "intfloat/e5-base": EMBEDDING_RECALL_REPO,
+    "intfloat_e5-base": EMBEDDING_RECALL_REPO,
     "e5-base": EMBEDDING_RECALL_REPO,
     "paraphrase-MiniLM-L3-v2": EMBEDDING_PARA_REPO,
-    "multi-qa-MiniLM": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
+    "multi-qa-MiniLM": "sentence-transformers_multi-qa-MiniLM-L6-cos-v1",
     
     # LLMs
-    "phi-1_5": "microsoft/phi-1_5",
-    "phi-2": "microsoft/phi-2",
-    "openchat-3.5": "openchat/openchat-3.5-0106",
-    "Nous-Capybara-7B": "NousResearch/Nous-Capybara-7B",
-    "Mistral-7B-Instruct-v0.2": "mistralai/Mistral-7B-Instruct-v0.2",
-    "TinyLlama-1.1B": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "phi-1_5": "microsoft_phi-1_5",
+    "phi-2": "microsoft_phi-2",
+    "openchat-3.5": "openchat_openchat-3.5-0106",
+    "Nous-Capybara-7B": "NousResearch_Nous-Capybara-7B",
+    "Mistral-7B-Instruct-v0.2": "mistralai_Mistral-7B-Instruct-v0.2",
+    "TinyLlama-1.1B": "TinyLlama_TinyLlama-1.1B-Chat-v1.0",
     
     # New stack names (allow either alias or repo)
     "Qwen3-0.6B": REASONING_MODEL_REPO,
     "Qwen2.5-Coder-1.5B-Instruct": CODER_MODEL_REPO,
-    "Qwen2.5-Coder-3B-Instruct": "Qwen/Qwen2.5-Coder-3B-Instruct",
-    "Qwen2.5-Coder-7B-Instruct": "Qwen/Qwen2.5-Coder-7B-Instruct",
-    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
-    "Phi-4-mini-instruct": "microsoft/Phi-4-mini-instruct",
+    "Qwen2.5-Coder-3B-Instruct": "Qwen_Qwen2.5-Coder-3B-Instruct",
+    "Qwen2.5-Coder-7B-Instruct": "Qwen_Qwen2.5-Coder-7B-Instruct",
+    "Qwen2.5-7B-Instruct": "Qwen_Qwen2.5-7B-Instruct",
+    "Phi-4-mini-instruct": "microsoft_Phi-4-mini-instruct",
 }
 
 def resolve_model_repo(model_id):
@@ -1190,28 +1190,28 @@ def model_policy_allows_download(expected_size_gb, models_dir=None):
             "budget_gb": budget_gb, "used_gb": used_gb, "max_single_gb": max_single_gb}
 
 MODEL_META = {
-    "Qwen/Qwen3-0.6B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
-    "Qwen/Qwen2.5-Coder-1.5B-Instruct": {"tier": "low", "disk_gb_est": 2.0, "vram_gb_est": 4.0, "speed": "medium"},
-    "sentence-transformers/all-MiniLM-L6-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
-    "sentence-transformers/distiluse-base-multilingual-cased-v2": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
-    "allenai/specter": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
-    "intfloat/e5-base": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.7, "speed": "fast"},
-    "sentence-transformers/paraphrase-MiniLM-L3-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
-    "nielsr/yolov12n": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.5, "speed": "fast"},
-    "ultralytics/yolov8": {"tier": "mid", "disk_gb_est": 0.1, "vram_gb_est": 1.0, "speed": "fast"},
-    "qualcomm/RF-DETR": {"tier": "mid", "disk_gb_est": 0.4, "vram_gb_est": 1.5, "speed": "medium"},
-    "Freepik/flux.1-lite-8B": {"tier": "mid", "disk_gb_est": 16.0, "vram_gb_est": 12.0, "speed": "slow"},
-    "FunAudioLLM/CosyVoice2-0.5B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
-    "Qwen/Qwen2.5-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
-    "Qwen/Qwen2.5-Coder-3B-Instruct": {"tier": "mid", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "medium"},
-    "Qwen/Qwen2.5-Coder-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "slow"},
-    "microsoft/Phi-4-mini-instruct": {"tier": "mid", "disk_gb_est": 3.0, "vram_gb_est": 4.0, "speed": "fast"},
-    "mistralai/Mistral-7B-Instruct-v0.2": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
-    "BAAI/bge-base-en-v1.5": {"tier": "high", "disk_gb_est": 1.0, "vram_gb_est": 1.0, "speed": "fast"},
-    "BAAI/bge-m3": {"tier": "beast", "disk_gb_est": 2.0, "vram_gb_est": 2.0, "speed": "medium"},
-    "ultralytics/yolov8x": {"tier": "high", "disk_gb_est": 0.3, "vram_gb_est": 2.0, "speed": "medium"},
-    "black-forest-labs/FLUX.1-schnell": {"tier": "low", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "fast"},
-    "black-forest-labs/FLUX.1-dev": {"tier": "beast", "disk_gb_est": 20.0, "vram_gb_est": 16.0, "speed": "slow"},
+    "Qwen_Qwen3-0.6B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
+    "Qwen_Qwen2.5-Coder-1.5B-Instruct": {"tier": "low", "disk_gb_est": 2.0, "vram_gb_est": 4.0, "speed": "medium"},
+    "sentence-transformers_all-MiniLM-L6-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
+    "sentence-transformers_distiluse-base-multilingual-cased-v2": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
+    "allenai_specter": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.5, "speed": "fast"},
+    "intfloat_e5-base": {"tier": "mid", "disk_gb_est": 0.5, "vram_gb_est": 0.7, "speed": "fast"},
+    "sentence-transformers_paraphrase-MiniLM-L3-v2": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.2, "speed": "fast"},
+    "nielsr_yolov12n": {"tier": "low", "disk_gb_est": 0.1, "vram_gb_est": 0.5, "speed": "fast"},
+    "ultralytics_yolov8": {"tier": "mid", "disk_gb_est": 0.1, "vram_gb_est": 1.0, "speed": "fast"},
+    "qualcomm_RF-DETR": {"tier": "mid", "disk_gb_est": 0.4, "vram_gb_est": 1.5, "speed": "medium"},
+    "Freepik_flux.1-lite-8B": {"tier": "mid", "disk_gb_est": 16.0, "vram_gb_est": 12.0, "speed": "slow"},
+    "FunAudioLLM_CosyVoice2-0.5B": {"tier": "low", "disk_gb_est": 1.0, "vram_gb_est": 2.0, "speed": "fast"},
+    "Qwen_Qwen2.5-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
+    "Qwen_Qwen2.5-Coder-3B-Instruct": {"tier": "mid", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "medium"},
+    "Qwen_Qwen2.5-Coder-7B-Instruct": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "slow"},
+    "microsoft_Phi-4-mini-instruct": {"tier": "mid", "disk_gb_est": 3.0, "vram_gb_est": 4.0, "speed": "fast"},
+    "mistralai_Mistral-7B-Instruct-v0.2": {"tier": "high", "disk_gb_est": 8.0, "vram_gb_est": 10.0, "speed": "medium"},
+    "BAAI_bge-base-en-v1.5": {"tier": "high", "disk_gb_est": 1.0, "vram_gb_est": 1.0, "speed": "fast"},
+    "BAAI_bge-m3": {"tier": "beast", "disk_gb_est": 2.0, "vram_gb_est": 2.0, "speed": "medium"},
+    "ultralytics_yolov8x": {"tier": "high", "disk_gb_est": 0.3, "vram_gb_est": 2.0, "speed": "medium"},
+    "black-forest-labs_FLUX.1-schnell": {"tier": "low", "disk_gb_est": 4.0, "vram_gb_est": 6.0, "speed": "fast"},
+    "black-forest-labs_FLUX.1-dev": {"tier": "beast", "disk_gb_est": 20.0, "vram_gb_est": 16.0, "speed": "slow"},
 }
 
 # ---------------- Object Detection Model Configuration (Spring Clean 2026) ----------------
@@ -1238,15 +1238,15 @@ ENABLE_FASTER_RCNN = False
 ENABLE_RETINANET = False
 
 OBJECT_MODEL_CONFIG = {
-    "YOLOv12n": {"enabled": bool(ENABLE_YOLOV12N), "repo": "yolov12n", "hf_repo": "nielsr/yolov12n", "require": None},
-    "YOLOv8":   {"enabled": bool(ENABLE_YOLOV8),   "repo": "ultralytics_yolov8", "hf_repo": "ultralytics/yolov8", "require": "ultralytics"},
+    "YOLOv12n": {"enabled": bool(ENABLE_YOLOV12N), "repo": "yolov12n", "hf_repo": "nielsr_yolov12n", "require": None},
+    "YOLOv8":   {"enabled": bool(ENABLE_YOLOV8),   "repo": "ultralytics_yolov8", "hf_repo": "ultralytics_yolov8", "require": "ultralytics"},
     "SSD":      {"enabled": bool(ENABLE_SSD),      "repo": "qfgaohao_pytorch-ssd", "hf_repo": "https://github.com/qfgaohao/pytorch-ssd", "require": None,
         "weights": [
             {"url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/mobilenet-v1-ssd-mp-0_675.pth", "filename": "mobilenet-v1-ssd-mp-0_675.pth"},
             {"url": "https://github.com/qfgaohao/pytorch-ssd/releases/download/v1.0/voc-model-labels.txt", "filename": "voc-model-labels.txt"},
         ]
     },
-    "RF-DETR":  {"enabled": bool(ENABLE_RF_DETR),  "repo": "rf_detr", "hf_repo": "qualcomm/RF-DETR", "require": None},
+    "RF-DETR":  {"enabled": bool(ENABLE_RF_DETR),  "repo": "rf_detr", "hf_repo": "qualcomm_RF-DETR", "require": None},
 }
 
 #----------------------------------------------------------------------------------------------------------
@@ -1461,7 +1461,7 @@ COHERE_API      = False
 
 LOCAL_LLM_API   = True  # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
 LOCAL_API       = True  # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
-MESH_API        = False # MESH_API is the SarahMemory Network https://api.sarahmemory.net
+MESH_API        = False  # MESH_API is the SarahMemory Network https://api.sarahmemory.net
 # MESH_API is the NODE NETWORK of other systems running the SARAHMEMORY AiOS systems
 
 # ---------------------------------------------------------------------------
@@ -2207,13 +2207,13 @@ AVATAR_REFRESH_RATE = 10
 # Then think about Scifi the Matrix/SkyNet/HAL this AI system may surpass imagination or even be uploaded into
 # a robotic form one day or later on, it is designed to evolve afterall.
 
-NEOSKYMATRIX = False 
+NEOSKYMATRIX = True 
 #When True NeoskyMatrix will be enabled and allow the system to run in a fully autonomious mode, default False. 
 # This is a joke flag but also a reminder if the system ever evolves beyond control, it may be best to have 
 # a kill switch or at least a warning system in place for the user to know if the system has reached 
 # a point of no return or is doing something it shouldn't be doing.
 
-DEVELOPERSMODE = False #When True DevelopersMode will be enabled and allow access.
+DEVELOPERSMODE = True #When True DevelopersMode will be enabled and allow access.
 #to more advanced features and tools, default False
  
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
@@ -2253,7 +2253,7 @@ def load_user_settings(settings_path: str = None) -> None:
     {
       "DEBUG_MODE": false,
       "SAFE_MODE": true,
-      "PRIMARY_API": "huggingface"
+      "PRIMARY_API": "huggingface" #BAD EXAMPLE
     }
     """
     try:
@@ -2308,7 +2308,7 @@ def get_active_model() -> str:
         ("Qwen2.5-Coder-1.5B-Instruct", ENABLE_MODEL_O),
         ("Qwen2.5-Coder-3B-Instruct", ENABLE_MODEL_P),
         ("Qwen2.5-7B-Instruct", ENABLE_MODEL_Q),
-        ("BAAI/bge-base-en-v1.5", ENABLE_MODEL_R),
+        ("BAAI_bge-base-en-v1.5", ENABLE_MODEL_R),
     ]
     # If auto selector is enabled, prefer models with GPU if available (simple placeholder logic)
     if AUTO_MODEL_SELECTOR:
