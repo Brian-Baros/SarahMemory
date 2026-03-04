@@ -373,7 +373,6 @@ The entire project is being built in the open:
 - Clear separation between private memory and public knowledge
 - Designed to scale without becoming a data-harvesting platform
 
-This is not a “toy repo.”  
 It is a long-term system being built with intention.
 
 ---
