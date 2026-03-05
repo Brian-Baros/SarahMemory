@@ -13,7 +13,7 @@
 ---
 KNOW EXCATLY how the Data flows from the moment you submit it all the way till it gives a response back.
 ---
-![SarahMemory DATAFLOW](documents/INFORMATION_FLOW_ENDTOEND.png)
+![SarahMemory DATAFLOW](documents/SARAHMEMORY-AIOS.png)
 
 ---
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
