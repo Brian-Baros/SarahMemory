@@ -206,6 +206,7 @@ class IntentType(Enum):
     LOGIN = "login"
     SIGNUP = "signup"
     DEVICE_QUERY = "device_query"
+    DIAGNOSTICS = "diagnostics"
     STATEMENT = "statement"
     COMMAND = "command"
     QUESTION = "question"
@@ -234,6 +235,7 @@ INTENT_DESCRIPTIONS: Dict[str, str] = {
     "login": "User wants to login or authenticate.",
     "signup": "User wants to sign up or create an account.",
     "device_query": "User asks about current device, hardware or environment.",
+    "diagnostics": "User asks to run diagnostics or health checks on the system.",
     "statement": "General statement that is not clearly an action command.",
     "command": "Explicit high-confidence executable command.",
     "question": "User is asking a question requiring information.",
@@ -834,11 +836,37 @@ def _looks_like_device_query(text: str) -> bool:
     """Check if text asks about the device/system."""
     t = text.lower()
     keywords = [
-        "this device", "my phone", "my pc", "my computer",
-        "my laptop", "current device", "what device am i using",
-        "what am i using", "what system is this", "what os is this",
-        "which browser", "which system", "which machine",
-        "system info", "device info"
+        "hardware",
+        "device",
+        "system info",
+        "system status",
+        "system stats",
+        "gpu",
+        "vram",
+        "cuda",
+        "nvidia-smi",
+        "disk space",
+        "free space",
+        "drive space",
+        "storage",
+        "cpu usage",
+        "cpu",
+        "ram",
+        "memory usage",
+        "memory",
+    ]
+    return any(k in t for k in keywords)
+
+def _looks_like_diagnostics(text: str) -> bool:
+    t = text.lower()
+    keywords = [
+        "diagnostic",
+        "diagnostics",
+        "health check",
+        "self test",
+        "self-test",
+        "system check",
+        "run diagnostics",
     ]
     return any(k in t for k in keywords)
 
@@ -959,6 +987,10 @@ def _rule_based_intent(text: Any) -> str:
     # Priority 2: Device queries
     if _looks_like_device_query(lt):
         return "device_query"
+
+    # Priority 2.5: Diagnostics / health checks
+    if _looks_like_diagnostics(lt):
+        return "diagnostics"
 
     # Priority 3: Conversational intents
     if _looks_like_greeting(lt):

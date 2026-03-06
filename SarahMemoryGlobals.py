@@ -511,8 +511,8 @@ PATTERN_HISTORY_DAYS = 30
 
 # ---------------- Model Selection & Multi-Model Configuration -New for v7.0-----Allows 3rd party models to be incorporated----------
 # Full Model Integration Flag
-MULTI_MODEL = True  # When True, allows multiple models to be enabled and used in logic checks. If False, only DEFAULT fallback model will load.
-AUTO_MODEL_SELECTOR = True # Automatic model selector flag (v7.1.3). When True, the system picks the best available model based on enabled flags.
+MULTI_MODEL = False  # When True, allows multiple models to be enabled and used in logic checks. If False, only DEFAULT fallback model will load.
+AUTO_MODEL_SELECTOR = False # Automatic model selector flag (v7.1.3). When True, the system picks the best available model based on enabled flags.
 
 # =============================================================================
 # Model Enable Flags (Used across modules for routing, embeddings, vision, voice)
@@ -529,11 +529,11 @@ AUTO_MODEL_SELECTOR = True # Automatic model selector flag (v7.1.3). When True, 
 # EMBEDDINGS / RETRIEVAL (SentenceTransformers / embedding encoders) [DEFAULTS = B,D,E,F,G]
 # -----------------------------------------------------------------------------
 ENABLE_MODEL_B  = True   # sentence-transformers/all-MiniLM-L6-v2 Tier: LOW | Function: Core English embeddings (default fallback); fast + reliable
-ENABLE_MODEL_D  = True   # sentence-transformers/paraphrase-MiniLM-L3-v2 Tier: LOW | Function: Paraphrase/rewrites; useful for semantic similarity + rewrite tasks
+ENABLE_MODEL_D  = False   # sentence-transformers/paraphrase-MiniLM-L3-v2 Tier: LOW | Function: Paraphrase/rewrites; useful for semantic similarity + rewrite tasks
 ENABLE_MODEL_C  = False  # sentence-transformers/multi-qa-MiniLM-L6-cos-v1 Tier: LOW | Function: QA-optimized embeddings (question->passage retrieval)
-ENABLE_MODEL_E  = True   # sentence-transformers/distiluse-base-multilingual-cased-v2 Tier: MID | Function: Multilingual embeddings (50+ languages)
-ENABLE_MODEL_F  = True   # allenai/specter Tier: MID | Function: Scientific paper/document embeddings (research corpora)
-ENABLE_MODEL_G  = True   # intfloat/e5-base Tier: MID | Function: High-recall retrieval embeddings; strong for search/retrieval
+ENABLE_MODEL_E  = False  # sentence-transformers/distiluse-base-multilingual-cased-v2 Tier: MID | Function: Multilingual embeddings (50+ languages)
+ENABLE_MODEL_F  = False  # allenai/specter Tier: MID | Function: Scientific paper/document embeddings (research corpora)
+ENABLE_MODEL_G  = False  # intfloat/e5-base Tier: MID | Function: High-recall retrieval embeddings; strong for search/retrieval
 ENABLE_MODEL_R  = False  # BAAI/bge-base-en-v1.5 Tier: HIGH | Function: Strong English embeddings; better ranking/semantic performance
 ENABLE_MODEL_U  = False  # BAAI/bge-m3  Tier: BEAST | Function: Multilingual + multi-function embeddings; heavier footprint
 # -----------------------------------------------------------------------------
@@ -552,7 +552,7 @@ ENABLE_MODEL_L  = False  # mistralai/Mistral-7B-Instruct-v0.2 Tier: BEAST | Func
 # -----------------------------------------------------------------------------
 # LOCAL LLMs (CODER / SOFTWARE ENGINEERING) [DEFAULTS=O,P]
 # -----------------------------------------------------------------------------
-ENABLE_MODEL_O  = True  # Qwen/Qwen2.5-Coder-1.5B-Instruct Tier: LOW | Function: Code assistant (small); best “coder low tier” default
+ENABLE_MODEL_O  = False # Qwen/Qwen2.5-Coder-1.5B-Instruct Tier: LOW | Function: Code assistant (small); best “coder low tier” default
 ENABLE_MODEL_P  = True   # Qwen/Qwen2.5-Coder-3B-Instruct   Tier: MID | Function: Code assistant (mid); better quality than 1.5B, still local-friendly
 ENABLE_MODEL_T  = False  # Qwen/Qwen2.5-Coder-7B-Instruct   Tier: BEAST | Function: Code assistant (high quality); needs more VRAM/RAM
 # -----------------------------------------------------------------------------
@@ -562,7 +562,7 @@ ENABLE_MODEL_V  = True  # nielsr/yolov12n Tier: LOW | Function: YOLOv12 Nano (fa
 ENABLE_MODEL_W  = False  # ultralytics/yolov8 Tier: MID | Function: Stable YOLOv8 baseline; good compatibility fallback
 ENABLE_MODEL_X  = False  # qualcomm/RF-DETR Tier: MID/HIGH | Function: DETR-style detector alternative; good secondary option
 ENABLE_MODEL_Y  = False  # ultralytics/yolov8x Tier: BEAST | Function: Higher-accuracy YOLOv8 variant; heavier compute
-ENABLE_MODEL_AD  = True   # SSD (pytorch-ssd) Tier: LOW/MID  | Lightweight SSD detector | Uses external weights URLs
+ENABLE_MODEL_AD  = False   # SSD (pytorch-ssd) Tier: LOW/MID  | Lightweight SSD detector | Uses external weights URLs
 ENABLE_MODEL_AE  = False  # YOLOv5            Tier: MID      | Legacy YOLO family       | Requires legacy loader
 ENABLE_MODEL_AF  = False  # YOLOv7            Tier: MID/HIGH | Legacy YOLO family       | Requires legacy loader
 ENABLE_MODEL_AG  = False  # YOLO-NAS          Tier: HIGH     | Legacy/alt detector      | Requires NAS loader
@@ -1585,7 +1585,7 @@ COHERE_API      = False
 
 LOCAL_LLM_API   = True # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
 LOCAL_API       = True # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
-MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahmemory.net
+MESH_API        = False # MESH_API is the SarahMemory Network https://api.sarahmemory.net
 # MESH_API is the NODE NETWORK of other systems running the SARAHMEMORY AiOS systems
 
 # ---------------------------------------------------------------------------
@@ -1651,6 +1651,7 @@ OS_TYPE = platform.system()  # System OS detected (Windows/Linux/macOS) for comp
 # --- IP/PORT Settings ---
 DEFAULT_PORT = 8000 # Localhost Flask API port for internal server communication
 DEFAULT_HOST = "127.0.0.1"  # Loopback address for local testing only
+
 # === SarahNet (Mesh Comms) â€” managed in Globals (no external JSON) ==========
 SARAHNET_ENABLED: bool = True
 
@@ -1663,7 +1664,7 @@ SARAHNET_PEERS: dict[str, tuple[str, int]] = {
     "node-B": ("184.52.80.237", 9998),
     "node-C": ("183.81.169.155", 9997),
 }
-
+SARAHNET_RELAY_TIMEOUT_SEC = float(os.getenv("SARAHNET_RELAY_TIMEOUT_SEC","2.0"))
 # IDS / Transport tuning
 SARAHNET_RPS: int         = int(os.getenv("SARAHNET_RPS", "30"))
 SARAHNET_BURST: int       = int(os.getenv("SARAHNET_BURST", "60"))
@@ -4403,3 +4404,23 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryGlobals.py v8.0.0
 # ====================================================================
+
+# ---------------------------------------------------------------------------
+# Neuron Governance & Multiworker (Positronic Matrix) Defaults
+# ---------------------------------------------------------------------------
+# When enabled, SarahMemoryNeuron can run multiple "worker tickets" in parallel
+# (e.g., deterministic WebSYM lane + generative ReplyEngine lane) and then
+# select a winner via the auditor (SarahMemoryCompare).
+NEURON_MULTIWORKER_ENABLED = True
+NEURON_MULTIWORKER_TIMEOUT_SEC = 10.0
+NEURON_MULTIWORKER_RETRY_ON_DIVERGENCE = True
+
+# Auditor threshold for marking a candidate as a "HIT" (0.0-1.0).
+NEURON_AUDIT_THRESHOLD = 0.65
+
+# Enable the Compare/Auditor gate (recommended True).
+ENABLE_COMPARE = True
+
+# Cloud-safe mode restricts privileged operations to loopback callers.
+# app.py uses this as an additional enforcement layer.
+CLOUD_SAFE_MODE = True

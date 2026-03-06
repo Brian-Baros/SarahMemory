@@ -256,7 +256,7 @@ def get_active_sentence_model():
 # =============================================================================
 # SOURCE FETCHING - v8.0 Enhanced
 # =============================================================================
-def fetch_all_sources(user_text: str, intent: str) -> Dict[str, Any]:
+def fetch_all_sources(user_text: str, intent: str, *, allow_local: bool = True, allow_web: bool = True, allow_api: bool = True) -> Dict[str, Any]:
     """
     Fetch responses from all enabled sources (local, web, API).
     v8.0: Enhanced with better error handling and source quality tracking.
@@ -366,7 +366,7 @@ def fetch_all_sources(user_text: str, intent: str) -> Dict[str, Any]:
 # =============================================================================
 # RESPONSE COMPARISON - v8.0 Enhanced
 # =============================================================================
-def compare_reply(user_text: str, generated_response: str, intent: str = "general") -> Dict[str, Any]:
+def compare_reply(user_text: str, generated_response: str, intent: str = "general", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Compare generated response against multiple sources with advanced metrics.
     v8.0: Enhanced with multi-layered scoring and detailed analytics.
@@ -390,7 +390,13 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
 
     try:
         # Fetch all available sources
-        response_pool = fetch_all_sources(user_text, intent)
+        meta = meta or {}
+        allow_web = True
+        allow_api = True
+        if bool(meta.get("offline") or meta.get("local_only")):
+            allow_web = False
+            allow_api = False
+        response_pool = fetch_all_sources(user_text, intent, allow_local=True, allow_web=allow_web, allow_api=allow_api)
         
         if not response_pool:
             logger.warning("[v8.0][Compare] No sources available")
@@ -529,6 +535,150 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
 # =============================================================================
 # SIMILARITY METRICS - v8.0 New
 # =============================================================================
+
+def compare_candidates(
+    user_text: str,
+    candidates: Dict[str, str],
+    intent: str,
+    *,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Compare multiple candidate replies against a shared source pool and select a winner.
+
+    This is designed for SarahMemoryNeuron multiworker mode:
+      - Candidates are produced in parallel ("tickets")
+      - An auditor evaluates each candidate against local/web/api sources
+      - The highest-confidence candidate is chosen, optionally preferring majority consensus
+
+    Returns:
+      {
+        "ok": True,
+        "winner_key": "...",
+        "winner_reply": "...",
+        "winner_score": 0.0-1.0,
+        "winner_source": "local_db|web|api|...",
+        "majority": {"key": "...", "ratio": 0.0-1.0} | None,
+        "scored": { key: {...} }
+      }
+    """
+    meta = meta or {}
+    allow_web = True
+    allow_api = True
+    if bool(meta.get("offline") or meta.get("local_only")):
+        allow_web = False
+        allow_api = False
+
+    # Pull sources once (shared) to avoid repeated I/O.
+    sources = fetch_all_sources(user_text, intent, allow_local=True, allow_web=allow_web, allow_api=allow_api)
+
+    def _norm(s: str) -> str:
+        s = (s or "").strip().lower()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    def _score_metrics(m: Dict[str, float]) -> float:
+        sim = float(m.get("similarity_score") or 0.0)
+        vec = float(m.get("vector_score") or 0.0)
+        tok = float(m.get("token_overlap") or 0.0)
+        # Conservative blend; vector score is powerful when embeddings are available.
+        return max(0.0, min(1.0, (0.50 * sim) + (0.40 * vec) + (0.10 * tok)))
+
+    scored: Dict[str, Any] = {}
+    norm_map: Dict[str, str] = {}  # key -> normalized reply
+
+    for key, reply in (candidates or {}).items():
+        reply = (reply or "").strip()
+        if not reply:
+            continue
+        norm_map[key] = _norm(reply)
+
+        best_score = 0.0
+        best_source = None
+        best_metrics = None
+
+        for src_name, src in (sources or {}).items():
+            src_text = str((src or {}).get("text") or "")
+            if not src_text.strip():
+                continue
+            try:
+                metrics = calculate_similarity_metrics(reply, src_text)
+            except Exception:
+                metrics = {
+                    "similarity_score": 0.0,
+                    "token_overlap": 0.0,
+                    "vector_score": 0.0,
+                }
+            score = _score_metrics(metrics)
+            if score > best_score:
+                best_score = score
+                best_source = src_name
+                best_metrics = metrics
+
+        scored[key] = {
+            "reply": reply,
+            "best_score": best_score,
+            "best_source": best_source,
+            "best_metrics": best_metrics or {},
+        }
+
+    if not scored:
+        return {
+            "ok": False,
+            "error": "no_candidates",
+            "scored": {},
+            "majority": None,
+        }
+
+    # Majority consensus (exact-ish) across candidate replies.
+    majority = None
+    if norm_map:
+        counts: Dict[str, int] = {}
+        inv: Dict[str, List[str]] = {}
+        for k, n in norm_map.items():
+            counts[n] = counts.get(n, 0) + 1
+            inv.setdefault(n, []).append(k)
+        top_norm = max(counts.items(), key=lambda kv: kv[1])
+        top_ratio = float(top_norm[1]) / float(len(norm_map))
+        if top_ratio > 0.5:
+            majority = {"key": inv[top_norm[0]][0], "ratio": top_ratio}
+
+    # Threshold for a "HIT" style selection.
+    try:
+        import SarahMemoryGlobals as _G  # local import to avoid cycles during tooling
+        threshold = float(getattr(_G, "NEURON_AUDIT_THRESHOLD", 0.65))
+    except Exception:
+        threshold = 0.65
+
+    # Winner: prefer a hit above threshold, otherwise best score.
+    best_key = max(scored.items(), key=lambda kv: kv[1]["best_score"])[0]
+    best = scored[best_key]
+
+    # If there's a majority reply and it's close to best, prefer it.
+    if majority:
+        maj_key = majority["key"]
+        maj = scored.get(maj_key)
+        if maj and (maj["best_score"] >= (best["best_score"] - 0.05)):
+            best_key, best = maj_key, maj
+
+    # If any candidate is above threshold, pick the top among those.
+    hit_keys = [k for k, v in scored.items() if float(v.get("best_score") or 0.0) >= threshold]
+    if hit_keys:
+        best_key = max(hit_keys, key=lambda k: scored[k]["best_score"])
+        best = scored[best_key]
+
+    return {
+        "ok": True,
+        "winner_key": best_key,
+        "winner_reply": best["reply"],
+        "winner_score": float(best.get("best_score") or 0.0),
+        "winner_source": best.get("best_source"),
+        "majority": majority,
+        "scored": scored,
+        "threshold": threshold,
+        "source_counts": {k: 1 for k in (sources or {}).keys()},
+    }
+
 def calculate_similarity_metrics(text1: str, text2: str) -> Dict[str, float]:
     """
     Calculate comprehensive similarity metrics between two texts.

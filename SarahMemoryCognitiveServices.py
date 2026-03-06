@@ -2,9 +2,9 @@
 File: SarahMemoryCognitiveServices.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-01-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 PURPOSE (v8.0.0):
@@ -494,6 +495,7 @@ def get_cognitive_policy_snapshot() -> Dict[str, Any]:
 _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
     ("PATCH_OR_UPDATE", r"\b(update|upgrade|patch|monkey\s*patch|self[-\s]*repair|fix\s+code)\b"),
     ("DIAGNOSTICS", r"\b(diagnose|diagnostics|health\s*check|self\s*check|log\s*scan)\b"),
+    ("SYSTEM_INFO", r"\b(gpu|vram|cuda|disk\s*space|free\s*space|drive\s*space|storage|cpu\s*usage|ram\s*usage|memory\s*usage|hardware\s*stats|system\s*stats)\b"),
     ("NETWORK_ACCESS", r"\b(network|internet|online|web|http|https|api\s+call|connect|wifi|bluetooth|lan|sarahnet)\b"),
     ("FILESYSTEM_WRITE", r"\b(write|create|delete|remove|move|rename|overwrite|trash|dumpster|upload|download)\b"),
     ("PRIVACY_SENSITIVE", r"\b(password|token|secret|key|credential|wallet|private\s+key)\b"),
@@ -615,6 +617,62 @@ def govern_request(
     pa = _normalize_proposed_action(proposed_action)
     ctx = caller_context or {}
 
+    # ---------------------------------------------------------------------
+    # Build a minimal routing policy (Governor output) — monotonic restrictions.
+    # This policy is advisory/authoritative for Neuron and other executors.
+    # ---------------------------------------------------------------------
+    try:
+        mode_flags = ctx.get("mode_flags") if isinstance(ctx, dict) else {}
+        mode_flags = mode_flags if isinstance(mode_flags, dict) else {}
+    except Exception:
+        mode_flags = {}
+
+    local_only = bool(mode_flags.get("LOCAL_ONLY_MODE") or ctx.get("local_only") or ctx.get("offline"))
+    safe_mode = bool(mode_flags.get("SAFE_MODE") or ctx.get("safe_mode"))
+    neoskymatrix = bool(mode_flags.get("NEOSKYMATRIX") or ctx.get("neoskymatrix"))
+    developersmode = bool(mode_flags.get("DEVELOPERSMODE") or ctx.get("developersmode"))
+
+    device_mode = str(mode_flags.get("DEVICE_MODE") or ctx.get("device_mode") or "").strip()
+    run_mode = str(mode_flags.get("RUN_MODE") or ctx.get("run_mode") or "").strip()
+    public_web = device_mode.lower().startswith("public") or run_mode.lower() == "cloud"
+
+    routing_policy = {
+        "allowed_tiers": {
+            "tier0": True,
+            "tier1": True,
+            "tier2": True,
+            # Tier-3 is only allowed when not local-only AND online is enabled in policy snapshot
+            "tier3": (not local_only) and bool(snap.get("cognitive_online_enabled")),
+        },
+        "budgets": {
+            # Keep governor budget guidance conservative; Neuron may further tighten
+            "latency_ms": 3500 if local_only else 7000,
+            "max_steps": 14 if neoskymatrix else 10,
+            "max_retries": 1,
+        },
+        "side_effects": {
+            # In SAFE_MODE, disable side effects by default (can be re-enabled by user)
+            "tts": True,
+            "db_write": False if safe_mode else True,
+            "compare": False if safe_mode else True,
+            "logging": True,
+            "evolution_tick": bool(neoskymatrix) and (not safe_mode),
+        },
+        "flags": {
+            "LOCAL_ONLY_MODE": local_only,
+            "SAFE_MODE": safe_mode,
+            "NEOSKYMATRIX": neoskymatrix,
+            "DEVELOPERSMODE": developersmode,
+        },
+    }
+
+    if public_web:
+        routing_policy["side_effects"]["filesystem"] = False
+        routing_policy["side_effects"]["exec"] = False
+        routing_policy["side_effects"]["db_write"] = False
+        routing_policy["side_effects"]["compare"] = False
+        routing_policy["side_effects"]["evolution_tick"] = False
+
     risk = {"risk_score": 0, "risk_factors": []}
     questions = []
     answers: Dict[str, Any] = {}
@@ -634,6 +692,9 @@ def govern_request(
         "answers": answers,
         "reasons": [],
         "recommended_next": None,
+        "rationale": "",
+        "trace": {},
+        "routing_policy": {},
         "policy_snapshot": {
             "cognitive_online_enabled": snap["cognitive_online_enabled"],
             "kill_switch_neoskymatrix": snap["kill_switch_neoskymatrix"],
@@ -641,6 +702,9 @@ def govern_request(
         },
     }
 
+
+    # Attach policy to decision (immutable baseline for this request)
+    decision["routing_policy"] = routing_policy
     def _finalize(dec: Dict[str, Any]) -> Dict[str, Any]:
         # Risk banding
         try:
@@ -657,7 +721,16 @@ def govern_request(
 
         _caller = _safe_str(caller) if caller else "unknown"
 
-        # Event log (best-effort)
+        
+        # Trace (best-effort; keep small unless DeveloperMode)
+        try:
+            if not isinstance(dec.get("trace"), dict):
+                dec["trace"] = {}
+            dec["trace"].setdefault("policy_flags", routing_policy.get("flags"))
+            dec["trace"].setdefault("allowed_tiers", routing_policy.get("allowed_tiers"))
+        except Exception:
+            pass
+# Event log (best-effort)
         try:
             log_cognitive_event(
                 "CognitiveDecision",
@@ -859,6 +932,16 @@ def govern_request(
 
 
     if intent == "FILESYSTEM_WRITE":
+        if public_web:
+            decision["decision"] = "DENY"
+            decision["allow"] = False
+            decision["require_user"] = False
+            decision["reasons"].append("Filesystem write operations are disabled in Public Web mode.")
+            decision["recommended_next"] = "Run filesystem changes on a local agent (LOCAL_AGENT)."
+            decision["risk_score"] = 8
+            decision["risk_factors"].append("public_web_restriction")
+            return _finalize(decision)
+
         questions.extend(
             [
                 "What exact filesystem operation is being requested (create/move/delete/trash/upload)?",
@@ -1007,6 +1090,16 @@ def govern_request(
         return _finalize(decision)
 
     if intent == "EXECUTE_COMMAND":
+        if public_web:
+            decision["decision"] = "DENY"
+            decision["allow"] = False
+            decision["require_user"] = False
+            decision["reasons"].append("Command execution is disabled in Public Web mode.")
+            decision["recommended_next"] = "Run this request on a local agent (LOCAL_AGENT)."
+            decision["risk_score"] = 9
+            decision["risk_factors"].append("public_web_restriction")
+            return _finalize(decision)
+
         questions.extend(
             [
                 "What exact command/action is intended (start/stop/restart/run)?",
@@ -1068,7 +1161,35 @@ def govern_request(
         decision["risk_factors"] = risk["risk_factors"]
         return _finalize(decision)
 
+    if intent == "SYSTEM_INFO":
+        if public_web:
+            decision["decision"] = "DENY"
+            decision["allow"] = False
+            decision["require_user"] = False
+            decision["reasons"].append("System hardware/runtime information is disabled in Public Web mode.")
+            decision["recommended_next"] = "Run this request on a local agent (LOCAL_AGENT)."
+            decision["risk_score"] = 5
+            decision["risk_factors"].append("public_web_restriction")
+            return _finalize(decision)
+
+        decision["decision"] = "ALLOW"
+        decision["allow"] = True
+        decision["require_user"] = False
+        decision["reasons"].append("Read-only system information.")
+        decision["risk_score"] = 1
+        return _finalize(decision)
+
     if intent == "DIAGNOSTICS":
+        if public_web:
+            decision["decision"] = "DENY"
+            decision["allow"] = False
+            decision["require_user"] = False
+            decision["reasons"].append("Diagnostics are disabled in Public Web mode.")
+            decision["recommended_next"] = "Run diagnostics locally (LOCAL_AGENT)."
+            decision["risk_score"] = 7
+            decision["risk_factors"].append("public_web_restriction")
+            return _finalize(decision)
+
         questions.extend(
             [
                 "Is this action read-only and non-destructive?",

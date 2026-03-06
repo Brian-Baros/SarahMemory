@@ -224,182 +224,6 @@ except Exception:
     voice = avatar = None
 
 
-# -----------------------------------------------------------------------------
-# Evolution Corrections Store (merged from sm_v800_reply_evolution_corrections_patch.py)
-# Contract: NEVER alter the reply shape; generate_reply always returns a bundle dict.
-# -----------------------------------------------------------------------------
-try:
-    import sqlite3  # already imported above; kept for clarity
-    from datetime import datetime
-    from pathlib import Path
-except Exception:
-    sqlite3 = None  # type: ignore
-
-_EVO_CORR_DB_READY = False
-
-def _evo_now() -> str:
-    try:
-        return datetime.now().isoformat(timespec="seconds")
-    except Exception:
-        return time.strftime("%Y-%m-%dT%H:%M:%S")
-
-def _evo_norm_q(text: str) -> str:
-    if not text:
-        return ""
-    t = str(text).strip().lower()
-    t = re.sub(r"\s+", " ", t)
-    t = re.sub(r"[^a-z0-9\s\.\,\?\!\'\"\-:;/\(\)]", "", t)
-    return t[:800]
-
-def _evo_get_paths() -> Tuple["Path", "Path"]:
-    """
-    Returns:
-      datasets_dir, evolution_corrections.db path
-    """
-    try:
-        import SarahMemoryGlobals as _G  # type: ignore
-        base_dir = Path(getattr(_G, "BASE_DIR", Path(__file__).resolve().parents[0]))
-        data_dir = Path(getattr(_G, "DATA_DIR", base_dir / "data"))
-        datasets_dir = Path(getattr(_G, "DATASETS_DIR", data_dir / "memory" / "datasets"))
-    except Exception:
-        base_dir = Path(__file__).resolve().parents[0]
-        datasets_dir = base_dir / "data" / "memory" / "datasets"
-
-    try:
-        datasets_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-
-    corrections_db = datasets_dir / "evolution_corrections.db"
-    return datasets_dir, corrections_db
-
-def _evo_db() -> Optional["sqlite3.Connection"]:
-    global _EVO_CORR_DB_READY
-    if sqlite3 is None:
-        return None
-    try:
-        _, corrections_db = _evo_get_paths()
-        conn = sqlite3.connect(str(corrections_db), timeout=5.0)
-        try:
-            conn.execute("PRAGMA journal_mode=WAL;")
-        except Exception:
-            pass
-        # Schema (isolated DB; no conflicts with existing DBs)
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS response_corrections (
-                question_norm TEXT PRIMARY KEY,
-                better_answer TEXT NOT NULL,
-                ts TEXT,
-                source TEXT,
-                confidence REAL,
-                notes TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS response_quality_flags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                question TEXT,
-                answer TEXT,
-                ts TEXT,
-                flags TEXT
-            )
-            """
-        )
-        conn.commit()
-        _EVO_CORR_DB_READY = True
-        return conn
-    except Exception:
-        return None
-
-def evo_get_correction(question: str) -> Optional[str]:
-    qn = _evo_norm_q(question)
-    if not qn:
-        return None
-    try:
-        conn = _evo_db()
-        if conn is None:
-            return None
-        cur = conn.cursor()
-        cur.execute("SELECT better_answer FROM response_corrections WHERE question_norm=?", (qn,))
-        row = cur.fetchone()
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return row[0] if row and row[0] else None
-    except Exception:
-        return None
-
-def evo_put_correction(question: str, better_answer: str, source: str = "evolution",
-                       confidence: float = 0.75, notes: str = "") -> bool:
-    qn = _evo_norm_q(question)
-    if not qn or not better_answer:
-        return False
-    try:
-        conn = _evo_db()
-        if conn is None:
-            return False
-        conn.execute(
-            """
-            INSERT INTO response_corrections(question_norm, better_answer, ts, source, confidence, notes)
-            VALUES(?,?,?,?,?,?)
-            ON CONFLICT(question_norm) DO UPDATE SET
-                better_answer=excluded.better_answer,
-                ts=excluded.ts,
-                source=excluded.source,
-                confidence=excluded.confidence,
-                notes=excluded.notes
-            """,
-            (qn, better_answer.strip(), _evo_now(), source, float(confidence), (notes or "")[:800]),
-        )
-        conn.commit()
-        try:
-            conn.close()
-        except Exception:
-            pass
-        return True
-    except Exception:
-        return False
-
-def _evo_flag_bad_answer(question: str, answer: str, flags: str) -> None:
-    try:
-        conn = _evo_db()
-        if conn is None:
-            return
-        conn.execute(
-            "INSERT INTO response_quality_flags(question, answer, ts, flags) VALUES(?,?,?,?)",
-            (str(question)[:1200], (answer or "")[:5000], _evo_now(), (flags or "")[:500]),
-        )
-        conn.commit()
-        try:
-            conn.close()
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-def _evo_looks_low_quality(answer: str) -> Optional[str]:
-    """
-    Fast local heuristics only:
-    returns flags string if low quality, else None
-    """
-    if not answer:
-        return "empty_answer"
-    a = answer.lower()
-    flags = []
-    if "as a language model" in a or "trained on data" in a or "i don't have a version number" in a:
-        flags.append("llm_disclaimer")
-    if len(answer.strip()) < 25:
-        flags.append("too_short")
-    if ("gpt-3" in a or "openai" in a) and ("i am sarah" not in a):
-        flags.append("identity_drift")
-    return ",".join(flags) if flags else None
-
-
-
 # --- Safe fallback: local vector-backed answer helper (returns None if unavailable) ---
 def _vector_backed_local_answer(text: str):
     try:
@@ -615,8 +439,66 @@ def _try_web(text: str) -> Tuple[Optional[str], Optional[str], List[str]]:
         logger.debug("Image fetch failed: %s", e)
     return summary, image, links
 
+
+# -----------------------------------------------------------------------------
+# Output sanitation (final-answer only)
+# -----------------------------------------------------------------------------
+# Some local LLMs echo role transcripts (system/user/assistant) and hidden thought tags.
+# This scrubber ensures the GUI/TTS sees only the final answer.
+
+def _sm_sanitize_user_text(text: str) -> str:
+    """Sanitize model output so only final user-visible answer reaches the WebUI.
+
+    Local LLMs sometimes echo chat templates (system/user/assistant) or prompt scaffolding.
+    This filter is best-effort and strictly display-layer.
+    """
+    if not text:
+        return ""
+
+    # Normalize newlines (keep as literals in source)
+    t = str(text).replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
+
+    # Strip hidden reasoning blocks
+    t = re.sub(r"(?is)<\\s*(think|analysis)\\s*>.*?<\\s*/\\s*\\1\\s*>", "", t)
+
+    # If an Assistant delimiter exists, keep the LAST segment
+    if "Assistant:" in t:
+        t = t.split("Assistant:")[-1].strip()
+
+    lines = t.split("\\n")
+    cleaned = []
+    for line in lines:
+        low = line.strip().lower()
+
+        # Drop standalone role markers
+        if low in {"system", "user", "assistant"}:
+            continue
+
+        # Drop colon-based role transcript lines
+        if re.match(r"^(system|user|assistant)\\s*:\\s*", line.strip(), flags=re.I):
+            continue
+
+        # Drop common scaffold headers
+        if re.match(r"^(role|intent|tone|complexity|recent context|context|query|mood profile)\\s*:\\s*", line.strip(), flags=re.I):
+            continue
+
+        # Drop the most common local chat-template instruction echo
+        if re.match(r"^you are sarahmemory\\b", line.strip(), flags=re.I):
+            continue
+        if re.match(r"^answer clearly and helpfully\\.?$", line.strip(), flags=re.I):
+            continue
+        if re.match(r"^answer the user directly\\.?$", line.strip(), flags=re.I):
+            continue
+
+        cleaned.append(line)
+
+    t = "\\n".join(cleaned)
+    t = re.sub(r"\\n{3,}", "\\n\\n", t).strip()
+    return t
+
+
 def _finalize_text(raw, meta):
-    txt = (raw or "").strip()
+    txt = _sm_sanitize_user_text((raw or "").strip())
     if not txt:
         return ""
     if (meta or {}).get("intent") in {"identity", "math", "image", "web", "local"}:
@@ -667,7 +549,7 @@ def route_reply(*args, **kwargs) -> Dict[str, Any]:
         return ReplyBundle("I'm having trouble routing that request.", meta={"error": str(e)}).to_dict()
 
 
-def generate_reply(self, user_text: str) -> Dict[str, Any]:
+def generate_reply(self, user_text: str, intent: str = "", tone: str = "", complexity: str = "", **kwargs) -> Dict[str, Any]:
     started = time.time()
     # Early bailout on interrupt
     try:
@@ -696,27 +578,10 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     """
     started = time.time()
     text_in = normalize_text(user_text) if 'normalize_text' in globals() else (user_text or "").strip()
-
-    # -----------------------------------------------------------------
-    # Evolution Corrections (serve corrected answers first, bundle-safe)
-    # -----------------------------------------------------------------
-    try:
-        corr = evo_get_correction(user_text)
-    except Exception:
-        corr = None
-    if corr:
-        meta = {"intent": "chat", "pipeline": ["corrections"], "offline": True, "source": "evolution_corrections"}
-        out = _finalize_text(str(corr), meta)
-        bundle = ReplyBundle(out, meta=meta).to_dict()
-        _store_history_safe(bundle)
-        # NOTE: voice/avatar are best-effort; must never gate bundle return
-        try:
-            _trigger_av_voice_safe(self, out)
-        except Exception:
-            pass
-        return _stamp_bundle(bundle)
     meta: Dict[str, Any] = {
         "intent": "chat",
+        "tone": tone or "",
+        "complexity": complexity or "",
         "pipeline": [],
         "offline": False,
         "model": None,
@@ -1065,7 +930,15 @@ def _stamp_bundle(bundle: dict) -> dict:
         pass
     return bundle
 
+# --- v7.7.4: enforce provenance label in responses ---
+def _sm_enforce_provenance(bundle):
+    """Legacy hook retained for back-compat.
+
+    IMPORTANT: Do not mutate user-visible text (no provenance labels in the reply body).
+    Provenance should live in bundle['meta'] only.
+    """
     return bundle
+
 
 try:
     if 'generate_reply' in globals():

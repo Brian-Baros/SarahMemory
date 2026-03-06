@@ -43,6 +43,10 @@ It consolidates:
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import subprocess
+import platform
 import sys
 import time
 import json
@@ -343,8 +347,15 @@ def _classify_intent(text: str) -> str:
     t = (text or "").strip().lower()
     if not t:
         return "empty"
-    if any(k in t for k in ("calculate", "solve", "convert", "unit", "derivative", "integral", "matrix", "vector")):
+    if any(k in t for k in ("calculate", "solve", "convert", "unit", "derivative", "integral", "matrix", "vector", "sqrt", "square root", "plus", "minus", "times", "multipl", "divide", "divided", "+", "-", "*", "/")):
         return "math"
+    # quick numeric expression heuristic
+    if re.search(r"\d", t) and any(op in t for op in ("+", "-", "*", "/", "sqrt", "square root", "plus", "minus", "times", "divided")):
+        return "math"
+    if any(k in t for k in ("diagnos", "self-test", "self test", "health check")):
+        return "diagnostics"
+    if any(k in t for k in ("gpu", "vram", "cuda", "disk space", "free disk", "free space", "storage", "drive space", "cpu", "ram", "memory usage", "system stats", "system status", "hardware stats")):
+        return "device_query"
     if any(k in t for k in ("chem", "molar", "stoichi", "compound", "element", "reaction", "ph", "acid", "base")):
         return "chemistry"
     if any(k in t for k in ("optimize", "speed up", "performance", "refactor", "bug", "error", "traceback")):
@@ -650,17 +661,339 @@ def _qa_compare_gate(user_text: str, draft: str, intent: str) -> Tuple[float, Di
 # Deterministic tiers
 # -----------------------------------------------------------------------------
 def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
-    if not _LogicCalc:
+    """Attempt deterministic evaluation.
+
+    Priority:
+      1) SarahMemoryLogicCalc (if available)
+      2) Safe fallback parser for basic arithmetic + sqrt when LogicCalc is unavailable
+    """
+    raw = (text or "").strip()
+    if not raw:
         return None
+
+    # Primary: project engine
+    if _LogicCalc:
+        try:
+            engine = _LogicCalc()
+            if hasattr(engine, "answer"):
+                out = engine.answer(raw)  # type: ignore
+                if out:
+                    return out
+            if hasattr(engine, "solve"):
+                out = engine.solve(raw)  # type: ignore
+                if out:
+                    return out
+        except Exception:
+            pass
+
+    # Fallback: minimal safe evaluator (keeps math functionality alive even without 3rd-party libs)
     try:
-        engine = _LogicCalc()
-        if hasattr(engine, "answer"):
-            return engine.answer(text)  # type: ignore
-        if hasattr(engine, "solve"):
-            return engine.solve(text)  # type: ignore
+        import ast
+        import math
+
+        t = raw.lower()
+
+        # Normalize common phrasing into an expression
+        t = t.replace("what is", "").replace("whats", "").replace("what\'s", "").strip()
+        t = re.sub(r"^\s*the\s+", "", t)
+        t = t.replace("square root of", "sqrt(")
+        # handle "sqrt(25)" already and close paren if we opened one
+        if "sqrt(" in t and ")" not in t.split("sqrt(", 1)[1]:
+            # append closing paren if missing
+            t = t + ")"
+
+        # Words -> numbers (very small, deterministic mapping)
+        words = {
+            "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+            "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
+            "seventy": 70, "eighty": 80, "ninety": 90,
+            "hundred": 100, "thousand": 1000,
+        }
+
+        def words_to_number(s: str) -> Optional[int]:
+            toks = [w for w in re.split(r"[^a-z]+", s.lower()) if w]
+            if not toks:
+                return None
+            total = 0
+            current = 0
+            seen = False
+            for w in toks:
+                if w not in words:
+                    return None
+                seen = True
+                v = words[w]
+                if v == 100:
+                    current = max(1, current) * 100
+                elif v == 1000:
+                    total += max(1, current) * 1000
+                    current = 0
+                else:
+                    current += v
+            if not seen:
+                return None
+            return total + current
+
+        # Replace plus/minus/times/divided
+        t = t.replace(" plus ", " + ").replace(" minus ", " - ").replace(" times ", " * ")
+        t = t.replace(" multiplied by ", " * ").replace(" x ", " * ")
+        t = t.replace(" divided by ", " / ").replace(" over ", " / ")
+
+        # Normalize digit scale phrases (e.g., '1 thousand' -> '(1*1000)')
+        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+(thousand|k)\b", r"(\1*1000)", t)
+        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+million\b", r"(\1*1000000)", t)
+        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+billion\b", r"(\1*1000000000)", t)
+
+        # If still no digits but contains number words, attempt conversion on entire string
+        if not re.search(r"\d", t):
+            n = words_to_number(t)
+            if n is not None:
+                t = str(n)
+
+        # Convert patterns like "one thousand + two thousand"
+        # Split on operators and convert each side when possible.
+        parts = re.split(r"(\+|\-|\*|/|\(|\)|,)", t)
+        rebuilt = []
+        for p in parts:
+            ps = p.strip()
+            if not ps:
+                rebuilt.append(p)
+                continue
+            if ps in {"+", "-", "*", "/", "(", ")", ","}:
+                rebuilt.append(ps)
+                continue
+            if re.search(r"\d", ps):
+                rebuilt.append(ps)
+                continue
+            n = words_to_number(ps)
+            rebuilt.append(str(n) if n is not None else ps)
+        expr = " ".join([x for x in rebuilt if x != ","]).strip()
+
+        # Allow only a strict subset of AST nodes
+        allowed_nodes = (
+            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call,
+            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
+            ast.USub, ast.UAdd,
+            ast.Constant, ast.Load, ast.Name,
+        )
+
+        tree = ast.parse(expr, mode="eval")
+        for node in ast.walk(tree):
+            if not isinstance(node, allowed_nodes):
+                return None
+            if isinstance(node, ast.Call):
+                if not isinstance(node.func, ast.Name) or node.func.id != "sqrt":
+                    return None
+
+        def _eval(node):
+            if isinstance(node, ast.Expression):
+                return _eval(node.body)
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    return float(node.value)
+                return None
+            if isinstance(node, ast.UnaryOp):
+                v = _eval(node.operand)
+                if v is None:
+                    return None
+                if isinstance(node.op, ast.USub):
+                    return -v
+                if isinstance(node.op, ast.UAdd):
+                    return v
+                return None
+            if isinstance(node, ast.BinOp):
+                a = _eval(node.left)
+                b = _eval(node.right)
+                if a is None or b is None:
+                    return None
+                if isinstance(node.op, ast.Add):
+                    return a + b
+                if isinstance(node.op, ast.Sub):
+                    return a - b
+                if isinstance(node.op, ast.Mult):
+                    return a * b
+                if isinstance(node.op, ast.Div):
+                    return a / b
+                if isinstance(node.op, ast.Pow):
+                    return a ** b
+                return None
+            if isinstance(node, ast.Call):
+                arg0 = _eval(node.args[0]) if node.args else None
+                if arg0 is None:
+                    return None
+                return math.sqrt(arg0)
+            if isinstance(node, ast.Name) and node.id == "sqrt":
+                return None
+            return None
+
+        val = _eval(tree)
+        if val is None:
+            return None
+
+        return {
+            "ok": True,
+            "value": val,
+            "text": f"Computed result using deterministic evaluation: {expr} = {val}",
+            "meta": {"expression": expr, "normalized_from": raw, "intent": "calc"},
+            "meaning": {"props": [{"predicate": "evaluates", "args": [{"kind": "concept", "name": "expression", "value": expr}]}], "meta": {"intent": "calc"}},
+        }
     except Exception:
         return None
+# -----------------------------------------------------------------------------
+# Tier-0: System / Diagnostics lane (safe reads)
+# -----------------------------------------------------------------------------
+def _is_public_device(meta: Dict[str, Any]) -> bool:
+    dm = str((meta or {}).get("device_mode") or "").strip().lower()
+    return dm.startswith("public")
+
+
+def _detect_system_kind(text: str, intent: str = "") -> Optional[str]:
+    t = (text or "").strip().lower()
+    i = (intent or "").strip().lower()
+    if i in ("diagnostics", "diagnostic"):
+        return "diagnostics"
+    if "diagnos" in t or "self-test" in t or "self test" in t or "health check" in t:
+        return "diagnostics"
+    # Hardware/system stats
+    if any(k in t for k in ("gpu", "vram", "cuda", "graphics", "nvidia-smi")):
+        return "gpu"
+    if any(k in t for k in ("disk space", "free disk", "free space", "storage", "drive space")):
+        return "disk"
+    if any(k in t for k in ("cpu", "ram", "memory usage", "system stats", "system status")):
+        return "system_stats"
     return None
+
+
+def _disk_usage_summary(path: str) -> Dict[str, Any]:
+    try:
+        du = shutil.disk_usage(path)
+        total, used, free = int(du.total), int(du.used), int(du.free)
+        gb = 1024 ** 3
+        return {
+            "ok": True,
+            "path": path,
+            "total_bytes": total,
+            "used_bytes": used,
+            "free_bytes": free,
+            "total_gb": round(total / gb, 2),
+            "used_gb": round(used / gb, 2),
+            "free_gb": round(free / gb, 2),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "path": path}
+
+
+def _gpu_stats_summary() -> Dict[str, Any]:
+    # Try torch first (if available)
+    try:
+        import torch  # type: ignore
+        out: Dict[str, Any] = {"ok": True, "backend": "torch", "cuda_available": bool(torch.cuda.is_available())}
+        if torch.cuda.is_available():
+            idx = 0
+            try:
+                idx = int(torch.cuda.current_device())
+            except Exception:
+                idx = 0
+            out["device_index"] = idx
+            try:
+                out["name"] = torch.cuda.get_device_name(idx)
+            except Exception:
+                out["name"] = None
+            try:
+                props = torch.cuda.get_device_properties(idx)
+                out["total_vram_bytes"] = int(getattr(props, "total_memory", 0) or 0)
+                out["total_vram_gb"] = round(out["total_vram_bytes"] / (1024 ** 3), 2) if out["total_vram_bytes"] else None
+            except Exception:
+                pass
+            try:
+                free_b, total_b = torch.cuda.mem_get_info(idx)
+                out["free_vram_bytes"] = int(free_b)
+                out["free_vram_gb"] = round(int(free_b) / (1024 ** 3), 2)
+                out["used_vram_gb"] = round((int(total_b) - int(free_b)) / (1024 ** 3), 2)
+            except Exception:
+                pass
+        return out
+    except Exception:
+        pass
+
+    # Fallback: nvidia-smi if installed
+    try:
+        cmd = [
+            "nvidia-smi",
+            "--query-gpu=name,driver_version,memory.total,memory.free,utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ]
+        raw = subprocess.check_output(cmd, text=True, stderr=subprocess.STDOUT, timeout=3).strip()
+        if not raw:
+            return {"ok": False, "backend": "nvidia-smi", "error": "No output"}
+        parts = [p.strip() for p in raw.split(",")]
+        out = {"ok": True, "backend": "nvidia-smi", "raw": raw}
+        if len(parts) >= 5:
+            out.update(
+                {
+                    "name": parts[0],
+                    "driver_version": parts[1],
+                    "total_vram_mb": float(parts[2]),
+                    "free_vram_mb": float(parts[3]),
+                    "gpu_util_pct": float(parts[4]),
+                }
+            )
+        return out
+    except Exception as e:
+        return {"ok": False, "backend": "nvidia-smi", "error": str(e)}
+
+
+def _quick_system_stats() -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": True, "platform": platform.platform(), "python": platform.python_version()}
+    # psutil is optional
+    try:
+        import psutil  # type: ignore
+
+        out["cpu_percent"] = float(psutil.cpu_percent(interval=0.2))
+        vm = psutil.virtual_memory()
+        out["ram_total_gb"] = round(float(vm.total) / (1024 ** 3), 2)
+        out["ram_available_gb"] = round(float(vm.available) / (1024 ** 3), 2)
+        out["ram_percent"] = float(vm.percent)
+    except Exception:
+        pass
+    return out
+
+
+def _run_quick_diagnostics() -> Dict[str, Any]:
+    # Always provide a safe, fast snapshot for the chat endpoint.
+    base_dir = os.getcwd()
+    try:
+        import SarahMemoryGlobals as _G  # type: ignore
+        base_dir = str(getattr(_G, "BASE_DIR", base_dir) or base_dir)
+    except Exception:
+        pass
+
+    out: Dict[str, Any] = {
+        "ok": True,
+        "engine": "quick",
+        "system": _quick_system_stats(),
+        "gpu": _gpu_stats_summary(),
+        "disk": _disk_usage_summary(base_dir),
+    }
+
+    # Optional: include slower full diagnostics if explicitly enabled.
+    if str(os.environ.get("SM_NEURON_FULL_DIAGNOSTICS", "")).strip().lower() in {"1", "true", "yes"}:
+        try:
+            import SarahMemoryDiagnostics as _D  # type: ignore
+
+            sysr = getattr(_D, "run_system_diagnostics", None)
+            hwr = getattr(_D, "run_hardware_diagnostics", None)
+            out["engine"] = "quick+SarahMemoryDiagnostics"
+            if callable(sysr):
+                out["full_system"] = sysr()
+            if callable(hwr):
+                out["full_hardware"] = hwr()
+        except Exception as e:
+            out["full_error"] = str(e)
+
+    return out
 
 def _try_websym(text: str) -> Optional[str]:
     if not _WebSYM:
@@ -763,12 +1096,46 @@ def _log_event(kind: str, intent: str, confidence: float, source: str, payload: 
 # -----------------------------------------------------------------------------
 # Public router surface
 # -----------------------------------------------------------------------------
-def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None) -> NeuronResult:
+def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: Optional[Dict[str, Any]] = None) -> NeuronResult:
     _init_db()
     budget = _budget_limits()
 
-    inp = NeuronInput(text=user_text or "", meta=meta or {})
+    meta = meta or {}
+    policy = policy or {}
+    allowed_tiers = dict(policy.get("allowed_tiers") or {"tier0": True, "tier1": True, "tier2": True, "tier3": True})
+    # Enforce request-scoped local-only as a hard restriction.
+    if bool(meta.get("local_only") or meta.get("offline")):
+        allowed_tiers["tier3"] = False
+    inp = NeuronInput(text=user_text or "", meta=meta)
     trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}}
+    trace["policy"] = {"allowed_tiers": allowed_tiers}
+
+    # Tier-0: Fast deterministic math (bypass heavy routing/QA gates)
+    if allowed_tiers.get('tier0', True):
+        det = _try_logiccalc(inp.text)
+        if det and bool(det.get('ok')):
+            trace['tiers'].append({'tier': 0, 'engine': 'LogicCalc', 'ok': True})
+            trace['intent'] = 'math'
+            artifacts = {'math': {'ok': True, 'expr': det.get('expr'), 'value': det.get('value'), 'engine': det.get('engine')}, 'deterministic': det}
+            v = det.get('value')
+            reply = str(v if v is not None else (det.get('text') or ''))
+            try:
+                fv = float(v)
+                if abs(fv - round(fv)) < 1e-9:
+                    reply = str(int(round(fv)))
+                else:
+                    reply = str(fv)
+            except Exception:
+                reply = str(det.get('text') or reply)
+            return NeuronResult(
+                ok=True,
+                reply=reply,
+                intent='math',
+                confidence=0.99,
+                source='logiccalc',
+                artifacts=artifacts,
+                trace=trace,
+            )
 
     # Tier-0.5: AdvCU delegation
     adv = _advcu_analyze(inp.text)
@@ -786,6 +1153,117 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None) -> Neuro
 
     inp.meta["intent"] = intent
     trace["intent"] = intent
+
+    # System/Diagnostics lane (Tier-0, safe reads; blocked in Public Web mode)
+    system_kind = _detect_system_kind(inp.text, intent)
+    if system_kind:
+        if not bool(allowed_tiers.get("tier0", True)):
+            trace["tiers"].append({"tier": 0, "engine": "SystemInfo", "ok": False, "reason": "policy_disallow"})
+            return NeuronResult(
+                ok=False,
+                reply="System tools are disabled by policy in this runtime.",
+                intent=intent,
+                source="system",
+                confidence=0.9,
+                artifacts={},
+                trace=trace,
+            )
+
+        if _is_public_device(inp.meta):
+            trace["tiers"].append({"tier": 0, "engine": "SystemInfo", "ok": False, "reason": "public_web_restricted"})
+            return NeuronResult(
+                ok=False,
+                reply="This request is not available in Public Web mode.",
+                intent=intent,
+                source="system",
+                confidence=0.9,
+                artifacts={},
+                trace=trace,
+            )
+
+        if system_kind == "diagnostics":
+            diag = _run_quick_diagnostics()
+            ok = bool(diag.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "Diagnostics", "ok": ok})
+            return NeuronResult(
+                ok=ok,
+                reply="Diagnostics completed." if ok else "Diagnostics failed (see artifacts for details).",
+                intent="diagnostics",
+                source="diagnostics",
+                confidence=0.9 if ok else 0.6,
+                artifacts={"diagnostics": diag},
+                trace=trace,
+            )
+
+        if system_kind == "gpu":
+            g = _gpu_stats_summary()
+            ok = bool(g.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "GPUStats", "ok": ok})
+            if ok:
+                # Prefer normalized fields when available
+                name = g.get("name") or "GPU"
+                if "free_vram_gb" in g and "total_vram_gb" in g:
+                    reply = f"{name}: {g.get('free_vram_gb')} GB free / {g.get('total_vram_gb')} GB total VRAM."
+                elif "free_vram_mb" in g and "total_vram_mb" in g:
+                    reply = f"{name}: {g.get('free_vram_mb')} MB free / {g.get('total_vram_mb')} MB total VRAM."
+                else:
+                    reply = f"{name}: GPU stats captured."
+            else:
+                reply = "GPU stats are not available on this system."
+            return NeuronResult(
+                ok=ok,
+                reply=reply,
+                intent="device_query",
+                source="gpu_stats",
+                confidence=0.9 if ok else 0.6,
+                artifacts={"gpu": g},
+                trace=trace,
+            )
+
+        if system_kind == "disk":
+            base_dir = os.getcwd()
+            try:
+                import SarahMemoryGlobals as _G  # type: ignore
+
+                base_dir = str(getattr(_G, "BASE_DIR", base_dir) or base_dir)
+            except Exception:
+                pass
+            du = _disk_usage_summary(base_dir)
+            ok = bool(du.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "DiskUsage", "ok": ok, "path": base_dir})
+            if ok:
+                reply = f"Disk free space for {du.get('path')}: {du.get('free_gb')} GB free / {du.get('total_gb')} GB total."
+            else:
+                reply = "Disk usage is not available on this system."
+            return NeuronResult(
+                ok=ok,
+                reply=reply,
+                intent="device_query",
+                source="disk_usage",
+                confidence=0.9 if ok else 0.6,
+                artifacts={"disk": du},
+                trace=trace,
+            )
+
+        if system_kind == "system_stats":
+            s = _quick_system_stats()
+            ok = bool(s.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "SystemStats", "ok": ok})
+            parts = []
+            if "cpu_percent" in s:
+                parts.append(f"CPU: {s.get('cpu_percent')}%")
+            if "ram_available_gb" in s and "ram_total_gb" in s:
+                parts.append(f"RAM: {s.get('ram_available_gb')} GB free / {s.get('ram_total_gb')} GB total")
+            reply = " | ".join(parts) if parts else "System stats captured."
+            return NeuronResult(
+                ok=ok,
+                reply=reply,
+                intent="device_query",
+                source="system_stats",
+                confidence=0.85 if ok else 0.6,
+                artifacts={"system": s},
+                trace=trace,
+            )
 
     # Action lane: emit local execution ticket (never execute here)
     if _is_action_intent(intent, inp.text, adv):
