@@ -223,6 +223,35 @@ def _sanitize_filename(name: str) -> str:
     return name[:255]
 
 
+
+
+# Sensitive directories/files that must NEVER be reachable via API file operations
+# (prevents policy/mod tampering and server-side leakage).
+_PROTECTED_REL_PREFIXES = (
+    "data/mods",          # includes ./data/mods/v800 policies
+    "data/memory",        # memory datasets/logs
+    "data/vault",         # any future secure vault
+)
+_PROTECTED_REL_FILES = (
+    ".env",
+    "SarahMemoryGlobals.py",
+)
+
+def _is_protected_path(candidate: Path, base: Path) -> bool:
+    """Return True if candidate is within a protected subtree or is a protected file."""
+    try:
+        rel = candidate.relative_to(base)
+    except Exception:
+        return True
+    rel_norm = str(rel).replace("\\", "/").lstrip("/").lower()
+    if rel_norm in (f.lower() for f in _PROTECTED_REL_FILES):
+        return True
+    for pref in _PROTECTED_REL_PREFIXES:
+        pref_norm = str(pref).replace("\\", "/").lstrip("/").lower().rstrip("/")
+        if rel_norm == pref_norm or rel_norm.startswith(pref_norm + "/"):
+            return True
+    return False
+
 def _norm_path(p: str) -> str:
     """Normalize and validate path (prevent traversal). Returns ABS path under BASE_DIR or empty."""
     p = (p or "").strip()
@@ -235,6 +264,12 @@ def _norm_path(p: str) -> str:
         candidate = (base / p).resolve() if not Path(p).is_absolute() else Path(p).expanduser().resolve()
         try:
             candidate.relative_to(base)
+            # Block protected areas (policies/mods/memory) from API access by default.
+            if _is_protected_path(candidate, base):
+                if _is_local_request() and os.environ.get("SARAHMEMORY_ALLOW_PROTECTED_PATHS", "0").strip().lower() in ("1", "true", "yes", "on"):
+                    return str(candidate)
+                logger.warning(f"Protected path blocked: {p}")
+                return ""
             return str(candidate)
         except ValueError:
             logger.warning(f"Path traversal attempt blocked: {p}")
@@ -351,7 +386,7 @@ def files_capabilities():
     if not enabled:
         note = "File browsing disabled (cloud-safe mode). Run locally or enable SARAHMEMORY_ALLOW_SERVER_FILES=1 explicitly."
 
-    return _ok(capabilities=caps, note=note, base=str(_get_base_dir()))
+    return _ok(capabilities=caps, note=note, base=(str(_get_base_dir()) if enabled else ""))
 
 
 @bp.get("/api/files/drives")

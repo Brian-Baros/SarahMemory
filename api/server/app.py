@@ -1232,265 +1232,205 @@ def api_chat():
                 "meta": {"source": "identity_guard", "version": ident["version"]},
             }), 200
 
-        reply_str = ""
-        engine_source = "api"  # Default source
-
         # ------------------------------------------------------------------
-        # Neuron routing (tiered local-first router)
+        # Build Context Packet + Mode Flags (single ingress contract)
         # ------------------------------------------------------------------
         try:
             import SarahMemoryGlobals as G
-            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False))
+            payload_local_only = bool(payload.get("local_only") or payload.get("offline") or payload.get("LOCAL_ONLY_MODE") or payload.get("force_local_only"))
+            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False) or payload_local_only)
+            payload_safe_mode = bool(payload.get("safe_mode") or payload.get("SAFE_MODE") or payload.get("force_safe_mode"))
+            safe_mode = bool(getattr(G, "SAFE_MODE", False) or payload_safe_mode)
+            neoskymatrix = bool(getattr(G, "NEOSKYMATRIX", False))
+            developersmode = bool(getattr(G, "DEVELOPERSMODE", False))
         except Exception:
             local_only = False
+            safe_mode = False
+            neoskymatrix = False
+            developersmode = False
 
-        force_neuron = bool(payload.get("force_neuron") or payload.get("use_neuron") or payload.get("neuron") or False)
+        # Caller-provided hints (do NOT widen permissions; only add metadata)
+        user_consented = bool(payload.get("user_consented") or payload.get("consented") or False)
+        proposed_action = payload.get("proposed_action") if isinstance(payload.get("proposed_action"), dict) else None
 
-        if local_only or force_neuron:
-            try:
-                from SarahMemoryNeuron import neuron_route
-                nres = neuron_route(text, meta={
-                    "intent": intent,
-                    "tone": tone,
-                    "complexity": complexity,
-                    "avatar_request": avatar_request,
-                    "ui": "webui",
-                    "local_only": local_only,
-                    "offline": local_only,
-                })
-
-                # NeuronResult supports to_dict(); fall back to attributes if needed
-                nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
-                    "ok": getattr(nres, "ok", True),
-                    "reply": getattr(nres, "reply", ""),
-                    "confidence": getattr(nres, "confidence", None),
-                    "intent": getattr(nres, "intent", intent),
-                    "source": getattr(nres, "source", "neuron"),
-                    "artifacts": getattr(nres, "artifacts", {}) or {},
-                    "trace": getattr(nres, "trace", {}) or {},
-                }
-
-                return jsonify({
-                    "ok": bool(nres_dict.get("ok", True)),
-                    "reply": str(nres_dict.get("reply") or ""),
-                    "meta": {
-                        "source": str(nres_dict.get("source") or "neuron"),
-                        "engine": "neuron_route",
-                        "intent": str(nres_dict.get("intent") or intent),
-                        "confidence": nres_dict.get("confidence"),
-                        "trace": nres_dict.get("trace") or {},
-                        "local_only": local_only,
-                        "version": PROJECT_VERSION,
-                    },
-                    "artifacts": nres_dict.get("artifacts") or {},
-                }), 200
-            except Exception as e:
-                app_logger.warning(f"Neuron route skipped/failed: {e}", exc_info=True)
+        context_packet = {
+            "text": text,
+            "intent": intent,
+            "tone": tone,
+            "complexity": complexity,
+            "avatar_request": avatar_request,
+            "files": payload.get("files"),
+            "meta": payload.get("meta") if isinstance(payload.get("meta"), dict) else {},
+            "mode_flags": {
+                "LOCAL_ONLY_MODE": local_only,
+                "SAFE_MODE": safe_mode,
+                "NEOSKYMATRIX": neoskymatrix,
+                "DEVELOPERSMODE": developersmode,
+            },
+            "request_source": "api_chat",
+            "ui": str(payload.get("ui") or "webui"),
+            "session_id": payload.get("session_id") or payload.get("sid"),
+            "user_id": payload.get("user_id") or payload.get("uid"),
+        }
 
         # ------------------------------------------------------------------
-        # Try the lightweight router (commands, mouse moves, URL opens)
+        # Governor/Judge (CognitiveServices) — per-request governance decision
         # ------------------------------------------------------------------
-        router_result = None
+        gov = None
         try:
-            import SarahMemoryAiFunctions as F
-
-            # Prefer the new cognitive loop router; fall back to legacy if needed
-            route_fn = _safe_getattr(F, "route_user_input_through_cognitive_loop")
-            if not callable(route_fn):
-                route_fn = _safe_getattr(F, "route_intent_response")
-
-            if callable(route_fn):
-                router_result = route_fn(text, intent=intent, tone=tone, complexity=complexity)
-                engine_source = "cognitive_loop" if route_fn.__name__ == "route_user_input_through_cognitive_loop" else "intent_router"
-
-        except ImportError:
-            app_logger.warning("SarahMemoryAiFunctions not found. Skipping cognitive loop.")
+            from SarahMemoryCognitiveServices import govern_request
+            gov = govern_request(
+                text,
+                caller="api_chat",
+                caller_context=context_packet,
+                user_present=True,
+                user_consented=user_consented,
+                proposed_action=proposed_action,
+            )
         except Exception as e:
-            app_logger.error(f"Error in SarahMemoryAiFunctions router: {e}", exc_info=True)
-            router_result = None  # Ensure fallback if router itself errors
+            app_logger.warning(f"CognitiveServices govern_request failed; continuing with safe defaults: {e}", exc_info=True)
+            gov = {
+                "ok": False,
+                "decision": "ALLOW",
+                "allow": True,
+                "require_user": False,
+                "reasons": ["governor_unavailable"],
+                "rationale": "Governor unavailable; proceeding with safe defaults.",
+                "routing_policy": {
+                    "allowed_tiers": {"tier0": True, "tier1": True, "tier2": False, "tier3": (not local_only)},
+                    "budgets": {"latency_ms": 4000, "max_steps": 12, "max_retries": 1},
+                    "side_effects": {"tts": True, "db_write": True, "compare": True},
+                },
+                "trace": {"governor_error": str(e)},
+            }
 
-        # If the router clearly handled it, use its response.
-        if router_result:
-            if isinstance(router_result, str) and router_result.strip():
-                # Avoid using internal "I'm unsure" as final reply if a full AI pipeline can do better
-                if router_result.strip() != "I'm unsure how to respond.":
-                    reply_str = router_result.strip()
+        gov_decision = str(gov.get("decision") or ("ALLOW" if bool(gov.get("allow")) else "DEFER")).upper()
+        gov_allow = bool(gov.get("allow")) or (gov_decision == "ALLOW")
+        gov_require_user = bool(gov.get("require_user")) or (gov_decision == "REQUIRE_USER")
+        gov_rationale = str(gov.get("rationale") or "") if isinstance(gov.get("rationale"), str) else ""
+        gov_reasons = gov.get("reasons") if isinstance(gov.get("reasons"), list) else []
+        gov_trace = gov.get("trace") if isinstance(gov.get("trace"), dict) else {}
+        routing_policy = gov.get("routing_policy") if isinstance(gov.get("routing_policy"), dict) else None
 
-            elif isinstance(router_result, dict) and router_result.get("handled"):
-                reply_str = (
-                    router_result.get("response")
-                    or router_result.get("text")
-                    or ""
-                ).strip()
-
-        # ------------------------------------------------------------------
-        # Fallback: full SarahMemory reply pipeline (same as GUI path)
-        # ------------------------------------------------------------------
-        if not reply_str:
-            bundle = None
-            try:
-                from SarahMemoryReply import generate_reply
-                # API usage: pass self=None and extended args
-                bundle = generate_reply(None, text, intent=intent, tone=tone, complexity=complexity)
-                engine_source = "sarahmemory_reply"
-            except ImportError:
-                app_logger.warning("SarahMemoryReply module not found. Attempting direct API call fallback.")
-            except Exception as e:
-                app_logger.error(f"SarahMemoryReply.generate_reply failed: {e}", exc_info=True)
-
-            if bundle:
-                if isinstance(bundle, dict):
-                    reply_str = str(
-                        bundle.get("response")
-                        or bundle.get("text")
-                        or ""
-                    ).strip()
-                else:
-                    reply_str = str(bundle or "").strip()
-
-        # ------------------------------------------------------------------
-                # ------------------------------------------------------------------
-        # Last-ditch fallback: Direct API call if all else fails
-        # ------------------------------------------------------------------
-        if not reply_str:
-            if 'local_only' in locals() and local_only:
-                # Enforce local-first behavior: do NOT call external providers when LOCAL_ONLY_MODE is enabled.
-                reply_str = "LOCAL_ONLY_MODE is enabled. External API providers are blocked."
-                engine_source = "local_only_block"
+        # Immediate gate responses
+        if (not gov_allow) or gov_require_user or gov_decision in ("DENY", "DEFER", "REQUIRE_USER"):
+            # Build a minimal consistent reply
+            if gov_decision == "DENY":
+                reply_text = gov_rationale or "Request denied by policy."
+                src = "governor:deny"
+            elif gov_decision == "REQUIRE_USER" or gov_require_user:
+                reply_text = gov_rationale or "User confirmation required before proceeding."
+                src = "governor:require_user"
             else:
-                try:
-                    import SarahMemoryGlobals as _G
-                    from SarahMemoryAPI import send_to_api as _send_to_api
+                reply_text = gov_rationale or "Request deferred. Provide more details or confirm intent."
+                src = "governor:defer"
 
-                    # Provider must follow Globals flags (PRIMARY_API) and must not bypass OPEN_AI_API=False.
-                    prov = str(getattr(_G, "PRIMARY_API", "local_llm") or "local_llm").strip().lower()
+            return jsonify({
+                "ok": True,
+                "reply": reply_text,
+                "meta": {
+                    "source": src,
+                    "engine": "cognitive_governor",
+                    "decision": gov_decision,
+                    "reasons": gov_reasons,
+                    "trace": gov_trace if developersmode else {},
+                    "local_only": local_only,
+                    "version": PROJECT_VERSION,
+                },
+            }), 200
 
-                    # Hard block OpenAI when disabled, even if PRIMARY_API or defaults point there.
-                    if prov == "openai" and not bool(getattr(_G, "OPEN_AI_API", False)):
-                        if bool(getattr(_G, "LOCAL_LLM_API", False)):
-                            prov = "local_llm"
-                        elif bool(getattr(_G, "LOCAL_API", False)):
-                            prov = "local"
-                        else:
-                            prov = "mesh"
-
-                    api_res = _send_to_api(
-                        text,
-                        provider=prov,
-                        intent=intent,
-                        tone=tone,
-                        complexity=complexity,
-                    )
-                    if isinstance(api_res, dict):
-                        reply_str = str(api_res.get("data") or api_res.get("reply") or "").strip()
-                        if not reply_str:
-                            try:
-                                _dbg = bool(getattr(_G, "DEBUG_MODE", False))
-                            except Exception:
-                                _dbg = True
-                            _err = api_res.get("error") or api_res.get("message")
-                            if _err and _dbg:
-                                reply_str = f"[{prov} error] {_err}"
-                    else:
-                        reply_str = str(api_res).strip()
-                    engine_source = f"direct_api_fallback:{prov}"
-                except ImportError:
-                    app_logger.warning("SarahMemoryAPI module not found. Cannot perform direct API call fallback.")
-                except Exception as api_e:
-                    app_logger.error(
-                        "SarahMemoryReply.generate_reply failed (or not imported); API fallback failed.",
-                        exc_info=True,
-                    )
-                    return jsonify({
-                        "ok": False,
-                        "error": "Internal server error: Failed to generate reply.",
-                        "meta": {"source": "api", "reason": "all_reply_methods_failed", "version": PROJECT_VERSION},
-                    }), 500
-
-# Final safety: never return None; if still empty, provide general fallback
-        reply_str = reply_str or "I'm sorry, I couldn't generate a response at this time."
-
-        # Final output hygiene: strip system/thinking scaffolding before returning to UI
+        # ------------------------------------------------------------------
+        # Police/Router (Neuron) — deterministic-first routing within policy
+        # ------------------------------------------------------------------
         try:
-            from SarahMemoryAPI import _sm_sanitize_llm_text as _san
-            reply_str = _san(reply_str)
-        except Exception:
-            pass
+            from SarahMemoryNeuron import neuron_route
+            nres = neuron_route(text, meta={
+                "intent": intent,
+                "tone": tone,
+                "complexity": complexity,
+                "avatar_request": avatar_request,
+                "ui": context_packet.get("ui"),
+                "local_only": local_only,
+                "offline": local_only,
+                "mode_flags": context_packet.get("mode_flags"),
+                "governor": {
+                    "decision": gov_decision,
+                    "reasons": gov_reasons,
+                },
+            }, policy=routing_policy)
+
+            nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
+                "ok": getattr(nres, "ok", True),
+                "reply": getattr(nres, "reply", ""),
+                "confidence": getattr(nres, "confidence", None),
+                "intent": getattr(nres, "intent", intent),
+                "source": getattr(nres, "source", "neuron"),
+                "artifacts": getattr(nres, "artifacts", {}) or {},
+                "trace": getattr(nres, "trace", {}) or {},
+            }
+
+            return jsonify({
+                "ok": bool(nres_dict.get("ok", True)),
+                "reply": str(nres_dict.get("reply") or ""),
+                "meta": {
+                    "source": str(nres_dict.get("source") or "neuron"),
+                    "engine": "neuron_route",
+                    "intent": str(nres_dict.get("intent") or intent),
+                    "confidence": nres_dict.get("confidence"),
+                    "trace": nres_dict.get("trace") or {},
+                    "governor": {
+                        "decision": gov_decision,
+                        "reasons": gov_reasons,
+                    } if developersmode else {"decision": gov_decision},
+                    "local_only": local_only,
+                    "version": PROJECT_VERSION,
+                },
+                "artifacts": nres_dict.get("artifacts") or {},
+            }), 200
+
+        except Exception as e:
+            app_logger.error(f"Neuron route failed: {e}", exc_info=True)
+
+        # ------------------------------------------------------------------
+        # Final fallback: SarahMemoryReply bundle builder (best-effort)
+        # ------------------------------------------------------------------
+        try:
+            from SarahMemoryReply import generate_reply
+            bundle = generate_reply(None, text, intent=intent, tone=tone, complexity=complexity)
+            if isinstance(bundle, dict):
+                reply_str = str(bundle.get("response") or bundle.get("text") or "").strip()
+                meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
+            else:
+                reply_str = str(bundle or "").strip()
+                meta = {}
+        except Exception as e:
+            reply_str = ""
+            meta = {}
+            app_logger.error(f"SarahMemoryReply.generate_reply failed: {e}", exc_info=True)
+
+        if not reply_str:
+            reply_str = "I’m having trouble generating a response right now."
 
         meta_out = {
-            "source": engine_source,
+            "source": str(meta.get("source") or "sarahmemory_reply"),
+            "engine": str(meta.get("engine") or "generate_reply"),
+            "intent": intent,
+            "governor": {"decision": gov_decision},
+            "local_only": local_only,
             "version": PROJECT_VERSION,
         }
-        if avatar_request:
-            meta_out["avatar_request"] = True
 
-        return jsonify({
-            "ok": True,
-            "reply": reply_str,
-            "meta": meta_out,
-        }), 200
-
-    except Exception:
-        # Hard catch-all so the Web UI sees a clean JSON error instead of a stack trace
-        app_logger.exception("api_chat failed unexpectedly.")
-        return jsonify({
-            "ok": False,
-            "error": "Internal server error during chat processing.",
-            "meta": {"source": "api", "reason": "uncaught_exception", "version": PROJECT_VERSION},
-        }), 500
-
-@app.get("/api/state")
-def api_state():
-    """
-    Runtime state snapshot.
-    Combines persisted server_state.json with a live main_running check.
-    Never raises.
-    """
-    try:
-        state = load_state()
-        if not isinstance(state, dict):
-            state = {}
-
-        # Live truth: mirror /api/health main_running computation
-        main_running = False
-        try:
-            fn = globals().get("_is_running")
-            if callable(fn):
-                main_running = bool(fn())
-        except Exception:
-            main_running = False
-
-        state["main_running"] = main_running
-        state.setdefault("ok", True)
-        state.setdefault("notes", [])
-        state.setdefault("source", "state_db_plus_live")
-        state["ts"] = time.time()
-
-        # Optional: persist the refreshed truth so UI/other callers stay consistent
-        try:
-            save_state(state)
-        except Exception:
-            pass
-
-        return jsonify({
-            "ok": True,
-            "state": state,
-            "ts": time.time(),
-            "version": PROJECT_VERSION,
-        }), 200
+        return jsonify({"ok": True, "reply": reply_str, "meta": meta_out}), 200
 
     except Exception as e:
+        app_logger.error(f"Fatal /api/chat error: {e}", exc_info=True)
         return jsonify({
             "ok": False,
             "error": str(e),
-            "ts": time.time(),
-            "version": PROJECT_VERSION,
-        }), 200
+            "meta": {"source": "api", "engine": "api_chat_exception", "version": PROJECT_VERSION},
+        }), 500
 
 
-# ---------------------------------------------------------------------------
-# Media Job Contract (v8.0.0) - JSON-first API for image/video/audio/3D
-# ---------------------------------------------------------------------------
 
 @app.route("/api/media/job", methods=["POST"])
 def api_media_job_submit():
