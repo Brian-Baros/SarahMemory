@@ -158,9 +158,22 @@ SarahMemory/
     S:\SarahMemory
     
      If you don't know how to do this step, May GOD BLESS YOUR SOUL.
-
-3.  Install the Python Dependency - This Program has many python dependencies and installing those can be a hassle.
-     type the following commands
+ 
+2a  Install Python 3.13 
+3.  Install the Python Dependency and RUST
+4.  winget install Rustlang.Rustup
+6.  or by executing curl https://sh.rustup.rs -sSf | sh
+7.  Test to Validate type - 
+    rustc --version
+    cargo --version
+    
+8.  pip install maturin
+9.  Validate type -
+10.  maturin --version
+11. set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 
+   
+12.  This Program has many python dependencies and installing those can be a hassle.
+    type the following commands
     
     python -m venv venv
     
@@ -180,9 +193,31 @@ SarahMemory/
      * I will be working on an easier possibly DOCKER setup in future updates. - Feb 10, 2026.
         
     powershell -ExecutionPolicy Bypass -File .\requirements-install.ps1
-   
+
+10a If you want it to run fast we USE RUST for the Tokenizer so after installing the Python Dependencies Compile the RUST scr code in the 
+sarahmemory_rust_core folder  
+Go into it for example S:\SarahMemory\sarahmemory_rust_core then type
+maturin develop --release
+
+NOTE: Everyone knows that python enviorments can be tricky, the Key to having a program work well isn't just in the code it's in the enviorment.
+      Step 10b is if you ran into an issue with RUST and compiling the script. You may Skip to STEP 11 and finish the SETUP INSTALLATION if you've done so
+      and still want to use RUST then go to step 10b.
+
+10b.  TROUBLE SHOOT WITH MATURIN NOTE: NOW SARAHMEMORY DOESN'T HAVE TO HAVE RUST w/MATURIN but it HELPS., 
+JUMP TO STEP 11 Finish the rest of the setup then COME BACK. ..........
+                  (WELCOME BACK) now that you have everything else installed and have attempted to run the program a couple of times to align everything
+                  NOW DO THE FOLLOWING TYPE THE FOLLOWING DIRECTLY IF YOU HAVING PROBLEMS
       
-5. Create a local set of databases
+      set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
+      python -m maturin build --release
+      dir target\wheels
+      python -m pip install --force-reinstall target\wheels\sarahmemory_rust_core-0.1.0-cp38-abi3-win_amd64.whl
+      python -m pip show sarahmemory_rust_core
+      python -c "import sarahmemory_rust_core; print(sarahmemory_rust_core.token_count('hello world'))"
+
+        IF EVERYTHING IS GOOD UP TO THIS POINT ENJOY THE PROGRAM.... and WELCOME TO DECENTRALIZED AI. 
+      
+11. Create a local set of databases
     
      Be sure you're now see the command prompt as (venv)SarahMemory
      type the following
