@@ -1395,14 +1395,56 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             rdata = _try_research(inp.text)
             if rdata:
                 merged, artifacts = _synthesize_evidence_reply(draft, rdata)
-                draft = merged
+                if merged and str(merged).strip():
+                    draft = str(merged).strip()
                 res.artifacts.update(artifacts)
                 conf = float(max(0.0, min(0.99, conf + 0.06)))
+                res.ok = True
+                if getattr(res, "source", "neuron") in ("neuron", "", None):
+                    res.source = "research"
                 trace["tiers"].append({"tier": 2, "engine": "Research", "ok": True, "reason": "low_confidence_repair"})
     except Exception:
         pass
 
-    res.reply = draft
+    _fallback_reply = "No engine produced an answer. Provide more constraints or enable an applicable tier."
+    _draft_str = str(draft or "").strip()
+
+    # If the route recovered content but draft still contains the default failure string,
+    # promote the best available candidate from artifacts.
+    try:
+        if (not _draft_str) or (_draft_str == _fallback_reply):
+            best_candidate = ""
+
+            research_art = res.artifacts.get("research") if isinstance(res.artifacts, dict) else None
+            if isinstance(research_art, dict):
+                for key in ("data", "snippet"):
+                    val = research_art.get(key)
+                    if isinstance(val, str):
+                        val = val.strip()
+                        if val and not val.lower().startswith("sorry, i was unable to find any reliable information"):
+                            best_candidate = val
+                            break
+
+            if not best_candidate:
+                compare_art = res.artifacts.get("compare") if isinstance(res.artifacts, dict) else None
+                if isinstance(compare_art, dict):
+                    val = compare_art.get("api_response")
+                    if isinstance(val, str):
+                        val = val.strip()
+                        if val and val != _fallback_reply and not val.lower().startswith("i couldn't find reliable information"):
+                            best_candidate = val
+
+            if best_candidate:
+                draft = best_candidate
+                _draft_str = best_candidate
+                res.ok = True
+                if getattr(res, "source", "neuron") in ("neuron", "", None):
+                    res.source = "research"
+                conf = float(max(conf, 0.58))
+    except Exception:
+        pass
+
+    res.reply = _draft_str or _fallback_reply
     res.confidence = conf
 
     # Governance stamp
