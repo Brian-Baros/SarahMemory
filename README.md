@@ -204,9 +204,10 @@ NOTE: Everyone knows that python enviorments can be tricky, the Key to having a 
       and still want to use RUST then go to step 10b.
 
 10b.  TROUBLE SHOOT WITH MATURIN NOTE: NOW SARAHMEMORY DOESN'T HAVE TO HAVE RUST w/MATURIN but it HELPS., 
-JUMP TO STEP 11 Finish the rest of the setup then COME BACK. ..........
+      Jump to next step and finish the rest of the setup then COME BACK. ..........
+                  
                   (WELCOME BACK) now that you have everything else installed and have attempted to run the program a couple of times to align everything
-                  NOW DO THE FOLLOWING TYPE THE FOLLOWING DIRECTLY IF YOU HAVING PROBLEMS
+                  LETS FINISH OFF THE TOKENIZER NOW DO THE FOLLOWING TYPE THE FOLLOWING DIRECTLY IF YOU HAVING PROBLEMS
       
       set PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1
       python -m maturin build --release
@@ -215,7 +216,7 @@ JUMP TO STEP 11 Finish the rest of the setup then COME BACK. ..........
       python -m pip show sarahmemory_rust_core
       python -c "import sarahmemory_rust_core; print(sarahmemory_rust_core.token_count('hello world'))"
 
-        IF EVERYTHING IS GOOD UP TO THIS POINT ENJOY THE PROGRAM.... and WELCOME TO DECENTRALIZED AI. 
+        IF EVERYTHING IS GOOD UP TO THIS POINT ENJOY THE PROGRAM YOU NOW HAVE AN, AiOS WORKSTATION ..That is Fully Customizable, Fully Modular, and is Local-First.. WELCOME TO DECENTRALIZED AI. 
       
 11. Create a local set of databases
     
