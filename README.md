@@ -18,7 +18,7 @@ Cognitive/Neuron/Synaptic and Logical Data flows from the moment you submit it a
 ![SarahMemory DATAFLOW](documents/SARAHMEMORY-AIOS.png)
 ---
 UPDATED WEB UI demostrates FULL WORKSTATION concepts, Actual system Image currently as of 03/05/2026
-![SarahMemory DATAFLOW](documents/Sarahmemory-Full_Workstation.png)
+![SarahMemory DATAFLOW](documents/SarahMemory-Full_Workstation.png)
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
 
 📊 System Maturity Score
