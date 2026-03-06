@@ -249,6 +249,7 @@ python SarahMemoryMain.py
 ---
 
 (Optional)
+AS OF MARCH 05,2026 the .NET 10 Shell isn't fully completed Therefore this part of the installation is OPTIONAL For Developers Feel free to skip to #4 and Build up the FLASK/REACT WEBUI using 
 
  Advanced configuration must be performed manually in:
  SarahMemoryGlobals.py
@@ -267,10 +268,15 @@ python SarahMemoryMain.py
 ---
 
 4. Build the WebUI React/Flask FrontEnd
+   
  using the NPM command the FrontEnd which you can modify anyway you want will be in the 
  C:\SarahMemory\data\ui\V8_ui_src 
- folder you should be able to Run 'npm run build' which will then create the /dist folder
+ folder you should be able to
+
+ Run 'npm run build' which will then create the /dist folder
  all contents should be then COPIED to the C:\SarahMemory\data\ui\V8 folder
+
+npm run build
 
 NOTE: to Make the ResearchBrowser function work correctly you must do the above .NET 10.0 SDK build mentioned above.
 ---
