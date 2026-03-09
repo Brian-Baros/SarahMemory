@@ -608,14 +608,16 @@ def _try_web(text: str) -> Tuple[Optional[str], Optional[str], List[str]]:
 # Some local LLMs echo role transcripts (system/user/assistant) and hidden thought tags.
 # This scrubber ensures the GUI/TTS sees only the final answer.
 
-def _sm_sanitize_user_text(text: str) -> str:
+def _sm_sanitize_user_text(text: str, for_tts: bool = False) -> str:
     """
     Sanitize model output so the UI/TTS only sees the final user-facing answer.
-    Removes common prompt scaffolding (ROLE/INTENT/MOOD/TEMP/etc) and hidden blocks.
+    Removes prompt scaffolding, hidden blocks, markdown noise, provenance labels,
+    and decorative symbols that should never be spoken literally.
     """
     if not text:
         return ""
-    t = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    t = html.unescape(str(text)).replace("\r\n", "\n").replace("\r", "\n").strip()
 
     # Strip hidden reasoning blocks (common tags)
     try:
@@ -629,11 +631,10 @@ def _sm_sanitize_user_text(text: str) -> str:
         matches = list(re.finditer(r"(?im)^(assistant)\s*:?\s*$", t))
         if matches:
             t = t[matches[-1].end():].strip()
-        else:
-            if re.search(r"(?im)^assistant\s*:\s*", t):
-                parts = re.split(r"(?im)^assistant\s*:\s*", t)
-                if parts:
-                    t = parts[-1].strip()
+        elif re.search(r"(?im)^assistant\s*:\s*", t):
+            parts = re.split(r"(?im)^assistant\s*:\s*", t)
+            if parts:
+                t = parts[-1].strip()
     except Exception:
         pass
 
@@ -644,11 +645,12 @@ def _sm_sanitize_user_text(text: str) -> str:
             r"temp(?:erature)?|top[_\s]?p|max[_\s]?tokens?|model(?:_used)?|provider|source)\s*[:=].*$"
         )
         cleaned = []
-        for line in (t.split("\n")):
+        for line in t.split("\n"):
             if drop_pat.match(line or ""):
                 continue
-            # drop purely decorative provenance markers
             if re.match(r"(?i)^\s*\[\s*source\s*:[^\]]*\]\s*$", line or ""):
+                continue
+            if re.match(r"(?i)^\s*\(\s*intent\s*:[^\)]*\)\s*$", line or ""):
                 continue
             if (line or "").strip() in ("[]", "[ ]"):
                 continue
@@ -657,14 +659,69 @@ def _sm_sanitize_user_text(text: str) -> str:
     except Exception:
         pass
 
-    # Strip trailing empty provenance tag (legacy)
+    # Remove legacy provenance/footer markers that should stay in meta only.
     try:
+        t = re.sub(r"(?im)^\s*\[\s*source\s*:[^\]]*\]\s*$", "", t)
+        t = re.sub(r"(?im)^\s*\(\s*intent\s*:[^\)]*\)\s*$", "", t)
+        t = re.sub(r"\s*\[\s*source\s*:[^\]]*\]\s*", " ", t, flags=re.I)
+        t = re.sub(r"\s*\(\s*intent\s*:[^\)]*\)\s*", " ", t, flags=re.I)
         t = re.sub(r"\s*\[\s*\]\s*$", "", t).strip()
     except Exception:
         pass
 
-    return t
+    # Collapse markdown/code formatting into plain readable text.
+    try:
+        t = re.sub(r"(?is)```.*?```", lambda m: re.sub(r"^```[a-zA-Z0-9_-]*\n?|\n?```$", "", m.group(0).strip()), t)
+        t = re.sub(r"`([^`]+)`", r"\1", t)
+        t = re.sub(r"!\[([^\]]*)\]\([^\)]+\)", r"\1", t)
+        t = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", t)
+        t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)
+        t = re.sub(r"(?m)^\s*>+\s*", "", t)
+        t = re.sub(r"(?m)^\s*[-*•◦▪▫]+\s+", "", t)
+        t = re.sub(r"(?m)^\s*\d+[\.)]\s+", "", t)
+        t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+        t = re.sub(r"__([^_]+)__", r"\1", t)
+        t = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", t)
+        t = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", t)
+        t = re.sub(r"~~([^~]+)~~", r"\1", t)
+    except Exception:
+        pass
 
+    # Strip decorative symbols and emoji-like characters that cause literal speech.
+    try:
+        t = t.replace("™", " ").replace("®", " ").replace("©", " ")
+        t = t.replace("•", "\n").replace("▪", "\n").replace("▫", "\n").replace("◦", "\n")
+        t = re.sub(r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]", " ", t)
+        t = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufeff]", "", t)
+    except Exception:
+        pass
+
+    if for_tts:
+        try:
+            t = t.replace("&", " and ")
+            t = re.sub(r"[*/_~`#|^<>\[\]{}\\]+", " ", t)
+            t = re.sub(r"(?m)^\s*[-–—]+\s*", "", t)
+            t = t.replace("\n", ". ")
+        except Exception:
+            pass
+    else:
+        try:
+            t = re.sub(r"[ \t]{2,}", " ", t)
+            t = re.sub(r" ?\n ?", "\n", t)
+        except Exception:
+            pass
+
+    # Final whitespace / punctuation normalization.
+    try:
+        t = re.sub(r"\n{3,}", "\n\n", t)
+        t = re.sub(r"[ \t]{2,}", " ", t)
+        t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+        t = re.sub(r"([,.;:!?]){2,}", lambda m: m.group(0)[0], t)
+        t = t.strip(" \t\n-–—*_`#|:;,")
+    except Exception:
+        pass
+
+    return t.strip()
 def _finalize_text(raw, meta):
     txt = _sm_sanitize_user_text((raw or "").strip())
     if not txt:
@@ -1022,7 +1079,7 @@ def _trigger_av_voice_safe(self_ref, text: str) -> None:
     if not text:
         return
 
-    spoken_text = _sm_sanitize_user_text(text)
+    spoken_text = _sm_sanitize_user_text(text, for_tts=True)
     if not spoken_text:
         return
 

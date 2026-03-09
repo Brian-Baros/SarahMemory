@@ -33,6 +33,7 @@ import asyncio
 import aiohttp
 import time
 import platform
+import importlib
 from datetime import datetime
 # Optional scheduler: if apscheduler is not installed in this environment,
 # just disable scheduler-based features instead of crashing the whole app.
@@ -507,6 +508,67 @@ PATTERN_HISTORY_DAYS = 30
 # Configure learning rate
 #USE_ADVANCED_AGENT.metrics.learning_rate = 0.02
 
+# --- Rust tokenizer auto-detect (paste directly above MODEL_CATALOG) ---
+RUSTTOKEN = False
+RUSTTOKEN_MODE = "auto"
+RUSTTOKEN_ENTRYPOINT = None
+
+try:
+        
+    # BASE_DIR is declared later in your file, so fall back safely here.
+    _sm_base_dir = globals().get("BASE_DIR", os.getcwd()) or os.getcwd()
+    _rust_core_dir = os.path.join(_sm_base_dir, "sarahmemory_rust_core")
+
+    # Require the Rust project folder + source files to exist
+    _rust_src_ok = (
+        os.path.isdir(_rust_core_dir)
+        and os.path.isfile(os.path.join(_rust_core_dir, "Cargo.toml"))
+        and os.path.isdir(os.path.join(_rust_core_dir, "src"))
+        and (
+            os.path.isfile(os.path.join(_rust_core_dir, "src", "lib.rs"))
+            or os.path.isfile(os.path.join(_rust_core_dir, "src", "main.rs"))
+        )
+    )
+
+    # Look for a compiled Python extension in common maturin/pyo3 output locations
+    _rust_candidate_dirs = [
+        _sm_base_dir,
+        _rust_core_dir,
+        os.path.join(_rust_core_dir, "target", "release"),
+        os.path.join(_rust_core_dir, "target", "debug"),
+    ]
+
+    _rust_binary_ok = False
+    for _d in _rust_candidate_dirs:
+        if not os.path.isdir(_d):
+            continue
+
+        _has_ext = (
+            glob.glob(os.path.join(_d, "sarahmemory_rust_core*.pyd"))
+            or glob.glob(os.path.join(_d, "sarahmemory_rust_core*.so"))
+        )
+
+        if _has_ext:
+            if _d not in sys.path:
+                sys.path.insert(0, _d)
+            _rust_binary_ok = True
+
+    # Final validation: import + basic tokenization smoke test
+    if _rust_src_ok and _rust_binary_ok:
+        _rust_mod = importlib.import_module("sarahmemory_rust_core")
+
+        for _fn_name in ("tokenize", "fast_tokenize", "tokenize_text", "encode"):
+            _fn = getattr(_rust_mod, _fn_name, None)
+            if callable(_fn):
+                _probe = _fn("SarahMemory tokenizer self-test")
+                if _probe is not None:
+                    RUSTTOKEN = True
+                    RUSTTOKEN_ENTRYPOINT = _fn_name
+                    break
+
+except Exception:
+    RUSTTOKEN = False
+    RUSTTOKEN_ENTRYPOINT = None
 
 
 # ---------------- Model Selection & Multi-Model Configuration -New for v7.0-----Allows 3rd party models to be incorporated----------

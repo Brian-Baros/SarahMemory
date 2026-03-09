@@ -55,115 +55,40 @@ from typing import Any, Dict, List, Optional, Tuple
 def _sm_sanitize_llm_text_local(text: str) -> str:
     if text is None:
         return ""
+
     t = str(text).replace("\r\n", "\n").replace("\r", "\n")
     t = re.sub(r"(?is)<think>.*?</think>", "", t)
     t = re.sub(r"(?is)<analysis>.*?</analysis>", "", t)
     t = re.sub(r"(?im)^\s*(system|user|assistant)\s*:\s*.*$", "", t)
     t = re.sub(r"(?im)^\s*\[(system|user|assistant)\]\s*.*$", "", t)
-    t = re.sub(r"\n{3,}", "\n\n", t).strip()
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
-    return t
-# =============================================================================
-# GLOBAL CONFIG (safe import)
-# =============================================================================
-try:
-    import SarahMemoryGlobals as config  # type: ignore
-except Exception:
-    # Allow module import in isolated tests
-    class _Cfg:  # pragma: no cover
-        BASE_DIR = os.getcwd()
-        DATA_DIR = os.path.join(os.getcwd(), "data")
-        SETTINGS_DIR = os.path.join(os.getcwd(), "data", "settings")
-        DOWNLOADS_DIR = os.path.join(os.getcwd(), "data", "downloads")
-        AVATAR_IS_SPEAKING = False
 
-    config = _Cfg()  # type: ignore
-
-# Optional helpers from globals (safe if missing)
-try:
-    from SarahMemoryGlobals import load_user_settings, SAFE_MODE, LOCAL_ONLY_MODE  # type: ignore
-except Exception:
-    load_user_settings = None  # type: ignore
-    SAFE_MODE = False  # type: ignore
-    LOCAL_ONLY_MODE = False  # type: ignore
-
-# Load settings early if available
-if callable(load_user_settings):
-    try:
-        load_user_settings()
-    except Exception:
-        pass
-
-# Mirror AVATAR_IS_SPEAKING on config
-if not hasattr(config, "AVATAR_IS_SPEAKING"):
-    config.AVATAR_IS_SPEAKING = False
-
-# =============================================================================
-# LOGGING
-# =============================================================================
-logger = logging.getLogger("SarahMemoryVoice")
-logger.setLevel(logging.INFO)
-if not logger.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-    logger.addHandler(_h)
-
-# Reduce common Windows comtypes spam if present (no hard dependency)
-try:
-    logging.getLogger("comtypes").setLevel(logging.WARNING)
-    logging.getLogger("comtypes.client").setLevel(logging.WARNING)
-    logging.getLogger("comtypes._comobject").setLevel(logging.WARNING)
-    logging.getLogger("comtypes._vtbl").setLevel(logging.WARNING)
-except Exception:
-    pass
-
-# =============================================================================
-# OPTIONAL LIBS
-# =============================================================================
-# SpeechRecognition / microphone
-try:  # pragma: no cover
-    import speech_recognition as sr  # type: ignore
-except Exception:
-    sr = None  # type: ignore
-
-recognizer = sr.Recognizer() if sr is not None else None
-if recognizer is not None:
-    recognizer.dynamic_energy_threshold = True
-
-# pyttsx3 TTS (Primary)
-try:  # pragma: no cover
-    import pyttsx3  # type: ignore
-except Exception:
-    pyttsx3 = None  # type: ignore
-
-# gTTS (Alternative TTS)
-try:
-    from gtts import gTTS  # type: ignore
-    _HAS_GTTS = True
-except Exception:
-    gTTS = None  # type: ignore
-    _HAS_GTTS = False
-
-# edge-tts (Optional)
-try:
-    import edge_tts  # type: ignore
-    _HAS_EDGE_TTS = True
-except Exception:
-    edge_tts = None  # type: ignore
-    _HAS_EDGE_TTS = False
-
-# Optional audio playback fallback
-try:
-    import pygame  # type: ignore
-    _HAS_PYGAME = True
-except Exception:
-    pygame = None  # type: ignore
-    _HAS_PYGAME = False
-
-# =============================================================================
-# PATH HELPERS (consistent BASE/DATA directories)
-# =============================================================================
+    # Markdown / provenance cleanup for spoken output.
+    t = re.sub(r"(?is)```.*?```", lambda m: re.sub(r"^```[a-zA-Z0-9_-]*\n?|\n?```$", "", m.group(0).strip()), t)
+    t = re.sub(r"`([^`]+)`", r"\1", t)
+    t = re.sub(r"!\[([^\]]*)\]\([^\)]+\)", r"\1", t)
+    t = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", t)
+    t = re.sub(r"(?im)^\s*\[\s*source\s*:[^\]]*\]\s*$", "", t)
+    t = re.sub(r"(?im)^\s*\(\s*intent\s*:[^\)]*\)\s*$", "", t)
+    t = re.sub(r"\s*\[\s*source\s*:[^\]]*\]\s*", " ", t, flags=re.I)
+    t = re.sub(r"\s*\(\s*intent\s*:[^\)]*\)\s*", " ", t, flags=re.I)
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
+    t = re.sub(r"__([^_]+)__", r"\1", t)
+    t = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"\1", t)
+    t = re.sub(r"(?<!_)_([^_]+)_(?!_)", r"\1", t)
+    t = re.sub(r"~~([^~]+)~~", r"\1", t)
+    t = t.replace("™", " ").replace("®", " ").replace("©", " ")
+    t = t.replace("•", "\n").replace("▪", "\n").replace("▫", "\n").replace("◦", "\n")
+    t = t.replace("&", " and ")
+    t = re.sub(r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]", " ", t)
+    t = re.sub(r"[*/_~`#|^<>\[\]{}\\]+", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t).strip()
+    t = t.replace("\n", ". ")
+    t = re.sub(r"\s+([,.;:!?])", r"\1", t)
+    t = re.sub(r"([,.;:!?]){2,}", lambda m: m.group(0)[0], t)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    return t.strip(" \t\n-–—*_`#|:;,")
 def _base_dir() -> Path:
     bd = getattr(config, "BASE_DIR", None)
     if bd:
@@ -771,7 +696,9 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
         from SarahMemoryAPI import _sm_sanitize_llm_text as _san
         text = _san(text)
     except Exception:
-        text = _sm_sanitize_llm_text_local(text)
+        pass
+
+    text = _sm_sanitize_llm_text_local(text)
 
     _start_tts_worker()
 
