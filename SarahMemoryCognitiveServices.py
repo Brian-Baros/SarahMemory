@@ -229,6 +229,39 @@ def _route_role_for_decision(dec: Dict[str, Any], caller_context: Optional[Dict[
             return "test"   # approved changes go into sandbox test lane next
         return "improve"    # denied/deferred require improvement/clarification lane
 
+    if intent == "CREATIVE_REQUEST":
+        questions.extend(
+            [
+                "Is this a creative artifact request rather than a direct system mutation?",
+                "Can the request be routed to Creative Lane and resolved through registered CreativeStudios modules?",
+                "Does the request require local filesystem writes, preview, or browser-open actions that may need confirmation?",
+            ]
+        )
+
+        creative_targets = [m for m in _suggest_module_hints(intent) if _is_core_module_approved(m)]
+        answers["creative_registered_modules"] = creative_targets
+
+        if not creative_targets:
+            decision["decision"] = "DEFER"
+            decision["allow"] = False
+            decision["require_user"] = True
+            decision["reasons"].append("No approved CreativeStudios modules are currently registered for this request.")
+            decision["recommended_next"] = "Register/approve a CreativeStudios module, then re-evaluate through Creative Lane."
+            _risk_add(risk, 10, "no_registered_creative_modules")
+            decision["risk_score"] = risk["risk_score"]
+            decision["risk_factors"] = risk["risk_factors"]
+            return _finalize(decision)
+
+        decision["decision"] = "ALLOW"
+        decision["allow"] = True
+        decision["require_user"] = False
+        decision["reasons"].append("Creative request approved for governed routing; execution belongs to Creative Lane.")
+        decision["recommended_next"] = "Route to Creative Lane and selected CreativeStudios module; validate artifacts before final presentation."
+        decision["risk_score"] = risk["risk_score"]
+        decision["risk_factors"] = risk["risk_factors"]
+        return _finalize(decision)
+
+
     if intent == "FILESYSTEM_WRITE":
         if decision == "ALLOW":
             return "deploy"
@@ -473,7 +506,7 @@ def get_cognitive_policy_snapshot() -> Dict[str, Any]:
     Lightweight snapshot of the current safety / identity flags.
     This is NOT a claim of sentience; it's an engineered self-model.
     """
-    return {
+    snap = {
         "ts": datetime.now().isoformat(),
         "base_dir": getattr(config, "BASE_DIR", None),
         "data_dir": getattr(config, "DATA_DIR", None),
@@ -483,6 +516,137 @@ def get_cognitive_policy_snapshot() -> Dict[str, Any]:
         ),
         "cognitive_online_enabled": bool(getattr(config, "COGNITIVE_ONLINE_ENABLED", False)),
         "kill_switch_neoskymatrix": bool(getattr(config, "NEOSKYMATRIX", False)),
+    }
+    try:
+        gp = getattr(config, "sm_get_core_governance_profile", None)
+        if callable(gp):
+            snap["core_governance"] = gp() or {}
+    except Exception:
+        snap["core_governance"] = {}
+    return snap
+
+
+# -----------------------------------------------------------------------------
+# Core-governed routing helpers
+# -----------------------------------------------------------------------------
+_KNOWN_CORE_MODULES = {
+    "SarahMemoryAdvCU",
+    "SarahMemoryAiFunctions",
+    "SarahMemoryAPI",
+    "SarahMemoryCanvasStudio",
+    "SarahMemoryCognitiveServices",
+    "SarahMemoryCompare",
+    "SarahMemoryDatabase",
+    "SarahMemoryDiagnostics",
+    "SarahMemoryFilesystem",
+    "SarahMemoryGlobals",
+    "SarahMemoryLogicCalc",
+    "SarahMemoryLyricsToSong",
+    "SarahMemoryMusicGenerator",
+    "SarahMemoryNetwork",
+    "SarahMemoryNeuron",
+    "SarahMemoryReply",
+    "SarahMemoryResearch",
+    "SarahMemorySynapes",
+    "SarahMemoryVideoEditorCore",
+    "SarahMemoryVoice",
+    "SarahMemoryWebSYM",
+}
+
+def _is_core_module_approved(module_name: str, capability: Optional[str] = None) -> bool:
+    """
+    Check the Globals core registry when available.
+    Conservative fallback: only allow known built-in SarahMemory modules.
+    """
+    mn = os.path.splitext(os.path.basename(str(module_name or "").strip()))[0]
+    if not mn:
+        return False
+    try:
+        fn = getattr(config, "sm_is_core_module_approved", None)
+        if callable(fn):
+            return bool(fn(mn, capability=capability))
+    except Exception:
+        pass
+    return mn in _KNOWN_CORE_MODULES
+
+def _lane_family_for_intent(intent: str) -> str:
+    label = str(intent or "").strip().upper()
+    if label in ("FILESYSTEM_WRITE", "EXECUTE_COMMAND"):
+        return "ACTION"
+    if label in ("CREATIVE_REQUEST",):
+        return "CREATIVE"
+    if label in ("DIAGNOSTICS", "SYSTEM_INFO", "PATCH_OR_UPDATE"):
+        return "SYSTEM"
+    if label in ("NETWORK_ACCESS",):
+        return "NETWORK"
+    return "ANSWER"
+
+def _suggest_module_hints(intent: str) -> list:
+    label = str(intent or "").strip().upper()
+    if label == "PATCH_OR_UPDATE":
+        return ["SarahMemoryCompare", "SarahMemorySynapes"]
+    if label == "FILESYSTEM_WRITE":
+        return ["SarahMemoryFilesystem", "appsys"]
+    if label == "EXECUTE_COMMAND":
+        return ["SarahMemoryIntegration", "SarahMemoryFilesystem"]
+    if label == "CREATIVE_REQUEST":
+        return [
+            "SarahMemoryCanvasStudio",
+            "SarahMemoryVideoEditorCore",
+            "SarahMemoryMusicGenerator",
+            "SarahMemoryLyricsToSong",
+        ]
+    if label == "DIAGNOSTICS":
+        return ["SarahMemoryDiagnostics"]
+    if label == "SYSTEM_INFO":
+        return ["SarahMemoryDiagnostics", "SarahMemoryGlobals"]
+    if label == "NETWORK_ACCESS":
+        return ["SarahMemoryResearch", "SarahMemoryNetwork", "appnet"]
+    return ["SarahMemoryLogicCalc", "SarahMemoryWebSYM", "SarahMemoryResearch", "SarahMemoryAPI"]
+
+def _validate_scope_modules(target_files: list, subsystems: list) -> Dict[str, Any]:
+    """
+    Ensure declared SarahMemory core scope only references approved/known modules.
+    Presence on disk is not activation.
+    """
+    declared = []
+    approved = []
+    unapproved = []
+
+    for item in (target_files or []):
+        try:
+            module_name = os.path.splitext(os.path.basename(str(item)))[0]
+        except Exception:
+            module_name = ""
+        if module_name:
+            declared.append(module_name)
+
+    for item in (subsystems or []):
+        try:
+            raw = str(item or "").strip()
+        except Exception:
+            raw = ""
+        if not raw:
+            continue
+        if raw.endswith(".py"):
+            raw = os.path.splitext(os.path.basename(raw))[0]
+        declared.append(raw)
+
+    seen = []
+    for module_name in declared:
+        if module_name in seen:
+            continue
+        seen.append(module_name)
+        if module_name.startswith("SarahMemory") or module_name in ("appsys", "appnet", "appnet2", "appmedia", "appstore"):
+            if _is_core_module_approved(module_name):
+                approved.append(module_name)
+            else:
+                unapproved.append(module_name)
+
+    return {
+        "declared": seen,
+        "approved": approved,
+        "unapproved": unapproved,
     }
 
 
@@ -496,6 +660,7 @@ _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
     ("PATCH_OR_UPDATE", r"\b(update|upgrade|patch|monkey\s*patch|self[-\s]*repair|fix\s+code)\b"),
     ("DIAGNOSTICS", r"\b(diagnose|diagnostics|health\s*check|self\s*check|log\s*scan)\b"),
     ("SYSTEM_INFO", r"\b(gpu|vram|cuda|disk\s*space|free\s*space|drive\s*space|storage|cpu\s*usage|ram\s*usage|memory\s*usage|hardware\s*stats|system\s*stats)\b"),
+    ("CREATIVE_REQUEST", r"\b(create|generate|make|draw|design|render|compose|build)\b.*\b(image|picture|art|song|music|video|website|webpage|page|avatar|logo|graphic|animation|lyrics|beat)\b"),
     ("NETWORK_ACCESS", r"\b(network|internet|online|web|http|https|api\s+call|connect|wifi|bluetooth|lan|sarahnet)\b"),
     ("FILESYSTEM_WRITE", r"\b(write|create|delete|remove|move|rename|overwrite|trash|dumpster|upload|download)\b"),
     ("PRIVACY_SENSITIVE", r"\b(password|token|secret|key|credential|wallet|private\s+key)\b"),
@@ -682,9 +847,12 @@ def govern_request(
         "ts": snap["ts"],
         "intent": intent,
         "caller": caller,
+        "lane_family": _lane_family_for_intent(intent),
+        "primary_lane": _lane_family_for_intent(intent),
         "require_user": True,
         "decision": "DEFER",
         "allow": False,
+        "execution_allowed": False,
         "risk": "unknown",
         "risk_score": 0,
         "risk_factors": [],
@@ -692,13 +860,18 @@ def govern_request(
         "answers": answers,
         "reasons": [],
         "recommended_next": None,
+        "module_hints": _suggest_module_hints(intent),
         "rationale": "",
-        "trace": {},
+        "trace": {
+            "governor_only": True,
+            "execution_owner": None,
+        },
         "routing_policy": {},
         "policy_snapshot": {
             "cognitive_online_enabled": snap["cognitive_online_enabled"],
             "kill_switch_neoskymatrix": snap["kill_switch_neoskymatrix"],
             "context_engine_enabled": snap["context_engine_enabled"],
+            "core_governance": snap.get("core_governance", {}),
         },
     }
 
@@ -728,6 +901,10 @@ def govern_request(
                 dec["trace"] = {}
             dec["trace"].setdefault("policy_flags", routing_policy.get("flags"))
             dec["trace"].setdefault("allowed_tiers", routing_policy.get("allowed_tiers"))
+            dec["trace"].setdefault("lane_family", dec.get("lane_family"))
+            dec["trace"].setdefault("primary_lane", dec.get("primary_lane"))
+            dec["trace"].setdefault("module_hints", dec.get("module_hints") or [])
+            dec["trace"].setdefault("execution_allowed", False)
         except Exception:
             pass
 # Event log (best-effort)
@@ -855,6 +1032,16 @@ def govern_request(
         answers["update_tests_declared"] = tests
         answers["update_rollback_plan"] = rollback or None
         answers["update_dry_run_declared"] = dry_run
+
+        scope_validation = _validate_scope_modules(targets, subsystems)
+        answers["governed_scope"] = scope_validation
+        if scope_validation.get("unapproved"):
+            _answer_missing(
+                answers,
+                "governed_scope",
+                "One or more declared SarahMemory modules are not approved/registered for governed routing.",
+            )
+            _risk_add(risk, 20, "unapproved_core_scope")
 
         # Required metadata checks (risk scoring + missing map)
         if not reason:
@@ -998,7 +1185,7 @@ def govern_request(
         decision["allow"] = True
         decision["require_user"] = not bool(user_consented)
         decision["reasons"].append("Filesystem action has sufficient details for routing; execution must confirm and log.")
-        decision["recommended_next"] = "Route to File API module; enforce BASE_DIR, trash-first, and event logging."
+        decision["recommended_next"] = "Route to Action Lane filesystem owner; enforce BASE_DIR, trash-first behavior, and event logging."
         decision["risk_score"] = risk["risk_score"]
         decision["risk_factors"] = risk["risk_factors"]
         
@@ -1052,7 +1239,7 @@ def govern_request(
         decision["allow"] = True
         decision["require_user"] = False
         decision["reasons"].append("Network action approved by policy + explicit consent; execution must minimize data.")
-        decision["recommended_next"] = "Route to Research/SarahNet module; redact sensitive info; log outbound intent."
+        decision["recommended_next"] = "Route to Network Lane through approved network/research owners; redact sensitive info and log intent."
         decision["risk_score"] = risk["risk_score"]
         decision["risk_factors"] = risk["risk_factors"]
         return _finalize(decision)
@@ -1200,7 +1387,7 @@ def govern_request(
         decision["allow"] = True
         decision["require_user"] = False
         decision["reasons"].append("Diagnostics are safe and read-only by default.")
-        decision["recommended_next"] = "Route to SarahMemoryDiagnostics (read-only) and log results."
+        decision["recommended_next"] = "Route to System Lane (Diagnostics) as read-only; execution remains outside the governor."
         decision["risk_score"] = risk["risk_score"]
         decision["risk_factors"] = risk["risk_factors"]
         return _finalize(decision)
@@ -1216,7 +1403,7 @@ def govern_request(
     decision["allow"] = True
     decision["require_user"] = False
     decision["reasons"].append("General chat is low risk.")
-    decision["recommended_next"] = "Route to Chat/LLM pipeline; persist context if enabled."
+    decision["recommended_next"] = "Route to Answer Lane with deterministic/local-first execution; helper models remain optional."
     decision["risk_score"] = risk["risk_score"]
     decision["risk_factors"] = risk["risk_factors"]
     return _finalize(decision)
@@ -1375,7 +1562,7 @@ def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     # Optional: include a minimal echo for debugging (do not leak secrets)
-    return {"ok": True, "governance": dec, "version": "8.0.0"}
+    return {"ok": True, "governance": dec, "lane_family": dec.get("lane_family"), "primary_lane": dec.get("primary_lane"), "version": "8.0.0"}
 
 
 # -----------------------------------------------------------------------------

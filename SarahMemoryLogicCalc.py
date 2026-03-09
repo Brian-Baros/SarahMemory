@@ -3,9 +3,9 @@
 File: SarahMemoryLogicCalc.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-19
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2026 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -13,6 +13,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 PURPOSE:
@@ -1920,12 +1921,28 @@ class ReasoningEngine:
             return SolveResult(ok=False, kind="calc", value=None, text=f"Calc failure: {e}", meaning=mg)
 
     def _normalize_math_expr(self, q: str) -> str:
-        q = q.strip()
+        q = (q or "").strip()
         q = q.replace("×", "*").replace("÷", "/")
+        q = q.replace("−", "-").replace("–", "-").replace("—", "-")
+
+        # Remove common wrapper language so deterministic math can operate on the
+        # actual expression instead of conversational padding.
+        q = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", q, flags=re.I)
+        q = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", q, flags=re.I)
+        q = re.sub(r"\?$", "", q).strip()
+
+        # Normalize verbal operators.
         q = re.sub(r"\bplus\b", "+", q, flags=re.I)
         q = re.sub(r"\bminus\b", "-", q, flags=re.I)
         q = re.sub(r"\btimes\b", "*", q, flags=re.I)
+        q = re.sub(r"\bmultiplied by\b", "*", q, flags=re.I)
         q = re.sub(r"\bdivided by\b", "/", q, flags=re.I)
+        q = re.sub(r"\bover\b", "/", q, flags=re.I)
+
+        # Support "square root of 25" and "sqrt of 25".
+        q = re.sub(r"\b(?:the\s+)?square\s+root\s+of\s+(.+)$", r"sqrt(\1)", q, flags=re.I)
+        q = re.sub(r"\bsqrt\s+of\s+(.+)$", r"sqrt(\1)", q, flags=re.I)
+
         q = _norm_space(q)
         return q
 
@@ -2553,19 +2570,46 @@ class SarahMemoryLogicCalc:
         self.formulas = FormulaLibrary(self.units)
         self.engine = ReasoningEngine(self.units, self.formulas)
 
+    def _build_canonical_payload(self, query: str, res: SolveResult, duration_ms: int) -> Dict[str, Any]:
+        raw_value = res.value
+        canonical_answer = raw_value
+
+        if isinstance(raw_value, dict):
+            if len(raw_value) == 1:
+                canonical_answer = next(iter(raw_value.values()))
+            else:
+                canonical_answer = raw_value
+        elif isinstance(raw_value, (list, tuple)) and len(raw_value) == 1:
+            canonical_answer = raw_value[0]
+
+        presentation_hint = None
+        if res.ok and res.kind in {"calc", "convert", "solve", "vector", "tensor", "calculus", "chemistry", "nuclear", "constants"}:
+            if isinstance(canonical_answer, (int, float, str)):
+                presentation_hint = f"The answer is {canonical_answer}."
+            elif isinstance(canonical_answer, dict):
+                presentation_hint = res.text
+
+        payload = {
+            "ok": res.ok,
+            "kind": res.kind,
+            "value": raw_value,
+            "text": res.text,
+            "raw_answer": raw_value,
+            "canonical_answer": canonical_answer,
+            "canonical_type": res.kind,
+            "truth_locked": bool(res.ok),
+            "deterministic": True,
+            "presentation_hint": presentation_hint,
+            "meta": {**res.meta, "duration_ms": duration_ms, "truth_engine": "SarahMemoryLogicCalc"},
+            "meaning": res.meaning.summarize() if res.meaning else None
+        }
+        return payload
+
     def route(self, query: str) -> Dict[str, Any]:
         start = _now_ms()
         res = self.engine.route(query)
         dur = _now_ms() - start
-        payload = {
-            "ok": res.ok,
-            "kind": res.kind,
-            "value": res.value,
-            "text": res.text,
-            "meta": {**res.meta, "duration_ms": dur},
-            "meaning": res.meaning.summarize() if res.meaning else None
-        }
-        return payload
+        return self._build_canonical_payload(query, res, dur)
 
 
 # Global instance (import-safe)

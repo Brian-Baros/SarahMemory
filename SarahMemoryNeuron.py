@@ -239,6 +239,70 @@ def _budget_limits() -> Dict[str, Any]:
     }
 
 
+def _core_registry_snapshot(force: bool = False) -> Dict[str, Any]:
+    try:
+        if config and hasattr(config, "sm_refresh_core_registry"):
+            data = config.sm_refresh_core_registry(force=force)  # type: ignore[attr-defined]
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+    return {}
+
+
+def _core_module_allowed(module_name: str, capability: Optional[str] = None, import_obj: Any = None) -> bool:
+    key = os.path.splitext(os.path.basename(str(module_name or "").strip()))[0]
+    try:
+        if config and hasattr(config, "sm_is_core_module_approved"):
+            return bool(config.sm_is_core_module_approved(key, capability=capability))  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return bool(import_obj is not None)
+
+
+def _core_governance_trace() -> Dict[str, Any]:
+    try:
+        if config and hasattr(config, "sm_get_core_governance_profile"):
+            profile = config.sm_get_core_governance_profile()  # type: ignore[attr-defined]
+            if isinstance(profile, dict):
+                return {
+                    "discovery_enabled": bool(profile.get("discovery_enabled", False)),
+                    "registered_count": int(profile.get("registered_count", 0) or 0),
+                    "quarantined_count": int(profile.get("quarantined_count", 0) or 0),
+                    "ignored_count": int(profile.get("ignored_count", 0) or 0),
+                }
+    except Exception:
+        pass
+    return {
+        "discovery_enabled": False,
+        "registered_count": 0,
+        "quarantined_count": 0,
+        "ignored_count": 0,
+    }
+
+
+def _approved_lane_modules() -> Dict[str, bool]:
+    return {
+        "advcu": _core_module_allowed("SarahMemoryAdvCU", "helper", _AdvCU),
+        "logiccalc": _core_module_allowed("SarahMemoryLogicCalc", "reasoning", _LogicCalc),
+        "websym": _core_module_allowed("SarahMemoryWebSYM", "reasoning", _WebSYM),
+        "research": _core_module_allowed("SarahMemoryResearch", "reasoning", _Research),
+        "api": _core_module_allowed("SarahMemoryAPI", "helper", _SMAPI),
+        "compare": _core_module_allowed("SarahMemoryCompare", "utility", _Compare),
+        "canvas": _core_module_allowed("SarahMemoryCanvasStudio", "creative", _CanvasStudio),
+        "filesystem": _core_module_allowed("SarahMemoryFilesystem", "action", True),
+        "network": _core_module_allowed("SarahMemoryNetwork", "network", True),
+        "cognitive": _core_module_allowed("SarahMemoryCognitiveServices", "diagnostics", _Cog),
+    }
+
+
+def _trace_primary_lane(trace: Dict[str, Any], lane: str, owner: str) -> None:
+    try:
+        trace["primary_lane"] = str(lane or "general")
+        trace["primary_owner"] = str(owner or "neuron")
+    except Exception:
+        pass
+
+
 # -----------------------------------------------------------------------------
 # Cognitive graph core (lightweight, local)
 # -----------------------------------------------------------------------------
@@ -375,6 +439,9 @@ def _classify_intent(text: str) -> str:
 def _advcu_analyze(text: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"intent": None, "confidence": None, "command": None, "entities": {}, "raw": {}}
     if not _AdvCU:
+        return out
+    if not _core_module_allowed("SarahMemoryAdvCU", "helper", _AdvCU):
+        out["raw"]["governance"] = "advcu_not_registered"
         return out
 
     try:
@@ -603,6 +670,8 @@ def _make_action_ticket(text: str, meta: Dict[str, Any], adv: Optional[Dict[str,
 def _try_research(text: str) -> Optional[Dict[str, Any]]:
     if not _Research:
         return None
+    if not _core_module_allowed("SarahMemoryResearch", "reasoning", _Research):
+        return None
     try:
         fn = getattr(_Research, "get_research_data", None)
         if callable(fn):
@@ -639,6 +708,8 @@ def _synthesize_evidence_reply(base_reply: str, research_data: Dict[str, Any]) -
 def _qa_compare_gate(user_text: str, draft: str, intent: str) -> Tuple[float, Dict[str, Any]]:
     if not _Compare:
         return 0.0, {}
+    if not _core_module_allowed("SarahMemoryCompare", "utility", _Compare):
+        return 0.0, {"compare": {"status": "BYPASS", "reason": "compare_not_registered"}}
     try:
         fn = getattr(_Compare, "compare_reply", None)
         if callable(fn):
@@ -664,7 +735,7 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
     """Attempt deterministic evaluation.
 
     Priority:
-      1) SarahMemoryLogicCalc (if available)
+      1) SarahMemoryLogicCalc (if available and registry-approved)
       2) Safe fallback parser for basic arithmetic + sqrt when LogicCalc is unavailable
     """
     raw = (text or "").strip()
@@ -672,7 +743,7 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
         return None
 
     # Primary: project engine
-    if _LogicCalc:
+    if _LogicCalc and _core_module_allowed("SarahMemoryLogicCalc", "reasoning", _LogicCalc):
         try:
             engine = _LogicCalc()
             if hasattr(engine, "answer"):
@@ -834,6 +905,7 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
 
         return {
             "ok": True,
+            "engine": "neuron_fallback",
             "value": val,
             "text": f"Computed result using deterministic evaluation: {expr} = {val}",
             "meta": {"expression": expr, "normalized_from": raw, "intent": "calc"},
@@ -998,6 +1070,8 @@ def _run_quick_diagnostics() -> Dict[str, Any]:
 def _try_websym(text: str) -> Optional[str]:
     if not _WebSYM:
         return None
+    if not _core_module_allowed("SarahMemoryWebSYM", "reasoning", _WebSYM):
+        return None
     try:
         for fn_name in ("route_query", "handle_query", "process_query", "websym_query"):
             fn = getattr(_WebSYM, fn_name, None)
@@ -1014,13 +1088,19 @@ def _try_api(text: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
         return None
     if not _SMAPI:
         return None
+    if not _core_module_allowed("SarahMemoryAPI", "helper", _SMAPI):
+        return None
+
     try:
-        # Inject resolver hints (no hardcoded repos here; all canonical names live in SarahMemoryGlobals.py).
         meta2 = dict(meta or {})
+        helper_payload = meta2.get("sm_helper_payload")
+        user_input = str(helper_payload or text or "").strip()
+        if not user_input:
+            return None
+
         try:
             if config and hasattr(config, "resolve_model"):
                 rm = config.resolve_model("reasoning", text=text, meta=meta2)  # type: ignore[attr-defined]
-                # Lightweight, non-breaking hint packet for downstream routing/logging.
                 meta2.setdefault("sm_model_resolve", {})["reasoning"] = rm
                 if isinstance(rm, dict) and rm.get("selected"):
                     meta2.setdefault("preferred_model_repo", rm.get("selected"))
@@ -1029,27 +1109,18 @@ def _try_api(text: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
 
         fn = getattr(_SMAPI, "send_to_api", None)
         if callable(fn):
-            resp = fn(text, **meta2)
+            resp = fn(user_input, **meta2)
             if isinstance(resp, str) and resp.strip():
                 return resp
-            if isinstance(resp, dict) and resp.get("reply"):
-                return str(resp["reply"])
+            if isinstance(resp, dict):
+                if resp.get("reply"):
+                    return str(resp["reply"])
+                if resp.get("data"):
+                    return str(resp["data"])
     except Exception:
         return None
     return None
-    if not _SMAPI:
-        return None
-    try:
-        fn = getattr(_SMAPI, "send_to_api", None)
-        if callable(fn):
-            resp = fn(text, **(meta or {}))
-            if isinstance(resp, str) and resp.strip():
-                return resp
-            if isinstance(resp, dict) and resp.get("reply"):
-                return str(resp["reply"])
-    except Exception:
-        return None
-    return None
+
 
 
 # -----------------------------------------------------------------------------
@@ -1094,6 +1165,46 @@ def _log_event(kind: str, intent: str, confidence: float, source: str, payload: 
 
 
 # -----------------------------------------------------------------------------
+# Helper semantic-gap payloads (compressed helper-only LLM method)
+# -----------------------------------------------------------------------------
+def _build_helper_payload(user_text: str, intent: str, adv: Optional[Dict[str, Any]] = None) -> str:
+    try:
+        adv = adv or {}
+        cmd = adv.get("command") or {}
+        entities = adv.get("entities") or {}
+        parts: List[str] = []
+        if intent:
+            parts.append(f"intent={intent}")
+        query_type = cmd.get("query_type") or entities.get("query_type") or ""
+        if query_type:
+            parts.append(f"query_type={query_type}")
+        action = cmd.get("action") or cmd.get("intent") or ""
+        if action:
+            parts.append(f"action={action}")
+        for key in ("subject", "topic", "object", "target"):
+            val = entities.get(key) or cmd.get(key)
+            if val:
+                parts.append(f"{key}={val}")
+        attrs = entities.get("attributes") or entities.get("mods") or cmd.get("attributes") or []
+        if isinstance(attrs, (list, tuple)) and attrs:
+            cleaned = [str(x).strip() for x in attrs if str(x).strip()]
+            if cleaned:
+                parts.append("attributes=" + ",".join(cleaned[:8]))
+        elif isinstance(attrs, str) and attrs.strip():
+            parts.append(f"attributes={attrs.strip()}")
+        keywords = entities.get("keywords") or cmd.get("keywords") or []
+        if isinstance(keywords, (list, tuple)) and keywords:
+            cleaned = [str(x).strip() for x in keywords if str(x).strip()]
+            if cleaned:
+                parts.append("keywords=" + ",".join(cleaned[:8]))
+        if not parts:
+            return str(user_text or "").strip()
+        return " | ".join(parts)
+    except Exception:
+        return str(user_text or "").strip()
+
+
+# -----------------------------------------------------------------------------
 # Public router surface
 # -----------------------------------------------------------------------------
 def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: Optional[Dict[str, Any]] = None) -> NeuronResult:
@@ -1102,19 +1213,28 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
     meta = meta or {}
     policy = policy or {}
+    approved_modules = _approved_lane_modules()
     allowed_tiers = dict(policy.get("allowed_tiers") or {"tier0": True, "tier1": True, "tier2": True, "tier3": True})
+    if not approved_modules.get("websym"):
+        allowed_tiers["tier1"] = False
+    if not approved_modules.get("research"):
+        allowed_tiers["tier2"] = False
+    if not approved_modules.get("api"):
+        allowed_tiers["tier3"] = False
     # Enforce request-scoped local-only as a hard restriction.
     if bool(meta.get("local_only") or meta.get("offline")):
         allowed_tiers["tier3"] = False
     inp = NeuronInput(text=user_text or "", meta=meta)
     trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}}
-    trace["policy"] = {"allowed_tiers": allowed_tiers}
+    trace["policy"] = {"allowed_tiers": allowed_tiers, "approved_modules": approved_modules}
+    trace["core_governance"] = _core_governance_trace()
 
     # Tier-0: Fast deterministic math (bypass heavy routing/QA gates)
     if allowed_tiers.get('tier0', True):
         det = _try_logiccalc(inp.text)
         if det and bool(det.get('ok')):
-            trace['tiers'].append({'tier': 0, 'engine': 'LogicCalc', 'ok': True})
+            _trace_primary_lane(trace, 'answer', str(det.get('engine') or 'LogicCalc'))
+            trace['tiers'].append({'tier': 0, 'engine': str(det.get('engine') or 'LogicCalc'), 'ok': True})
             trace['intent'] = 'math'
             artifacts = {'math': {'ok': True, 'expr': det.get('expr'), 'value': det.get('value'), 'engine': det.get('engine')}, 'deterministic': det}
             v = det.get('value')
@@ -1140,6 +1260,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     # Tier-0.5: AdvCU delegation
     adv = _advcu_analyze(inp.text)
     trace["advcu"] = {"intent": adv.get("intent"), "confidence": adv.get("confidence"), "has_command": bool(adv.get("command"))}
+    inp.meta["sm_helper_payload"] = _build_helper_payload(inp.text, str(adv.get("intent") or ""), adv)
 
     # Intent selection
     intent = _classify_intent(inp.text)
@@ -1182,6 +1303,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "diagnostics":
+            _trace_primary_lane(trace, 'system', 'SarahMemoryDiagnostics')
             diag = _run_quick_diagnostics()
             ok = bool(diag.get("ok", False))
             trace["tiers"].append({"tier": 0, "engine": "Diagnostics", "ok": ok})
@@ -1196,6 +1318,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "gpu":
+            _trace_primary_lane(trace, 'system', 'GPUStats')
             g = _gpu_stats_summary()
             ok = bool(g.get("ok", False))
             trace["tiers"].append({"tier": 0, "engine": "GPUStats", "ok": ok})
@@ -1221,6 +1344,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "disk":
+            _trace_primary_lane(trace, 'system', 'DiskUsage')
             base_dir = os.getcwd()
             try:
                 import SarahMemoryGlobals as _G  # type: ignore
@@ -1246,6 +1370,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "system_stats":
+            _trace_primary_lane(trace, 'system', 'SystemStats')
             s = _quick_system_stats()
             ok = bool(s.get("ok", False))
             trace["tiers"].append({"tier": 0, "engine": "SystemStats", "ok": ok})
@@ -1267,6 +1392,18 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
     # Action lane: emit local execution ticket (never execute here)
     if _is_action_intent(intent, inp.text, adv):
+        _trace_primary_lane(trace, 'action', 'SarahMemoryFilesystem')
+        if not approved_modules.get("filesystem"):
+            trace["tiers"].append({"tier": "action", "engine": "ActionTicket", "ok": False, "reason": "filesystem_not_registered"})
+            return NeuronResult(
+                ok=False,
+                reply="Action lane is not available because SarahMemoryFilesystem is not registered and approved.",
+                confidence=0.25,
+                intent="action",
+                source="action_ticket",
+                artifacts={"action_ticket_error": "filesystem_not_registered"},
+                trace=trace,
+            )
         ticket = _make_action_ticket(inp.text, inp.meta, adv)
         trace["tiers"].append({"tier": "action", "engine": "ActionTicket", "ok": True, "action": ticket.get("action")})
         res = NeuronResult(
@@ -1285,6 +1422,18 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
     # Creative lane: emit job ticket
     if _is_creative_intent(intent, inp.text, adv):
+        _trace_primary_lane(trace, 'creative', 'SarahMemoryCanvasStudio')
+        if not approved_modules.get("canvas"):
+            trace["tiers"].append({"tier": "creative", "engine": "CanvasStudioTicket", "ok": False, "reason": "canvas_not_registered"})
+            return NeuronResult(
+                ok=False,
+                reply="Creative lane is not available because SarahMemoryCanvasStudio is not registered and approved.",
+                confidence=0.25,
+                intent="creative",
+                source="creative_ticket",
+                artifacts={"creative_ticket_error": "canvas_not_registered"},
+                trace=trace,
+            )
         kind = _creative_kind(intent, inp.text, adv)
         ticket = _make_creative_job_ticket(inp.text, kind, inp.meta, adv)
         trace["tiers"].append({"tier": "creative", "engine": "CanvasStudioTicket", "ok": True, "kind": kind})
@@ -1304,7 +1453,8 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     det = _try_logiccalc(inp.text)
     if det:
         inp.meta["deterministic_hit"] = True
-        trace["tiers"].append({"tier": 0, "engine": "LogicCalc", "ok": True})
+        _trace_primary_lane(trace, 'answer', str(det.get('engine') or 'LogicCalc'))
+        trace["tiers"].append({"tier": 0, "engine": str(det.get('engine') or 'LogicCalc'), "ok": True})
         reply = det.get("reply") if isinstance(det, dict) else None
         if not reply and isinstance(det, dict):
             reply = det.get("text") or det.get("result")
@@ -1315,8 +1465,9 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
         trace["tiers"].append({"tier": 0, "engine": "LogicCalc", "ok": False})
 
         # Tier-1: WebSYM
-        sym = _try_websym(inp.text)
+        sym = _try_websym(inp.text) if bool(allowed_tiers.get("tier1", True)) else None
         if sym:
+            _trace_primary_lane(trace, 'answer', 'SarahMemoryWebSYM')
             trace["tiers"].append({"tier": 1, "engine": "WebSYM", "ok": True})
             res = NeuronResult(ok=True, reply=sym, confidence=0.66, intent=intent, source="websym", artifacts={}, trace=trace)
         else:
@@ -1324,9 +1475,10 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
             # Tier-2: Research lane (evidence-backed)
             research_data = None
-            if intent == "research" and not inp.meta.get("offline"):
+            if bool(allowed_tiers.get("tier2", True)) and intent == "research" and not inp.meta.get("offline"):
                 research_data = _try_research(inp.text)
             if research_data:
+                _trace_primary_lane(trace, 'answer', 'SarahMemoryResearch')
                 trace["tiers"].append({"tier": 2, "engine": "Research", "ok": True})
                 merged, artifacts = _synthesize_evidence_reply("Here is what I found:", research_data)
                 res = NeuronResult(ok=True, reply=merged, confidence=0.70, intent=intent, source="research", artifacts=artifacts, trace=trace)
@@ -1334,8 +1486,9 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
                 trace["tiers"].append({"tier": 2, "engine": "Research", "ok": False})
 
                 # Tier-3: API
-                api_reply = _try_api(inp.text, meta=inp.meta)
+                api_reply = _try_api(inp.text, meta=inp.meta) if bool(allowed_tiers.get("tier3", True)) else None
                 if api_reply:
+                    _trace_primary_lane(trace, 'answer', 'SarahMemoryAPI')
                     trace["tiers"].append({"tier": 3, "engine": "SarahMemoryAPI", "ok": True})
                     res = NeuronResult(ok=True, reply=api_reply, confidence=0.62, intent=intent, source="api", artifacts={}, trace=trace)
                 else:
@@ -1397,6 +1550,8 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
                 merged, artifacts = _synthesize_evidence_reply(draft, rdata)
                 if merged and str(merged).strip():
                     draft = str(merged).strip()
+                    if not trace.get("primary_lane"):
+                        _trace_primary_lane(trace, 'answer', 'SarahMemoryResearch')
                 res.artifacts.update(artifacts)
                 conf = float(max(0.0, min(0.99, conf + 0.06)))
                 res.ok = True
@@ -1490,7 +1645,7 @@ def _neuron_loop(poll_s: float = 0.25) -> None:
             r = neuron_tick()
             if r:
                 try:
-                    if _Cog and hasattr(_Cog, "notify_neuron_result"):
+                    if _Cog and _core_module_allowed("SarahMemoryCognitiveServices", "diagnostics", _Cog) and hasattr(_Cog, "notify_neuron_result"):
                         _Cog.notify_neuron_result(r.to_dict())  # type: ignore
                 except Exception:
                     pass
@@ -1534,5 +1689,5 @@ if __name__ == "__main__":
     
     
 # ====================================================================
-# END OF SarahMemoryNetwork.py v8.0.0
+# END OF SarahMemoryNeuron.py v8.0.0
 # ====================================================================

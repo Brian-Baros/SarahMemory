@@ -373,6 +373,83 @@ def log_gui_event(event: str, details: str) -> None:
             logger.warning(f"Vision light update failed: {ce}")
         logger.error(f"Error logging GUI event: {e}")
 
+
+def _sm_extract_presentation_bundle(bundle):
+    """
+    Normalize any reply/bundle shape into the user-facing presentation contract.
+    Raw/canonical internals must stay inside the core; GUI should only consume
+    presentation text plus outward artifacts/actions.
+    """
+    try:
+        if isinstance(bundle, dict):
+            meta = bundle.get("meta") or {}
+            artifacts = list(bundle.get("artifacts") or [])
+            actions = list(bundle.get("actions") or [])
+            # legacy image_url support -> artifact
+            img_url = bundle.get("image_url")
+            if img_url and not any((a or {}).get("url") == img_url for a in artifacts if isinstance(a, dict)):
+                artifacts.append({"type": "image", "url": img_url, "display_ready": True, "download_ready": True})
+            presented = (
+                bundle.get("presentation_reply")
+                or bundle.get("reply")
+                or bundle.get("response")
+                or bundle.get("text")
+                or bundle.get("data")
+                or ""
+            )
+            return {
+                "presentation_reply": str(presented or "").strip(),
+                "artifacts": artifacts,
+                "actions": actions,
+                "errors": list(bundle.get("errors") or []),
+                "meta": meta,
+                "links": list(bundle.get("links") or []),
+                "html": bundle.get("html"),
+            }
+        return {
+            "presentation_reply": str(bundle or "").strip(),
+            "artifacts": [],
+            "actions": [],
+            "errors": [],
+            "meta": {},
+            "links": [],
+            "html": None,
+        }
+    except Exception:
+        return {
+            "presentation_reply": "",
+            "artifacts": [],
+            "actions": [],
+            "errors": [],
+            "meta": {},
+            "links": [],
+            "html": None,
+        }
+
+
+def _sm_bundle_artifact_lines(bundle):
+    """
+    Create concise GUI-facing status lines for outward artifacts/actions only.
+    """
+    lines = []
+    try:
+        for art in (bundle.get("artifacts") or []):
+            if not isinstance(art, dict):
+                continue
+            atype = art.get("type", "artifact")
+            title = art.get("title") or art.get("name") or art.get("path") or art.get("url") or atype
+            if title:
+                lines.append(f"[Artifact] {atype}: {title}")
+        for act in (bundle.get("actions") or []):
+            if not isinstance(act, dict):
+                continue
+            atype = act.get("type", "action")
+            status = act.get("status") or "ready"
+            lines.append(f"[Action] {atype}: {status}")
+    except Exception:
+        pass
+    return lines
+
 # ------------------------- Extended Avatar Controller -------------------------
 class ExtendedAvatarController(UnifiedAvatarController):
     def show_avatar(self):
@@ -919,6 +996,22 @@ class ChatPanel:
         self.chat_output.see(tk.END)
         self.chat_output.configure(state=tk.DISABLED)
 
+    def _speak_if_needed(self, bundle):
+        """
+        Speak only the presentation answer. Raw/canonical internals must never be
+        spoken from the GUI layer.
+        """
+        try:
+            presented = _sm_extract_presentation_bundle(bundle).get("presentation_reply", "")
+            if not presented:
+                return False
+            from SarahMemoryVoice import synthesize_voice
+            synthesize_voice(presented)
+            return True
+        except Exception as e:
+            logger.warning(f"TTS speak-if-needed failed: {e}")
+            return False
+
     def scan_item(self):
         from SarahMemoryAvatar import perform_scan_capture
         perform_scan_capture()
@@ -1022,48 +1115,76 @@ class ChatPanel:
         from SarahMemoryGlobals import COMPARE_VOTE
         from SarahMemoryDatabase import record_qa_feedback
         research_path_logger.debug(f"[GUI] Forwarding to generate_reply() from GUI input: '{user_text}'")
-        result_bundle = generate_reply(self, user_text)  # LOGGING STARTS HERE
-        # When generate_reply returns a dictionary, unpack and display the reply
+        result_bundle = generate_reply(self, user_text)
+        self.last_result_bundle = result_bundle if isinstance(result_bundle, dict) else {}
         if isinstance(result_bundle, dict):
-            response = (result_bundle.get("response") or result_bundle.get("data") or "").strip()
-            meta = result_bundle.get("meta") or {}
+            view_bundle = _sm_extract_presentation_bundle(result_bundle)
+            meta = view_bundle.get("meta") or {}
             source = meta.get("source", result_bundle.get("source", "unknown"))
             intent = meta.get("intent", result_bundle.get("intent", "undetermined"))
-#---------------------------------------------------------------------------------------
-            # Update last interaction timestamp to prevent idle optimization
             self.gui.last_user_interaction = time.time()
 
-#---------------------------------------------------------------------------------------
-        # Clean inline provenance artifacts emitted by downstream layers.
-        # Always strip trailing bare brackets like " []"
-
-            text = (response or "").strip()
+            text = (view_bundle.get("presentation_reply") or "").strip()
 
             if text:
-                # If REPLY_STATUS is OFF, strip inline debug artifacts before showing
                 try:
                     if not getattr(config, "REPLY_STATUS", False):
-                        text = _re.sub(r"\s*\[\]\s*$", "", text)                      # trailing []
-                        text = _re.sub(r"\s*\[Source:[^\]]+\]\s*", "", text)          # inline [Source: ...]
-                        text = _re.sub(r"\s*\(Intent:[^)]+\)\s*", "", text)           # inline (Intent: ...)
+                        text = re.sub(r"\s*\[\]\s*$", "", text)
+                        text = re.sub(r"\s*\[Source:[^\]]+\]\s*", "", text)
+                        text = re.sub(r"\s*\(Intent:[^)]+\)\s*", "", text)
                 except Exception:
                     pass
 
                 self.append_message("Sarah: " + text)
 
-                # Optional GUI catch-all TTS (OFF by default; Reply layer is primary speaker)
+                # display outward artifact/action summaries only
+                for line in _sm_bundle_artifact_lines(view_bundle):
+                    self.append_message(line)
+
+                try:
+                    html = view_bundle.get("html")
+                    if html and hasattr(self, "_reply_browser") and self._reply_browser:
+                        try:
+                            self._reply_browser.set_content(html)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # render first image artifact or legacy image_url
+                try:
+                    image_url = None
+                    for art in (view_bundle.get("artifacts") or []):
+                        if isinstance(art, dict):
+                            if art.get("url") and art.get("type") in ("image", "photo", "picture"):
+                                image_url = art.get("url")
+                                break
+                    if image_url and Image:
+                        img = _sm_download_image(image_url)
+                        if img:
+                            img.thumbnail((512, 512))
+                            photo = ImageTk.PhotoImage(img)
+                            if not hasattr(self, "chat_images"):
+                                self.chat_images = []
+                            self.chat_images.append(photo)
+                            self.chat_output.configure(state=tk.NORMAL)
+                            self.chat_output.image_create(tk.END, image=photo)
+                            self.chat_output.insert(tk.END, "\n")
+                            self.chat_output.see(tk.END)
+                            self.chat_output.configure(state=tk.DISABLED)
+                except Exception:
+                    pass
+
                 try:
                     if getattr(config, "GUI_CATCHALL_TTS", False):
-                        meta = (result_bundle.get("meta") or {}) if isinstance(result_bundle, dict) else {}
-                        if not meta.get("spoken", False):                # avoid double-speak if Reply already spoke
-                            self._speak_if_needed(result_bundle)
+                        meta = view_bundle.get("meta") or {}
+                        if not meta.get("spoken", False):
+                            self._speak_if_needed(view_bundle)
                 except Exception:
                     pass
             else:
-                # Only show fallback when truly empty
                 self.append_message("Sarah: [No response]")
 
-            # --- Optional provenance line (separate, clean; respects REPLY_STATUS) ---
             try:
                 if getattr(config, "REPLY_STATUS", False):
                     source_display = source or "unknown"
@@ -1071,11 +1192,11 @@ class ChatPanel:
                     self.append_message(f"[Source: {source_display}] (Intent: {intent_display})")
             except Exception:
                 pass
-                        # Optional comparison and voting logic
-            if config.API_RESPONSE_CHECK_TRAINER:
-                compare_result = compare_reply(user_text, response)
+
+            if config.API_RESPONSE_CHECK_TRAINER and text:
+                compare_result = compare_reply(user_text, text, intent=intent or "general")
                 if compare_result and isinstance(compare_result, dict):
-                    conf = compare_result.get("similarity_score", 'N/A')
+                    conf = compare_result.get("similarity_score", compare_result.get("confidence", 'N/A'))
                     status = compare_result.get("status", 'N/A')
                     comp_source = compare_result.get("source", 'unknown')
                     comp_intent = compare_result.get("intent", 'verification')
@@ -1090,14 +1211,14 @@ class ChatPanel:
                         except Exception as e:
                             logger.warning(f"User feedback prompt failed: {e}")
         else:
-            # Fallback error if generate_reply did not return a dict
             self.append_message("[ERROR] Failed to get a valid response from AI pipeline.")
 
     def compare_responses(self, user_text, generated_response):
         from SarahMemoryCompare import compare_reply
-        result = compare_reply(user_text, generated_response)
+        shown_text = _sm_extract_presentation_bundle(generated_response).get("presentation_reply") if isinstance(generated_response, dict) else generated_response
+        result = compare_reply(user_text, shown_text)
         if result and isinstance(result, dict):
-            self.append_message(f"[Comparison Result] Status: {result['status']} | Confidence: {result.get('similarity_score', 'N/A')}")
+            self.append_message(f"[Comparison Result] Status: {result['status']} | Confidence: {result.get('similarity_score', result.get('confidence', 'N/A'))}")
         else:
             self.append_message("[Comparison Result] No feedback returned.")
 
@@ -2300,25 +2421,35 @@ def run_gui():
                     try:
                         from SarahMemoryReply import generate_reply
                         bundle = generate_reply(None, text)  # ChatPanel 'self' is unused in v7.7.4+
-                        # Ensure plain dict with expected keys
+                        view_bundle = _sm_extract_presentation_bundle(bundle)
                         resp = {
-                            "response": (bundle.get("response") if isinstance(bundle, dict) else str(bundle)),
-                            "links": (bundle.get("links") if isinstance(bundle, dict) else []),
-                            "meta": (bundle.get("meta") if isinstance(bundle, dict) else {}),
+                            "presentation_reply": view_bundle.get("presentation_reply", ""),
+                            "response": view_bundle.get("presentation_reply", ""),
+                            "reply": view_bundle.get("presentation_reply", ""),
+                            "links": view_bundle.get("links", []),
+                            "meta": view_bundle.get("meta", {}),
+                            "artifacts": view_bundle.get("artifacts", []),
+                            "actions": view_bundle.get("actions", []),
+                            "errors": view_bundle.get("errors", []),
                         }
                         try:
                             from SarahMemoryGlobals import VOICE_FEEDBACK_ENABLED
-                            if VOICE_FEEDBACK_ENABLED:
+                            if VOICE_FEEDBACK_ENABLED and not (view_bundle.get("meta") or {}).get("spoken", False):
                                 from SarahMemoryVoice import synthesize_voice
-                                synthesize_voice(resp.get('response', ''))
+                                synthesize_voice(resp.get('presentation_reply', ''))
                         except Exception:
                             pass
                         return resp
                     except Exception as e:
                         return {
+                            "presentation_reply": f"[ERROR] {e}",
                             "response": f"[ERROR] {e}",
+                            "reply": f"[ERROR] {e}",
                             "links": [],
                             "meta": {"intent": "error", "source": "local"},
+                            "artifacts": [],
+                            "actions": [],
+                            "errors": [str(e)],
                         }
 
                 def list_threads_for_date(self, iso_date):
@@ -2505,7 +2636,8 @@ def _sm_download_image(url: str):
         return None
 
 def insert_bundle(self, bundle):
-    txt = bundle.get("response") or bundle.get("text") or ""
+    view_bundle = _sm_extract_presentation_bundle(bundle)
+    txt = view_bundle.get("presentation_reply") or ""
     if txt:
         try:
             self.add_assistant_text(txt + "\n")
@@ -2514,7 +2646,11 @@ def insert_bundle(self, bundle):
                 self.chat_text.insert("end", txt + "\n"); self.chat_text.see("end")
             except Exception:
                 pass
-    img_url = bundle.get("image_url")
+    img_url = None
+    for art in (view_bundle.get("artifacts") or []):
+        if isinstance(art, dict) and art.get("type") in ("image", "photo", "picture") and art.get("url"):
+            img_url = art.get("url")
+            break
     if img_url and Image:
         img = _sm_download_image(img_url)
         if img:
@@ -3452,12 +3588,12 @@ class UnifiedCommsProPanel:
 def _display_model_response(self, bundle):
     """Expected to be called after generate_reply()."""
     try:
-        text = bundle.get("response","")
-        html = bundle.get("html")
+        view_bundle = _sm_extract_presentation_bundle(bundle)
+        text = view_bundle.get("presentation_reply","")
+        html = view_bundle.get("html")
         if hasattr(self, "browser") and html:
             self.browser.open(html)
-        # Always append text to chat area too
-        if hasattr(self, "chat_text"):
+        if hasattr(self, "chat_text") and text:
             self.chat_text.insert("end", f"Sarah: {text}\n")
             self.chat_text.see("end")
     except Exception:
@@ -3791,7 +3927,7 @@ def _sm_hotfix_install():
                     if isinstance(bundle, dict):
                         lnks = bundle.get("links") or []
                         self._last_links = lnks[:]
-                        self._last_topic = (user_text or "").strip() or (bundle.get("response","").split(".")[0])
+                        self._last_topic = (user_text or "").strip() or ((_sm_extract_presentation_bundle(bundle).get("presentation_reply","") or "").split(".")[0])
                         html = bundle.get("html")
                         if html and hasattr(self, "_reply_browser") and self._reply_browser:
                             try:

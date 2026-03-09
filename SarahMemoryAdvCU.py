@@ -207,6 +207,9 @@ class IntentType(Enum):
     SIGNUP = "signup"
     DEVICE_QUERY = "device_query"
     DIAGNOSTICS = "diagnostics"
+    CREATIVE = "creative"
+    BUILD_REQUEST = "build_request"
+    NETWORK_REQUEST = "network_request"
     STATEMENT = "statement"
     COMMAND = "command"
     QUESTION = "question"
@@ -236,6 +239,9 @@ INTENT_DESCRIPTIONS: Dict[str, str] = {
     "signup": "User wants to sign up or create an account.",
     "device_query": "User asks about current device, hardware or environment.",
     "diagnostics": "User asks to run diagnostics or health checks on the system.",
+    "creative": "User wants SarahMemory to generate or create an artifact such as an image, song, video, avatar, or webpage.",
+    "build_request": "User wants SarahMemory to build or generate a website, page, application, dashboard, or project artifact.",
+    "network_request": "User wants SarahMemory to use SarahNet, sync, broker, remote node, or mesh/network functionality.",
     "statement": "General statement that is not clearly an action command.",
     "command": "Explicit high-confidence executable command.",
     "question": "User is asking a question requiring information.",
@@ -247,9 +253,9 @@ INTENT_DESCRIPTIONS: Dict[str, str] = {
 
 # Intent priority order (more specific before broad)
 INTENT_PRIORITY_ORDER: List[str] = [
-    "login", "signup", "device_query", "time_related", "math",
-    "system_control", "open_app", "open_url", "search_web",
-    "play_media", "window_mgmt", "close_quit", "agent_control",
+    "login", "signup", "device_query", "diagnostics", "creative", "build_request",
+    "time_related", "math", "system_control", "open_app", "open_url", "search_web",
+    "play_media", "window_mgmt", "close_quit", "agent_control", "network_request",
     "identity_query", "greeting", "farewell", "smalltalk",
     "question", "command", "statement",
 ]
@@ -419,6 +425,38 @@ DOMAIN_REGEX = re.compile(
 )
 EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
 
+# Semantic compression keyword groups
+_CREATIVE_VERBS = {
+    "create", "make", "generate", "draw", "design", "compose",
+    "produce", "build", "craft", "render", "write"
+}
+_CREATIVE_OUTPUT_KEYWORDS = {
+    "image": ("image", "picture", "photo", "art", "drawing", "poster", "graphic", "wallpaper"),
+    "video": ("video", "movie", "clip", "animation", "reel", "short"),
+    "music": ("music", "song", "beat", "melody", "instrumental", "lyrics", "track"),
+    "avatar": ("avatar", "character", "persona", "model"),
+    "website": ("website", "webpage", "site", "landing page", "dashboard", "page"),
+    "application": ("app", "application", "tool", "program", "script", "workflow"),
+}
+_NETWORK_HINTS = (
+    "sarahnet", "network", "mesh", "broker", "sync", "remote node",
+    "cloud", "peer", "server", "api hub"
+)
+_FILE_ACTION_HINTS = (
+    "open", "save", "move", "copy", "delete", "rename", "preview",
+    "launch", "browse", "display", "download", "export"
+)
+_SEMANTIC_STOPWORDS: Set[str] = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "for", "of", "and", "or", "if", "then", "with", "into", "in",
+    "on", "at", "from", "by", "about", "as", "that", "this", "these",
+    "those", "it", "its", "me", "my", "your", "you", "we", "our", "us",
+    "please", "can", "could", "would", "should", "what", "how", "why",
+    "where", "when", "who", "which", "do", "does", "did", "have", "has",
+    "had", "want", "need", "like", "show", "tell", "give", "there", "here",
+    "new", "professional", "proper", "final", "full", "about"
+}
+
 
 # ============================================================================
 # DATA CLASSES
@@ -428,7 +466,7 @@ EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
 class ParsedCommand:
     """
     Structured representation of a parsed user command.
-    Contains extracted intent, targets, and context.
+    Contains extracted intent, targets, and compact semantic-routing context.
     """
     intent: str
     raw_text: str
@@ -439,25 +477,58 @@ class ParsedCommand:
     site: Optional[str] = None
     subject: Optional[str] = None
     action: Optional[str] = None
+    intent_family: Optional[str] = None
+    likely_lane: Optional[str] = None
+    output_type: Optional[str] = None
+    query_type: Optional[str] = None
+    semantic_summary: Optional[str] = None
+    attributes: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
+    module_hints: List[str] = field(default_factory=list)
+    helper_payload: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         d = asdict(self)
         d["extra"] = d.get("extra") or {}
+        d["helper_payload"] = d.get("helper_payload") or {}
+        d["attributes"] = list(d.get("attributes") or [])
+        d["keywords"] = list(d.get("keywords") or [])
+        d["module_hints"] = list(d.get("module_hints") or [])
         return d
+
+    def to_semantic_packet(self) -> Dict[str, Any]:
+        """Return the compact semantic packet used by Neuron/helper lanes."""
+        return {
+            "intent": self.intent,
+            "intent_confidence": self.confidence,
+            "intent_family": self.intent_family,
+            "likely_lane": self.likely_lane,
+            "query_type": self.query_type,
+            "subject": self.subject,
+            "attributes": list(self.attributes or []),
+            "keywords": list(self.keywords or []),
+            "output_type": self.output_type,
+            "math_expr": self.math_expr,
+            "action": self.action,
+            "target": self.get_target(),
+            "semantic_summary": self.semantic_summary,
+            "module_hints": list(self.module_hints or []),
+            "helper_payload": dict(self.helper_payload or {}),
+        }
 
     def is_actionable(self) -> bool:
         """Check if this command can be executed."""
         return self.intent in (
             "open_app", "open_url", "search_web", "play_media",
             "close_quit", "window_mgmt", "system_control", "agent_control",
-            "math", "command"
-        )
+            "math", "command", "creative", "build_request", "network_request"
+        ) or (self.likely_lane in ("action", "creative", "network"))
 
     def get_target(self) -> Optional[str]:
         """Get the primary target of this command."""
-        return self.app or self.site or self.url or self.subject
+        return self.app or self.site or self.url or self.subject or self.output_type
 
 
 @dataclass
@@ -518,6 +589,16 @@ def _contains_any(text: str, terms: List[str]) -> bool:
         return False
     t = text.lower()
     return any(term.lower() in t for term in terms)
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Check for a whole-word/phrase match, avoiding accidental substring hits."""
+    t = (text or "").lower().strip()
+    p = (phrase or "").lower().strip()
+    if not t or not p:
+        return False
+    pattern = r"(?<![A-Za-z0-9])" + re.escape(p) + r"(?![A-Za-z0-9])"
+    return re.search(pattern, t) is not None
 
 
 def _get_timestamp() -> str:
@@ -933,7 +1014,7 @@ def _detect_action_subject(text: str) -> Tuple[Optional[str], Optional[str]]:
     action_label = None
     for action_key, synonyms in ACTION_SYNONYMS.items():
         for syn in synonyms:
-            if syn in joined or syn in t:
+            if _contains_phrase(joined, syn) or _contains_phrase(t, syn):
                 action_label = action_key
                 break
         if action_label:
@@ -942,19 +1023,255 @@ def _detect_action_subject(text: str) -> Tuple[Optional[str], Optional[str]]:
     # Detect subject
     subject_key = None
     for subj_key, meta in SUBJECT_LEXICON.items():
-        # Check main key
-        if subj_key in joined or subj_key in t:
+        if _contains_phrase(joined, subj_key) or _contains_phrase(t, subj_key):
             subject_key = subj_key
             break
-        # Check aliases
         for alias in meta.get("aka", []):
-            if alias in joined or alias in t:
+            if _contains_phrase(joined, alias) or _contains_phrase(t, alias):
                 subject_key = subj_key
                 break
         if subject_key:
             break
 
     return action_label, subject_key
+
+
+def _extract_keywords(text: str, limit: int = 8) -> List[str]:
+    """Extract compact routing keywords from text."""
+    out: List[str] = []
+    seen: Set[str] = set()
+    for tok in tokenize(text):
+        t = tok.lower().strip()
+        if not t or t in _SEMANTIC_STOPWORDS:
+            continue
+        if len(t) == 1 and not t.isdigit():
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _flatten_subject_tokens(subject: Optional[str]) -> Set[str]:
+    if not subject:
+        return set()
+    return set(tokenize(subject.lower()))
+
+
+def _extract_attributes(
+    text: str,
+    subject: Optional[str] = None,
+    action: Optional[str] = None,
+    output_type: Optional[str] = None,
+    limit: int = 8
+) -> List[str]:
+    """Extract descriptive attributes that are not the primary subject/action."""
+    subject_tokens = _flatten_subject_tokens(subject)
+    action_tokens = _flatten_subject_tokens(action)
+    output_tokens = _flatten_subject_tokens(output_type)
+    ignored = subject_tokens | action_tokens | output_tokens | _SEMANTIC_STOPWORDS | _CREATIVE_VERBS
+
+    attrs: List[str] = []
+    seen: Set[str] = set()
+    for tok in tokenize(text):
+        t = tok.lower().strip()
+        if not t or t in ignored:
+            continue
+        if len(t) == 1 and not t.isdigit():
+            continue
+        if t not in seen:
+            seen.add(t)
+            attrs.append(t)
+        if len(attrs) >= limit:
+            break
+    return attrs
+
+def _infer_subject_from_text(
+    text: str,
+    output_type: Optional[str],
+    action: Optional[str],
+    existing_subject: Optional[str] = None
+) -> Optional[str]:
+    """Infer the semantic topic/subject when no explicit app/site subject exists."""
+    if existing_subject:
+        return existing_subject
+    keywords = _extract_keywords(text, limit=10)
+    ignored: Set[str] = set()
+    if output_type:
+        ignored |= _flatten_subject_tokens(output_type)
+    if action:
+        ignored |= _flatten_subject_tokens(action)
+    ignored |= _CREATIVE_VERBS
+    for kw in keywords:
+        if kw in ignored:
+            continue
+        return kw
+    return None
+
+
+
+
+def _detect_output_type(text: str, intent_label: str, action: Optional[str] = None) -> Optional[str]:
+    """Infer the primary requested output/artifact type."""
+    t = (text or "").lower()
+    for kind, hints in _CREATIVE_OUTPUT_KEYWORDS.items():
+        for hint in hints:
+            if hint in t:
+                return kind
+    if intent_label == "math":
+        return "answer"
+    if action in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control"):
+        return "action"
+    if intent_label in ("diagnostics", "device_query"):
+        return "system_status"
+    return None
+
+
+def _detect_intent_family_and_lane(
+    text: str,
+    intent_label: str,
+    action: Optional[str],
+    output_type: Optional[str],
+    math_expr: Optional[str]
+) -> Tuple[str, str]:
+    """Map parsed meaning to an intent family + primary lane."""
+    t = (text or "").lower()
+
+    if intent_label == "diagnostics":
+        return "SYSTEM", "system"
+
+    if any(h in t for h in _NETWORK_HINTS) or intent_label == "network_request":
+        return "NETWORK", "network"
+
+    if output_type in ("image", "video", "music", "avatar", "website"):
+        return "CREATIVE", "creative"
+
+    if action in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control", "agent_control"):
+        return "ACTION", "action"
+
+    if math_expr or intent_label in (
+        "math", "question", "identity_query", "smalltalk", "greeting",
+        "farewell", "statement", "time_related", "device_query"
+    ):
+        return "ANSWER", "answer"
+
+    if any(v in t for v in _CREATIVE_VERBS) and any(
+        hint in t for hints in _CREATIVE_OUTPUT_KEYWORDS.values() for hint in hints
+    ):
+        return "CREATIVE", "creative"
+
+    if any(v in t for v in _FILE_ACTION_HINTS):
+        return "ACTION", "action"
+
+    return "ANSWER", "answer"
+
+
+def _module_hints_for_packet(lane: str, output_type: Optional[str], intent_label: str) -> List[str]:
+    """Suggest likely owner/helper modules for downstream routing."""
+    if lane == "system":
+        return ["SarahMemoryDiagnostics"]
+    if lane == "network":
+        return ["SarahMemoryNetwork", "appnet"]
+    if lane == "creative":
+        if output_type == "video":
+            return ["SarahMemoryVideoEditorCore", "SarahMemoryCanvasStudio"]
+        if output_type == "music":
+            return ["SarahMemoryMusicGenerator", "SarahMemoryLyricsToSong"]
+        if output_type == "avatar":
+            return ["SarahMemoryCanvasStudio"]
+        if output_type == "website":
+            return ["SarahMemoryCanvasStudio", "SarahMemoryAiFunctions"]
+        return ["SarahMemoryCanvasStudio"]
+    if lane == "action":
+        return ["SarahMemoryAiFunctions"]
+    if intent_label == "math":
+        return ["SarahMemoryLogicCalc"]
+    return ["SarahMemoryWebSYM", "SarahMemoryResearch"]
+
+
+def _infer_query_type(
+    text: str,
+    intent_label: str,
+    output_type: Optional[str],
+    math_expr: Optional[str]
+) -> str:
+    """Produce a normalized query_type field for compact semantic packets."""
+    t = (text or "").lower()
+    if math_expr or intent_label == "math":
+        return "deterministic_math"
+    if intent_label == "diagnostics":
+        return "diagnostics"
+    if output_type in ("image", "video", "music", "avatar"):
+        return "creative_request"
+    if output_type == "website":
+        return "build_request"
+    if any(k in t for k in _NETWORK_HINTS):
+        return "network_request"
+    if intent_label in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control", "agent_control", "command"):
+        return "action_request"
+    if intent_label in ("question", "identity_query", "device_query", "time_related"):
+        return "identity_or_definition" if "what is" in t or "who is" in t else "question"
+    return "statement"
+
+
+def _build_semantic_summary(
+    intent_label: str,
+    subject: Optional[str],
+    attributes: List[str],
+    output_type: Optional[str],
+    query_type: Optional[str],
+    math_expr: Optional[str]
+) -> str:
+    """Generate a concise semantic summary for routing and logging."""
+    if math_expr:
+        return f"user is asking to solve math expression {math_expr}"
+    bits: List[str] = []
+    if query_type:
+        bits.append(query_type.replace("_", " "))
+    if output_type and output_type != "answer":
+        bits.append(f"output={output_type}")
+    if subject:
+        bits.append(f"subject={subject}")
+    if attributes:
+        bits.append("attributes=" + ", ".join(attributes[:4]))
+    if not bits:
+        bits.append(f"intent={intent_label}")
+    return "user request: " + " | ".join(bits)
+
+
+def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
+    """Build the compressed semantic helper payload for helper-only LLM use."""
+    payload: Dict[str, Any] = {
+        "intent": cmd.intent,
+        "intent_family": cmd.intent_family,
+        "task": None,
+        "topic": cmd.subject,
+        "attribute": (cmd.attributes[0] if cmd.attributes else None),
+        "attributes": list(cmd.attributes[:4]),
+        "keywords": list(cmd.keywords[:6]),
+        "query_type": cmd.query_type,
+        "output_type": cmd.output_type,
+        "math_expr": cmd.math_expr,
+        "semantic_summary": cmd.semantic_summary,
+    }
+
+    if cmd.math_expr:
+        payload["task"] = "solve exact expression"
+    elif cmd.output_type in ("image", "video", "music", "avatar", "website"):
+        payload["task"] = f"fill missing creative/build details for {cmd.output_type}"
+    elif cmd.intent_family == "ANSWER":
+        payload["task"] = "infer concise likely concept"
+    elif cmd.intent_family == "ACTION":
+        payload["task"] = "fill missing action target details only"
+    elif cmd.intent_family == "NETWORK":
+        payload["task"] = "fill missing network intent details only"
+    else:
+        payload["task"] = "fill missing semantic gap only"
+
+    return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
+
 
 
 # ============================================================================
@@ -991,6 +1308,18 @@ def _rule_based_intent(text: Any) -> str:
     # Priority 2.5: Diagnostics / health checks
     if _looks_like_diagnostics(lt):
         return "diagnostics"
+
+    # Priority 2.75: Creative / build / network requests
+    if any(v in lt for v in _CREATIVE_VERBS) and any(
+        hint in lt for hints in _CREATIVE_OUTPUT_KEYWORDS.values() for hint in hints
+    ):
+        if any(h in lt for h in _NETWORK_HINTS):
+            return "network_request"
+        if any(h in lt for h in _CREATIVE_OUTPUT_KEYWORDS.get("website", ()) + _CREATIVE_OUTPUT_KEYWORDS.get("application", ())):
+            return "build_request"
+        return "creative"
+    if any(h in lt for h in _NETWORK_HINTS):
+        return "network_request"
 
     # Priority 3: Conversational intents
     if _looks_like_greeting(lt):
@@ -1200,6 +1529,7 @@ def parse_command(
     - URLs and domains
     - App/site targets
     - Action and subject
+    - Compact semantic packet data for governed routing
 
     Args:
         text: Input text to parse
@@ -1231,7 +1561,6 @@ def parse_command(
         if url_match:
             url = url_match[0]
         else:
-            # Try to extract domain
             domain_match = DOMAIN_REGEX.search(t)
             if domain_match:
                 site = domain_match.group(0)
@@ -1248,12 +1577,47 @@ def parse_command(
                 url = info["url"]
         subject = subj
 
+    output_type = _detect_output_type(t, label, action=action)
+
+    # Semantic subject fallback from natural language/topic extraction
+    if not math_expr:
+        subject = _infer_subject_from_text(
+            t,
+            output_type=output_type,
+            action=action,
+            existing_subject=subject
+        )
+    intent_family, likely_lane = _detect_intent_family_and_lane(
+        t,
+        label,
+        action=action,
+        output_type=output_type,
+        math_expr=math_expr
+    )
+    query_type = _infer_query_type(t, label, output_type, math_expr)
+    keywords = _extract_keywords(t)
+    attributes = _extract_attributes(t, subject=subject, action=action, output_type=output_type)
+    semantic_summary = _build_semantic_summary(
+        label,
+        subject=subject,
+        attributes=attributes,
+        output_type=output_type,
+        query_type=query_type,
+        math_expr=math_expr
+    )
+    module_hints = _module_hints_for_packet(likely_lane, output_type, label)
+
     # Store context in extra
     extra["user_context"] = user_context
     extra["device_context"] = device_context
     extra["tokens"] = tokenize(t)
+    extra["query_type"] = query_type
+    extra["intent_family"] = intent_family
+    extra["likely_lane"] = likely_lane
+    extra["output_type"] = output_type
+    extra["module_hints"] = module_hints
 
-    return ParsedCommand(
+    parsed = ParsedCommand(
         intent=label,
         raw_text=t,
         confidence=confidence,
@@ -1263,8 +1627,54 @@ def parse_command(
         site=site,
         subject=subject,
         action=action,
+        intent_family=intent_family,
+        likely_lane=likely_lane,
+        output_type=output_type,
+        query_type=query_type,
+        semantic_summary=semantic_summary,
+        attributes=attributes,
+        keywords=keywords,
+        module_hints=module_hints,
         extra=extra
     )
+    parsed.helper_payload = _build_helper_payload_from_command(parsed)
+    extra["helper_payload"] = dict(parsed.helper_payload)
+    extra["semantic_packet"] = parsed.to_semantic_packet()
+    return parsed
+
+
+def build_semantic_packet(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> Dict[str, Any]:
+    """
+    Build the canonical compact semantic packet used by Neuron and helper lanes.
+
+    This is the governed semantic compression output described by SM_FULL_IO.TXT.
+    """
+    parsed = parse_command(text, user_context=user_context, device_context=device_context)
+    packet = parsed.to_semantic_packet()
+    packet["raw_text"] = parsed.raw_text
+    packet["target"] = parsed.get_target()
+    return packet
+
+
+def build_helper_payload(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> Dict[str, Any]:
+    """
+    Build the compressed helper-only LLM payload.
+
+    Third-party/helper models should receive this compact payload instead of the
+    raw prompt whenever local structure is already understood.
+    """
+    parsed = parse_command(text, user_context=user_context, device_context=device_context)
+    return dict(parsed.helper_payload or _build_helper_payload_from_command(parsed))
+
+
 
 
 # ============================================================================
@@ -2075,6 +2485,8 @@ __all__ = [
     "classify_intent",
     "classify_intent_with_confidence",
     "parse_command",
+    "build_semantic_packet",
+    "build_helper_payload",
     "ParsedCommand",
     "IntentResult",
     "INTENT_DESCRIPTIONS",

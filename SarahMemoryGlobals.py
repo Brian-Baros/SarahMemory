@@ -1867,11 +1867,384 @@ IMPORTS_DIR       = os.path.join(MEMORY_DIR, "imports")
 DATASETS_DIR      = os.path.join(MEMORY_DIR, "datasets")
 MODS_DIR          = os.path.join(DATA_DIR, "mods")
 MODELS_DIR        = os.path.join(DATA_DIR, "models")
+DRIVERS_DIR       = os.path.join(DATA_DIR, "drivers")
 THEMES_DIR        = os.path.join(MODS_DIR, "themes")
 SETTINGS_DIR      = os.path.join(DATA_DIR, "settings")
 SYNC_DIR          = os.path.join(DATA_DIR, "sync")
 VAULT_DIR         = os.path.join(DATA_DIR, "vault")
 WALLET_DIR        = os.path.join(DATA_DIR, "wallet")
+
+# =============================================================================
+# SarahMemory Core Discovery / Registration / Governance (SM_FULL_IO lock)
+# -----------------------------------------------------------------------------
+# Presence is NOT activation. A file in BASE_DIR is not part of SarahMemory just
+# because it exists. New files must be discovered, classified, contract-validated,
+# registered, governed, and only then exposed to routing. Unqualified files are
+# ignored or logically quarantined without destabilizing the running core.
+# =============================================================================
+SM_CORE_DISCOVERY_ENABLED = True
+SM_CORE_DISCOVERY_ON_BOOT = True
+SM_CORE_DYNAMIC_REGISTRATION = True
+SM_CORE_AUTO_EXPOSE_APPROVED = True
+SM_CORE_REQUIRE_APPROVED_PREFIX = True
+SM_CORE_REQUIRE_CONTRACT = True
+SM_CORE_IGNORE_UNQUALIFIED = True
+SM_CORE_QUARANTINE_INVALID = True
+SM_CORE_ALLOW_MONKEY_PATCHES = True
+SM_CORE_DISCOVERY_MAX_DEPTH = int(os.getenv("SARAH_CORE_DISCOVERY_MAX_DEPTH", "4") or 4)
+SM_CORE_DISCOVERY_ALLOWED_EXTENSIONS = {".py"}
+SM_CORE_APPROVED_NAME_PREFIXES = ("SarahMemory", "app")
+SM_CORE_APPROVED_FILE_NAMES = {
+    "app.py",
+    "appsys.py",
+    "appnet.py",
+    "appnet2.py",
+    "appmedia.py",
+    "appstore.py",
+}
+SM_CORE_CONTRACT_MARKERS = (
+    "SarahMemory",
+    "SARAHMEMORY",
+    "Part of the SarahMemory",
+    "SarahMemory AiOS",
+    "SarahMemory Companion",
+    "SARAHMEMORY_CORE_PLUGIN",
+    "SARAHMEMORY_CAPABILITY",
+    "SARAHMEMORY_CONTRACT_VERSION",
+)
+SM_CORE_CAPABILITY_CATEGORIES = (
+    "reasoning", "coder", "vision", "image", "voice",
+    "creative", "action", "diagnostics", "network", "helper", "utility", "unknown/pending",
+)
+CORE_REGISTRY_DIR = os.path.join(SETTINGS_DIR, "core_registry")
+CORE_REGISTRY_CACHE_FILE = os.path.join(CORE_REGISTRY_DIR, "core_registry_cache.json")
+CORE_QUARANTINE_REPORT = os.path.join(CORE_REGISTRY_DIR, "core_quarantine.json")
+
+_SM_CORE_FILE_HINTS = {
+    "SarahMemoryLogicCalc": "reasoning",
+    "SarahMemoryWebSYM": "reasoning",
+    "SarahMemoryResearch": "reasoning",
+    "SarahMemoryAdvCU": "helper",
+    "SarahMemoryLLM": "helper",
+    "SarahMemoryAPI": "helper",
+    "SarahMemoryCognitiveServices": "diagnostics",
+    "SarahMemoryCompare": "utility",
+    "SarahMemoryReply": "utility",
+    "SarahMemoryDiagnostics": "diagnostics",
+    "SarahMemoryDatabase": "utility",
+    "SarahMemoryFilesystem": "action",
+    "SarahMemoryAiFunctions": "action",
+    "SarahMemoryCanvasStudio": "creative",
+    "SarahMemoryVoice": "voice",
+    "SarahMemoryGUI": "utility",
+    "SarahMemoryNetwork": "network",
+    "SarahMemorySync": "network",
+    "SarahNet": "network",
+    "appnet": "network",
+    "appsys": "action",
+    "appmedia": "creative",
+    "appstore": "utility",
+    "app": "utility",
+}
+
+CORE_REGISTRY_CACHE = {
+    "version": 1,
+    "generated_at": None,
+    "base_dir": None,
+    "entries": {},
+    "quarantined": {},
+    "ignored": {},
+}
+
+def _sm_norm_path(path_value: str | None) -> str:
+    try:
+        return os.path.normcase(os.path.abspath(str(path_value or "").strip()))
+    except Exception:
+        return ""
+
+
+def sm_is_path_within(child_path: str, parent_path: str) -> bool:
+    try:
+        child = _sm_norm_path(child_path)
+        parent = _sm_norm_path(parent_path)
+        return bool(child and parent and os.path.commonpath([child, parent]) == parent)
+    except Exception:
+        return False
+
+
+def sm_get_core_scan_dirs() -> list[str]:
+    dirs = [BASE_DIR, ADDONS_DIR, DRIVERS_DIR, RESOURCES_DIR, SANDBOX_DIR]
+    out = []
+    for d in dirs:
+        nd = _sm_norm_path(d)
+        if nd and nd not in out:
+            out.append(nd)
+    return out
+
+
+def sm_is_candidate_core_file(file_path: str) -> bool:
+    try:
+        norm = _sm_norm_path(file_path)
+        if not norm or not os.path.isfile(norm):
+            return False
+        if os.path.splitext(norm)[1].lower() not in SM_CORE_DISCOVERY_ALLOWED_EXTENSIONS:
+            return False
+        if not any(sm_is_path_within(norm, root) or norm == root for root in sm_get_core_scan_dirs()):
+            return False
+        name = os.path.basename(norm)
+        if name in SM_CORE_APPROVED_FILE_NAMES:
+            return True
+        if not SM_CORE_REQUIRE_APPROVED_PREFIX:
+            return True
+        return name.startswith(SM_CORE_APPROVED_NAME_PREFIXES)
+    except Exception:
+        return False
+
+
+def sm_classify_core_file(file_path: str) -> str:
+    try:
+        name = os.path.splitext(os.path.basename(file_path))[0]
+        for prefix, capability in _SM_CORE_FILE_HINTS.items():
+            if name.startswith(prefix):
+                return capability
+        lname = name.lower()
+        if "logic" in lname or "reason" in lname or "math" in lname:
+            return "reasoning"
+        if "code" in lname or "coder" in lname or "patch" in lname or "monkey" in lname:
+            return "coder"
+        if "vision" in lname or "yolo" in lname or "image" in lname or "visual" in lname:
+            return "vision"
+        if "voice" in lname or "tts" in lname or "audio" in lname:
+            return "voice"
+        if "canvas" in lname or "creative" in lname or "studio" in lname or "avatar" in lname:
+            return "creative"
+        if "network" in lname or "mesh" in lname or "sync" in lname or "net" in lname:
+            return "network"
+        if "diag" in lname or "health" in lname or "cognitive" in lname:
+            return "diagnostics"
+        if "tool" in lname or "function" in lname or "file" in lname or "system" in lname:
+            return "action"
+    except Exception:
+        pass
+    return "unknown/pending"
+
+
+def sm_validate_core_contract(file_path: str, capability: str | None = None) -> dict:
+    result = {
+        "ok": False,
+        "status": "ignored",
+        "reason": "unqualified",
+        "capability": capability or "unknown/pending",
+        "contract_markers": [],
+        "compile_ok": False,
+        "designed_for_sarahmemory": False,
+        "file": _sm_norm_path(file_path),
+    }
+    try:
+        path_norm = result["file"]
+        if not sm_is_candidate_core_file(path_norm):
+            result["reason"] = "not_candidate_core_file"
+            return result
+        try:
+            with open(path_norm, "r", encoding="utf-8", errors="ignore") as fh:
+                src = fh.read()
+        except Exception as exc:
+            result["status"] = "quarantined"
+            result["reason"] = f"read_failed:{exc}"
+            return result
+
+        markers = [m for m in SM_CORE_CONTRACT_MARKERS if m in src]
+        result["contract_markers"] = markers
+        result["designed_for_sarahmemory"] = bool(markers)
+
+        try:
+            compile(src, path_norm, "exec")
+            result["compile_ok"] = True
+        except Exception as exc:
+            result["status"] = "quarantined"
+            result["reason"] = f"compile_failed:{exc}"
+            return result
+
+        if SM_CORE_REQUIRE_CONTRACT and not markers:
+            result["status"] = "ignored"
+            result["reason"] = "missing_sarahmemory_contract_markers"
+            return result
+
+        capability_value = capability or sm_classify_core_file(path_norm)
+        if capability_value not in SM_CORE_CAPABILITY_CATEGORIES:
+            capability_value = "unknown/pending"
+        result["capability"] = capability_value
+
+        result["ok"] = True
+        result["status"] = "approved" if capability_value != "unknown/pending" else "pending"
+        result["reason"] = "approved" if result["status"] == "approved" else "pending_manual_review"
+        return result
+    except Exception as exc:
+        result["status"] = "quarantined" if SM_CORE_QUARANTINE_INVALID else "ignored"
+        result["reason"] = f"validation_error:{exc}"
+        return result
+
+
+def sm_discover_core_files(force: bool = False) -> dict:
+    registry = {
+        "version": CORE_REGISTRY_CACHE.get("version", 1),
+        "generated_at": datetime.utcnow().isoformat(),
+        "base_dir": _sm_norm_path(BASE_DIR),
+        "entries": {},
+        "quarantined": {},
+        "ignored": {},
+    }
+    if not SM_CORE_DISCOVERY_ENABLED:
+        return registry
+
+    seen = set()
+    max_depth = max(0, int(SM_CORE_DISCOVERY_MAX_DEPTH))
+    for root_dir in sm_get_core_scan_dirs():
+        try:
+            for walk_root, dirnames, filenames in os.walk(root_dir):
+                rel = os.path.relpath(walk_root, root_dir)
+                depth = 0 if rel == "." else rel.count(os.sep) + 1
+                if depth > max_depth:
+                    dirnames[:] = []
+                    continue
+                for fn in filenames:
+                    full_path = _sm_norm_path(os.path.join(walk_root, fn))
+                    if full_path in seen:
+                        continue
+                    seen.add(full_path)
+                    capability = sm_classify_core_file(full_path)
+                    validation = sm_validate_core_contract(full_path, capability=capability)
+                    entry = {
+                        "file": full_path,
+                        "name": os.path.basename(full_path),
+                        "module_name": os.path.splitext(os.path.basename(full_path))[0],
+                        "capability": validation.get("capability", capability),
+                        "status": validation.get("status", "ignored"),
+                        "reason": validation.get("reason", "unqualified"),
+                        "contract_markers": validation.get("contract_markers", []),
+                        "compile_ok": bool(validation.get("compile_ok", False)),
+                        "designed_for_sarahmemory": bool(validation.get("designed_for_sarahmemory", False)),
+                        "approved": bool(validation.get("ok", False) and validation.get("status") in ("approved", "pending")),
+                        "exposed": bool(validation.get("ok", False) and validation.get("status") == "approved" and SM_CORE_AUTO_EXPOSE_APPROVED),
+                    }
+                    if entry["status"] == "quarantined":
+                        registry["quarantined"][entry["module_name"]] = entry
+                    elif entry["status"] in ("approved", "pending"):
+                        registry["entries"][entry["module_name"]] = entry
+                    else:
+                        registry["ignored"][entry["module_name"]] = entry
+        except Exception as exc:
+            logger.warning("[CORE_DISCOVERY] scan failure for %s: %s", root_dir, exc)
+
+    return registry
+
+
+def sm_persist_core_registry(registry: dict | None = None) -> bool:
+    try:
+        payload = registry or CORE_REGISTRY_CACHE
+        os.makedirs(CORE_REGISTRY_DIR, exist_ok=True)
+        with open(CORE_REGISTRY_CACHE_FILE, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, sort_keys=True)
+        with open(CORE_QUARANTINE_REPORT, "w", encoding="utf-8") as fh:
+            json.dump(payload.get("quarantined", {}), fh, indent=2, sort_keys=True)
+        return True
+    except Exception as exc:
+        logger.warning("[CORE_DISCOVERY] persist failed: %s", exc)
+        return False
+
+
+def sm_refresh_core_registry(force: bool = False) -> dict:
+    global CORE_REGISTRY_CACHE
+    try:
+        if force or not CORE_REGISTRY_CACHE.get("generated_at"):
+            CORE_REGISTRY_CACHE = sm_discover_core_files(force=force)
+            sm_persist_core_registry(CORE_REGISTRY_CACHE)
+    except Exception as exc:
+        logger.warning("[CORE_DISCOVERY] refresh failed: %s", exc)
+    return CORE_REGISTRY_CACHE
+
+
+def sm_get_registered_core_modules(capability: str | None = None, include_pending: bool = True) -> dict:
+    registry = sm_refresh_core_registry(force=False)
+    out = {}
+    for module_name, entry in (registry.get("entries") or {}).items():
+        if capability and entry.get("capability") != capability:
+            continue
+        if not include_pending and entry.get("status") != "approved":
+            continue
+        out[module_name] = entry
+    return out
+
+
+def sm_is_core_module_approved(module_name_or_path: str, capability: str | None = None) -> bool:
+    key = os.path.splitext(os.path.basename(str(module_name_or_path or "").strip()))[0]
+    registry = sm_refresh_core_registry(force=False)
+    entry = (registry.get("entries") or {}).get(key)
+    if not entry:
+        return False
+    if capability and entry.get("capability") != capability:
+        return False
+    return bool(entry.get("status") == "approved" and entry.get("exposed", False))
+
+
+def sm_register_core_module(file_path: str, force_expose: bool = False) -> dict:
+    global CORE_REGISTRY_CACHE
+    entry = sm_validate_core_contract(file_path)
+    module_name = os.path.splitext(os.path.basename(str(file_path or "").strip()))[0]
+    registry = sm_refresh_core_registry(force=False)
+    normalized = {
+        "file": _sm_norm_path(file_path),
+        "name": os.path.basename(str(file_path or "").strip()),
+        "module_name": module_name,
+        "capability": entry.get("capability", "unknown/pending"),
+        "status": entry.get("status", "ignored"),
+        "reason": entry.get("reason", "unqualified"),
+        "contract_markers": entry.get("contract_markers", []),
+        "compile_ok": bool(entry.get("compile_ok", False)),
+        "designed_for_sarahmemory": bool(entry.get("designed_for_sarahmemory", False)),
+        "approved": bool(entry.get("ok", False) and entry.get("status") in ("approved", "pending")),
+        "exposed": bool((entry.get("status") == "approved") and (force_expose or SM_CORE_AUTO_EXPOSE_APPROVED)),
+    }
+    if normalized["status"] == "quarantined":
+        registry.setdefault("quarantined", {})[module_name] = normalized
+        registry.get("entries", {}).pop(module_name, None)
+        registry.get("ignored", {}).pop(module_name, None)
+    elif normalized["status"] in ("approved", "pending"):
+        registry.setdefault("entries", {})[module_name] = normalized
+        registry.get("quarantined", {}).pop(module_name, None)
+        registry.get("ignored", {}).pop(module_name, None)
+    else:
+        registry.setdefault("ignored", {})[module_name] = normalized
+        registry.get("entries", {}).pop(module_name, None)
+        registry.get("quarantined", {}).pop(module_name, None)
+    registry["generated_at"] = datetime.utcnow().isoformat()
+    CORE_REGISTRY_CACHE = registry
+    sm_persist_core_registry(CORE_REGISTRY_CACHE)
+    return normalized
+
+
+def sm_get_core_governance_profile() -> dict:
+    registry = sm_refresh_core_registry(force=False)
+    return {
+        "base_dir": _sm_norm_path(BASE_DIR),
+        "discovery_enabled": bool(SM_CORE_DISCOVERY_ENABLED),
+        "dynamic_registration": bool(SM_CORE_DYNAMIC_REGISTRATION),
+        "auto_expose_approved": bool(SM_CORE_AUTO_EXPOSE_APPROVED),
+        "require_contract": bool(SM_CORE_REQUIRE_CONTRACT),
+        "ignore_unqualified": bool(SM_CORE_IGNORE_UNQUALIFIED),
+        "quarantine_invalid": bool(SM_CORE_QUARANTINE_INVALID),
+        "allow_monkey_patches": bool(SM_CORE_ALLOW_MONKEY_PATCHES),
+        "allowed_dirs": sm_get_core_scan_dirs(),
+        "approved_prefixes": list(SM_CORE_APPROVED_NAME_PREFIXES),
+        "approved_files": sorted(SM_CORE_APPROVED_FILE_NAMES),
+        "capability_categories": list(SM_CORE_CAPABILITY_CATEGORIES),
+        "registered_count": len((registry.get("entries") or {})),
+        "quarantined_count": len((registry.get("quarantined") or {})),
+        "ignored_count": len((registry.get("ignored") or {})),
+        "registry_file": CORE_REGISTRY_CACHE_FILE,
+        "quarantine_report": CORE_QUARANTINE_REPORT,
+    }
+
 
 # ===== Updater Policy (Unified) =====
 # Human-friendly cadence (string) + interval (minutes) + env override
@@ -2268,7 +2641,9 @@ DIR_STRUCTURE = {
     "mobile":      MOBILE_DIR,
     "mods":        MODS_DIR,
     "models":      MODELS_DIR,
+    "drivers":     DRIVERS_DIR,
     "themes":      THEMES_DIR,
+    "core_registry": CORE_REGISTRY_DIR,
     "settings":    SETTINGS_DIR,
     "sync":        SYNC_DIR,
     "vault":       VAULT_DIR,
@@ -2351,8 +2726,8 @@ def ensure_directories():
     dirs = [
         API_DIR, BIN_DIR, DATA_DIR, DOCUMENTS_DIR, DOWNLOADS_DIR, RESOURCES_DIR, SANDBOX_DIR,
         ADDONS_DIR, AI_DIR, BACKUP_DIR, CONTACTS_DIR, CLOUD_DIR, EXPORTS_DIR, IMAGES_DIR, MOBILE_DIR, NETWORK_DIR, CRYPTO_DIR, DIAGNOSTICS_DIR,
-        LOGS_DIR, MEMORY_DIR, IMPORTS_DIR, DATASETS_DIR, MODS_DIR, MODELS_DIR, THEMES_DIR,
-        SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR,
+        LOGS_DIR, MEMORY_DIR, IMPORTS_DIR, DATASETS_DIR, MODS_DIR, MODELS_DIR, DRIVERS_DIR, THEMES_DIR,
+        SETTINGS_DIR, SYNC_DIR, VAULT_DIR, WALLET_DIR, KEYSTORE_DIR, CORE_REGISTRY_DIR,
         AVATAR_DIR, AVATAR_MODELS_DIR, AVATAR_EXPRESSIONS_DIR, AVATAR_SHADERS_DIR,
         AVATAR_SKINS_DIR, SOUND_DIR, SOUND_EFFECTS_DIR, SOUND_INSTRUMENTS_DIR,
         TOOLS_DIR, VOICE_DIR
@@ -2487,7 +2862,10 @@ def get_global_config():
         "ADDONS_DIR":    ADDONS_DIR,
         "MODS_DIR":      MODS_DIR,
         "MODELS_DIR":    MODELS_DIR,
+        "DRIVERS_DIR":   DRIVERS_DIR,
         "THEMES_DIR":    THEMES_DIR,
+        "CORE_REGISTRY_DIR": CORE_REGISTRY_DIR,
+        "CORE_REGISTRY_CACHE_FILE": CORE_REGISTRY_CACHE_FILE,
         "VOICES_DIR":    VOICE_DIR,
         "DOWNLOADS_DIR": DOWNLOADS_DIR,
         "PROJECTS_DIR":  os.path.join(BASE_DIR, "projects"),
@@ -4352,6 +4730,19 @@ def get_mesh_sync_config() -> dict:
         "http_timeout":           float(globals().get("REMOTE_HTTP_TIMEOUT", 6.0)),
     }
 
+# Best-effort warm-up of governed core registry.
+# This never imports discovered modules; it only scans, classifies, validates,
+# and writes registry/quarantine metadata so routing layers can consult Globals
+# without auto-activating arbitrary files.
+try:
+    if SM_CORE_DISCOVERY_ENABLED and SM_CORE_DISCOVERY_ON_BOOT:
+        sm_refresh_core_registry(force=True)
+except Exception as e:
+    try:
+        logger.warning("[CORE_DISCOVERY] bootstrap refresh failed: %s", e)
+    except Exception:
+        pass
+
 # ============================================================================
 # ============================================================================
 # MAIN EXECUTION BLOCK
@@ -4404,23 +4795,3 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryGlobals.py v8.0.0
 # ====================================================================
-
-# ---------------------------------------------------------------------------
-# Neuron Governance & Multiworker (Positronic Matrix) Defaults
-# ---------------------------------------------------------------------------
-# When enabled, SarahMemoryNeuron can run multiple "worker tickets" in parallel
-# (e.g., deterministic WebSYM lane + generative ReplyEngine lane) and then
-# select a winner via the auditor (SarahMemoryCompare).
-NEURON_MULTIWORKER_ENABLED = True
-NEURON_MULTIWORKER_TIMEOUT_SEC = 10.0
-NEURON_MULTIWORKER_RETRY_ON_DIVERGENCE = True
-
-# Auditor threshold for marking a candidate as a "HIT" (0.0-1.0).
-NEURON_AUDIT_THRESHOLD = 0.65
-
-# Enable the Compare/Auditor gate (recommended True).
-ENABLE_COMPARE = True
-
-# Cloud-safe mode restricts privileged operations to loopback callers.
-# app.py uses this as an additional enforcement layer.
-CLOUD_SAFE_MODE = True

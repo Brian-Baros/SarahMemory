@@ -46,7 +46,24 @@ try:
     from SarahMemoryAdvCU import embed_text as _advcu_embed
 except Exception:
     _advcu_embed = None
-from SarahMemoryCanvasStudio import CanvasStudio
+try:
+    from SarahMemoryCanvasStudio import CanvasStudio
+except Exception:
+    CanvasStudio = None
+
+try:
+    from SarahMemoryGlobals import (
+        sm_is_core_module_approved,
+        sm_get_registered_core_modules,
+        sm_get_core_governance_profile,
+    )
+except Exception:
+    def sm_is_core_module_approved(_module_name: str) -> bool:
+        return True
+    def sm_get_registered_core_modules() -> dict:
+        return {}
+    def sm_get_core_governance_profile() -> dict:
+        return {"dynamic_registration": False, "auto_expose_approved": True}
 
 def _fallback_embed(text: str, dim: int = 64):
     """
@@ -192,6 +209,53 @@ if not logger.hasHandlers():
     _h.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(_h)
 logger.propagate = False
+
+
+def _sm_module_approved(module_name: str) -> bool:
+    try:
+        return bool(sm_is_core_module_approved(module_name))
+    except Exception:
+        return True
+
+def _sm_registered_modules() -> dict:
+    try:
+        reg = sm_get_registered_core_modules() or {}
+        return reg if isinstance(reg, dict) else {}
+    except Exception:
+        return {}
+
+def _sm_creative_studio_registry() -> Dict[str, Dict[str, Any]]:
+    reg = _sm_registered_modules()
+    out: Dict[str, Dict[str, Any]] = {}
+    for module_name, row in reg.items():
+        if not isinstance(row, dict):
+            continue
+        cap = str(row.get("capability") or "").lower()
+        if cap == "creative" or module_name in {
+            "SarahMemoryCanvasStudio",
+            "SarahMemoryVideoEditorCore",
+            "SarahMemoryMusicGenerator",
+            "SarahMemoryLyricsToSong",
+        }:
+            out[module_name] = row
+    return out
+
+def _sm_tool_allowed(tool_name: str) -> bool:
+    mapping = {
+        "memory_search": "SarahMemoryCompare",
+        "web_search": "SarahMemoryResearch",
+        "calc": "SarahMemoryWebSYM",
+        "open_url": "SarahMemoryAiFunctions",
+        "agent": "SarahMemoryAiFunctions",
+        "creative": "SarahMemoryCanvasStudio",
+    }
+    module_name = mapping.get(tool_name)
+    if not module_name:
+        return False
+    return _sm_module_approved(module_name)
+
+def _sm_tool_error(tool_name: str) -> str:
+    return f"Tool '{tool_name}' is not currently registered/approved in the SarahMemory core registry."
 
 # === Context Management ===
 context_buffer = []
@@ -1118,8 +1182,9 @@ class ToolOrchestrator:
         self._initialize_tools()
 
     def _initialize_tools(self):
-        """Initialize tool registry with metadata"""
-        self.agent.tool_registry = {
+        """Initialize tool registry with governance-aware metadata"""
+        registry = {}
+        base = {
             'memory_search': {
                 'function': self._tool_memory_search,
                 'can_parallel': True,
@@ -1151,6 +1216,17 @@ class ToolOrchestrator:
                 'estimated_time': 0.5
             }
         }
+        for tool_name, info in base.items():
+            if _sm_tool_allowed(tool_name):
+                registry[tool_name] = info
+        if _sm_creative_studio_registry():
+            registry['creative'] = {
+                'function': self._tool_creative,
+                'can_parallel': False,
+                'requires_network': False,
+                'estimated_time': 3.0
+            }
+        self.agent.tool_registry = registry
 
     def execute_tools(self, tool_calls: List[Tuple[str, Any]]) -> Dict[str, Any]:
         """Execute multiple tools with optimization"""
@@ -1230,6 +1306,8 @@ class ToolOrchestrator:
         """Execute a single tool"""
         if tool_name not in self.agent.tool_registry:
             raise ValueError(f"Unknown tool: {tool_name}")
+        if not _sm_tool_allowed(tool_name) and tool_name != 'creative':
+            raise PermissionError(_sm_tool_error(tool_name))
 
         tool_func = self.agent.tool_registry[tool_name]['function']
         return tool_func(arg)
@@ -1237,6 +1315,8 @@ class ToolOrchestrator:
     # Tool implementations
     def _tool_memory_search(self, query: str) -> str:
         """Search memory/context"""
+        if not _sm_module_approved("SarahMemoryCompare"):
+            return _sm_tool_error("memory_search")
         try:
             from SarahMemoryCompare import compare_local_memory
             result = compare_local_memory(query)
@@ -1246,6 +1326,8 @@ class ToolOrchestrator:
 
     def _tool_web_search(self, query: str) -> str:
         """Perform web search"""
+        if not _sm_module_approved("SarahMemoryResearch"):
+            return _sm_tool_error("web_search")
         if SAFE_MODE or LOCAL_ONLY_MODE or is_offline():
             return "Web search disabled in current mode"
         try:
@@ -1256,6 +1338,8 @@ class ToolOrchestrator:
 
     def _tool_calc(self, expression: str) -> str:
         """Perform calculation"""
+        if not _sm_module_approved("SarahMemoryWebSYM"):
+            return _sm_tool_error("calc")
         try:
             from SarahMemoryWebSYM import WebSemanticSynthesizer
             calc = WebSemanticSynthesizer()
@@ -1277,10 +1361,21 @@ class ToolOrchestrator:
     def _tool_agent_control(self, command: str) -> str:
         """Execute agent control command"""
         try:
-            # (local) handle_ai_agent_command is defined in this module
             return handle_ai_agent_command(command)
         except Exception as e:
             return f"Agent control failed: {e}"
+
+    def _tool_creative(self, payload: Any) -> str:
+        """Governed CreativeStudios bridge."""
+        studios = _sm_creative_studio_registry()
+        if not studios:
+            return "CreativeStudios are not currently registered/approved in the SarahMemory core registry."
+        try:
+            if CanvasStudio is not None and _sm_module_approved("SarahMemoryCanvasStudio"):
+                return f"CreativeStudios available: {', '.join(sorted(studios.keys()))}"
+            return f"CreativeStudios registered: {', '.join(sorted(studios.keys()))}"
+        except Exception as e:
+            return f"Creative tool bridge failed: {e}"
 
 # ================================================================================
 # UNIFIED ADVANCED AGENT INTERFACE
@@ -1826,6 +1921,8 @@ def get_media_result(job_id: str) -> Dict[str, Any]:
 # === Stubbed Plug-in Connectors ===
 
 def local_memory_lookup(text):
+    if not _sm_module_approved("SarahMemoryCompare"):
+        return None
     try:
         from SarahMemoryCompare import compare_local_memory
         return compare_local_memory(text)
@@ -1834,6 +1931,8 @@ def local_memory_lookup(text):
 
 
 def web_research_query(text):
+    if not _sm_module_approved("SarahMemoryResearch"):
+        return None
     try:
         from SarahMemoryResearch import perform_web_search
 
@@ -1844,6 +1943,8 @@ def web_research_query(text):
 
 def symbolic_calc_answer(text):
     """Delegate symbolic/arithmetic questions to SarahMemoryWebSYM safely."""
+    if not _sm_module_approved("SarahMemoryWebSYM"):
+        return None
     try:
         from SarahMemoryWebSYM import WebSemanticSynthesizer
         calc = WebSemanticSynthesizer()
@@ -2722,31 +2823,42 @@ def rerank(query: str, candidates: list, cross_encoder=None) -> list:
         return candidates
 
 def list_tools() -> list:
-    """List available tools"""
-    return [
+    """List governed tools with enabled state"""
+    tools = [
         {"name": "memory_search", "description": "Search local memory"},
         {"name": "web_search", "description": "Search the web"},
         {"name": "calc", "description": "Calculate mathematical expressions"},
         {"name": "open_url", "description": "Open a URL in browser"},
-        {"name": "agent", "description": "AI agent control"}
+        {"name": "agent", "description": "AI agent control"},
     ]
+    if _sm_creative_studio_registry():
+        tools.append({"name": "creative", "description": "CreativeStudios bridge"})
+    for row in tools:
+        row["enabled"] = _sm_tool_allowed(row["name"]) or (row["name"] == "creative" and bool(_sm_creative_studio_registry()))
+    return tools
 
 def exec_tool(name: str, arg: str = "") -> dict:
-    """Execute a tool"""
+    """Execute a tool through governed core policy"""
     tools = {
         "memory_search": lambda a: {"result": local_memory_lookup(a)},
         "web_search": lambda a: {"result": web_research_query(a)},
         "calc": lambda a: {"result": symbolic_calc_answer(a)},
         "open_url": lambda a: {"result": open_url_in_chrome(a)},
-        "agent": lambda a: {"result": handle_ai_agent_command(a)}
+        "agent": lambda a: {"result": handle_ai_agent_command(a)},
+        "creative": lambda a: {"result": f"CreativeStudios available: {', '.join(sorted(_sm_creative_studio_registry().keys()))}"},
     }
 
-    if name in tools:
-        try:
-            return tools[name](arg)
-        except Exception as e:
-            return {"error": str(e)}
-    return {"error": f"Unknown tool: {name}"}
+    if name not in tools:
+        return {"error": f"Unknown tool: {name}"}
+    if name == "creative":
+        if not _sm_creative_studio_registry():
+            return {"error": "CreativeStudios are not registered/approved."}
+    elif not _sm_tool_allowed(name):
+        return {"error": _sm_tool_error(name)}
+    try:
+        return tools[name](arg)
+    except Exception as e:
+        return {"error": str(e)}
 
 def _simple_plan(text: str) -> list:
     """Simple task planning"""
@@ -2789,3 +2901,11 @@ except:
 # ====================================================================
 # END OF SarahMemoryAiFunctions.py v8.0.0
 # ====================================================================
+try:
+    __all__.extend([
+        'list_tools',
+        'exec_tool',
+        '_sm_creative_studio_registry',
+    ])
+except Exception:
+    pass

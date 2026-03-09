@@ -68,6 +68,7 @@ import math
 import time
 import html
 import queue
+import threading
 import types
 import random
 import string
@@ -92,16 +93,58 @@ logger.setLevel(logging.INFO)
 # --- v7.7.4: uniform bundle stamper (ensures provenance + latency) ---
 def _stamp_bundle(bundle: dict) -> dict:
     try:
+        if not isinstance(bundle, dict):
+            return bundle
         meta = bundle.get("meta") or {}
-        src_label = meta.get("source") or bundle.get("source") or "local"
+        if not isinstance(meta, dict):
+            meta = {}
+
+        source = meta.get("source") or bundle.get("source")
+        if not source:
+            pipe = meta.get("pipeline") or []
+            source = pipe[-1] if pipe else ("offline" if meta.get("offline") else "local")
         intent = meta.get("intent") or bundle.get("intent") or "chat"
-        meta["source"] = src_label
+
+        response_text = _sm_sanitize_user_text(
+            bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or ""
+        )
+
+        meta["source"] = source
         meta["intent"] = intent
-        if "latency_ms" not in meta:
-            try:
-                meta["latency_ms"] = int((time.time() - started) * 1000)
-            except Exception:
-                pass
+        meta.setdefault("outward_formatter", "SarahMemoryReply")
+        meta.setdefault("presentation_only", True)
+        meta.setdefault("latency_ms", 0)
+        meta.pop("raw_answer", None)
+        meta.pop("canonical_answer", None)
+        meta.pop("trace_internal", None)
+
+        bundle["ok"] = bool(bundle.get("ok", True))
+        bundle["source"] = source
+        bundle["intent"] = intent
+        bundle["response"] = response_text
+        bundle["presentation_reply"] = response_text
+        bundle["reply"] = response_text
+        bundle["content"] = response_text
+
+        if not isinstance(bundle.get("links"), list):
+            bundle["links"] = list(bundle.get("links") or [])
+        if not isinstance(bundle.get("artifacts"), list):
+            bundle["artifacts"] = list(bundle.get("artifacts") or [])
+        if not isinstance(bundle.get("actions"), list):
+            bundle["actions"] = list(bundle.get("actions") or [])
+        if not isinstance(bundle.get("errors"), list):
+            bundle["errors"] = list(bundle.get("errors") or [])
+
+        image_url = bundle.get("image_url")
+        if image_url and not any(isinstance(a, dict) and a.get("path") == image_url for a in bundle["artifacts"]):
+            bundle["artifacts"].append({
+                "type": "image",
+                "path": image_url,
+                "display_ready": True,
+                "download_ready": True,
+                "source": source,
+            })
+
         bundle["meta"] = meta
     except Exception:
         pass
@@ -118,6 +161,34 @@ except Exception:
 # -----------------------------------------------------------------------------
 # Guarded imports from sibling modules (graceful degradation)
 # -----------------------------------------------------------------------------
+def _try_neuron_reply(text_in: str, meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Use SarahMemoryNeuron as the orchestration brain when available."""
+    try:
+        from SarahMemoryNeuron import neuron_route  # type: ignore
+    except Exception:
+        return None
+    try:
+        res = neuron_route(text_in, meta=meta)
+        if not getattr(res, "ok", False):
+            return None
+        reply_txt = getattr(res, "reply", None)
+        if not reply_txt:
+            return None
+        try:
+            meta.setdefault("pipeline", []).append(f"neuron:{getattr(res,'source','neuron')}")
+            meta["neuron_intent"] = getattr(res, "intent", None)
+            meta["neuron_confidence"] = getattr(res, "confidence", None)
+            meta["neuron_trace"] = getattr(res, "trace", None)
+        except Exception:
+            pass
+        return _sm_make_outward_bundle(str(reply_txt), meta=meta, artifacts=_sm_creative_artifacts_from_meta(meta))
+    except Exception as e:
+        try:
+            logger.warning(f"[neuron] route failed: {e}")
+        except Exception:
+            pass
+        return None
+
 try:
     import SarahMemoryGlobals as config
 except Exception as _e:
@@ -136,6 +207,15 @@ except Exception as _e:
             return False
     config = _Config()
     logger.warning("[Globals] Missing or failed import; using minimal defaults: %s", _e)
+
+
+try:
+    from SarahMemoryGlobals import sm_is_core_module_approved, sm_get_registered_core_modules
+except Exception:
+    def sm_is_core_module_approved(_module_name: str) -> bool:
+        return True
+    def sm_get_registered_core_modules() -> dict:
+        return {}
 
 # Database / memory layer
 try:
@@ -246,13 +326,95 @@ class ReplyBundle:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        # Ensure stable defaults
+        response_text = _sm_sanitize_user_text(d.get("response") or "")
         if d.get("links") is None:
             d["links"] = []
         if d.get("meta") is None:
             d["meta"] = {}
+        d.setdefault("artifacts", [])
+        d.setdefault("actions", [])
+        d.setdefault("errors", [])
+        d["ok"] = True
+        d["response"] = response_text
+        d["presentation_reply"] = response_text
+        d["reply"] = response_text
+        d["content"] = response_text
+        # Never expose raw/canonical internals through the outward bundle.
+        try:
+            meta = d.get("meta") or {}
+            if isinstance(meta, dict):
+                meta.pop("raw_answer", None)
+                meta.pop("canonical_answer", None)
+                meta.pop("trace_internal", None)
+                d["meta"] = meta
+        except Exception:
+            pass
         return d
 
+
+
+def _sm_make_outward_bundle(
+    presentation_text: str,
+    *,
+    image_url: Optional[str] = None,
+    links: Optional[List[str]] = None,
+    meta: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[List[Dict[str, Any]]] = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    errors: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    meta = dict(meta or {})
+    text = _sm_sanitize_user_text(presentation_text or "")
+    bundle = ReplyBundle(text, image_url=image_url, links=list(links or []), meta=meta).to_dict()
+    bundle["artifacts"] = list(artifacts or [])
+    bundle["actions"] = list(actions or [])
+    bundle["errors"] = list(errors or [])
+    bundle["ok"] = True
+    bundle["response"] = text
+    bundle["presentation_reply"] = text
+    bundle["reply"] = text
+    bundle["content"] = text
+    if image_url:
+        bundle["artifacts"].append({
+            "type": "image",
+            "path": image_url,
+            "display_ready": True,
+            "download_ready": True,
+            "source": meta.get("source") or "image",
+        })
+    return _stamp_bundle(bundle)
+
+def _sm_creative_artifacts_from_meta(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
+    artifacts: List[Dict[str, Any]] = []
+    try:
+        trace = meta.get("neuron_trace") or {}
+        raw_art = trace.get("artifacts") or meta.get("artifacts") or {}
+        if isinstance(raw_art, dict):
+            for key, value in raw_art.items():
+                if value in (None, "", [], {}):
+                    continue
+                art_type = "file"
+                if isinstance(value, str):
+                    lv = value.lower()
+                    if lv.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+                        art_type = "image"
+                    elif lv.endswith((".mp4", ".mov", ".avi", ".webm")):
+                        art_type = "video"
+                    elif lv.endswith((".mp3", ".wav", ".flac", ".ogg")):
+                        art_type = "audio"
+                    elif lv.endswith((".html", ".htm")):
+                        art_type = "webpage"
+                artifacts.append({
+                    "name": key,
+                    "type": art_type,
+                    "path": value,
+                    "display_ready": True,
+                    "download_ready": True,
+                    "source": meta.get("source") or "creative",
+                })
+    except Exception:
+        pass
+    return artifacts
 
 # =============================================================================
 # Utilities — safe math & simple parsing
@@ -447,55 +609,61 @@ def _try_web(text: str) -> Tuple[Optional[str], Optional[str], List[str]]:
 # This scrubber ensures the GUI/TTS sees only the final answer.
 
 def _sm_sanitize_user_text(text: str) -> str:
-    """Sanitize model output so only final user-visible answer reaches the WebUI.
-
-    Local LLMs sometimes echo chat templates (system/user/assistant) or prompt scaffolding.
-    This filter is best-effort and strictly display-layer.
+    """
+    Sanitize model output so the UI/TTS only sees the final user-facing answer.
+    Removes common prompt scaffolding (ROLE/INTENT/MOOD/TEMP/etc) and hidden blocks.
     """
     if not text:
         return ""
+    t = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
 
-    # Normalize newlines (keep as literals in source)
-    t = str(text).replace("\\r\\n", "\\n").replace("\\r", "\\n").strip()
+    # Strip hidden reasoning blocks (common tags)
+    try:
+        t = re.sub(r"(?is)<\s*(think|analysis)\s*>.*?<\s*/\s*\1\s*>", "", t)
+        t = re.sub(r"(?is)\[\s*(think|analysis)\s*\].*?\[\s*/\s*\1\s*\]", "", t)
+    except Exception:
+        pass
 
-    # Strip hidden reasoning blocks
-    t = re.sub(r"(?is)<\\s*(think|analysis)\\s*>.*?<\\s*/\\s*\\1\\s*>", "", t)
+    # If an explicit assistant marker exists, keep only what follows the LAST one.
+    try:
+        matches = list(re.finditer(r"(?im)^(assistant)\s*:?\s*$", t))
+        if matches:
+            t = t[matches[-1].end():].strip()
+        else:
+            if re.search(r"(?im)^assistant\s*:\s*", t):
+                parts = re.split(r"(?im)^assistant\s*:\s*", t)
+                if parts:
+                    t = parts[-1].strip()
+    except Exception:
+        pass
 
-    # If an Assistant delimiter exists, keep the LAST segment
-    if "Assistant:" in t:
-        t = t.split("Assistant:")[-1].strip()
+    # Remove common prompt header lines that local models sometimes echo.
+    try:
+        drop_pat = re.compile(
+            r"(?i)^\s*(role|intent|tone|complexity|mood(?:\s*profile)?|context|query|parameters?|"
+            r"temp(?:erature)?|top[_\s]?p|max[_\s]?tokens?|model(?:_used)?|provider|source)\s*[:=].*$"
+        )
+        cleaned = []
+        for line in (t.split("\n")):
+            if drop_pat.match(line or ""):
+                continue
+            # drop purely decorative provenance markers
+            if re.match(r"(?i)^\s*\[\s*source\s*:[^\]]*\]\s*$", line or ""):
+                continue
+            if (line or "").strip() in ("[]", "[ ]"):
+                continue
+            cleaned.append(line)
+        t = "\n".join(cleaned).strip()
+    except Exception:
+        pass
 
-    lines = t.split("\\n")
-    cleaned = []
-    for line in lines:
-        low = line.strip().lower()
+    # Strip trailing empty provenance tag (legacy)
+    try:
+        t = re.sub(r"\s*\[\s*\]\s*$", "", t).strip()
+    except Exception:
+        pass
 
-        # Drop standalone role markers
-        if low in {"system", "user", "assistant"}:
-            continue
-
-        # Drop colon-based role transcript lines
-        if re.match(r"^(system|user|assistant)\\s*:\\s*", line.strip(), flags=re.I):
-            continue
-
-        # Drop common scaffold headers
-        if re.match(r"^(role|intent|tone|complexity|recent context|context|query|mood profile)\\s*:\\s*", line.strip(), flags=re.I):
-            continue
-
-        # Drop the most common local chat-template instruction echo
-        if re.match(r"^you are sarahmemory\\b", line.strip(), flags=re.I):
-            continue
-        if re.match(r"^answer clearly and helpfully\\.?$", line.strip(), flags=re.I):
-            continue
-        if re.match(r"^answer the user directly\\.?$", line.strip(), flags=re.I):
-            continue
-
-        cleaned.append(line)
-
-    t = "\\n".join(cleaned)
-    t = re.sub(r"\\n{3,}", "\\n\\n", t).strip()
     return t
-
 
 def _finalize_text(raw, meta):
     txt = _sm_sanitize_user_text((raw or "").strip())
@@ -549,7 +717,7 @@ def route_reply(*args, **kwargs) -> Dict[str, Any]:
         return ReplyBundle("I'm having trouble routing that request.", meta={"error": str(e)}).to_dict()
 
 
-def generate_reply(self, user_text: str, intent: str = "", tone: str = "", complexity: str = "", **kwargs) -> Dict[str, Any]:
+def generate_reply(self, user_text: str) -> Dict[str, Any]:
     started = time.time()
     # Early bailout on interrupt
     try:
@@ -580,8 +748,6 @@ def generate_reply(self, user_text: str, intent: str = "", tone: str = "", compl
     text_in = normalize_text(user_text) if 'normalize_text' in globals() else (user_text or "").strip()
     meta: Dict[str, Any] = {
         "intent": "chat",
-        "tone": tone or "",
-        "complexity": complexity or "",
         "pipeline": [],
         "offline": False,
         "model": None,
@@ -673,12 +839,7 @@ def generate_reply(self, user_text: str, intent: str = "", tone: str = "", compl
         except Exception:
             pass
         # optional: voice/avatar trigger if your GUI hooks are available
-        try:
-            from SarahMemoryGUI import voice
-            if hasattr(voice, "speak_text"):
-                voice.speak_text(out)
-        except Exception:
-            pass
+        _trigger_av_voice_safe(self, out)
         # Store in QA cache (local + cloud) before returning
         try:
             if user_text and bundle.get("response"):
@@ -748,6 +909,25 @@ def generate_reply(self, user_text: str, intent: str = "", tone: str = "", compl
         except Exception as e:
             logger.warning(f"[QA STORE] Failed to store answer: {e}")
         return _stamp_bundle(bundle)
+
+    # ---------------------------------------------------------------------
+    # NEURON ORCHESTRATOR (preferred multi-tier routing)
+    # ---------------------------------------------------------------------
+    try:
+        nb = _try_neuron_reply(text_in, meta)
+        if nb and nb.get("response"):
+            out = _finalize_text(nb["response"], meta)
+            nb["response"] = out
+            _store_history_safe(nb)
+            _trigger_av_voice_safe(self, out)
+            try:
+                if user_text and nb.get("response"):
+                    store_answer(user_text, nb["response"])
+            except Exception as e:
+                logger.warning(f"[QA STORE] Failed to store answer: {e}")
+            return _stamp_bundle(nb)
+    except Exception:
+        pass
 
     # ---------------------------------------------------------------------
     # API ONLINE (if allowed & not offline)
@@ -831,29 +1011,58 @@ def generate_reply(self, user_text: str, intent: str = "", tone: str = "", compl
 # =============================================================================
 def _store_history_safe(bundle: Dict[str, Any]) -> None:
     try:
-        store_response_history(bundle)
+        safe_bundle = dict(bundle or {})
+        safe_bundle["response"] = _sm_sanitize_user_text(safe_bundle.get("presentation_reply") or safe_bundle.get("response") or "")
+        safe_bundle["presentation_reply"] = safe_bundle.get("response") or ""
+        store_response_history(safe_bundle)
     except Exception as e:
         logger.debug("History store skipped: %s", e)
 
 def _trigger_av_voice_safe(self_ref, text: str) -> None:
     if not text:
         return
+
+    spoken_text = _sm_sanitize_user_text(text)
+    if not spoken_text:
+        return
+
+    def _worker() -> None:
+        try:
+            if voice is not None:
+                try:
+                    if hasattr(voice, "synthesize_voice_async"):
+                        voice.synthesize_voice_async(spoken_text)
+                    elif hasattr(voice, "speak_text_async"):
+                        voice.speak_text_async(spoken_text)
+                    elif hasattr(voice, "queue_text"):
+                        voice.queue_text(spoken_text)
+                    elif hasattr(voice, "enqueue_speech"):
+                        voice.enqueue_speech(spoken_text)
+                    elif hasattr(voice, "synthesize_voice"):
+                        voice.synthesize_voice(spoken_text)
+                    elif hasattr(voice, "speak_text"):
+                        voice.speak_text(spoken_text)
+                except Exception as e:
+                    logger.debug("Voice hook failed: %s", e)
+
+            if avatar is not None:
+                try:
+                    dur = max(1.0, len(spoken_text.split()) / 2.0)
+                    if hasattr(avatar, "simulate_lip_sync_async"):
+                        avatar.simulate_lip_sync_async(dur)
+                except Exception as e:
+                    logger.debug("Avatar hook failed: %s", e)
+        except Exception as e:
+            logger.debug("AV hooks failed: %s", e)
+
     try:
-        if voice is not None:
-            try:
-                voice.synthesize_voice(text)
-            except Exception:
-                pass
-        if avatar is not None:
-            try:
-                # rough word->seconds estimation for lip sync
-                dur = max(1.0, len(text.split()) / 2.0)
-                if hasattr(avatar, "simulate_lip_sync_async"):
-                    avatar.simulate_lip_sync_async(dur)
-            except Exception:
-                pass
-    except Exception as e:
-        logger.debug("AV hooks failed: %s", e)
+        t = threading.Thread(target=_worker, name="SarahMemoryReplyAV", daemon=True)
+        t.start()
+    except Exception:
+        try:
+            _worker()
+        except Exception as e:
+            logger.debug("AV worker launch failed: %s", e)
 
 
 # =============================================================================
@@ -913,39 +1122,90 @@ except Exception:
 
 def _stamp_bundle(bundle: dict) -> dict:
     try:
+        if not isinstance(bundle, dict):
+            return bundle
         meta = bundle.get("meta") or {}
-        source = meta.get("source")
+        if not isinstance(meta, dict):
+            meta = {}
+
+        source = meta.get("source") or bundle.get("source")
         if not source:
             pipe = meta.get("pipeline") or []
             source = pipe[-1] if pipe else ("offline" if meta.get("offline") else "local")
-            meta["source"] = source
-        bundle["source"] = meta.get("source", "unknown")
-        bundle["intent"] = meta.get("intent", "chat")
-        import datetime as _dt
-        bundle["timestamp"] = _dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        intent = meta.get("intent") or bundle.get("intent") or "chat"
+
+        response_text = _sm_sanitize_user_text(
+            bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or ""
+        )
+
+        meta["source"] = source
+        meta["intent"] = intent
+        meta.setdefault("outward_formatter", "SarahMemoryReply")
+        meta.setdefault("presentation_only", True)
+        meta.setdefault("latency_ms", 0)
+        meta.pop("raw_answer", None)
+        meta.pop("canonical_answer", None)
+        meta.pop("trace_internal", None)
+
+        bundle["ok"] = bool(bundle.get("ok", True))
+        bundle["source"] = source
+        bundle["intent"] = intent
+        bundle["response"] = response_text
+        bundle["presentation_reply"] = response_text
+        bundle["reply"] = response_text
+        bundle["content"] = response_text
+
         if not isinstance(bundle.get("links"), list):
             bundle["links"] = list(bundle.get("links") or [])
+        if not isinstance(bundle.get("artifacts"), list):
+            bundle["artifacts"] = list(bundle.get("artifacts") or [])
+        if not isinstance(bundle.get("actions"), list):
+            bundle["actions"] = list(bundle.get("actions") or [])
+        if not isinstance(bundle.get("errors"), list):
+            bundle["errors"] = list(bundle.get("errors") or [])
+
+        image_url = bundle.get("image_url")
+        if image_url and not any(isinstance(a, dict) and a.get("path") == image_url for a in bundle["artifacts"]):
+            bundle["artifacts"].append({
+                "type": "image",
+                "path": image_url,
+                "display_ready": True,
+                "download_ready": True,
+                "source": source,
+            })
+
         bundle["meta"] = meta
     except Exception:
         pass
     return bundle
-
 # --- v7.7.4: enforce provenance label in responses ---
 def _sm_enforce_provenance(bundle):
-    """Legacy hook retained for back-compat.
-
-    IMPORTANT: Do not mutate user-visible text (no provenance labels in the reply body).
-    Provenance should live in bundle['meta'] only.
     """
+    Legacy hook. Keep provenance in meta ONLY; never append to the visible response text.
+    Also acts as a last-chance sanitizer for bundle['response'].
+    """
+    try:
+        if not isinstance(bundle, dict):
+            return bundle
+        meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
+        src = meta.get("source") or meta.get("Source") or meta.get("provider") or bundle.get("source") or "Local"
+        meta["source"] = src
+        bundle["meta"] = meta
+        if "response" in bundle and isinstance(bundle.get("response"), str):
+            bundle["response"] = _sm_sanitize_user_text(bundle.get("response") or "")
+    except Exception:
+        pass
     return bundle
-
 
 try:
     if 'generate_reply' in globals():
         _orig = generate_reply
         def generate_reply(*args, **kwargs):
             out = _orig(*args, **kwargs)
-            if isinstance(out, dict): return _sm_enforce_provenance(out)
+            if isinstance(out, dict):
+                out = _sm_enforce_provenance(out)
+                out = _stamp_bundle(out)
+                return out
             return out
 except Exception:
     pass

@@ -284,6 +284,7 @@ def _get_cloud_conn():
             user=G.CLOUD_DB_USER,
             password=G.CLOUD_DB_PASSWORD,
             database=G.CLOUD_DB_NAME,
+            connection_timeout=int(getattr(G, "CLOUD_DB_CONNECT_TIMEOUT", 3) or 3),
         )
     except Exception as e:
         logging.error(f"[CLOUD_DB_CONNECT ERROR] {e}")
@@ -297,6 +298,197 @@ def _get_cloud_conn():
 # --- Database Paths ---
 DB_PATH = os.path.join(config.DATASETS_DIR, 'ai_learning.db')
 USER_DB_PATH = os.path.join(config.DATASETS_DIR, 'user_profile.db')
+
+RESPONSE_HISTORY_DB = DB_PATH
+
+
+def _resolve_system_log_db_path():
+    try:
+        db_path = getattr(config, "SYSTEM_LOG_DB", None)
+    except Exception:
+        db_path = None
+    if db_path:
+        return db_path
+    try:
+        dd = getattr(config, "DATASETS_DIR", None)
+    except Exception:
+        dd = None
+    if not dd:
+        dd = os.path.join(os.getcwd(), "data", "memory", "datasets")
+    return os.path.join(dd, "system_logs.db")
+
+
+def _json_dumps_safe(value, limit: int = 100000) -> str:
+    try:
+        raw = json.dumps(value if value is not None else {}, ensure_ascii=False)
+    except Exception:
+        raw = json.dumps({"_unserializable": str(value)}, ensure_ascii=False)
+    if len(raw) > int(limit):
+        return raw[: int(limit)]
+    return raw
+
+
+def _normalize_response_layers(user_text: str, response_text: str, meta: dict, kwargs: dict):
+    """Normalize canonical vs presentation layers for storage.
+
+    Raw/canonical stays internal. Presentation is the user-facing form.
+    Backward compatibility: if a caller only provides a flat response, we store it as
+    the presentation answer and use it as canonical only when no better raw truth is available.
+    """
+    meta = meta if isinstance(meta, dict) else {}
+    canonical_answer = (
+        kwargs.get("canonical_answer")
+        or kwargs.get("raw_answer")
+        or meta.get("canonical_answer")
+        or meta.get("raw_answer")
+        or meta.get("truth")
+        or meta.get("truth_core")
+        or meta.get("answer_raw")
+        or meta.get("raw")
+        or ""
+    )
+    presented_answer = (
+        kwargs.get("presented_answer")
+        or kwargs.get("presentation_answer")
+        or meta.get("presented_answer")
+        or meta.get("presentation_answer")
+        or meta.get("presentation_reply")
+        or meta.get("reply")
+        or response_text
+        or ""
+    )
+    if not canonical_answer:
+        canonical_answer = presented_answer
+    canonical_type = str(
+        kwargs.get("canonical_type")
+        or meta.get("canonical_type")
+        or ("deterministic" if bool(kwargs.get("truth_locked") or meta.get("truth_locked")) else "response")
+    )
+    truth_locked = bool(kwargs.get("truth_locked") or meta.get("truth_locked") or meta.get("deterministic"))
+    tone = str(kwargs.get("tone") or meta.get("tone") or "")
+    style = str(kwargs.get("style") or meta.get("style") or meta.get("complexity") or "")
+    persona_state = str(kwargs.get("persona_state") or meta.get("persona_state") or meta.get("persona") or "")
+    lane = str(kwargs.get("lane") or meta.get("lane") or meta.get("primary_lane") or "")
+    source = str(kwargs.get("source") or meta.get("source") or meta.get("provider") or "")
+    raw_meta = {
+        "canonical_answer": canonical_answer,
+        "canonical_type": canonical_type,
+        "truth_locked": truth_locked,
+        "lane": lane,
+        "source": source,
+    }
+    raw_meta.update(meta.get("raw_meta") or {})
+    presentation_meta = {
+        "presented_answer": presented_answer,
+        "tone": tone,
+        "style": style,
+        "persona_state": persona_state,
+        "lane": lane,
+        "source": source,
+    }
+    presentation_meta.update(meta.get("presentation_meta") or {})
+    return {
+        "user_text": str(user_text or ""),
+        "canonical_answer": str(canonical_answer or ""),
+        "presented_answer": str(presented_answer or ""),
+        "canonical_type": canonical_type,
+        "truth_locked": truth_locked,
+        "tone": tone,
+        "style": style,
+        "persona_state": persona_state,
+        "lane": lane,
+        "source": source,
+        "raw_meta": raw_meta,
+        "presentation_meta": presentation_meta,
+    }
+
+
+def ensure_response_memory_schema():
+    """Create/upgrade dual-layer response memory tables.
+
+    Keeps backward compatibility with legacy flat history while adding canonical vs
+    presentation storage required by the SarahMemory I/O framework.
+    """
+    try:
+        ensure_core_schema()
+    except Exception:
+        pass
+    try:
+        os.makedirs(os.path.dirname(RESPONSE_HISTORY_DB), exist_ok=True)
+        with sqlite3.connect(RESPONSE_HISTORY_DB) as conn:
+            cur = conn.cursor()
+            def _ensure_column(cur, table: str, col: str, col_type: str) -> None:
+                try:
+                    cur.execute(f"PRAGMA table_info({table})")
+                    existing = [r[1] for r in cur.fetchall()]
+                    if col not in existing:
+                        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass
+            cur.execute("""CREATE TABLE IF NOT EXISTS response_layers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT,
+                session_id TEXT,
+                user_input TEXT,
+                canonical_answer TEXT,
+                presented_answer TEXT,
+                intent TEXT,
+                lane TEXT,
+                source TEXT,
+                canonical_type TEXT,
+                truth_locked INTEGER DEFAULT 0,
+                tone TEXT,
+                style TEXT,
+                persona_state TEXT,
+                raw_meta_json TEXT,
+                presentation_meta_json TEXT
+            )""")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_response_layers_ts ON response_layers(ts)")
+            for col, col_type in [
+                ("canonical_answer", "TEXT"),
+                ("presented_answer", "TEXT"),
+                ("lane", "TEXT"),
+                ("source", "TEXT"),
+                ("canonical_type", "TEXT"),
+                ("truth_locked", "INTEGER DEFAULT 0"),
+                ("tone", "TEXT"),
+                ("style", "TEXT"),
+                ("persona_state", "TEXT"),
+                ("raw_meta_json", "TEXT"),
+                ("presentation_meta_json", "TEXT"),
+            ]:
+                _ensure_column(cur, "conversations", col, col_type)
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"[ensure_response_memory_schema] {e}")
+    try:
+        sys_db = _resolve_system_log_db_path()
+        os.makedirs(os.path.dirname(sys_db), exist_ok=True)
+        with sqlite3.connect(sys_db) as conn:
+            cur = conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS response_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT,
+                user_input TEXT,
+                response TEXT,
+                intent TEXT,
+                tone TEXT,
+                complexity TEXT,
+                source TEXT,
+                session_id TEXT,
+                meta_json TEXT,
+                canonical_answer TEXT,
+                presented_answer TEXT,
+                canonical_type TEXT,
+                truth_locked INTEGER DEFAULT 0,
+                lane TEXT,
+                persona_state TEXT,
+                raw_meta_json TEXT,
+                presentation_meta_json TEXT
+            )""")
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"[ensure_response_history_schema] {e}")
 
 def get_active_sentence_model():
     """Return the active embedding model (one per category), with offline-safe fallback.
@@ -521,21 +713,43 @@ def store_answer(query, answer):
     except Exception as e:
         logger.error(f"Error storing QA cache locally: {e}")
 
-    # 2) Cloud MySQL
-    try:
-        cloud = _get_cloud_conn()
-        if cloud is not None:
-            cur = cloud.cursor()
-            cur.execute(
-                "INSERT INTO sm_qa_cache (query, ai_answer, hit_score, feedback, timestamp, source_node) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
-                (query, answer, 0, "ungraded", timestamp.replace("T", " "), G.NODE_NAME if G else None)
-            )
-            cloud.commit()
-            cloud.close()
-            logger.info(f"Stored QA cache for query: '{query}' (cloud)")
-    except Exception as e:
-        logger.error(f"[CLOUD QA STORE ERROR] {e}")
+        # 2) Cloud MySQL (best-effort, NON-BLOCKING)
+        try:
+            mesh_cfg = get_mesh_sync_config() or {}
+        except Exception:
+            mesh_cfg = {}
+
+        try:
+            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False)) if G else False
+        except Exception:
+            local_only = False
+
+        # Respect local-only + hub policy gates
+        if (not local_only) and bool(mesh_cfg.get("mesh_enabled", True)) and bool(mesh_cfg.get("hub_allowed", True)):
+
+            def _cloud_push():
+                try:
+                    cloud = _get_cloud_conn()
+                    if cloud is None:
+                        return
+                    cur = cloud.cursor()
+                    cur.execute(
+                        "INSERT INTO sm_qa_cache (query, ai_answer, hit_score, feedback, timestamp, source_node) "
+                        "VALUES (%s, %s, %s, %s, %s, %s)",
+                        (query, answer, 0, "ungraded", timestamp.replace("T", " "), G.NODE_NAME if G else None)
+                    )
+                    cloud.commit()
+                    cloud.close()
+                    logger.info(f"Stored QA cache for query: '{query}' (cloud)")
+                except Exception as e:
+                    logger.error(f"[CLOUD QA STORE ERROR] {e}")
+
+            # Fire-and-forget to avoid blocking chat/UI responsiveness
+            try:
+                run_async(_cloud_push)
+            except Exception:
+                # Fallback: attempt inline but still best-effort
+                _cloud_push()
 
 
 
@@ -1008,9 +1222,175 @@ if __name__ == '__main__':
         export_voice_logs_to_json(conn, 'voice_logs_export.json')
         conn.close()
 def store_response_history(*args, **kwargs):
+    """
+    Persist a user/assistant exchange locally (offline-first).
+
+    Supported call shapes:
+      - store_response_history({"user_input":..., "response":..., "meta":...})
+      - store_response_history(user_text, response_text, meta={...})
+      - store_response_history(user_text=user_text, response=response_text, meta={...})
+
+    Framework rule:
+      - canonical/raw truth is stored internally
+      - presentation answer is stored separately and is the user-facing form
+    """
     try:
+        import os
+        import json
+        import sqlite3
+        import datetime as _dt
+
+        user_text = ""
+        response_text = ""
+        meta = {}
+
+        if args and isinstance(args[0], dict):
+            payload = dict(args[0])
+            user_text = payload.get("user_input") or payload.get("query") or payload.get("text") or payload.get("user") or ""
+            response_text = payload.get("response") or payload.get("reply") or payload.get("data") or payload.get("assistant") or ""
+            meta = payload.get("meta") or payload.get("metadata") or {}
+        else:
+            if len(args) >= 2:
+                user_text = args[0]
+                response_text = args[1]
+            elif len(args) == 1:
+                response_text = args[0]
+                user_text = kwargs.get("user_input") or kwargs.get("query") or kwargs.get("text") or ""
+            else:
+                user_text = kwargs.get("user_input") or kwargs.get("query") or kwargs.get("text") or ""
+                response_text = kwargs.get("response") or kwargs.get("reply") or kwargs.get("data") or ""
+            meta = kwargs.get("meta") or kwargs.get("metadata") or kwargs.get("extra") or {}
+
+        if meta is None:
+            meta = {}
+        if not isinstance(meta, dict):
+            meta = {"_meta": str(meta)}
+
+        intent = str(kwargs.get("intent") or meta.get("intent") or meta.get("Intent") or "")
+        session_id = str(kwargs.get("session_id") or meta.get("session_id") or meta.get("sid") or "")
+        ts = kwargs.get("timestamp") or meta.get("ts") or _dt.datetime.utcnow().isoformat(timespec="seconds")
+
+        try:
+            ensure_response_memory_schema()
+        except Exception:
+            pass
+
+        layers = _normalize_response_layers(str(user_text or ""), str(response_text or ""), meta, kwargs)
+        canonical_answer = layers["canonical_answer"]
+        presented_answer = layers["presented_answer"]
+        canonical_type = layers["canonical_type"]
+        truth_locked = 1 if layers["truth_locked"] else 0
+        tone = layers["tone"]
+        style = layers["style"]
+        persona_state = layers["persona_state"]
+        lane = layers["lane"]
+        source = layers["source"]
+        raw_meta_json = _json_dumps_safe(layers["raw_meta"])
+        presentation_meta_json = _json_dumps_safe(layers["presentation_meta"])
+        meta_json = _json_dumps_safe(meta)
+
+        # AI learning DB (canonical + presentation record)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO conversations (timestamp, user_input, ai_response, intent, sentiment_score, emotional_state, session_id, canonical_answer, presented_answer, lane, source, canonical_type, truth_locked, tone, style, persona_state, raw_meta_json, presentation_meta_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(ts),
+                        str(user_text or ""),
+                        str(presented_answer or ""),
+                        str(intent or ""),
+                        None,
+                        None,
+                        (session_id or None),
+                        str(canonical_answer or ""),
+                        str(presented_answer or ""),
+                        str(lane or ""),
+                        str(source or ""),
+                        str(canonical_type or "response"),
+                        int(truth_locked),
+                        str(tone or ""),
+                        str(style or ""),
+                        str(persona_state or ""),
+                        raw_meta_json,
+                        presentation_meta_json,
+                    ),
+                )
+                c.execute(
+                    "INSERT INTO response_layers (ts, session_id, user_input, canonical_answer, presented_answer, intent, lane, source, canonical_type, truth_locked, tone, style, persona_state, raw_meta_json, presentation_meta_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(ts),
+                        str(session_id or ""),
+                        str(user_text or ""),
+                        str(canonical_answer or ""),
+                        str(presented_answer or ""),
+                        str(intent or ""),
+                        str(lane or ""),
+                        str(source or ""),
+                        str(canonical_type or "response"),
+                        int(truth_locked),
+                        str(tone or ""),
+                        str(style or ""),
+                        str(persona_state or ""),
+                        raw_meta_json,
+                        presentation_meta_json,
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+        # System log DB (backward compatible flat history + dual-layer fields)
+        try:
+            sys_db = _resolve_system_log_db_path()
+            os.makedirs(os.path.dirname(sys_db), exist_ok=True)
+            with sqlite3.connect(sys_db) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO response_history(ts,user_input,response,intent,tone,complexity,source,session_id,meta_json,canonical_answer,presented_answer,canonical_type,truth_locked,lane,persona_state,raw_meta_json,presentation_meta_json) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        str(ts),
+                        str(user_text or ""),
+                        str(presented_answer or ""),
+                        str(intent or ""),
+                        str(tone or ""),
+                        str(style or ""),
+                        str(source or ""),
+                        str(session_id or ""),
+                        meta_json,
+                        str(canonical_answer or ""),
+                        str(presented_answer or ""),
+                        str(canonical_type or "response"),
+                        int(truth_locked),
+                        str(lane or ""),
+                        str(persona_state or ""),
+                        raw_meta_json,
+                        presentation_meta_json,
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+        # Context memory (presentation answer only)
+        try:
+            from SarahMemoryAiFunctions import add_to_context_entry  # type: ignore
+            add_to_context_entry(str(user_text or ""), str(presented_answer or ""), meta=meta)  # type: ignore
+        except Exception:
+            pass
+
+        try:
+            from SarahMemoryAdaptive import log_interaction_to_db  # type: ignore
+            log_interaction_to_db(str(user_text or ""), str(presented_answer or ""), meta)  # type: ignore
+        except Exception:
+            pass
+
+        return True
+    except Exception:
         return None
-    except Exception: return None
 
 def store_comparison_outcome(query, reply, intent, source, confidence, meta=None):
     try:
@@ -1372,12 +1752,52 @@ def ensure_core_schema():
                 intent TEXT,
                 sentiment_score REAL,
                 emotional_state TEXT,
-                session_id TEXT)""")
+                session_id TEXT,
+                canonical_answer TEXT,
+                presented_answer TEXT,
+                lane TEXT,
+                source TEXT,
+                canonical_type TEXT,
+                truth_locked INTEGER DEFAULT 0,
+                tone TEXT,
+                style TEXT,
+                persona_state TEXT,
+                raw_meta_json TEXT,
+                presentation_meta_json TEXT)""")
             
             _ensure_column(c, "conversations", "intent", "TEXT")
             _ensure_column(c, "conversations", "sentiment_score", "REAL")
             _ensure_column(c, "conversations", "emotional_state", "TEXT")
             _ensure_column(c, "conversations", "session_id", "TEXT")
+            _ensure_column(c, "conversations", "canonical_answer", "TEXT")
+            _ensure_column(c, "conversations", "presented_answer", "TEXT")
+            _ensure_column(c, "conversations", "lane", "TEXT")
+            _ensure_column(c, "conversations", "source", "TEXT")
+            _ensure_column(c, "conversations", "canonical_type", "TEXT")
+            _ensure_column(c, "conversations", "truth_locked", "INTEGER DEFAULT 0")
+            _ensure_column(c, "conversations", "tone", "TEXT")
+            _ensure_column(c, "conversations", "style", "TEXT")
+            _ensure_column(c, "conversations", "persona_state", "TEXT")
+            _ensure_column(c, "conversations", "raw_meta_json", "TEXT")
+            _ensure_column(c, "conversations", "presentation_meta_json", "TEXT")
+            c.execute("""CREATE TABLE IF NOT EXISTS response_layers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT,
+                session_id TEXT,
+                user_input TEXT,
+                canonical_answer TEXT,
+                presented_answer TEXT,
+                intent TEXT,
+                lane TEXT,
+                source TEXT,
+                canonical_type TEXT,
+                truth_locked INTEGER DEFAULT 0,
+                tone TEXT,
+                style TEXT,
+                persona_state TEXT,
+                raw_meta_json TEXT,
+                presentation_meta_json TEXT)""")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_response_layers_ts ON response_layers(ts)")
             c.execute("""CREATE TABLE IF NOT EXISTS intent_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,

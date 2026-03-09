@@ -2,9 +2,9 @@
 File: SarahMemoryDiagnostics.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-02-18
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 
@@ -108,6 +109,175 @@ REQUIRED_FILES = [
     # "SarahMemoryLLM.py" Stand-Alone LLM and Object Downloader file. for easy installation.
     # "SarahMemoryStartup.py" Stand-Alone File in the C:\SarahMe...directory that allows for auto-run on systemboot up via Registry
 ]
+
+
+def _sm_globals_helper(name: str, default=None):
+    """Best-effort access to governed core helpers exposed by SarahMemoryGlobals."""
+    try:
+        return getattr(config, name, default)
+    except Exception:
+        return default
+
+
+def _derive_module_name(file_path: str) -> str | None:
+    """Convert a Python file path into a likely module name."""
+    try:
+        base = os.path.basename(file_path or "")
+        if not base.endswith('.py'):
+            return None
+        return os.path.splitext(base)[0]
+    except Exception:
+        return None
+
+
+def _get_core_registry_snapshot(force_refresh: bool = False) -> dict:
+    """
+    Best-effort governed core registry snapshot.
+
+    Presence in BASE_DIR is NOT activation. This helper exposes the governed
+    discover -> classify -> validate -> register view when SarahMemoryGlobals
+    provides the registry helpers; otherwise it returns a safe fallback view.
+    """
+    snapshot = {"available": False, "modules": {}, "count": 0}
+    try:
+        refresh = _sm_globals_helper('sm_refresh_core_registry')
+        get_registered = _sm_globals_helper('sm_get_registered_core_modules')
+        if callable(refresh) and force_refresh:
+            try:
+                refresh()
+            except Exception:
+                pass
+        if callable(get_registered):
+            modules = get_registered() or {}
+            if isinstance(modules, dict):
+                snapshot['available'] = True
+                snapshot['modules'] = modules
+                snapshot['count'] = len(modules)
+                return snapshot
+    except Exception:
+        pass
+
+    cache = _sm_globals_helper('CORE_REGISTRY_CACHE', None)
+    if isinstance(cache, dict):
+        snapshot['available'] = True
+        snapshot['modules'] = cache
+        snapshot['count'] = len(cache)
+    return snapshot
+
+
+def _get_core_module_status(module_name: str) -> dict:
+    """Best-effort governed status for a discovered SarahMemory core module."""
+    status = {
+        'module': module_name,
+        'is_candidate': False,
+        'registered': False,
+        'approved': False,
+        'capability': None,
+        'contract_valid': None,
+        'quarantined': False,
+        'reason': None,
+    }
+    if not module_name:
+        return status
+
+    registry = _get_core_registry_snapshot(force_refresh=False)
+    entry = None
+    if registry.get('available'):
+        entry = (registry.get('modules') or {}).get(module_name)
+    is_candidate = module_name.startswith('SarahMemory') or module_name.startswith('app') or module_name.startswith('Unified')
+    status['is_candidate'] = is_candidate
+
+    if isinstance(entry, dict):
+        status['registered'] = True
+        status['approved'] = bool(entry.get('approved') or entry.get('is_approved') or entry.get('status') in ('approved', 'active', 'registered'))
+        status['capability'] = entry.get('capability') or entry.get('category')
+        status['contract_valid'] = entry.get('contract_valid') if 'contract_valid' in entry else entry.get('valid')
+        status['quarantined'] = bool(entry.get('quarantined') or entry.get('status') == 'quarantined')
+        status['reason'] = entry.get('reason') or entry.get('detail')
+        return status
+
+    approve_fn = _sm_globals_helper('sm_is_core_module_approved')
+    if callable(approve_fn):
+        try:
+            status['approved'] = bool(approve_fn(module_name))
+            status['registered'] = status['approved']
+        except Exception as e:
+            status['reason'] = str(e)
+
+    class_fn = _sm_globals_helper('sm_classify_core_file')
+    if callable(class_fn):
+        try:
+            fake_path = os.path.join(getattr(config, 'BASE_DIR', os.getcwd()), f'{module_name}.py')
+            classification = class_fn(fake_path)
+            if isinstance(classification, dict):
+                status['capability'] = classification.get('capability') or classification.get('category')
+                if 'contract_valid' in classification:
+                    status['contract_valid'] = classification.get('contract_valid')
+        except Exception:
+            pass
+
+    return status
+
+
+def _pragma_columns(db_path: str, table_name: str) -> set[str]:
+    cols: set[str] = set()
+    if not db_path or not os.path.exists(db_path):
+        return cols
+    try:
+        conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+        try:
+            cur = conn.cursor()
+            cur.execute(f"PRAGMA table_info(`{table_name}`)")
+            rows = cur.fetchall()
+            for row in rows or []:
+                if len(row) >= 2 and row[1]:
+                    cols.add(str(row[1]))
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return cols
+    return cols
+
+
+def _get_response_layer_schema_report() -> dict:
+    """
+    Best-effort schema report for the canonical/raw + presentation storage split.
+    This tracks the SM_FULL_IO contract without writing to any DB.
+    """
+    report = {
+        'available': False,
+        'conversations_dual_layer': False,
+        'response_layers_table': False,
+        'response_history_dual_layer': False,
+        'details': {}
+    }
+    try:
+        datasets_dir = getattr(config, 'DATASETS_DIR', None)
+        ai_path = getattr(SMDB, 'DB_PATH', None) if SMDB is not None else None
+        if not ai_path and datasets_dir:
+            ai_path = os.path.join(datasets_dir, 'ai_learning.db')
+        sys_path = None
+        if datasets_dir:
+            sys_path = os.path.join(datasets_dir, 'system_logs.db')
+
+        conv_cols = _pragma_columns(ai_path, 'conversations')
+        layers_cols = _pragma_columns(ai_path, 'response_layers')
+        hist_cols = _pragma_columns(sys_path, 'response_history')
+
+        report['details']['conversations_columns'] = sorted(conv_cols)
+        report['details']['response_layers_columns'] = sorted(layers_cols)
+        report['details']['response_history_columns'] = sorted(hist_cols)
+        report['conversations_dual_layer'] = {'canonical_answer', 'presented_answer'} <= conv_cols
+        report['response_layers_table'] = {'canonical_answer', 'presented_answer'} <= layers_cols
+        report['response_history_dual_layer'] = {'canonical_answer', 'presented_answer'} <= hist_cols
+        report['available'] = any([conv_cols, layers_cols, hist_cols])
+    except Exception as e:
+        report['details']['error'] = str(e)
+    return report
+
 # ============================
 # PHASE A: Identity & Device Awareness (v7.7.5–8)
 # ============================
@@ -372,17 +542,41 @@ def run_self_check():
     diagnostics_report = {}
 
     missing_files = []
+    core_presence = {}
+    governed_core = {}
+    governance_summary = {"approved": 0, "registered": 0, "quarantined": 0, "unapproved": 0}
     for file_path in REQUIRED_FILES:
-        if not os.path.exists(file_path):
+        file_name = os.path.basename(file_path)
+        module_name = _derive_module_name(file_path)
+        exists = os.path.exists(file_path)
+        core_presence[file_name] = exists
+        if not exists:
             warning_msg = f"Missing required file: {file_path}"
             logger.warning(warning_msg)
             log_diagnostics_event("Missing File", warning_msg)
             missing_files.append(file_path)
         else:
-            info_msg = f"Verified file: {os.path.basename(file_path)}"
+            info_msg = f"Verified file presence: {file_name}"
             logger.info(info_msg)
             log_diagnostics_event("Verified File", info_msg)
+
+        if module_name:
+            st = _get_core_module_status(module_name)
+            governed_core[module_name] = st
+            if st.get('quarantined'):
+                governance_summary['quarantined'] += 1
+            elif st.get('approved'):
+                governance_summary['approved'] += 1
+            elif st.get('registered'):
+                governance_summary['registered'] += 1
+            elif st.get('is_candidate'):
+                governance_summary['unapproved'] += 1
+
     diagnostics_report["missing_files"] = missing_files
+    diagnostics_report["core_presence"] = core_presence
+    diagnostics_report["governed_core"] = governed_core
+    diagnostics_report["governance_summary"] = governance_summary
+    diagnostics_report["response_memory_schema"] = _get_response_layer_schema_report()
 
     # Check Python version
     py_version = platform.python_version()
@@ -1166,6 +1360,38 @@ class DatabaseDiagnosticsSuperTask:
             except Exception:
                 pass
 
+    def _check_response_memory_schema(self, ai_path, system_logs_path):
+        """Check canonical/raw vs presentation storage schema expected by SM_FULL_IO."""
+        conv_cols = _pragma_columns(ai_path, 'conversations')
+        if conv_cols:
+            dual = {'canonical_answer', 'presented_answer'} <= conv_cols
+            self._add('sqlite-ai_learning', ai_path or '<unknown>', 'response_layers_conversations', dual,
+                      'conversations has canonical_answer + presented_answer.' if dual
+                      else f"conversations columns missing dual-layer fields: {sorted(conv_cols)}")
+        else:
+            self._add('sqlite-ai_learning', ai_path or '<unknown>', 'response_layers_conversations', False,
+                      'conversations table not found or unreadable.')
+
+        layers_cols = _pragma_columns(ai_path, 'response_layers')
+        if layers_cols:
+            dual_layers = {'canonical_answer', 'presented_answer'} <= layers_cols
+            self._add('sqlite-ai_learning', ai_path or '<unknown>', 'response_layers_table', dual_layers,
+                      'response_layers table present with canonical/presented split.' if dual_layers
+                      else f"response_layers table incomplete: {sorted(layers_cols)}")
+        else:
+            self._add('sqlite-ai_learning', ai_path or '<unknown>', 'response_layers_table', False,
+                      'response_layers table not found.')
+
+        hist_cols = _pragma_columns(system_logs_path, 'response_history')
+        if hist_cols:
+            dual_hist = {'canonical_answer', 'presented_answer'} <= hist_cols
+            self._add('sqlite-system_logs', system_logs_path or '<unknown>', 'response_history_layers', dual_hist,
+                      'response_history records canonical/presented answers.' if dual_hist
+                      else f"response_history missing dual-layer columns: {sorted(hist_cols)}")
+        else:
+            self._add('sqlite-system_logs', system_logs_path or '<unknown>', 'response_history_layers', False,
+                      'response_history table not found or unreadable.')
+
     # --- Cloud MySQL (PythonAnywhere / GoogieHost) ---------------------------
 
     def _determine_cloud_env_label(self):
@@ -1291,6 +1517,7 @@ class DatabaseDiagnosticsSuperTask:
         self._check_sqlite_db("sqlite-ai_learning", ai_path)
         self._check_sqlite_db("sqlite-user_profile", user_path)
         self._check_sqlite_db("sqlite-system_logs", system_logs_path)
+        self._check_response_memory_schema(ai_path, system_logs_path)
 
         # Cloud MySQL (PythonAnywhere / GoogieHost depending on CLOUD_DB_HOST)
         self._check_cloud_mysql()
