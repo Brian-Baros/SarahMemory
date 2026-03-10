@@ -2,9 +2,9 @@
 File: SarahMemoryIntegration.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 SarahMemory v8.0 - Integration & Main Menu System
 Integration with Enhanced Features
@@ -698,6 +699,7 @@ def launch_gui():
     """
     v8.0 Enhanced: Launch the main GUI with voice chat integration.
     """
+    voice_thread = None
     try:
         logger.info("[v8.0] Launching main GUI...")
         # Ensure runtime services are active before GUI mainloop
@@ -706,19 +708,27 @@ def launch_gui():
         except Exception:
             pass
         synthesize_voice("Loading Main GUI interface, Please Wait.")
-        
-        voice_thread = threading.Thread(target=run_voice_chat)
+
+        # Daemonize the voice thread so a blocked microphone read never prevents process exit.
+        voice_thread = threading.Thread(target=run_voice_chat, name="SM_VoiceChat", daemon=True)
         voice_thread.start()
-        
+
         run_gui()
-        
-        terminate_flag.set()
-        voice_thread.join()
-        
         logger.info("[v8.0] GUI closed; returning to integration menu.")
-    
+
     except Exception as e:
         logger.error(f"[v8.0] GUI Launch Error: {e}")
+    finally:
+        terminate_flag.set()
+        try:
+            shutdown_tts()
+        except Exception:
+            pass
+        if voice_thread is not None:
+            try:
+                voice_thread.join(timeout=2.0)
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -728,14 +738,29 @@ def shutdown_sequence():
     """
     v8.0 Enhanced: Clean shutdown with voice confirmation.
     """
-    synthesize_voice("Shutting down. Have a great day!")
+    try:
+        synthesize_voice("Shutting down. Have a great day!")
+    except Exception:
+        pass
     logger.info("[v8.0] Initiating safe shutdown procedures.")
-    
+
     print("\n" + "═" * 78)
     print("  SARAHMEMORY v8.0 - SHUTTING DOWN")
     print("═" * 78)
-    
+
     terminate_flag.set()
+
+    # Run the centralized local cleanup first so threads, shared memory, DBs, and OpenCV release cleanly.
+    try:
+        import SarahMemoryInitialization as init
+        init.safe_shutdown()
+    except Exception as e:
+        logger.warning(f"[v8.0] Initialization safe shutdown hook failed: {e}")
+
+    try:
+        shutdown_tts()
+    except Exception:
+        pass
 
     # v8.0 Hotfix: Ensure local API server fully terminates and releases PORT (Windows)
     try:
@@ -787,15 +812,24 @@ def shutdown_sequence():
                 except Exception:
                     # Best-effort only; do not block shutdown
                     pass
+
+            # Briefly wait for the listening port to drop so the same console can relaunch cleanly.
+            for _ in range(20):
+                try:
+                    chk = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
+                except Exception:
+                    chk = ""
+                if f":{port}" not in chk:
+                    break
+                time.sleep(0.15)
     except Exception:
         pass
 
     logger.info("[v8.0] Safe shutdown completed successfully.")
-    shutdown_tts()
-    
+
     print("\n  ✓ Shutdown complete. Thank you for using SarahMemory!")
     print("  ✓ Visit https://www.sarahmemory.com for updates\n")
-    
+
     sys.exit(0)
 
 

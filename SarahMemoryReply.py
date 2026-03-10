@@ -95,9 +95,12 @@ def _stamp_bundle(bundle: dict) -> dict:
     try:
         if not isinstance(bundle, dict):
             return bundle
+
         meta = bundle.get("meta") or {}
         if not isinstance(meta, dict):
             meta = {}
+
+        prompt_text = meta.get("_prompt_text")
 
         source = meta.get("source") or bundle.get("source")
         if not source:
@@ -106,7 +109,8 @@ def _stamp_bundle(bundle: dict) -> dict:
         intent = meta.get("intent") or bundle.get("intent") or "chat"
 
         response_text = _sm_sanitize_user_text(
-            bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or ""
+            bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or "",
+            user_text=prompt_text,
         )
 
         meta["source"] = source
@@ -117,6 +121,7 @@ def _stamp_bundle(bundle: dict) -> dict:
         meta.pop("raw_answer", None)
         meta.pop("canonical_answer", None)
         meta.pop("trace_internal", None)
+        meta.pop("_prompt_text", None)
 
         bundle["ok"] = bool(bundle.get("ok", True))
         bundle["source"] = source
@@ -326,7 +331,8 @@ class ReplyBundle:
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        response_text = _sm_sanitize_user_text(d.get("response") or "")
+        meta = d.get("meta") if isinstance(d.get("meta"), dict) else {}
+        response_text = _sm_sanitize_user_text(d.get("response") or "", user_text=meta.get("_prompt_text"))
         if d.get("links") is None:
             d["links"] = []
         if d.get("meta") is None:
@@ -364,7 +370,7 @@ def _sm_make_outward_bundle(
     errors: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     meta = dict(meta or {})
-    text = _sm_sanitize_user_text(presentation_text or "")
+    text = _sm_sanitize_user_text(presentation_text or "", user_text=meta.get("_prompt_text"))
     bundle = ReplyBundle(text, image_url=image_url, links=list(links or []), meta=meta).to_dict()
     bundle["artifacts"] = list(artifacts or [])
     bundle["actions"] = list(actions or [])
@@ -608,16 +614,23 @@ def _try_web(text: str) -> Tuple[Optional[str], Optional[str], List[str]]:
 # Some local LLMs echo role transcripts (system/user/assistant) and hidden thought tags.
 # This scrubber ensures the GUI/TTS sees only the final answer.
 
-def _sm_sanitize_user_text(text: str, for_tts: bool = False) -> str:
+def _sm_sanitize_user_text(text: str, for_tts: bool = False, user_text: Optional[str] = None) -> str:
     """
     Sanitize model output so the UI/TTS only sees the final user-facing answer.
     Removes prompt scaffolding, hidden blocks, markdown noise, provenance labels,
-    and decorative symbols that should never be spoken literally.
+    echoed prompts, mojibake, control bytes, and decorative symbols.
     """
     if not text:
         return ""
 
     t = html.unescape(str(text)).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+    # Remove control bytes early while preserving tab/newline.
+    try:
+        t = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]", "", t)
+        t = t.replace("\ufffd", " ")
+    except Exception:
+        pass
 
     # Strip hidden reasoning blocks (common tags)
     try:
@@ -626,15 +639,17 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False) -> str:
     except Exception:
         pass
 
-    # If an explicit assistant marker exists, keep only what follows the LAST one.
+    # If explicit transcript markers exist, keep only the visible assistant content.
     try:
-        matches = list(re.finditer(r"(?im)^(assistant)\s*:?\s*$", t))
+        t = re.sub(r"(?im)^\s*(system|developer|tool)\s*:\s*.*$", "", t)
+        matches = list(re.finditer(r"(?im)^assistant\s*:\s*$", t))
         if matches:
             t = t[matches[-1].end():].strip()
         elif re.search(r"(?im)^assistant\s*:\s*", t):
             parts = re.split(r"(?im)^assistant\s*:\s*", t)
             if parts:
                 t = parts[-1].strip()
+        t = re.sub(r"(?im)^\s*(user|human|prompt|question)\s*:\s*", "", t)
     except Exception:
         pass
 
@@ -687,12 +702,62 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False) -> str:
     except Exception:
         pass
 
+    # Remove echoed prompt if the first visible line/paragraph is the user's question.
+    try:
+        if user_text:
+            def _norm_cmp(s: str) -> str:
+                s = html.unescape(str(s or ""))
+                s = re.sub(r"(?i)^\s*(user|human|prompt|question)\s*:\s*", "", s)
+                s = s.strip().strip(" \"'`*_[](){}<>")
+                s = re.sub(r"\s+", " ", s)
+                s = re.sub(r"[\s\-–—:;,.!?]+$", "", s)
+                return s.lower()
+
+            prompt_norm = _norm_cmp(user_text)
+            if prompt_norm:
+                lines = t.split("\n")
+                while lines:
+                    first = lines[0].strip()
+                    if not first:
+                        lines.pop(0)
+                        continue
+                    first_norm = _norm_cmp(first)
+                    first_para = first_norm
+                    if len(lines) > 1 and lines[1].strip() == "":
+                        para_lines = []
+                        for line in lines:
+                            if not line.strip() and para_lines:
+                                break
+                            if line.strip():
+                                para_lines.append(line.strip())
+                        if para_lines:
+                            first_para = _norm_cmp(" ".join(para_lines))
+                    if first_norm == prompt_norm or first_para == prompt_norm:
+                        lines.pop(0)
+                        while lines and not lines[0].strip():
+                            lines.pop(0)
+                        continue
+                    break
+                t = "\n".join(lines).strip()
+    except Exception:
+        pass
+
     # Strip decorative symbols and emoji-like characters that cause literal speech.
     try:
         t = t.replace("™", " ").replace("®", " ").replace("©", " ")
         t = t.replace("•", "\n").replace("▪", "\n").replace("▫", "\n").replace("◦", "\n")
         t = re.sub(r"[\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]", " ", t)
         t = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufeff]", "", t)
+    except Exception:
+        pass
+
+    # Remove common mojibake fragments and malformed tail noise.
+    try:
+        t = re.sub(r"(?:Ã.|Â.|ð.|Ð.){2,}", " ", t)
+        t = re.sub(r"\b(?:Ã[^\s]{0,7}|Â[^\s]{0,7}|ð[^\s]{0,7}|Ð[^\s]{0,7})\b", " ", t)
+        t = re.sub(r"[ÂÃÐð]+(?=\s|$)", " ", t)
+        t = re.sub(r"(?:\s*[ÂÃÐð�][^\w\n]{0,4})+\s*$", "", t)
+        t = re.sub(r"(?:\s*[^\w\s\.,;:!?\)\]\}\"'/%-]){2,}\s*$", "", t)
     except Exception:
         pass
 
@@ -717,44 +782,37 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False) -> str:
         t = re.sub(r"[ \t]{2,}", " ", t)
         t = re.sub(r"\s+([,.;:!?])", r"\1", t)
         t = re.sub(r"([,.;:!?]){2,}", lambda m: m.group(0)[0], t)
+        t = re.sub(r"[ \t]+\n", "\n", t)
+        t = re.sub(r"\n[ \t]+", "\n", t)
+        t = re.sub(r"(?:\s*[,;:]+\s*)+$", "", t)
         t = t.strip(" \t\n-–—*_`#|:;,")
     except Exception:
         pass
 
     return t.strip()
+
+
 def _finalize_text(raw, meta):
-    txt = _sm_sanitize_user_text((raw or "").strip())
+    meta = meta or {}
+    txt = _sm_sanitize_user_text((raw or "").strip(), user_text=meta.get("_prompt_text"))
     if not txt:
         return ""
-    if (meta or {}).get("intent") in {"identity", "math", "image", "web", "local"}:
+
+    if meta.get("intent") in {"identity", "math", "image", "web", "local", "interrupt", "system_status"}:
         return txt
-    # Personality styling + gentle follow-ups (inline to avoid GUI changes)
+
+    styled = txt
     try:
-        from SarahMemoryPersonality import integrate_with_personality as _pint
-        styled = _pint(txt)
+        try:
+            styled = integrate_with_personality(txt, meta=meta)
+        except TypeError:
+            styled = integrate_with_personality(txt)
     except Exception:
         styled = txt
-    # Minimal follow-up generation using adaptive state
-    try:
-        from SarahMemoryAdaptive import advanced_emotional_learning
-        emo = advanced_emotional_learning(txt) or {}
-        bal = float(emo.get("emotional_balance", 0.0))
-        cues = []
-        if bal < -0.2:
-            cues.append("Want me to keep this short and calm?")
-        if bal > 0.25:
-            cues.append("Want a creative spin on this?")
-        if "?" not in txt:
-            cues.append("Should I dig deeper on that?")
-        if cues:
-            styled = styled + "\n\n• " + "\n• ".join(cues[:2])
-    except Exception:
-        pass
-    return styled
-    try:
-        return integrate_with_personality(txt)    # 1-arg call
-    except Exception:
-        return txt
+
+    styled = _sm_sanitize_user_text(styled, user_text=meta.get("_prompt_text"))
+    return styled or txt
+
 
 # =============================================================================
 # PUBLIC: Back-compat alias and main entry
@@ -809,6 +867,7 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
         "offline": False,
         "model": None,
         "latency_ms": 0,
+        "_prompt_text": text_in,
     }
     # --- System Management Intents via SMAPI ---
     try:
@@ -1069,7 +1128,11 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
 def _store_history_safe(bundle: Dict[str, Any]) -> None:
     try:
         safe_bundle = dict(bundle or {})
-        safe_bundle["response"] = _sm_sanitize_user_text(safe_bundle.get("presentation_reply") or safe_bundle.get("response") or "")
+        safe_meta = safe_bundle.get("meta") if isinstance(safe_bundle.get("meta"), dict) else {}
+        safe_bundle["response"] = _sm_sanitize_user_text(
+            safe_bundle.get("presentation_reply") or safe_bundle.get("response") or "",
+            user_text=safe_meta.get("_prompt_text"),
+        )
         safe_bundle["presentation_reply"] = safe_bundle.get("response") or ""
         store_response_history(safe_bundle)
     except Exception as e:
@@ -1143,149 +1206,105 @@ def _self_test() -> Dict[str, Any]:
 if __name__ == "__main__":
     out = _self_test()
     print(json.dumps(out, indent=2))
+
+
+# Back-compat helpers retained but neutered: provenance stays in meta only.
 def render_provenance_footer(source_label, intent_label):
-    try: return f"[Source: {source_label}] (Intent: {intent_label})"
-    except Exception: return "[Source: Unknown] (Intent: undetermined)"
+    return ""
+
+
 def _append_source_intent_to_reply(text, provenance=None, intent=None):
-    src_lab=(provenance or {}).get("source","Unknown"); lab=intent or "undetermined"
-    foot=render_provenance_footer(src_lab, lab)
-    if text and not text.endswith("\n"): text=text+"\n"
-    return (text or "") + foot
+    return _sm_sanitize_user_text(text or "")
 
 
 # --- injected: on-demand ensure table for `response` ---
 def _ensure_response_table(db_path=None):
     try:
-        import sqlite3, os, logging
+        import sqlite3
+        import os
+        import logging
         try:
             import SarahMemoryGlobals as config
         except Exception:
-            class config: pass
+            class config:
+                DATASETS_DIR = os.path.join(os.getcwd(), "data", "memory", "datasets")
         if db_path is None:
-            base = getattr(config, "BASE_DIR", os.getcwd())
             db_path = os.path.join(config.DATASETS_DIR, "system_logs.db")
-        con = sqlite3.connect(db_path); cur = con.cursor()
-        cur.execute('CREATE TABLE IF NOT EXISTS response (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT, user TEXT, content TEXT, source TEXT, intent TEXT)'); con.commit(); con.close()
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS response ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts TEXT, user TEXT, content TEXT, source TEXT, intent TEXT)"
+        )
+        con.commit()
+        con.close()
         logging.debug("[DB] ensured table `response` in %s", db_path)
     except Exception as e:
         try:
-            import logging; logging.warning("[DB] ensure `response` failed: %s", e)
+            import logging
+            logging.warning("[DB] ensure `response` failed: %s", e)
         except Exception:
             pass
+
+
 try:
     _ensure_response_table()
 except Exception:
     pass
 
-def _stamp_bundle(bundle: dict) -> dict:
-    try:
-        if not isinstance(bundle, dict):
-            return bundle
-        meta = bundle.get("meta") or {}
-        if not isinstance(meta, dict):
-            meta = {}
 
-        source = meta.get("source") or bundle.get("source")
-        if not source:
-            pipe = meta.get("pipeline") or []
-            source = pipe[-1] if pipe else ("offline" if meta.get("offline") else "local")
-        intent = meta.get("intent") or bundle.get("intent") or "chat"
-
-        response_text = _sm_sanitize_user_text(
-            bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or ""
-        )
-
-        meta["source"] = source
-        meta["intent"] = intent
-        meta.setdefault("outward_formatter", "SarahMemoryReply")
-        meta.setdefault("presentation_only", True)
-        meta.setdefault("latency_ms", 0)
-        meta.pop("raw_answer", None)
-        meta.pop("canonical_answer", None)
-        meta.pop("trace_internal", None)
-
-        bundle["ok"] = bool(bundle.get("ok", True))
-        bundle["source"] = source
-        bundle["intent"] = intent
-        bundle["response"] = response_text
-        bundle["presentation_reply"] = response_text
-        bundle["reply"] = response_text
-        bundle["content"] = response_text
-
-        if not isinstance(bundle.get("links"), list):
-            bundle["links"] = list(bundle.get("links") or [])
-        if not isinstance(bundle.get("artifacts"), list):
-            bundle["artifacts"] = list(bundle.get("artifacts") or [])
-        if not isinstance(bundle.get("actions"), list):
-            bundle["actions"] = list(bundle.get("actions") or [])
-        if not isinstance(bundle.get("errors"), list):
-            bundle["errors"] = list(bundle.get("errors") or [])
-
-        image_url = bundle.get("image_url")
-        if image_url and not any(isinstance(a, dict) and a.get("path") == image_url for a in bundle["artifacts"]):
-            bundle["artifacts"].append({
-                "type": "image",
-                "path": image_url,
-                "display_ready": True,
-                "download_ready": True,
-                "source": source,
-            })
-
-        bundle["meta"] = meta
-    except Exception:
-        pass
-    return bundle
-# --- v7.7.4: enforce provenance label in responses ---
 def _sm_enforce_provenance(bundle):
     """
-    Legacy hook. Keep provenance in meta ONLY; never append to the visible response text.
+    Legacy hook. Keep provenance in meta ONLY; never append to visible response text.
     Also acts as a last-chance sanitizer for bundle['response'].
     """
     try:
         if not isinstance(bundle, dict):
             return bundle
         meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
-        src = meta.get("source") or meta.get("Source") or meta.get("provider") or bundle.get("source") or "Local"
-        meta["source"] = src
+        meta["source"] = meta.get("source") or meta.get("Source") or meta.get("provider") or bundle.get("source") or "local"
         bundle["meta"] = meta
         if "response" in bundle and isinstance(bundle.get("response"), str):
-            bundle["response"] = _sm_sanitize_user_text(bundle.get("response") or "")
+            bundle["response"] = _sm_sanitize_user_text(
+                bundle.get("response") or "",
+                user_text=meta.get("_prompt_text"),
+            )
     except Exception:
         pass
     return bundle
-
-try:
-    if 'generate_reply' in globals():
-        _orig = generate_reply
-        def generate_reply(*args, **kwargs):
-            out = _orig(*args, **kwargs)
-            if isinstance(out, dict):
-                out = _sm_enforce_provenance(out)
-                out = _stamp_bundle(out)
-                return out
-            return out
-except Exception:
-    pass
 
 
 # v7.7.4 fallback: ensure emotion logging doesn't fail if table name differs
 def _log_emotion_safe(emotion: str, intensity: float = 0.5):
     try:
-        import os, sqlite3, time
-        db = os.path.join(os.getcwd(), 'data', 'memory', 'datasets', 'system_logs.db')
+        import os
+        import sqlite3
+        import time
+        db = os.path.join(os.getcwd(), "data", "memory", "datasets", "system_logs.db")
         os.makedirs(os.path.dirname(db), exist_ok=True)
-        con = sqlite3.connect(db); cur = con.cursor()
-        cur.execute("INSERT INTO emotion_states(ts, emotion, intensity) VALUES (?,?,?)",
-                    (time.strftime('%Y-%m-%dT%H:%M:%S'), emotion, float(intensity)))
-        con.commit(); con.close()
+        con = sqlite3.connect(db)
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO emotion_states(ts, emotion, intensity) VALUES (?,?,?)",
+            (time.strftime("%Y-%m-%dT%H:%M:%S"), emotion, float(intensity)),
+        )
+        con.commit()
+        con.close()
     except Exception:
         try:
-            con = sqlite3.connect(db); cur = con.cursor()
-            cur.execute("INSERT INTO traits(ts, trait, value) VALUES (?,?,?)",
-                        (time.strftime('%Y-%m-%dT%H:%M:%S'), emotion, float(intensity)))
-            con.commit(); con.close()
+            con = sqlite3.connect(db)
+            cur = con.cursor()
+            cur.execute(
+                "INSERT INTO traits(ts, trait, value) VALUES (?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), emotion, float(intensity)),
+            )
+            con.commit()
+            con.close()
         except Exception:
             pass
+
 
 # ====================================================================
 # END OF SarahMemoryReply.py v8.0.0
