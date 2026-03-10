@@ -188,6 +188,168 @@ VOICE_OUTPUT_ON = TTS_ON
 VOICE_OUTPUT_ENABLED = TTS_ON
 # Small in-memory cache for hot endpoints (rankings/wallet/etc.)
 _CACHE = {}
+
+# Session-scoped live vision frame cache for Custom / Web UI handoff.
+# Stores a lightweight latest-frame snapshot per UI session so /api/chat can
+# attach the newest frame into the governed Context Packet without changing
+# non-vision routes.
+_VISION_FRAME_LOCK = threading.Lock()
+_VISION_FRAME_CACHE: dict[str, dict] = {}
+_VISION_FRAME_MAX_AGE_S = int(os.getenv("SM_VISION_FRAME_MAX_AGE_S", "45") or 45)
+_VISION_FRAME_MAX_CHARS = int(os.getenv("SM_VISION_FRAME_MAX_CHARS", "1800000") or 1800000)
+def _get_or_create_session_id(payload: dict | None = None) -> str:
+    """Return a stable session identifier for UI->API coordination."""
+    payload = payload or {}
+    for key in ("session_id", "sid"):
+        val = str(payload.get(key) or "").strip()
+        if val:
+            try:
+                session["sm_session_id"] = val
+            except Exception:
+                pass
+            return val
+    header_sid = str(request.headers.get("X-Session-Id") or request.headers.get("X-Session-ID") or "").strip()
+    if header_sid:
+        try:
+            session["sm_session_id"] = header_sid
+        except Exception:
+            pass
+        return header_sid
+    try:
+        sid = str(session.get("sm_session_id") or "").strip()
+    except Exception:
+        sid = ""
+    if sid:
+        return sid
+    sid = secrets.token_urlsafe(18)
+    try:
+        session["sm_session_id"] = sid
+    except Exception:
+        pass
+    return sid
+def _normalize_vision_frame_payload(payload: dict | None = None) -> dict | None:
+    """Accept several frontend frame shapes and normalize to one dict."""
+    payload = payload or {}
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    candidates = [
+        payload.get("frame"),
+        payload.get("image"),
+        payload.get("image_data"),
+        payload.get("imageData"),
+        payload.get("image_base64"),
+        payload.get("imageBase64"),
+        payload.get("data_url"),
+        payload.get("dataUrl"),
+        payload.get("vision_frame"),
+        payload.get("latest_frame"),
+        meta.get("frame"),
+        meta.get("image"),
+        meta.get("image_data"),
+        meta.get("imageData"),
+        meta.get("image_base64"),
+        meta.get("imageBase64"),
+        meta.get("data_url"),
+        meta.get("dataUrl"),
+        meta.get("vision_frame"),
+        meta.get("latest_frame"),
+    ]
+    frame_value = None
+    for cand in candidates:
+        if isinstance(cand, dict):
+            inner = cand.get("image") or cand.get("imageBase64") or cand.get("image_base64") or cand.get("dataUrl") or cand.get("data_url") or cand.get("frame")
+            if inner:
+                frame_value = inner
+                break
+        elif isinstance(cand, str) and cand.strip():
+            frame_value = cand.strip()
+            break
+    if not frame_value:
+        return None
+    if not isinstance(frame_value, str):
+        try:
+            frame_value = str(frame_value)
+        except Exception:
+            return None
+    frame_value = frame_value.strip()
+    if not frame_value:
+        return None
+    if len(frame_value) > _VISION_FRAME_MAX_CHARS:
+        app_logger.warning("Vision frame rejected: payload too large (%s chars)", len(frame_value))
+        return None
+    return {
+        "frame": frame_value,
+        "ts": float(payload.get("ts") or meta.get("ts") or time.time()),
+        "source": str(payload.get("source") or meta.get("source") or "ui").strip() or "ui",
+        "width": payload.get("width") or meta.get("width"),
+        "height": payload.get("height") or meta.get("height"),
+        "mime": str(payload.get("mime") or meta.get("mime") or "image/jpeg").strip() or "image/jpeg",
+    }
+def _prune_vision_frame_cache(now_ts: float | None = None) -> None:
+    now_ts = float(now_ts or time.time())
+    stale_before = now_ts - float(_VISION_FRAME_MAX_AGE_S)
+    with _VISION_FRAME_LOCK:
+        for sid, rec in list(_VISION_FRAME_CACHE.items()):
+            try:
+                if float(rec.get("ts") or 0.0) < stale_before:
+                    _VISION_FRAME_CACHE.pop(sid, None)
+            except Exception:
+                _VISION_FRAME_CACHE.pop(sid, None)
+def _store_latest_vision_frame(session_id: str, frame_payload: dict) -> dict:
+    rec = dict(frame_payload or {})
+    rec["session_id"] = session_id
+    rec["stored_ts"] = time.time()
+    _prune_vision_frame_cache(rec["stored_ts"])
+    with _VISION_FRAME_LOCK:
+        _VISION_FRAME_CACHE[session_id] = rec
+    return rec
+def _get_latest_vision_frame(session_id: str, *, max_age_s: int | None = None) -> dict | None:
+    if not session_id:
+        return None
+    max_age = int(max_age_s or _VISION_FRAME_MAX_AGE_S)
+    stale_before = time.time() - max(1, max_age)
+    try:
+        with _VISION_FRAME_LOCK:
+            rec = _VISION_FRAME_CACHE.get(session_id)
+            if not rec:
+                return None
+            ts = float(rec.get("ts") or rec.get("stored_ts") or 0.0)
+            if ts < stale_before:
+                _VISION_FRAME_CACHE.pop(session_id, None)
+                return None
+            return dict(rec)
+    except Exception:
+        return None
+def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict) -> tuple[dict, dict | None]:
+    """Attach the freshest available frame into the Context Packet meta block."""
+    payload = payload if isinstance(payload, dict) else {}
+    context_packet = context_packet if isinstance(context_packet, dict) else {}
+    meta_block = context_packet.get("meta") if isinstance(context_packet.get("meta"), dict) else {}
+    frame_rec = _normalize_vision_frame_payload(payload)
+    session_id = str(context_packet.get("session_id") or _get_or_create_session_id(payload)).strip()
+    if frame_rec is not None and session_id:
+        frame_rec = _store_latest_vision_frame(session_id, frame_rec)
+    elif session_id:
+        frame_rec = _get_latest_vision_frame(session_id)
+    if not frame_rec:
+        return context_packet, None
+    meta_block["frame"] = frame_rec.get("frame")
+    meta_block["latest_frame"] = frame_rec.get("frame")
+    meta_block["vision_frame"] = {
+        "ts": frame_rec.get("ts"),
+        "source": frame_rec.get("source"),
+        "width": frame_rec.get("width"),
+        "height": frame_rec.get("height"),
+        "mime": frame_rec.get("mime"),
+    }
+    images = meta_block.get("images") if isinstance(meta_block.get("images"), list) else []
+    if not images:
+        images = [frame_rec.get("frame")]
+    elif frame_rec.get("frame") not in images:
+        images = [frame_rec.get("frame")] + list(images)
+    meta_block["images"] = images[:3]
+    context_packet["meta"] = meta_block
+    context_packet["session_id"] = session_id
+    return context_packet, frame_rec
 def _cache_get(key: str):
     item = _CACHE.get(key)
     if not item:
@@ -511,9 +673,24 @@ def _sm_module_approved(module_name: str, capability: str | None = None) -> bool
 
 def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, complexity: str, avatar_request: bool, *, local_only: bool, safe_mode: bool, neoskymatrix: bool, developersmode: bool) -> dict:
     meta_in = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    session_id = _get_or_create_session_id(payload)
+
+    images = payload.get("images") if isinstance(payload.get("images"), list) else []
+    if not images and isinstance(meta_in.get("images"), list):
+        images = list(meta_in.get("images") or [])
+    video = payload.get("video") if isinstance(payload.get("video"), list) else []
+    if not video and isinstance(meta_in.get("video"), list):
+        video = list(meta_in.get("video") or [])
+    files = payload.get("files") if isinstance(payload.get("files"), list) else []
+    if not files and isinstance(meta_in.get("files"), list):
+        files = list(meta_in.get("files") or [])
+
+    frame_payload = _normalize_vision_frame_payload(payload)
+    frame_value = frame_payload.get("frame") if isinstance(frame_payload, dict) else None
+
     return {
         "text": text,
-        "session_id": payload.get("session_id") or payload.get("sid"),
+        "session_id": session_id,
         "user_id": payload.get("user_id") or payload.get("uid"),
         "source": str(payload.get("source") or "api").strip() or "api",
         "mode": str(payload.get("mode") or ("LOCAL" if local_only else "ANY")).strip().upper() or "ANY",
@@ -524,10 +701,12 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
         "request_source": "api_chat",
         "ui": str(payload.get("ui") or "webui"),
         "meta": {
-            "files": payload.get("files") or [],
-            "images": payload.get("images") or [],
+            "files": files,
+            "images": images,
             "audio": payload.get("audio") or [],
-            "video": payload.get("video") or [],
+            "video": video,
+            "frame": frame_value,
+            "latest_frame": frame_value,
             "offline": bool(local_only or payload.get("offline") or payload.get("local_only")),
             "local_only": bool(local_only),
             "safe_mode": bool(safe_mode),
@@ -1311,6 +1490,54 @@ def api_health():
         }
     ), 200
 
+@app.route("/api/vision/frame", methods=["POST"])
+def api_vision_frame():
+    """Cache the latest UI vision frame for the current session.
+
+    Intended for Custom / Web UI low-FPS webcam pushes so /api/chat can reuse the
+    freshest frame without forcing every non-vision chat message to upload media.
+    """
+    try:
+        payload = request.get_json(silent=True) or {}
+        session_id = _get_or_create_session_id(payload)
+        frame_rec = _normalize_vision_frame_payload(payload)
+        if not frame_rec:
+            return jsonify({"ok": False, "error": "Missing frame/image payload.", "session_id": session_id}), 400
+        stored = _store_latest_vision_frame(session_id, frame_rec)
+        return jsonify({
+            "ok": True,
+            "session_id": session_id,
+            "frame_cached": True,
+            "ts": stored.get("ts"),
+            "source": stored.get("source"),
+            "has_frame": True,
+        }), 200
+    except Exception as e:
+        app_logger.error(f"/api/vision/frame failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.get("/api/vision/frame/status")
+def api_vision_frame_status():
+    """Small debug/status endpoint for the active session vision cache."""
+    try:
+        payload = {
+            "session_id": request.args.get("session_id") or request.headers.get("X-Session-Id") or request.headers.get("X-Session-ID")
+        }
+        session_id = _get_or_create_session_id(payload)
+        rec = _get_latest_vision_frame(session_id)
+        return jsonify({
+            "ok": True,
+            "session_id": session_id,
+            "has_frame": bool(rec),
+            "ts": (rec or {}).get("ts"),
+            "source": (rec or {}).get("source"),
+            "width": (rec or {}).get("width"),
+            "height": (rec or {}).get("height"),
+        }), 200
+    except Exception as e:
+        app_logger.error(f"/api/vision/frame/status failed: {e}", exc_info=True)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -1355,6 +1582,7 @@ def api_chat():
             neoskymatrix=neoskymatrix,
             developersmode=developersmode,
         )
+        context_packet, frame_rec = _attach_cached_or_inline_vision_frame(payload, context_packet)
         _sm_refresh_core_registry(force=False)
 
         if not text:
@@ -1474,6 +1702,11 @@ def api_chat():
                     "ui": context_packet.get("ui"),
                     "local_only": local_only,
                     "offline": local_only,
+                    "session_id": context_packet.get("session_id"),
+                    "frame": context_packet.get("meta", {}).get("frame"),
+                    "latest_frame": context_packet.get("meta", {}).get("latest_frame"),
+                    "images": context_packet.get("meta", {}).get("images", []),
+                    "vision_frame": context_packet.get("meta", {}).get("vision_frame"),
                     "context_packet": context_packet,
                     "mode_flags": context_packet.get("meta", {}).get("mode_flags", {}),
                     "governor": {"decision": gov_decision, "reasons": gov_reasons},
@@ -1500,6 +1733,8 @@ def api_chat():
                     "governor": {"decision": gov_decision, "reasons": gov_reasons} if developersmode else {"decision": gov_decision},
                     "local_only": local_only,
                     "version": PROJECT_VERSION,
+                    "session_id": context_packet.get("session_id"),
+                    "vision_frame_attached": bool(frame_rec),
                     "neuron_trace": nres_dict.get("trace") or {},
                 }
                 artifacts = []
