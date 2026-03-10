@@ -26,6 +26,7 @@ import random
 import numpy as np
 from datetime import datetime
 import re as _re
+from typing import Any, Dict, List, Optional, Tuple
 import SarahMemoryGlobals as config
 from SarahMemoryGlobals import DATASETS_DIR, OBJECT_MODEL_CONFIG, OBJECT_DETECTION_ENABLED, MODEL_PATHS
 #import SarahMemoryFacialRecognition as fr
@@ -175,6 +176,13 @@ if not logger.hasHandlers():
     sh = logging.NullHandler()
     sh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(sh)
+
+# Runtime memory for lightweight vision continuity (single-process, best-effort).
+_VISION_RUNTIME_STATE: Dict[str, Any] = {
+    "prev_gray": None,
+    "prev_timestamp": None,
+    "last_findings": None,
+}
 
 # === [ADDED] Label normalization & synonyms ===
 
@@ -867,122 +875,632 @@ def _detect_eyeglasses(frame, face_box):
     except Exception:
         return False
 
+def _normalize_visual_request(question_or_payload: Any) -> Dict[str, Any]:
+    """Normalize a raw question or AdvCU/helper payload into a vision request contract."""
+    request: Dict[str, Any] = {
+        "text": "",
+        "query_type": None,
+        "requested_subject": None,
+        "requested_attributes": [],
+        "action_expectation": "answer_only",
+        "module_hints": [],
+    }
+
+    payload = question_or_payload
+    if isinstance(question_or_payload, dict):
+        request["text"] = str(
+            question_or_payload.get("text")
+            or question_or_payload.get("raw_text")
+            or question_or_payload.get("question")
+            or ""
+        ).strip()
+        vision = None
+        if isinstance(question_or_payload.get("vision"), dict):
+            vision = question_or_payload.get("vision")
+        elif isinstance(question_or_payload.get("helper_payload"), dict):
+            hp = question_or_payload.get("helper_payload") or {}
+            if isinstance(hp.get("vision"), dict):
+                vision = hp.get("vision")
+        elif isinstance(question_or_payload.get("semantic_packet"), dict):
+            sp = question_or_payload.get("semantic_packet") or {}
+            hp = sp.get("helper_payload") or {}
+            if isinstance(hp.get("vision"), dict):
+                vision = hp.get("vision")
+
+        merged = vision or question_or_payload
+        if isinstance(merged, dict):
+            request["query_type"] = merged.get("query_type") or request["query_type"]
+            request["requested_subject"] = merged.get("requested_subject") or merged.get("subject") or request["requested_subject"]
+            attrs = merged.get("requested_attributes") or merged.get("attributes") or []
+            if isinstance(attrs, (list, tuple, set)):
+                request["requested_attributes"] = [str(x).strip().lower() for x in attrs if str(x).strip()]
+            elif attrs:
+                request["requested_attributes"] = [str(attrs).strip().lower()]
+            request["action_expectation"] = str(merged.get("action_expectation") or request["action_expectation"]).strip()
+            hints = merged.get("module_hints") or question_or_payload.get("module_hints") or []
+            if isinstance(hints, (list, tuple, set)):
+                request["module_hints"] = [str(x) for x in hints if str(x).strip()]
+    else:
+        request["text"] = str(question_or_payload or "").strip()
+
+    q = request["text"].lower()
+    parsed = sm_parse_visual_intent(request["text"])
+
+    if not request["query_type"]:
+        if any(s in q for s in ("read", "say", "text", "label", "sign", "shirt say", "screen say", "ocr")):
+            request["query_type"] = "read_text"
+        elif any(s in q for s in ("track", "moving", "motion", "follow")):
+            request["query_type"] = "track_motion"
+        elif any(s in q for s in ("distance", "how far", "how close", "too close", "near me", "near the machine", "danger zone", "safe zone", "hazard zone")):
+            request["query_type"] = "inspect_safety_zone" if any(s in q for s in ("danger zone", "safe zone", "hazard zone")) else "estimate_distance"
+        elif any(s in q for s in ("fit", "look fat", "look good", "look okay", "match", "style", "outfit")):
+            request["query_type"] = "assess_style_or_fit"
+        elif any(s in q for s in ("face", "eyes", "eye", "nose", "mouth", "beard", "glasses", "hat on my face")):
+            request["query_type"] = "detect_faces"
+        elif parsed.get("is_color_query") or " color " in f" {q} ":
+            request["query_type"] = "identify_color"
+        elif any(s in q for s in ("before and after", "compare", "difference", "changed")):
+            request["query_type"] = "compare_before_after"
+        elif any(s in q for s in ("what do you see", "scene", "summarize", "around me", "environment")):
+            request["query_type"] = "scene_summary"
+        else:
+            request["query_type"] = "detect_objects"
+
+    if not request["requested_subject"]:
+        parsed_target = parsed.get("target")
+        if parsed_target in ("person", "screen", "object"):
+            request["requested_subject"] = parsed_target
+        elif parsed_target and _re.search(rf"\b{_re.escape(str(parsed_target))}\b", q):
+            request["requested_subject"] = parsed_target
+
+    subject = str(request.get("requested_subject") or "").strip().lower()
+    request["requested_subject"] = subject or None
+
+    if not request["requested_attributes"]:
+        default_attrs = {
+            "identify_color": ["color"],
+            "read_text": ["text"],
+            "detect_objects": ["objects"],
+            "detect_faces": ["face"],
+            "track_motion": ["motion"],
+            "estimate_distance": ["distance"],
+            "inspect_safety_zone": ["distance", "risk"],
+            "compare_before_after": ["difference"],
+            "assess_style_or_fit": ["style", "fit"],
+            "scene_summary": ["scene"],
+        }
+        request["requested_attributes"] = list(default_attrs.get(request["query_type"], []))
+
+    return request
+
+
+def _safe_bbox_tuple(box: Any) -> Optional[Tuple[int, int, int, int]]:
+    try:
+        if box is None:
+            return None
+        if len(box) != 4:
+            return None
+        x, y, w, h = [int(v) for v in box]
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    except Exception:
+        return None
+
+
+def _largest_face_box(frame: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+    faces = _detect_face_boxes(frame)
+    try:
+        faces = list(faces) if faces is not None else []
+    except Exception:
+        faces = []
+    if not faces:
+        return None
+    return max((_safe_bbox_tuple(f) for f in faces), key=lambda b: (b[2] * b[3]) if b else -1)
+
+
+def _clamp_crop(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> Optional[np.ndarray]:
+    try:
+        h, w = frame.shape[:2]
+        x1 = max(0, min(w, int(x1)))
+        y1 = max(0, min(h, int(y1)))
+        x2 = max(0, min(w, int(x2)))
+        y2 = max(0, min(h, int(y2)))
+        if x2 <= x1 or y2 <= y1:
+            return None
+        roi = frame[y1:y2, x1:x2]
+        if roi is None or roi.size == 0:
+            return None
+        return roi.copy()
+    except Exception:
+        return None
+
+
+def _roi_color_stats(roi: Optional[np.ndarray]) -> Dict[str, Any]:
+    if roi is None or getattr(roi, "size", 0) == 0:
+        return {"name": "unknown", "confidence": 0.0, "rgb": [0, 0, 0], "hex": "#000000"}
+    b, g, r = _dominant_bgr_color(roi)
+    return {
+        "name": _bgr_to_color_name((b, g, r)),
+        "confidence": 0.65,
+        "rgb": [int(r), int(g), int(b)],
+        "hex": f"#{int(r):02x}{int(g):02x}{int(b):02x}",
+    }
+
+
+def _collect_structured_detections(frame: np.ndarray, requested_subject: Optional[str] = None) -> List[Dict[str, Any]]:
+    detections: List[Dict[str, Any]] = []
+    requested_subject = _norm_token(requested_subject or "") if requested_subject else None
+    models = _get_yolo_models_for_inference()
+    if not models:
+        return detections
+
+    for model_name, model in models.items():
+        try:
+            results = model.predict(frame, imgsz=640, conf=0.25, verbose=False)
+        except Exception as e:
+            logger.warning(f"[Vision Detect] {model_name} inference failed: {e}")
+            continue
+        for r in results:
+            names = getattr(r, "names", None) or getattr(model, "names", {}) or {}
+            for b in getattr(r, "boxes", []) or []:
+                try:
+                    cls_id = int(b.cls[0])
+                    conf = float(b.conf[0])
+                    x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                    raw_label = str(names.get(cls_id, "object")).lower().strip()
+                except Exception:
+                    continue
+                domain, canon = _domain_of(raw_label)
+                roi = _clamp_crop(frame, x1, y1, x2, y2)
+                det = {
+                    "raw_label": raw_label,
+                    "label": canon,
+                    "domain": domain,
+                    "bbox": [x1, y1, x2, y2],
+                    "confidence": conf,
+                    "model": model_name,
+                    "color": _roi_color_stats(roi),
+                }
+                detections.append(det)
+
+    if requested_subject:
+        def _score(det: Dict[str, Any]) -> Tuple[int, float]:
+            label = str(det.get("label") or "")
+            raw = str(det.get("raw_label") or "")
+            score = 0
+            if requested_subject == label or requested_subject == raw:
+                score += 3
+            if requested_subject in label or requested_subject in raw:
+                score += 2
+            if requested_subject in ("shirt", "pants", "jeans", "hat", "cap", "hoodie", "jacket") and label == "person":
+                score += 1
+            return (score, float(det.get("confidence") or 0.0))
+        detections.sort(key=_score, reverse=True)
+    else:
+        detections.sort(key=lambda d: float(d.get("confidence") or 0.0), reverse=True)
+    return detections
+
+
+def _estimate_subject_roi(frame: np.ndarray, requested_subject: Optional[str], detections: Optional[List[Dict[str, Any]]] = None) -> Tuple[Optional[np.ndarray], Dict[str, Any]]:
+    requested_subject = _norm_token(requested_subject or "") if requested_subject else None
+    detections = list(detections or [])
+    meta: Dict[str, Any] = {"method": "none", "resolved_subject": requested_subject, "bbox": None}
+
+    # Use direct detector match first.
+    if requested_subject:
+        for det in detections:
+            label = str(det.get("label") or "")
+            raw = str(det.get("raw_label") or "")
+            if requested_subject == label or requested_subject == raw or requested_subject in label or requested_subject in raw:
+                x1, y1, x2, y2 = [int(v) for v in det.get("bbox") or [0, 0, 0, 0]]
+                roi = _clamp_crop(frame, x1, y1, x2, y2)
+                if roi is not None:
+                    meta.update({"method": "detector", "bbox": [x1, y1, x2, y2], "resolved_subject": label or requested_subject})
+                    return roi, meta
+
+    h, w = frame.shape[:2]
+    face = _largest_face_box(frame)
+    if face:
+        fx, fy, fw, fh = face
+        if requested_subject in ("face", "head", "eyes", "eye", "nose", "mouth", "beard", "mustache", "glasses"):
+            roi = _clamp_crop(frame, fx, fy, fx + fw, fy + fh)
+            if roi is not None:
+                meta.update({"method": "face", "bbox": [fx, fy, fx + fw, fy + fh], "resolved_subject": requested_subject or "face"})
+                return roi, meta
+        if requested_subject in ("shirt", "t-shirt", "tee", "top", "hoodie", "jacket", "coat", "blouse", "upper garment"):
+            roi = _clamp_crop(frame, fx - int(fw * 0.35), fy + fh, fx + fw + int(fw * 0.35), fy + fh + int(h * 0.28))
+            if roi is not None:
+                meta.update({"method": "face_relative_upper", "bbox": [max(0, fx - int(fw * 0.35)), fy + fh, min(w, fx + fw + int(fw * 0.35)), min(h, fy + fh + int(h * 0.28))], "resolved_subject": requested_subject})
+                return roi, meta
+        if requested_subject in ("pants", "trousers", "jeans", "shorts", "skirt", "lower garment"):
+            roi = _clamp_crop(frame, fx - int(fw * 0.45), fy + fh + int(h * 0.18), fx + fw + int(fw * 0.45), fy + fh + int(h * 0.58))
+            if roi is not None:
+                meta.update({"method": "face_relative_lower", "bbox": [max(0, fx - int(fw * 0.45)), min(h, fy + fh + int(h * 0.18)), min(w, fx + fw + int(fw * 0.45)), min(h, fy + fh + int(h * 0.58))], "resolved_subject": requested_subject})
+                return roi, meta
+        if requested_subject in ("hat", "cap", "beanie", "hood", "headwear"):
+            roi = _clamp_crop(frame, fx - int(fw * 0.2), fy - int(fh * 0.55), fx + fw + int(fw * 0.2), fy + int(fh * 0.25))
+            if roi is not None:
+                meta.update({"method": "face_relative_headwear", "bbox": [max(0, fx - int(fw * 0.2)), max(0, fy - int(fh * 0.55)), min(w, fx + fw + int(fw * 0.2)), min(h, fy + int(fh * 0.25))], "resolved_subject": requested_subject})
+                return roi, meta
+
+    # Generic fallback crops if no better ROI found.
+    if requested_subject in ("shirt", "t-shirt", "tee", "top", "hoodie", "jacket", "coat", "blouse", "upper garment"):
+        roi = _clamp_crop(frame, int(w * 0.2), int(h * 0.33), int(w * 0.8), int(h * 0.7))
+        if roi is not None:
+            meta.update({"method": "generic_upper_body", "bbox": [int(w * 0.2), int(h * 0.33), int(w * 0.8), int(h * 0.7)]})
+            return roi, meta
+    if requested_subject in ("pants", "trousers", "jeans", "shorts", "skirt", "lower garment"):
+        roi = _clamp_crop(frame, int(w * 0.22), int(h * 0.5), int(w * 0.78), int(h * 0.95))
+        if roi is not None:
+            meta.update({"method": "generic_lower_body", "bbox": [int(w * 0.22), int(h * 0.5), int(w * 0.78), int(h * 0.95)]})
+            return roi, meta
+
+    whole = _clamp_crop(frame, 0, 0, w, h)
+    if whole is not None:
+        meta.update({"method": "frame", "bbox": [0, 0, w, h], "resolved_subject": requested_subject or "scene"})
+    return whole, meta
+
+
+def _read_text_from_roi(roi: Optional[np.ndarray]) -> Dict[str, Any]:
+    result = {"text": None, "confidence": 0.0, "engine": None, "zoom": None}
+    if roi is None or getattr(roi, "size", 0) == 0:
+        return result
+    txt = _try_pytesseract_text(roi)
+    if txt:
+        result.update({"text": txt, "confidence": 0.72, "engine": "pytesseract"})
+        return result
+
+    try:
+        import easyocr as _easyocr
+        reader = getattr(_read_text_from_roi, "_easy_reader", None)
+        if reader is None:
+            reader = _easyocr.Reader(['en'], gpu=False)
+            _read_text_from_roi._easy_reader = reader
+        roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        results = reader.readtext(roi_rgb, detail=0, paragraph=True)
+        txt = " ".join([t for t in results if isinstance(t, str)]).strip()
+        if txt:
+            result.update({"text": txt, "confidence": 0.68, "engine": "easyocr"})
+            return result
+    except Exception:
+        pass
+
+    try:
+        crop = smart_interest_crop(roi)
+    except Exception:
+        crop = None
+    if crop is not None and crop.shape[0] > 24 and crop.shape[1] > 24:
+        txt = _try_pytesseract_text(crop)
+        if txt:
+            result.update({"text": txt, "confidence": 0.64, "engine": "pytesseract", "zoom": "interest"})
+            return result
+        try:
+            import easyocr as _easyocr
+            reader = getattr(_read_text_from_roi, "_easy_reader", None)
+            if reader is None:
+                reader = _easyocr.Reader(['en'], gpu=False)
+                _read_text_from_roi._easy_reader = reader
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            results = reader.readtext(crop_rgb, detail=0, paragraph=True)
+            txt = " ".join([t for t in results if isinstance(t, str)]).strip()
+            if txt:
+                result.update({"text": txt, "confidence": 0.60, "engine": "easyocr", "zoom": "interest"})
+                return result
+        except Exception:
+            pass
+    return result
+
+
+def _distance_from_bbox(frame: np.ndarray, bbox_xyxy: Optional[List[int]]) -> Dict[str, Any]:
+    out = {"label": "unknown", "confidence": 0.0, "approx_ratio": 0.0}
+    try:
+        if not bbox_xyxy:
+            return out
+        h, w = frame.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox_xyxy]
+        area_ratio = max(0.0, ((x2 - x1) * (y2 - y1)) / float(max(1, w * h)))
+        out["approx_ratio"] = round(area_ratio, 4)
+        if area_ratio >= 0.24:
+            out.update({"label": "very_close", "confidence": 0.70})
+        elif area_ratio >= 0.12:
+            out.update({"label": "close", "confidence": 0.66})
+        elif area_ratio >= 0.04:
+            out.update({"label": "medium", "confidence": 0.62})
+        else:
+            out.update({"label": "far", "confidence": 0.58})
+    except Exception:
+        pass
+    return out
+
+
+def _motion_findings(frame: np.ndarray) -> Dict[str, Any]:
+    findings = {"available": False, "moving_regions": 0, "motion_detected": False, "confidence": 0.0}
+    try:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (9, 9), 0)
+        prev = _VISION_RUNTIME_STATE.get("prev_gray")
+        _VISION_RUNTIME_STATE["prev_gray"] = gray
+        _VISION_RUNTIME_STATE["prev_timestamp"] = datetime.utcnow().isoformat()
+        if prev is None:
+            findings["available"] = False
+            return findings
+        delta = cv2.absdiff(prev, gray)
+        thresh = cv2.threshold(delta, 12, 255, cv2.THRESH_BINARY)[1]
+        thresh = cv2.dilate(thresh, None, iterations=2)
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        moving = [c for c in contours if cv2.contourArea(c) >= 500]
+        findings.update({
+            "available": True,
+            "moving_regions": len(moving),
+            "motion_detected": bool(moving),
+            "confidence": 0.55 + min(0.25, len(moving) * 0.08),
+        })
+        return findings
+    except Exception as e:
+        logger.warning(f"[Vision Motion] failed: {e}")
+        return findings
+
+
+def _build_visual_findings(question_or_payload: Any, frame: Optional[np.ndarray]) -> Dict[str, Any]:
+    request = _normalize_visual_request(question_or_payload)
+    findings: Dict[str, Any] = {
+        "vision_request": request,
+        "sensor_status": {
+            "camera": frame is not None,
+            "object_detection": bool(OBJECT_DETECTION_ENABLED),
+            "yolo_models_enabled": bool(_enabled_yolo_model_names()),
+            "ocr": True,
+            "face_detection": True,
+        },
+        "resolved_subject": request.get("requested_subject"),
+        "subject_candidates": [],
+        "observed_subjects": [],
+        "detections": [],
+        "faces": {"count": 0, "glasses": None},
+        "ocr": {"text": None, "confidence": 0.0},
+        "color": {"name": None, "confidence": 0.0},
+        "motion": {"available": False, "moving_regions": 0, "motion_detected": False, "confidence": 0.0},
+        "distance": {"label": "unknown", "confidence": 0.0, "approx_ratio": 0.0},
+        "safety": {"hazard_zone_violation": None, "configured": False, "message": None},
+        "style": {"assessment": None, "confidence": 0.0},
+        "confidence": 0.0,
+        "errors": [],
+    }
+
+    if frame is None:
+        findings["errors"].append("no_frame")
+        return findings
+
+    requested_subject = request.get("requested_subject")
+    query_type = request.get("query_type")
+
+    detections = _collect_structured_detections(frame, requested_subject=requested_subject)
+    findings["detections"] = detections
+    findings["observed_subjects"] = [d.get("label") for d in detections[:12] if d.get("label")]
+    findings["subject_candidates"] = list(dict.fromkeys(findings["observed_subjects"]))
+
+    face = _largest_face_box(frame)
+    faces = _detect_face_boxes(frame) or []
+    try:
+        face_count = len(list(faces))
+    except Exception:
+        face_count = 0
+    findings["faces"]["count"] = face_count
+    if face:
+        findings["resolved_subject"] = findings["resolved_subject"] or "face"
+        findings["faces"]["glasses"] = _detect_eyeglasses(frame, face)
+        findings["distance"] = _distance_from_bbox(frame, [face[0], face[1], face[0] + face[2], face[1] + face[3]])
+
+    roi, roi_meta = _estimate_subject_roi(frame, requested_subject, detections=detections)
+    if roi_meta.get("resolved_subject"):
+        findings["resolved_subject"] = roi_meta.get("resolved_subject")
+    if roi_meta.get("resolved_subject") and roi_meta.get("resolved_subject") not in findings["subject_candidates"]:
+        findings["subject_candidates"].insert(0, roi_meta.get("resolved_subject"))
+
+    if query_type == "identify_color":
+        color_roi = roi
+        try:
+            focus_crop = smart_interest_crop(roi) if roi is not None else None
+            if focus_crop is not None and getattr(focus_crop, "size", 0) > 0:
+                color_roi = focus_crop
+        except Exception:
+            color_roi = roi
+        color = _roi_color_stats(color_roi)
+        findings["color"] = color
+        findings["confidence"] = float(color.get("confidence") or 0.0)
+
+    elif query_type == "read_text":
+        ocr = _read_text_from_roi(roi)
+        findings["ocr"] = ocr
+        findings["confidence"] = float(ocr.get("confidence") or 0.0)
+
+    elif query_type == "detect_faces":
+        findings["confidence"] = 0.72 if face_count else 0.30
+
+    elif query_type == "track_motion":
+        findings["motion"] = _motion_findings(frame)
+        findings["confidence"] = float(findings["motion"].get("confidence") or 0.0)
+
+    elif query_type == "estimate_distance":
+        if detections and not face:
+            best = detections[0]
+            findings["distance"] = _distance_from_bbox(frame, best.get("bbox"))
+            findings["resolved_subject"] = best.get("label") or findings["resolved_subject"]
+        findings["confidence"] = float(findings["distance"].get("confidence") or 0.0)
+
+    elif query_type == "inspect_safety_zone":
+        if detections and not face:
+            best = detections[0]
+            findings["distance"] = _distance_from_bbox(frame, best.get("bbox"))
+            findings["resolved_subject"] = best.get("label") or findings["resolved_subject"]
+        dist_label = str(findings["distance"].get("label") or "unknown")
+        findings["safety"] = {
+            "hazard_zone_violation": True if dist_label in ("very_close", "close") else False if dist_label in ("medium", "far") else None,
+            "configured": False,
+            "message": "No explicit hazard-zone geometry is configured in SarahMemorySOBJE.py; using proximity-only advisory."
+        }
+        findings["confidence"] = max(float(findings["distance"].get("confidence") or 0.0), 0.55)
+
+    elif query_type == "compare_before_after":
+        prev = _VISION_RUNTIME_STATE.get("last_findings") or {}
+        previous_subjects = prev.get("observed_subjects") or []
+        current_subjects = findings.get("observed_subjects") or []
+        added = [s for s in current_subjects if s not in previous_subjects]
+        removed = [s for s in previous_subjects if s not in current_subjects]
+        findings["comparison"] = {
+            "added": added,
+            "removed": removed,
+            "baseline_available": bool(prev),
+        }
+        findings["confidence"] = 0.58 if prev else 0.34
+
+    elif query_type == "assess_style_or_fit":
+        assessment = "unable_to_assess_confidently"
+        conf = 0.28
+        if roi is not None and getattr(roi, "size", 0) > 0:
+            rh, rw = roi.shape[:2]
+            coverage = (rh * rw) / float(max(1, frame.shape[0] * frame.shape[1]))
+            if coverage >= 0.18:
+                assessment = "garment_visible"
+                conf = 0.50
+            if requested_subject in ("shirt", "t-shirt", "tee", "top", "hoodie", "jacket", "coat"):
+                assessment = "fit_assessment_requires_user_preference_and_pose"
+                conf = max(conf, 0.42)
+        findings["style"] = {"assessment": assessment, "confidence": conf}
+        findings["confidence"] = conf
+
+    elif query_type in ("scene_summary", "detect_objects"):
+        findings["confidence"] = 0.66 if detections else 0.35
+
+    if not findings["confidence"]:
+        findings["confidence"] = 0.45 if detections else 0.30
+
+    _VISION_RUNTIME_STATE["last_findings"] = findings
+    return findings
+
+
+def _answer_from_visual_findings(findings: Dict[str, Any]) -> str:
+    request = findings.get("vision_request") or {}
+    query_type = str(request.get("query_type") or "").strip()
+    subject = str(findings.get("resolved_subject") or request.get("requested_subject") or "object").strip()
+
+    if "no_frame" in (findings.get("errors") or []):
+        return "I don't have a camera frame yet."
+
+    if query_type == "identify_color":
+        color = (findings.get("color") or {}).get("name")
+        if color:
+            return f"The color of your {subject} looks {color}." if subject not in ("scene", "object") else f"It looks {color}."
+        return "I couldn't determine the color clearly yet."
+
+    if query_type == "read_text":
+        text = (findings.get("ocr") or {}).get("text")
+        if text:
+            return f'It says: "{text}".'
+        return "I couldn't read that clearly. Try moving a little closer or steadier lighting."
+
+    if query_type == "detect_faces":
+        faces = findings.get("faces") or {}
+        count = int(faces.get("count") or 0)
+        glasses = faces.get("glasses")
+        if count <= 0:
+            return "I can't see your face clearly right now."
+        if subject in ("glasses", "face", "eyes", "eye") and glasses is True:
+            return "You're wearing glasses."
+        if subject in ("glasses", "face", "eyes", "eye") and glasses is False:
+            return "I don't detect glasses."
+        return f"I detect {count} face{'s' if count != 1 else ''}."
+
+    if query_type == "track_motion":
+        motion = findings.get("motion") or {}
+        if not motion.get("available"):
+            return "I need another frame or live feed to judge motion reliably."
+        if motion.get("motion_detected"):
+            return f"I detect motion in about {int(motion.get('moving_regions') or 0)} region(s)."
+        return "I don't detect meaningful motion right now."
+
+    if query_type == "estimate_distance":
+        dist = findings.get("distance") or {}
+        label = str(dist.get("label") or "unknown").replace("_", " ")
+        if label == "unknown":
+            return "I can't estimate the distance confidently from this frame."
+        return f"The {subject} appears {label}."
+
+    if query_type == "inspect_safety_zone":
+        safety = findings.get("safety") or {}
+        dist = findings.get("distance") or {}
+        label = str(dist.get("label") or "unknown").replace("_", " ")
+        violation = safety.get("hazard_zone_violation")
+        if violation is True:
+            return f"The {subject} appears too close for a safe advisory check. No explicit hazard-zone map is configured yet, so this is proximity-only guidance."
+        if violation is False:
+            return f"The {subject} appears {label}; no proximity hazard is suggested from this frame alone."
+        return "I need a clearer view and a configured safety zone to assess that properly."
+
+    if query_type == "compare_before_after":
+        comp = findings.get("comparison") or {}
+        if not comp.get("baseline_available"):
+            return "I need a prior visual baseline before I can compare before and after."
+        added = comp.get("added") or []
+        removed = comp.get("removed") or []
+        bits = []
+        if added:
+            bits.append("new: " + ", ".join(added[:4]))
+        if removed:
+            bits.append("gone: " + ", ".join(removed[:4]))
+        return "I compared the scene. " + ("; ".join(bits) if bits else "I do not see a major visible difference.")
+
+    if query_type == "assess_style_or_fit":
+        style = findings.get("style") or {}
+        assessment = str(style.get("assessment") or "unable_to_assess_confidently").replace("_", " ")
+        if assessment == "unable to assess confidently":
+            return "I can't judge the style or fit confidently from this frame yet."
+        if "requires user preference" in assessment:
+            return "I can see the garment, but style and fit depend on pose, angle, and your preference. I would need a clearer front view for a better assessment."
+        return f"I can see the {subject}; preliminary style assessment: {assessment}."
+
+    if query_type in ("scene_summary", "detect_objects"):
+        observed = findings.get("observed_subjects") or []
+        if observed:
+            return "I see " + ", ".join(observed[:8]) + "."
+        return "I can't see anything clearly right now."
+
+    return "I understood the visual request, but I need a clearer frame or more specific target."
+
+
 def answer_visual_question(question, frame):
     """
-    High-level visual Q&A used by GUI bridge. Returns dict {answer, details}.
-    - "what's on my face?" -> detect glasses/headwear
-    - "what does my shirt say" -> OCR on torso below face
-    - "what color is my <object>" -> detect object bbox if model available; else whole frame
+    Backward-compatible visual Q&A wrapper.
+
+    Accepts either:
+    - raw text question (legacy GUI path)
+    - semantic/helper payload dict from AdvCU/Neuron (new governed path)
+
+    Returns dict {answer, details} while exposing structured findings for the next-stage
+    governed Reply integration.
     """
-    q = (question or "").lower().strip()
-    if frame is None:
-        return {"answer":"I don't have a camera frame yet.", "details":{}}
-
-    # Face-based queries
-    if "on my face" in q or "wearing on my face" in q:
-        faces = _detect_face_boxes(frame)
-        if not faces:
-            return {"answer":"I can't see your face clearly right now.", "details":{"faces":0}}
-        # take largest
-        face = max(faces, key=lambda b:b[2]*b[3])
-        has_glasses = _detect_eyeglasses(frame, face)
-        return {"answer": ("You're wearing glasses." if has_glasses else "I don't detect glasses."),
-                "details":{"faces":len(faces), "glasses":bool(has_glasses)}}
-
-    # Shirt text OCR
-    if "what does my shirt say" in q or "read my shirt" in q or ("shirt" in q and "say" in q):
-        faces = _detect_face_boxes(frame)
-        h, w = frame.shape[:2]
-        if faces:
-            x,y,fw,fh = max(faces, key=lambda b:b[2]*b[3])
-            y1 = min(h, y+fh+10)
-            roi = frame[y1:min(h, y1 + int(h*0.35)), max(0, x-40):min(w, x+fw+40)]
-        else:
-            # center-lower crop
-            roi = frame[int(h*0.45):int(h*0.8), int(w*0.2):int(w*0.8)]
-        txt = _try_pytesseract_text(roi)
-
-        if not txt:
-            # Optional fallback if easyocr is installed
-            try:
-                import numpy as np
-                import cv2
-                import easyocr as _easyocr
-                reader = getattr(answer_visual_question, "_easy_reader", None)
-                if reader is None:
-                    reader = _easyocr.Reader(['en'], gpu=False)
-                    answer_visual_question._easy_reader = reader
-                roi_rgb = cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
-                results = reader.readtext(roi_rgb, detail=0, paragraph=True)
-                txt = " ".join([t for t in results if isinstance(t, str)]).strip()
-            except Exception:
-                txt = None
-
-        # If first read weak, auto-zoom with interest crop and try again
-        if not txt:
-            try:
-                crop = smart_interest_crop(roi)
-            except Exception:
-                crop = None
-            if crop is not None and crop.shape[0] > 24 and crop.shape[1] > 24:
-                txt2 = _try_pytesseract_text(crop)
-                if not txt2:
-                    # also try EasyOCR fallback on the interest crop
-                    try:
-                        import cv2, easyocr as _easyocr
-                        reader = getattr(answer_visual_question, "_easy_reader", None)
-                        if reader is None:
-                            reader = _easyocr.Reader(['en'], gpu=False)
-                            answer_visual_question._easy_reader = reader
-                        crgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-                        rs = reader.readtext(crgb, detail=0, paragraph=True)
-                        txt2 = " ".join([t for t in rs if isinstance(t, str)]).strip()
-                    except Exception:
-                        pass
-                if txt2:
-                    return {"answer": f'It says: "{txt2}".', "details":{"ocr":True, "zoom":"interest"}}
-
-        if txt:
-            return {"answer": f'It says: "{txt}".', "details":{"ocr":True}}
-        return {"answer":"I couldn't read that clearly. Try moving a little closer or steadier lighting.", "details":{"ocr":False}}
-
-    # Color of object (e.g., couch/sofa/shirt/hat)
-    if "color of my" in q or q.startswith("what color is my") or "what color is the" in q:
-        # Try YOLO label for target object first
-        target = None
-        for key in ["couch","sofa","shirt","hat","cap","jacket","hoodie","pants","jeans"]:
-            if key in q:
-                target = key
-                break
-        crop = None
-        try:
-            models = _get_yolo_models_for_inference()
-            if models:
-                # pick first model and run a quick inference
-                model = list(models.values())[0]
-                results = model(frame)
-                best = None
-                for r in results:
-                    for b in r.boxes:
-                        cls = int(b.cls[0])
-                        label = (r.names or {}).get(cls, "").lower()
-                        if not label:
-                            continue
-                        if (target and target in label) or (not target and label in ("couch","sofa","person","shirt","jacket","hat")):
-                            x1,y1,x2,y2 = map(int, b.xyxy[0].tolist())
-                            crop = frame[y1:y2, x1:x2].copy()
-                            break
-                    if crop is not None:
-                        break
-        except Exception:
-            crop = None
-        if crop is None:
-            crop = frame
-        color = _bgr_to_color_name(_dominant_bgr_color(crop))
-        if target:
-            return {"answer": f"The color of your {target} looks {color}.", "details":{"color":color}}
-        return {"answer": f"It looks {color}.", "details":{"color":color}}
-    return {"answer":"I understood the question, but I need you to phrase it like: 'what's on my face', 'what does my shirt say', or 'what color is my couch?'", "details":{}}
+    findings = _build_visual_findings(question, frame)
+    answer = _answer_from_visual_findings(findings)
+    details = {
+        "request": findings.get("vision_request") or {},
+        "resolved_subject": findings.get("resolved_subject"),
+        "subject_candidates": findings.get("subject_candidates") or [],
+        "observed_subjects": findings.get("observed_subjects") or [],
+        "detections": findings.get("detections") or [],
+        "faces": findings.get("faces") or {},
+        "ocr": findings.get("ocr") or {},
+        "color": findings.get("color") or {},
+        "motion": findings.get("motion") or {},
+        "distance": findings.get("distance") or {},
+        "safety": findings.get("safety") or {},
+        "style": findings.get("style") or {},
+        "sensor_status": findings.get("sensor_status") or {},
+        "confidence": findings.get("confidence") or 0.0,
+        "errors": findings.get("errors") or [],
+        "findings": findings,
+    }
+    return {"answer": answer, "details": details}
 
 # ====================================================================
 # END OF SarahMemorySOBJE.py v8.0.0

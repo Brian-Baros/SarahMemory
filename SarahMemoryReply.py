@@ -90,6 +90,202 @@ if not logger.handlers:
     logger.addHandler(_h)
 logger.setLevel(logging.INFO)
 
+# -----------------------------------------------------------------------------
+# Reply context / response cleanup / avatar speech cues
+# -----------------------------------------------------------------------------
+_FOLLOWUP_CONTEXT: Dict[str, Dict[str, Any]] = {}
+_FOLLOWUP_MAX_AGE_SEC = 1800.0
+_FOLLOWUP_MAX_ITEMS = 256
+
+YES_RE = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|please|do it|go on|continue|tell me more)\b", re.I)
+NO_RE = re.compile(r"^(no|nope|nah|never mind|nevermind|stop|cancel|forget it|no thanks)\b", re.I)
+IDENTITY_RE = re.compile(r"\b(what\s+is\s+your\s+name|who\s+are\s+you|who\s+(made|created|built|developed|engineered|designed)\s+you)\b", re.I)
+BAD_UI_TRAIL_RE = re.compile(r"(?:\s*,?\s*\[\s*\]\s*)+$")
+BAD_DIG_DEEPER_RE = re.compile(r"\n?\s*[•*-]?\s*Should\s+I\s+dig\s+deeper\s+on\s+that\?\s*(?:\[\s*\])?\s*$", re.I)
+
+
+def _sm_prune_followup_context() -> None:
+    try:
+        now = time.time()
+        stale = [k for k, v in (_FOLLOWUP_CONTEXT or {}).items() if (now - float((v or {}).get("ts") or 0.0)) > _FOLLOWUP_MAX_AGE_SEC]
+        for k in stale:
+            _FOLLOWUP_CONTEXT.pop(k, None)
+        if len(_FOLLOWUP_CONTEXT) > _FOLLOWUP_MAX_ITEMS:
+            ordered = sorted(_FOLLOWUP_CONTEXT.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0), reverse=True)
+            keep = dict(ordered[:_FOLLOWUP_MAX_ITEMS])
+            _FOLLOWUP_CONTEXT.clear()
+            _FOLLOWUP_CONTEXT.update(keep)
+    except Exception:
+        pass
+
+
+def _sm_current_session_key(meta: Optional[Dict[str, Any]] = None) -> str:
+    meta = dict(meta or {})
+    for k in ("session_id", "sessionId", "sid", "chat_id", "chatId", "client_id", "clientId", "user_id", "userId"):
+        v = meta.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    try:
+        from flask import has_request_context, request  # type: ignore
+        if has_request_context():
+            payload = request.get_json(silent=True) or {}
+            if isinstance(payload, dict):
+                for k in ("session_id", "sessionId", "sid", "chat_id", "chatId", "client_id", "clientId", "user_id", "userId"):
+                    v = payload.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+            ua = (request.headers.get("User-Agent") or "")[:120]
+            ip = request.headers.get("X-Forwarded-For") or request.remote_addr or "unknown"
+            return f"{ip}|{ua}"
+    except Exception:
+        pass
+    return str(meta.get("source") or "default")
+
+
+def _sm_clean_reply_text(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    out = s
+    try:
+        out = out.replace("ðŸ™‚", "🙂").replace("ðŸ˜Š", "😊")
+        out = BAD_DIG_DEEPER_RE.sub("", out)
+        out = BAD_UI_TRAIL_RE.sub("", out)
+        out = re.sub(r"^(The answer is\s+)+", "", out, flags=re.I)
+    except Exception:
+        pass
+    return out.strip()
+
+
+def _sm_topic_from_exchange(q: str, a: str) -> str:
+    qn = (q or "").strip()
+    if qn and len(qn) <= 120:
+        return qn
+    an = _sm_clean_reply_text(a or "")
+    if an:
+        first = re.split(r"(?<=[.!?])\s+|\n", an, maxsplit=1)[0].strip()
+        if first:
+            return first[:120]
+    return (qn[:120] or "that topic").strip() or "that topic"
+
+
+def _sm_should_fallback_identity(user_text: str, local_answer: str) -> bool:
+    try:
+        if not IDENTITY_RE.search(user_text or ""):
+            return False
+    except Exception:
+        return False
+    a = (local_answer or "").strip().lower()
+    if not a:
+        return True
+    if len(a) < 10:
+        return True
+    if "openai" in a:
+        return True
+    if "[]" in a or "ðÿ" in a or "ðŸ" in a:
+        return True
+    return False
+
+
+def _estimate_speech_duration_seconds(text: str) -> float:
+    t = (text or "").strip()
+    if not t:
+        return 0.8
+    words = max(1, len(t.split()))
+    secs = words / 2.2
+    if secs < 0.8:
+        secs = 0.8
+    if secs > 12.0:
+        secs = 12.0
+    return float(secs)
+
+
+def _basic_mouth_cues(text: str, duration_s: float) -> List[Dict[str, Any]]:
+    steps = max(6, min(30, int(duration_s * 10)))
+    cues: List[Dict[str, Any]] = []
+    if steps <= 1:
+        return [{"t": 0, "v": 0.6}, {"t": int(duration_s * 1000), "v": 0.0}]
+    for i in range(steps):
+        t_ms = int((i / max(1, steps - 1)) * duration_s * 1000)
+        v = 0.15 + (0.55 if (i % 2 == 0) else 0.30)
+        cues.append({"t": t_ms, "v": v})
+    cues.append({"t": int(duration_s * 1000), "v": 0.0})
+    return cues
+
+
+def _sm_attach_avatar_speech(meta: Dict[str, Any], text: str) -> None:
+    try:
+        if not isinstance(meta, dict):
+            return
+        txt = _sm_clean_reply_text(_sm_sanitize_user_text(text or "", for_tts=True))
+        if not txt:
+            return
+        dur_s = _estimate_speech_duration_seconds(txt)
+        meta["avatar_speech"] = {
+            "speak": True,
+            "duration_ms": int(dur_s * 1000),
+            "cues": _basic_mouth_cues(txt, dur_s),
+            "ts": time.time(),
+        }
+    except Exception:
+        pass
+
+
+def _sm_store_followup_context(meta: Optional[Dict[str, Any]], user_text: str, reply_text: str) -> None:
+    try:
+        if not user_text or not reply_text:
+            return
+        meta = dict(meta or {})
+        if str(meta.get("intent") or "").lower() in {"interrupt", "followup_no"}:
+            return
+        _sm_prune_followup_context()
+        key = _sm_current_session_key(meta)
+        _FOLLOWUP_CONTEXT[key] = {
+            "q": str(user_text or "").strip(),
+            "a": str(reply_text or "").strip(),
+            "topic": _sm_topic_from_exchange(str(user_text or ""), str(reply_text or "")),
+            "ts": time.time(),
+        }
+    except Exception:
+        pass
+
+
+def _sm_resolve_followup_input(user_text: str, meta: Optional[Dict[str, Any]] = None) -> Tuple[Optional[Dict[str, Any]], str]:
+    text = (user_text or "").strip()
+    if not text:
+        return None, text
+    meta = meta if isinstance(meta, dict) else {}
+    _sm_prune_followup_context()
+    key = _sm_current_session_key(meta)
+    prev = _FOLLOWUP_CONTEXT.get(key)
+    if not prev:
+        return None, text
+    try:
+        if (time.time() - float(prev.get("ts") or 0.0)) > _FOLLOWUP_MAX_AGE_SEC:
+            _FOLLOWUP_CONTEXT.pop(key, None)
+            return None, text
+    except Exception:
+        pass
+
+    if len(text) <= 40 and YES_RE.match(text):
+        topic = prev.get("topic") or _sm_topic_from_exchange(str(prev.get("q") or ""), str(prev.get("a") or ""))
+        meta["followup_original_text"] = text
+        meta["followup_of"] = str(prev.get("q") or topic)
+        meta.setdefault("pipeline", []).append("followup_yes")
+        return None, f"Go deeper on this and explain more clearly: {topic}"
+
+    if len(text) <= 40 and NO_RE.match(text):
+        _FOLLOWUP_CONTEXT.pop(key, None)
+        meta["intent"] = "followup_no"
+        meta.setdefault("pipeline", []).append("followup_no")
+        bundle = ReplyBundle(
+            "No problem — what would you like to talk about next?",
+            meta=meta,
+        ).to_dict()
+        return bundle, text
+
+    return None, text
+
+
 # --- v7.7.4: uniform bundle stamper (ensures provenance + latency) ---
 def _stamp_bundle(bundle: dict) -> dict:
     try:
@@ -101,7 +297,6 @@ def _stamp_bundle(bundle: dict) -> dict:
             meta = {}
 
         prompt_text = meta.get("_prompt_text")
-
         source = meta.get("source") or bundle.get("source")
         if not source:
             pipe = meta.get("pipeline") or []
@@ -112,6 +307,22 @@ def _stamp_bundle(bundle: dict) -> dict:
             bundle.get("response") or bundle.get("presentation_reply") or bundle.get("reply") or bundle.get("content") or "",
             user_text=prompt_text,
         )
+        response_text = _sm_clean_reply_text(response_text)
+
+        if _sm_should_fallback_identity(str(prompt_text or meta.get("followup_of") or ""), response_text):
+            response_text = "My name is Sarah — your SarahMemory AI companion (SarahMemory AiOS)."
+
+        if not response_text:
+            vision_txt = _sm_render_vision_reply(meta, bundle)
+            if vision_txt:
+                response_text = vision_txt
+
+        if response_text:
+            _sm_attach_avatar_speech(meta, response_text)
+            meta.setdefault(
+                "followup_hint",
+                "If you want more detail, reply: \"yes\" or ask a specific angle (history, examples, pros/cons).",
+            )
 
         meta["source"] = source
         meta["intent"] = intent
@@ -151,6 +362,8 @@ def _stamp_bundle(bundle: dict) -> dict:
             })
 
         bundle["meta"] = meta
+        if response_text:
+            _sm_store_followup_context(meta, str(prompt_text or meta.get("followup_original_text") or meta.get("followup_of") or ""), response_text)
     except Exception:
         pass
     return bundle
@@ -171,6 +384,92 @@ def _try_neuron_reply(text_in: str, meta: Dict[str, Any]) -> Optional[Dict[str, 
     try:
         from SarahMemoryNeuron import neuron_route  # type: ignore
     except Exception:
+        return None
+    try:
+        res = neuron_route(text_in, meta=meta)
+        if not getattr(res, "ok", False):
+            return None
+
+        try:
+            res_dict = res.to_dict() if hasattr(res, "to_dict") else {
+                "ok": getattr(res, "ok", False),
+                "reply": getattr(res, "reply", ""),
+                "confidence": getattr(res, "confidence", None),
+                "intent": getattr(res, "intent", None),
+                "source": getattr(res, "source", "neuron"),
+                "artifacts": getattr(res, "artifacts", {}) or {},
+                "trace": getattr(res, "trace", {}) or {},
+            }
+        except Exception:
+            res_dict = {
+                "ok": True,
+                "reply": getattr(res, "reply", "") or "",
+                "confidence": getattr(res, "confidence", None),
+                "intent": getattr(res, "intent", None),
+                "source": getattr(res, "source", "neuron"),
+                "artifacts": {},
+                "trace": {},
+            }
+
+        reply_txt = str(res_dict.get("reply") or "").strip()
+        trace = res_dict.get("trace") if isinstance(res_dict.get("trace"), dict) else {}
+        artifacts_raw = res_dict.get("artifacts") or {}
+        actions = list(res_dict.get("actions") or []) if isinstance(res_dict.get("actions"), list) else []
+
+        try:
+            meta.setdefault("pipeline", []).append(f"neuron:{res_dict.get('source') or 'neuron'}")
+            meta["neuron_intent"] = res_dict.get("intent")
+            meta["neuron_confidence"] = res_dict.get("confidence")
+            meta["neuron_trace"] = trace
+            if isinstance(trace.get("vision_findings"), dict):
+                meta["vision_findings"] = trace.get("vision_findings")
+        except Exception:
+            pass
+
+        if not reply_txt:
+            reply_txt = _sm_render_vision_reply(meta, {"trace": trace, "artifacts": artifacts_raw}) or ""
+        if not reply_txt:
+            return None
+
+        artifacts = []
+        try:
+            if isinstance(artifacts_raw, list):
+                artifacts.extend([a for a in artifacts_raw if isinstance(a, dict)])
+            elif isinstance(artifacts_raw, dict):
+                for key, value in artifacts_raw.items():
+                    if value in (None, "", [], {}):
+                        continue
+                    artifacts.append({
+                        "name": key,
+                        "type": "file",
+                        "path": value if isinstance(value, str) else json.dumps(value),
+                        "display_ready": True,
+                        "download_ready": True,
+                        "source": str(res_dict.get("source") or "neuron"),
+                    })
+        except Exception:
+            artifacts = []
+
+        try:
+            artifacts.extend(_sm_creative_artifacts_from_meta({
+                "source": str(res_dict.get("source") or "neuron"),
+                "artifacts": artifacts_raw,
+                "neuron_trace": trace,
+            }))
+        except Exception:
+            pass
+
+        return _sm_make_outward_bundle(
+            str(reply_txt),
+            meta=meta,
+            artifacts=artifacts,
+            actions=actions,
+        )
+    except Exception as e:
+        try:
+            logger.warning(f"[neuron] route failed: {e}")
+        except Exception:
+            pass
         return None
     try:
         res = neuron_route(text_in, meta=meta)
@@ -453,6 +752,137 @@ def _eval_safe_math(expr: str) -> Optional[str]:
         return None
 
 _IMG_TRIGGERS = ("show me a photo of ", "show me an image of ", "image of ", "picture of ", "show me ", "display ")
+
+def _try_websym_math(text: str) -> Optional[str]:
+    """Prefer WebSYM calculator-style math answers when available; otherwise return None."""
+    try:
+        from SarahMemoryWebSYM import WebSemanticSynthesizer, is_math_expression  # type: ignore
+    except Exception:
+        return None
+
+    q = (text or "").strip()
+    if not q:
+        return None
+
+    try:
+        if hasattr(WebSemanticSynthesizer, "is_math_query"):
+            if not bool(WebSemanticSynthesizer.is_math_query(q)):
+                if not (callable(is_math_expression) and is_math_expression(q)):
+                    return None
+        else:
+            if not (callable(is_math_expression) and is_math_expression(q)):
+                return None
+    except Exception:
+        pass
+
+    try:
+        if hasattr(WebSemanticSynthesizer, "sarah_calculator"):
+            ans = WebSemanticSynthesizer.sarah_calculator(q, original_query=q)
+            ans = str(ans or "").strip()
+            return ans or None
+    except Exception:
+        return None
+    return None
+
+
+def _sm_extract_vision_findings(meta: Optional[Dict[str, Any]], bundle: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    meta = meta if isinstance(meta, dict) else {}
+    bundle = bundle if isinstance(bundle, dict) else {}
+    candidates = [
+        bundle.get("vision_findings"),
+        meta.get("vision_findings"),
+        (meta.get("neuron_trace") or {}).get("vision_findings") if isinstance(meta.get("neuron_trace"), dict) else None,
+        (bundle.get("trace") or {}).get("vision_findings") if isinstance(bundle.get("trace"), dict) else None,
+    ]
+    for cand in candidates:
+        if isinstance(cand, dict) and cand:
+            return cand
+    return None
+
+
+def _sm_render_vision_reply(meta: Optional[Dict[str, Any]], bundle: Optional[Dict[str, Any]] = None) -> str:
+    data = _sm_extract_vision_findings(meta, bundle)
+    if not isinstance(data, dict) or not data:
+        return ""
+
+    request = data.get("vision_request") if isinstance(data.get("vision_request"), dict) else {}
+    findings = data.get("vision_findings") if isinstance(data.get("vision_findings"), dict) else data
+
+    query_type = str(request.get("query_type") or findings.get("query_type") or "").strip().lower()
+    subject = str(findings.get("resolved_subject") or request.get("requested_subject") or findings.get("subject") or "item").strip() or "item"
+    resolved_attributes = findings.get("resolved_attributes") if isinstance(findings.get("resolved_attributes"), dict) else {}
+    observations = findings.get("observed_subjects") if isinstance(findings.get("observed_subjects"), list) else []
+    detections = findings.get("detections") if isinstance(findings.get("detections"), list) else []
+    ocr = findings.get("ocr") if isinstance(findings.get("ocr"), dict) else {}
+    tracking = findings.get("tracking") if isinstance(findings.get("tracking"), dict) else {}
+    safety = findings.get("safety") if isinstance(findings.get("safety"), dict) else {}
+    distance = findings.get("distance") if isinstance(findings.get("distance"), dict) else {}
+
+    color = resolved_attributes.get("color") or findings.get("color")
+    if query_type == "identify_color" and color:
+        return f"It looks like your {subject} is {color}."
+
+    if query_type == "read_text":
+        text_val = str(ocr.get("text") or findings.get("text") or "").strip()
+        if text_val:
+            return f"The visible text says: {text_val}"
+        return "I couldn't read any clear text from the current view."
+
+    if query_type == "detect_objects":
+        labels = []
+        for d in detections:
+            if isinstance(d, dict):
+                label = d.get("label") or d.get("name") or d.get("class")
+                if label:
+                    labels.append(str(label))
+        labels.extend([str(x) for x in observations if x])
+        labels = list(dict.fromkeys(labels))
+        if labels:
+            return "I can see: " + ", ".join(labels[:8]) + "."
+
+    if query_type == "detect_faces":
+        face_count = findings.get("face_count")
+        if isinstance(face_count, int):
+            if face_count == 1:
+                return "I can see one face."
+            return f"I can see {face_count} faces."
+
+    if query_type == "track_motion":
+        moving = tracking.get("moving_objects")
+        if isinstance(moving, int):
+            if moving <= 0:
+                return "I do not detect significant motion right now."
+            return f"I detect motion from {moving} moving object{'s' if moving != 1 else ''}."
+
+    if query_type == "estimate_distance":
+        val = distance.get("value") or findings.get("distance_value")
+        unit = distance.get("unit") or findings.get("distance_unit") or "units"
+        if val not in (None, ""):
+            return f"The estimated distance to the {subject} is about {val} {unit}."
+
+    if query_type == "inspect_safety_zone":
+        violation = safety.get("hazard_zone_violation")
+        if violation is True:
+            return "A safety issue is detected: the observed subject appears to be inside the configured danger zone."
+        if violation is False:
+            return "The observed subject appears to be outside the configured danger zone."
+
+    if query_type == "assess_style_or_fit":
+        summary = str(findings.get("style_assessment") or findings.get("summary") or "").strip()
+        if summary:
+            return summary
+
+    if query_type == "scene_summary":
+        summary = str(findings.get("summary") or "").strip()
+        if summary:
+            return summary
+
+    if color:
+        return f"It looks like the {subject} is {color}."
+    if observations:
+        return "From the current view, I can see: " + ", ".join([str(x) for x in observations[:8]]) + "."
+    return ""
+
 
 def _maybe_image_subject(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
@@ -794,11 +1224,13 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False, user_text: Optional
 
 def _finalize_text(raw, meta):
     meta = meta or {}
-    txt = _sm_sanitize_user_text((raw or "").strip(), user_text=meta.get("_prompt_text"))
+    txt = _sm_clean_reply_text(_sm_sanitize_user_text((raw or "").strip(), user_text=meta.get("_prompt_text")))
+    if not txt:
+        txt = _sm_render_vision_reply(meta, None)
     if not txt:
         return ""
 
-    if meta.get("intent") in {"identity", "math", "image", "web", "local", "interrupt", "system_status"}:
+    if meta.get("intent") in {"identity", "math", "image", "web", "local", "interrupt", "system_status", "followup_no"}:
         return txt
 
     styled = txt
@@ -810,7 +1242,7 @@ def _finalize_text(raw, meta):
     except Exception:
         styled = txt
 
-    styled = _sm_sanitize_user_text(styled, user_text=meta.get("_prompt_text"))
+    styled = _sm_clean_reply_text(_sm_sanitize_user_text(styled, user_text=meta.get("_prompt_text")))
     return styled or txt
 
 
@@ -860,15 +1292,21 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     Returns a bundle dict: {response, image_url?, links[], meta{}}
     """
     started = time.time()
-    text_in = normalize_text(user_text) if 'normalize_text' in globals() else (user_text or "").strip()
+    original_text = normalize_text(user_text) if 'normalize_text' in globals() else (user_text or "").strip()
+    text_in = original_text
     meta: Dict[str, Any] = {
         "intent": "chat",
         "pipeline": [],
         "offline": False,
         "model": None,
         "latency_ms": 0,
-        "_prompt_text": text_in,
+        "_prompt_text": original_text,
     }
+    followup_bundle, text_in = _sm_resolve_followup_input(text_in, meta)
+    if isinstance(followup_bundle, dict):
+        return _stamp_bundle(followup_bundle)
+    if text_in != original_text:
+        meta["effective_prompt_text"] = text_in
     # --- System Management Intents via SMAPI ---
     try:
         from SarahMemorySMAPI import sm_api
@@ -967,7 +1405,7 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
 
     # (2) Math
     if _looks_like_math(text_in):
-        m = _eval_safe_math(text_in)
+        m = _eval_safe_math(text_in) or _try_websym_math(text_in)
         if m:
             meta["intent"] = "math"
             meta["pipeline"].append("math")

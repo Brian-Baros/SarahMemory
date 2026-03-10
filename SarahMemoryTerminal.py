@@ -2,9 +2,17 @@
 File: SarahMemoryTerminal.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-01-28
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Date: 2025-03-01
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 
 PURPOSE:

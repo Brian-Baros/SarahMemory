@@ -928,6 +928,18 @@ def build_advanced_prompt(
         emotion = simulate_emotion_response()
     except Exception:
         emotion = {"joy": 0.5, "trust": 0.5, "fear": 0.1, "anger": 0.1, "surprise": 0.2}
+    # -----------------------------------------------------------------
+    # Local providers: keep prompt minimal to prevent chat-template echo.
+    # The local runtime already wraps with system/user roles.
+    # -----------------------------------------------------------------
+    p = (provider or "").strip().lower()
+    if p in {"local", "local_llm", "ollama", "model_catalog", "localmodels", "local_llm_api"}:
+        prompt = (user_input or "").strip()
+        research_path_logger.debug(
+            f"API Call → Provider: {provider} (local-minimal), Intent: {intent}"
+        )
+        return prompt, emotion
+
 
     # Build mood profile string
     mood_items = [f"{k.title()}: {v:.2f}" for k, v in emotion.items() if isinstance(v, (int, float))]
@@ -1828,12 +1840,20 @@ def _call_local_llm(
 
             decoded = tok.decode(out[0], skip_special_tokens=True)
 
-            # Best-effort: strip the input prefix
-            if decoded.startswith(text_in):
-                decoded = decoded[len(text_in):].strip()
+            # Best-effort: strip the input prefix (handles tokenizers that don't reproduce exact prefix)
+            try:
+                if decoded.startswith(text_in):
+                    decoded = decoded[len(text_in):].strip()
+                else:
+                    idx = decoded.find(text_in)
+                    if idx != -1:
+                        decoded = decoded[idx + len(text_in):].strip()
+            except Exception:
+                pass
 
-            if not decoded:
-                decoded = decoded.split("Assistant:", 1)[-1].strip() if "Assistant:" in decoded else decoded.strip()
+            # If an Assistant delimiter exists, keep the last segment
+            if "Assistant:" in decoded:
+                decoded = decoded.split("Assistant:")[-1].strip()
 
             if decoded:
                 return _sm_sanitize_llm_text(decoded), None
@@ -2549,6 +2569,10 @@ _SANITIZE_RE_BLOCKS = [
 ]
 _SANITIZE_RE_LINES = [
     re.compile(r"(?im)^\s*(system|user|assistant)\s*:\s*.*$"),
+    re.compile(r"(?im)^\s*(system|user|assistant)\s*$"),
+    re.compile(r"(?im)^\s*you are sarahmemory\b.*$"),
+    re.compile(r"(?im)^\s*answer clearly and helpfully\.?$"),
+    re.compile(r"(?im)^\s*answer the user directly\.?$"),
     re.compile(r"(?im)^\s*(role|tone|complexity|recent context|context|intent)\s*:\s*.*$"),
     re.compile(r"(?im)^\s*\[(system|user|assistant)\]\s*.*$"),
 ]

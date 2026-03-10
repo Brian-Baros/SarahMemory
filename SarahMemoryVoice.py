@@ -46,7 +46,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 
 
 # -----------------------------------------------------------------------------
@@ -187,6 +187,14 @@ except Exception:
     pygame = None  # type: ignore
     _HAS_PYGAME = False
 
+# CosyVoice dependencies must remain optional.
+try:
+    import torchaudio  # type: ignore
+    _HAS_TORCHAUDIO = True
+except Exception:
+    torchaudio = None  # type: ignore
+    _HAS_TORCHAUDIO = False
+
 # =============================================================================
 # PATH HELPERS (consistent BASE/DATA directories)
 # =============================================================================
@@ -283,11 +291,381 @@ current_settings: Dict[str, Any] = {
     "speech_rate": "Normal",  # Slow/Normal/Fast
     "voice_profile": "Female",
     "emotion": "neutral",
-    "tts_engine": "pyttsx3",  # pyttsx3|gtts|edge
+    "tts_engine": "auto",  # pyttsx3|gtts|edge|cosyvoice|auto
     "language": "en",
 }
 
 active_voice_profile: str = "Female"
+
+# =============================================================================
+# CATEGORY-DRIVEN TTS RESOLUTION
+# =============================================================================
+_SUPPORTED_TTS_ENGINES: Tuple[str, ...] = ("pyttsx3", "gtts", "edge", "cosyvoice", "auto")
+_TTS_MODEL_BACKEND_MAP: Dict[str, str] = {
+    "FunAudioLLM/CosyVoice2-0.5B": "cosyvoice",
+}
+
+_COSYVOICE_RUNTIME = None
+_COSYVOICE_RUNTIME_META: Dict[str, Any] = {
+    "repo": None,
+    "model_dir": None,
+    "backend": None,
+    "sample_rate": 22050,
+}
+_COSYVOICE_LOCK = threading.Lock()
+
+
+def _normalize_tts_engine_name(engine_name: Optional[str]) -> str:
+    val = str(engine_name or "").strip().lower()
+    aliases = {
+        "pytts": "pyttsx3",
+        "pyttsx": "pyttsx3",
+        "pyttsx3": "pyttsx3",
+        "gtts": "gtts",
+        "google": "gtts",
+        "googletts": "gtts",
+        "edge": "edge",
+        "edge-tts": "edge",
+        "edgetts": "edge",
+        "cosyvoice": "cosyvoice",
+        "cosyvoice2": "cosyvoice",
+        "auto": "auto",
+    }
+    return aliases.get(val, val)
+
+
+def _tts_repo_to_backend(repo: Optional[str]) -> str:
+    repo_val = str(repo or "").strip()
+    if not repo_val:
+        return ""
+    backend = _TTS_MODEL_BACKEND_MAP.get(repo_val, "")
+    if backend:
+        return backend
+    if "cosyvoice" in repo_val.lower():
+        return "cosyvoice"
+    return ""
+
+
+def _resolve_tts_model_candidates(text: str = "", lang: str = "en") -> Dict[str, Any]:
+    default = {
+        "selected": None,
+        "fallbacks": [],
+        "source": "none",
+        "score": 0.0,
+        "tier": "low",
+        "tier_rating": "Poor",
+        "third_party_autoload_allowed": False,
+    }
+    try:
+        if hasattr(config, "resolve_model"):
+            resolved = config.resolve_model(
+                "tts",
+                text=text or "",
+                meta={"lang": str(lang or "en")},
+                models_dir=getattr(config, "MODELS_DIR", None),
+            )
+            if isinstance(resolved, dict):
+                return {**default, **resolved}
+    except Exception as exc:
+        logger.debug("[Voice] TTS model resolution failed: %s", exc)
+    return default
+
+
+def _build_engine_fallback_chain(primary_engine: str, allow_remote: bool = True) -> List[str]:
+    normalized = _normalize_tts_engine_name(primary_engine)
+    chain: List[str] = []
+
+    def _add(name: Optional[str]) -> None:
+        eng = _normalize_tts_engine_name(name)
+        if not eng or eng == "auto":
+            return
+        if eng not in chain:
+            chain.append(eng)
+
+    _add(normalized or "pyttsx3")
+    if allow_remote:
+        _add("edge")
+        _add("gtts")
+    _add("pyttsx3")
+    return chain or ["pyttsx3"]
+
+
+def _resolve_tts_runtime_plan(text: str = "", lang: str = "en", explicit_engine: Optional[str] = None) -> Dict[str, Any]:
+    requested_engine = _normalize_tts_engine_name(explicit_engine or current_settings.get("tts_engine", "pyttsx3"))
+    allow_remote = not bool(getattr(config, "LOCAL_ONLY_MODE", False))
+    if requested_engine and requested_engine != "auto":
+        return {
+            "engine": requested_engine,
+            "engine_chain": _build_engine_fallback_chain(requested_engine, allow_remote=allow_remote),
+            "requested_engine": requested_engine,
+            "selected_repo": None,
+            "fallback_repos": [],
+            "backend_source": "user_engine",
+            "tier_rating": "Poor",
+            "third_party_autoload_allowed": False,
+            "model_resolution": None,
+        }
+
+    resolved = _resolve_tts_model_candidates(text=text or "", lang=lang or "en")
+    selected_repo = str((resolved or {}).get("selected") or "").strip() or None
+    fallback_repos = [str(x).strip() for x in ((resolved or {}).get("fallbacks") or []) if str(x).strip()]
+    engine = _tts_repo_to_backend(selected_repo)
+    if not engine:
+        for repo_name in fallback_repos:
+            engine = _tts_repo_to_backend(repo_name)
+            if engine:
+                break
+
+    if not engine:
+        if _HAS_EDGE_TTS:
+            engine = "edge"
+        elif _HAS_GTTS and allow_remote:
+            engine = "gtts"
+        else:
+            engine = "pyttsx3"
+
+    return {
+        "engine": engine,
+        "engine_chain": _build_engine_fallback_chain(engine, allow_remote=allow_remote),
+        "requested_engine": requested_engine or "auto",
+        "selected_repo": selected_repo,
+        "fallback_repos": fallback_repos,
+        "backend_source": str((resolved or {}).get("source") or "none"),
+        "tier_rating": str((resolved or {}).get("tier_rating") or "Poor"),
+        "third_party_autoload_allowed": bool((resolved or {}).get("third_party_autoload_allowed", False)),
+        "model_resolution": resolved,
+    }
+
+
+def _cosyvoice_model_dir(repo: Optional[str]) -> Optional[str]:
+    repo_val = str(repo or "").strip()
+    if not repo_val:
+        return None
+
+    candidates: List[str] = []
+    try:
+        if hasattr(config, "_repo_to_local_dir"):
+            local_dir = config._repo_to_local_dir(repo_val, getattr(config, "MODELS_DIR", None) or str(_data_dir() / "models"))
+            if local_dir:
+                candidates.append(str(local_dir))
+    except Exception:
+        pass
+
+    models_dir = getattr(config, "MODELS_DIR", None)
+    if models_dir:
+        safe_name = repo_val.replace("/", "_")
+        candidates.append(os.path.join(str(models_dir), safe_name))
+        candidates.append(os.path.join(str(models_dir), os.path.basename(repo_val)))
+    candidates.append(repo_val)
+
+    for item in candidates:
+        try:
+            p = Path(str(item)).expanduser()
+            if p.is_dir() and any(p.iterdir()):
+                return str(p)
+        except Exception:
+            continue
+    return None
+
+
+def _iter_cosyvoice_audio_segments(result: Any) -> Generator[Any, None, None]:
+    if result is None:
+        return
+    if isinstance(result, dict):
+        if "tts_speech" in result:
+            yield result["tts_speech"]
+        return
+    if isinstance(result, (list, tuple)):
+        for item in result:
+            yield from _iter_cosyvoice_audio_segments(item)
+        return
+    if isinstance(result, Iterable) and not isinstance(result, (str, bytes, bytearray, dict)):
+        try:
+            for item in result:
+                yield from _iter_cosyvoice_audio_segments(item)
+        except TypeError:
+            pass
+        return
+    yield result
+
+
+def _pick_cosyvoice_speaker(runtime_obj: Any, profile: str, lang: str) -> Optional[str]:
+    try:
+        lister = getattr(runtime_obj, "list_avaliable_spks", None) or getattr(runtime_obj, "list_available_spks", None)
+        if not callable(lister):
+            return None
+        speakers = list(lister() or [])
+        if not speakers:
+            return None
+        want_male = (VOICE_PROFILES.get(profile) or profile or "female").lower() == "male"
+        lang_tokens: List[str] = []
+        if str(lang or "").lower().startswith("en"):
+            lang_tokens.extend(["en", "eng", "english"])
+        elif str(lang or "").lower().startswith("zh"):
+            lang_tokens.extend(["zh", "chinese", "中文"])
+        for spk in speakers:
+            spk_low = str(spk).lower()
+            if want_male and any(tok in spk_low for tok in ("male", "man", "guy", "男")):
+                return str(spk)
+            if (not want_male) and any(tok in spk_low for tok in ("female", "woman", "girl", "zira", "aria", "jenny", "女")):
+                return str(spk)
+        for spk in speakers:
+            spk_low = str(spk).lower()
+            if lang_tokens and any(tok in spk_low for tok in lang_tokens):
+                return str(spk)
+        return str(speakers[0])
+    except Exception:
+        return None
+
+
+def _ensure_cosyvoice_runtime(repo: Optional[str]) -> Tuple[Optional[Any], Dict[str, Any]]:
+    repo_val = str(repo or "").strip()
+    meta = {
+        "ok": False,
+        "repo": repo_val,
+        "model_dir": None,
+        "backend": None,
+        "reason": "uninitialized",
+    }
+    if not repo_val:
+        meta["reason"] = "missing_repo"
+        return None, meta
+    if _headless_safe():
+        meta["reason"] = "headless_runtime"
+        return None, meta
+    if not _HAS_TORCHAUDIO or torchaudio is None:
+        meta["reason"] = "torchaudio_unavailable"
+        return None, meta
+
+    model_dir = _cosyvoice_model_dir(repo_val)
+    meta["model_dir"] = model_dir
+    if not model_dir:
+        meta["reason"] = "model_dir_missing"
+        return None, meta
+
+    with _COSYVOICE_LOCK:
+        global _COSYVOICE_RUNTIME, _COSYVOICE_RUNTIME_META
+        if _COSYVOICE_RUNTIME is not None and _COSYVOICE_RUNTIME_META.get("repo") == repo_val and _COSYVOICE_RUNTIME_META.get("model_dir") == model_dir:
+            meta.update({
+                "ok": True,
+                "backend": _COSYVOICE_RUNTIME_META.get("backend"),
+                "reason": "ready",
+            })
+            return _COSYVOICE_RUNTIME, meta
+
+        runtime_obj = None
+        backend_name = None
+        errors: List[str] = []
+
+        try:
+            from cosyvoice.cli.cosyvoice import CosyVoice2  # type: ignore
+            runtime_obj = CosyVoice2(model_dir, load_jit=False, load_trt=False, fp16=False)
+            backend_name = "CosyVoice2"
+        except Exception as exc:
+            errors.append(f"CosyVoice2:{exc}")
+
+        if runtime_obj is None:
+            try:
+                from cosyvoice.cli.cosyvoice import CosyVoice  # type: ignore
+                runtime_obj = CosyVoice(model_dir, load_jit=False, load_onnx=False, load_trt=False, fp16=False)
+                backend_name = "CosyVoice"
+            except Exception as exc:
+                errors.append(f"CosyVoice:{exc}")
+
+        if runtime_obj is None:
+            meta["reason"] = "init_failed:" + " | ".join(errors[:3])
+            return None, meta
+
+        _COSYVOICE_RUNTIME = runtime_obj
+        _COSYVOICE_RUNTIME_META = {
+            "repo": repo_val,
+            "model_dir": model_dir,
+            "backend": backend_name,
+            "sample_rate": int(getattr(runtime_obj, "sample_rate", 22050) or 22050),
+        }
+        meta.update({
+            "ok": True,
+            "backend": backend_name,
+            "reason": "ready",
+        })
+        return runtime_obj, meta
+
+
+def _save_wave_tensor_to_file(audio_obj: Any, sample_rate: int, out_path: Path) -> bool:
+    if not _HAS_TORCHAUDIO or torchaudio is None:
+        return False
+    try:
+        import torch  # type: ignore
+    except Exception:
+        return False
+
+    try:
+        tensor = audio_obj
+        if isinstance(audio_obj, (list, tuple)):
+            tensor = torch.tensor(audio_obj)
+        elif not hasattr(audio_obj, "shape"):
+            tensor = torch.tensor(audio_obj)
+        if getattr(tensor, "dim", lambda: 0)() == 1:
+            tensor = tensor.unsqueeze(0)
+        elif getattr(tensor, "dim", lambda: 0)() > 2:
+            tensor = tensor.squeeze()
+            if getattr(tensor, "dim", lambda: 0)() == 1:
+                tensor = tensor.unsqueeze(0)
+        tensor = tensor.detach().cpu().float()
+        torchaudio.save(str(out_path), tensor, int(sample_rate or 22050))
+        return True
+    except Exception:
+        return False
+
+
+def _speak_with_cosyvoice(text: str, profile: str, emotion: str, lang: str, repo: Optional[str]) -> bool:
+    runtime_obj, runtime_meta = _ensure_cosyvoice_runtime(repo)
+    if runtime_obj is None:
+        logger.info("[Voice] CosyVoice unavailable: %s", runtime_meta.get("reason"))
+        return False
+    if _TTS_STOP_FLAG.is_set():
+        return False
+
+    chunks = _split_text_for_tts(text, max_chars=220)
+    if not chunks:
+        return False
+
+    speaker = _pick_cosyvoice_speaker(runtime_obj, profile, lang)
+    if not speaker:
+        logger.info("[Voice] CosyVoice runtime ready but no SFT speakers exposed; falling back.")
+        return False
+
+    sample_rate = int(_COSYVOICE_RUNTIME_META.get("sample_rate") or getattr(runtime_obj, "sample_rate", 22050) or 22050)
+    spoke_any = False
+    infer = getattr(runtime_obj, "inference_sft", None)
+    if not callable(infer):
+        logger.info("[Voice] CosyVoice runtime does not expose inference_sft; falling back.")
+        return False
+
+    for idx, chunk in enumerate(chunks):
+        if _TTS_STOP_FLAG.is_set():
+            return spoke_any
+        try:
+            result = infer(chunk, speaker, stream=False)
+            audio_segments = list(_iter_cosyvoice_audio_segments(result))
+            for seg_idx, segment in enumerate(audio_segments):
+                if _TTS_STOP_FLAG.is_set():
+                    return spoke_any
+                out_path = _downloads_dir() / f"sm_cosyvoice_{uuid.uuid4().hex}_{idx}_{seg_idx}.wav"
+                try:
+                    if _save_wave_tensor_to_file(segment, sample_rate, out_path):
+                        _play_audio_file(str(out_path))
+                        spoke_any = True
+                finally:
+                    try:
+                        out_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.warning("[Voice] CosyVoice inference failed: %s", exc)
+            logger.debug(traceback.format_exc())
+            return spoke_any
+    return spoke_any
 
 # =============================================================================
 # DATABASE LOGGING
@@ -688,6 +1066,9 @@ class _TTSTask:
     engine_pref: str
     voice_profile: str
     lang: str
+    selected_repo: Optional[str] = None
+    fallback_repos: Optional[List[str]] = None
+    backend_source: str = "none"
 
 
 def _start_tts_worker() -> None:
@@ -712,18 +1093,76 @@ def _tts_worker_loop() -> None:
             config.AVATAR_IS_SPEAKING = True
             _TTS_STOP_FLAG.clear()
 
-            engine = (task.engine_pref or "pyttsx3").strip().lower()
+            requested_engine = _normalize_tts_engine_name(task.engine_pref or "pyttsx3") or "pyttsx3"
             emotion = (task.emotion or "neutral").strip().lower()
             profile = (task.voice_profile or "Female").strip()
+            selected_repo = str(task.selected_repo or "").strip() or None
+            fallback_repos = list(task.fallback_repos or [])
+            backend_source = str(task.backend_source or "none")
+            engine_chain = _build_engine_fallback_chain(requested_engine, allow_remote=not bool(getattr(config, "LOCAL_ONLY_MODE", False)))
+
+            completed_engine = None
+            completed = False
+            failure_notes: List[str] = []
 
             try:
-                if engine == "edge" and _HAS_EDGE_TTS:
-                    _speak_with_edge_tts(task.text, profile)
-                elif engine == "gtts" and _HAS_GTTS:
-                    _speak_with_gtts(task.text, lang=task.lang or "en")
-                else:
-                    # default: pyttsx3 if available
-                    _speak_with_pyttsx3(task.text, profile, emotion)
+                for engine in engine_chain:
+                    if _TTS_STOP_FLAG.is_set():
+                        break
+                    try:
+                        if engine == "cosyvoice":
+                            repo_candidates: List[str] = []
+                            if selected_repo:
+                                repo_candidates.append(selected_repo)
+                            for repo_name in fallback_repos:
+                                if repo_name and repo_name not in repo_candidates:
+                                    repo_candidates.append(repo_name)
+                            if not repo_candidates and hasattr(config, "get_stack_primary_repo"):
+                                default_repo = config.get_stack_primary_repo("tts", task.text, {"lang": task.lang or "en"})
+                                if default_repo:
+                                    repo_candidates.append(str(default_repo))
+                            for repo_name in repo_candidates:
+                                if _speak_with_cosyvoice(task.text, profile, emotion, task.lang or "en", repo_name):
+                                    completed_engine = "cosyvoice"
+                                    completed = True
+                                    break
+                            if completed:
+                                break
+                            failure_notes.append("cosyvoice_unavailable")
+                            continue
+                        if engine == "edge":
+                            if not _HAS_EDGE_TTS:
+                                failure_notes.append("edge_unavailable")
+                                continue
+                            _speak_with_edge_tts(task.text, profile)
+                            completed_engine = "edge"
+                            completed = True
+                            break
+                        if engine == "gtts":
+                            if not _HAS_GTTS or bool(getattr(config, "LOCAL_ONLY_MODE", False)):
+                                failure_notes.append("gtts_unavailable")
+                                continue
+                            _speak_with_gtts(task.text, lang=task.lang or "en")
+                            completed_engine = "gtts"
+                            completed = True
+                            break
+                        if engine == "pyttsx3":
+                            if not _ensure_pyttsx3_engine():
+                                failure_notes.append("pyttsx3_unavailable")
+                                continue
+                            _speak_with_pyttsx3(task.text, profile, emotion)
+                            completed_engine = "pyttsx3"
+                            completed = True
+                            break
+                        failure_notes.append(f"unknown_engine:{engine}")
+                    except Exception as engine_exc:
+                        failure_notes.append(f"{engine}:{engine_exc}")
+                        logger.warning("[Voice] TTS backend '%s' failed: %s", engine, engine_exc)
+                        logger.debug(traceback.format_exc())
+                        continue
+
+                if not completed and failure_notes:
+                    logger.info("[Voice] TTS fallback chain exhausted: %s", " | ".join(failure_notes[:5]))
             except Exception as e:
                 logger.warning("[Voice] TTS task failed: %s", e)
                 logger.debug(traceback.format_exc())
@@ -740,7 +1179,10 @@ def _tts_worker_loop() -> None:
 
                 # Log
                 try:
-                    log_voice_event("TTS", f"engine={engine} emotion={emotion} text={task.text[:120]}")
+                    log_voice_event(
+                        "TTS",
+                        f"engine={completed_engine or requested_engine} requested={requested_engine} source={backend_source} repo={selected_repo or 'none'} emotion={emotion} text={task.text[:120]}",
+                    )
                 except Exception:
                     pass
 
@@ -778,7 +1220,7 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
         text: text to speak
         blocking: if True, wait until speech completes
         emotion: optional emotion label (neutral/joy/etc)
-        engine_pref: 'pyttsx3'|'gtts'|'edge'
+        engine_pref: 'pyttsx3'|'gtts'|'edge'|'cosyvoice'|'auto'
 
     Returns:
         True if accepted for speech, False if skipped (e.g., SAFE_MODE/headless/no text).
@@ -790,8 +1232,6 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
     if SAFE_MODE:
         return False
 
-    
-
     # Speak final-only output (never speak system/thinking scaffolding)
     try:
         from SarahMemoryAPI import _sm_sanitize_llm_text as _san
@@ -800,53 +1240,28 @@ def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, 
         pass
 
     text = _sm_sanitize_llm_text_local(text)
+    if not text:
+        return False
 
     _start_tts_worker()
 
-    # Resolver-driven default engine selection (no hardcoded model names)
-    # - If user sets tts_engine explicitly (pyttsx3/gtts/edge), we obey.
-    # - If user sets tts_engine="auto", we select the best available enhancer via Globals.resolve_model("tts").
-    # - POOR tier => core-only defaults (pyttsx3) unless user explicitly selects another engine.
-    try:
-        if engine_pref is None:
-            _user_engine = str(current_settings.get("tts_engine", "pyttsx3") or "pyttsx3").strip().lower()
-            if _user_engine == "auto":
-                _engine_choice = "pyttsx3"
-                try:
-                    resolved = None
-                    if hasattr(config, "resolve_model"):
-                        resolved = config.resolve_model("tts", text=text or "", meta={"lang": str(current_settings.get("language", "en") or "en")}, models_dir=getattr(config, "MODELS_DIR", None))
-                    sel = (resolved or {}).get("selected") if isinstance(resolved, dict) else None
-                    tier_rating = str((resolved or {}).get("tier_rating") or "").strip().lower() if isinstance(resolved, dict) else ""
-                    # If POOR and nothing user-forced, stay on core engine.
-                    if tier_rating == "poor" and not sel:
-                        _engine_choice = "pyttsx3"
-                    else:
-                        # Prefer edge if available, else gTTS if available, else pyttsx3.
-                        if _HAS_EDGE_TTS:
-                            _engine_choice = "edge"
-                        elif _HAS_GTTS and not bool(getattr(config, "LOCAL_ONLY_MODE", False)):
-                            _engine_choice = "gtts"
-                        else:
-                            _engine_choice = "pyttsx3"
-                except Exception:
-                    _engine_choice = "pyttsx3"
-                engine_pref = _engine_choice
-            else:
-                engine_pref = _user_engine
-    except Exception:
-        # Never block speech; default to pyttsx3
-        if engine_pref is None:
-            engine_pref = "pyttsx3"
+    lang = str(current_settings.get("language", "en") or "en")
+    runtime_plan = _resolve_tts_runtime_plan(text=text, lang=lang, explicit_engine=engine_pref)
+    chosen_engine = _normalize_tts_engine_name(runtime_plan.get("engine") or "pyttsx3") or "pyttsx3"
+    if chosen_engine not in _SUPPORTED_TTS_ENGINES:
+        chosen_engine = "pyttsx3"
 
     ev: Optional[threading.Event] = threading.Event() if blocking else None
     task = _TTSTask(
         text=str(text).strip(),
         blocking_event=ev,
         emotion=(emotion or str(current_settings.get("emotion", "neutral"))),
-        engine_pref=(engine_pref or str(current_settings.get("tts_engine", "pyttsx3"))),
+        engine_pref=chosen_engine,
         voice_profile=str(current_settings.get("voice_profile", active_voice_profile or "Female")),
-        lang=str(current_settings.get("language", "en") or "en"),
+        lang=lang,
+        selected_repo=runtime_plan.get("selected_repo"),
+        fallback_repos=list(runtime_plan.get("fallback_repos") or []),
+        backend_source=str(runtime_plan.get("backend_source") or "none"),
     )
     _TTS_QUEUE.put(task)
 
@@ -981,7 +1396,10 @@ def set_emotion(emotion: str) -> None:
 def set_tts_engine(engine_name: str) -> None:
     if not engine_name:
         return
-    current_settings["tts_engine"] = engine_name
+    normalized = _normalize_tts_engine_name(engine_name)
+    if normalized not in _SUPPORTED_TTS_ENGINES:
+        normalized = "pyttsx3"
+    current_settings["tts_engine"] = normalized
 
 
 def set_speech_rate(rate_label: str) -> None:

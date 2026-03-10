@@ -446,6 +446,93 @@ _FILE_ACTION_HINTS = (
     "open", "save", "move", "copy", "delete", "rename", "preview",
     "launch", "browse", "display", "download", "export"
 )
+
+# Vision / perception semantic pools
+_VISUAL_QUERY_TYPES: Tuple[str, ...] = (
+    "identify_color",
+    "read_text",
+    "detect_objects",
+    "detect_faces",
+    "track_motion",
+    "estimate_distance",
+    "inspect_safety_zone",
+    "compare_before_after",
+    "assess_style_or_fit",
+    "scene_summary",
+)
+_VISUAL_COLOR_HINTS = (
+    "color", "colour", "shade", "dominant color", "what color", "what colour"
+)
+_VISUAL_TEXT_HINTS = (
+    "read", "say", "text", "label", "sign", "license plate", "plate", "ocr",
+    "serial", "screen", "display text", "what does"
+)
+_VISUAL_OBJECT_HINTS = (
+    "object", "objects", "item", "items", "thing", "things", "see", "seeing",
+    "in frame", "in the image", "in the picture", "in the scene", "around me",
+    "what is there", "what's there", "what do you see"
+)
+_VISUAL_FACE_HINTS = (
+    "face", "faces", "eye", "eyes", "eyecolor", "eye color", "facial",
+    "person", "people", "employee", "worker", "recognize", "who is", "smiling"
+)
+_VISUAL_MOTION_HINTS = (
+    "moving", "movement", "motion", "track", "tracking", "follow", "walking",
+    "running", "approaching", "leaving", "entering", "exiting"
+)
+_VISUAL_DISTANCE_HINTS = (
+    "distance", "far", "close", "near", "too close", "how far", "how close",
+    "range", "proximity"
+)
+_VISUAL_SAFETY_HINTS = (
+    "danger zone", "safe zone", "safety zone", "hazard zone", "restricted zone",
+    "unsafe", "collision", "stop the machine", "stop machine", "emergency stop",
+    "interlock", "too close to", "in the zone", "crossing the line"
+)
+_VISUAL_COMPARE_HINTS = (
+    "before and after", "before/after", "compare", "difference", "changed",
+    "has it changed", "what changed"
+)
+_VISUAL_STYLE_HINTS = (
+    "look fat", "look good", "look bad", "fit", "style", "match", "flattering",
+    "outfit", "dress this", "does this shirt", "does this dress", "does this outfit"
+)
+_VISUAL_SCENE_HINTS = (
+    "summarize the scene", "scene summary", "describe the scene", "describe what you see",
+    "what do you see", "what's happening", "what is happening", "summarize this image"
+)
+_VISUAL_DEVICE_HINTS = (
+    "camera", "webcam", "vision", "image", "picture", "photo", "frame", "video",
+    "screen", "monitor", "thermal", "infrared", "ir", "night vision", "autofocus",
+    "zoom", "magnify", "sensor"
+)
+_VISUAL_SUBJECT_SYNONYMS: Dict[str, str] = {
+    "tee": "shirt",
+    "tshirt": "shirt",
+    "t-shirt": "shirt",
+    "top": "shirt",
+    "hooded sweatshirt": "hoodie",
+    "trousers": "pants",
+    "slacks": "pants",
+    "blue jeans": "jeans",
+    "specs": "glasses",
+    "spectacles": "glasses",
+    "hard hat": "helmet",
+    "hi vis": "safety vest",
+    "high vis": "safety vest",
+    "infra red": "infrared",
+}
+_VISUAL_SUBJECT_CANDIDATES: Tuple[str, ...] = (
+    "shirt", "pants", "jeans", "shorts", "skirt", "dress", "jacket", "hoodie", "sweater",
+    "coat", "hat", "cap", "helmet", "glasses", "shoes", "boots", "eyes", "eye", "face",
+    "hair", "worker", "employee", "person", "people", "machine", "robot", "vehicle", "car",
+    "road", "lane", "controller", "tool", "sign", "label", "screen", "display", "animal",
+    "deer", "hog", "target", "zone", "door", "package", "box", "desk", "couch", "sofa"
+)
+_VISUAL_ACTION_HINTS = (
+    "stop", "halt", "shutdown", "lockout", "disable", "track", "monitor", "follow",
+    "alert", "warn", "notify", "report", "log"
+)
 _SEMANTIC_STOPWORDS: Set[str] = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "to", "for", "of", "and", "or", "if", "then", "with", "into", "in",
@@ -481,6 +568,7 @@ class ParsedCommand:
     likely_lane: Optional[str] = None
     output_type: Optional[str] = None
     query_type: Optional[str] = None
+    action_expectation: Optional[str] = None
     semantic_summary: Optional[str] = None
     attributes: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
@@ -506,6 +594,7 @@ class ParsedCommand:
             "intent_family": self.intent_family,
             "likely_lane": self.likely_lane,
             "query_type": self.query_type,
+            "action_expectation": self.action_expectation,
             "subject": self.subject,
             "attributes": list(self.attributes or []),
             "keywords": list(self.keywords or []),
@@ -1113,6 +1202,175 @@ def _infer_subject_from_text(
 
 
 
+def _normalize_visual_subject(subject: Optional[str]) -> Optional[str]:
+    """Normalize a likely vision subject into a stable canonical phrase."""
+    s = _normalize_text(subject).lower().strip(" ?!,.:-")
+    if not s:
+        return None
+    s = re.sub(r"(my|the|this|that|these|those|a|an)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return None
+    if s in _VISUAL_SUBJECT_SYNONYMS:
+        s = _VISUAL_SUBJECT_SYNONYMS[s]
+    for k, v in _VISUAL_SUBJECT_SYNONYMS.items():
+        if s == k or s.endswith(" " + k):
+            return v
+    return s
+
+
+def _contains_any_phrase(text: str, phrases: Tuple[str, ...]) -> bool:
+    lt = (text or "").lower()
+    return any(p in lt for p in phrases)
+
+
+def _detect_visual_query_type(
+    text: str,
+    subject: Optional[str] = None,
+    output_type: Optional[str] = None,
+    intent_label: Optional[str] = None,
+) -> Optional[str]:
+    """Detect whether the user request is a vision/perception request and return a normalized vision query type."""
+    lt = _normalize_text(text).lower()
+    if not lt:
+        return None
+
+    has_subject = bool(_normalize_visual_subject(subject))
+    has_visual_cues = (
+        _contains_any_phrase(lt, _VISUAL_DEVICE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_FACE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_COLOR_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_TEXT_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_MOTION_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_STYLE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_SCENE_HINTS)
+    )
+    visual_context = bool(has_visual_cues and (has_subject or True))
+    if not visual_context:
+        return None
+
+    if _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS):
+        return "inspect_safety_zone"
+    if _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS):
+        return "compare_before_after"
+    if _contains_any_phrase(lt, _VISUAL_STYLE_HINTS):
+        return "assess_style_or_fit"
+    if _contains_any_phrase(lt, _VISUAL_TEXT_HINTS):
+        return "read_text"
+    if _contains_any_phrase(lt, _VISUAL_COLOR_HINTS):
+        return "identify_color"
+    if _contains_any_phrase(lt, _VISUAL_MOTION_HINTS):
+        return "track_motion"
+    if _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS):
+        return "estimate_distance"
+    if _contains_any_phrase(lt, _VISUAL_FACE_HINTS):
+        return "detect_faces"
+    if _contains_any_phrase(lt, _VISUAL_SCENE_HINTS):
+        return "scene_summary"
+    if _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS):
+        return "detect_objects"
+
+    if output_type == "image":
+        return "scene_summary"
+    if intent_label in ("question", "device_query", "statement") and visual_context:
+        return "scene_summary"
+    return None
+
+
+def _extract_visual_subject_from_text(text: str, query_type: Optional[str], fallback_subject: Optional[str] = None) -> Optional[str]:
+    """Best-effort extraction of the subject being visually queried."""
+    lt = _normalize_text(text).lower()
+    patterns = [
+        r"(?:color|colour)\s+(?:of|for)\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"what\s+(?:color|colour)\s+(?:is|are)\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"what\s+does\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})\s+say",
+        r"read\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"does\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})\s+make\s+me\s+look",
+        r"is\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})\s+too\s+close",
+        r"is\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})\s+in\s+(?:the\s+)?(?:danger|safe|safety|hazard)\s+zone",
+        r"track\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"compare\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, lt)
+        if m:
+            subj = _normalize_visual_subject(m.group(1))
+            if subj:
+                return subj
+
+    cleaned = re.sub(r"[^a-z0-9\s_-]", " ", lt)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    for cand in sorted(_VISUAL_SUBJECT_CANDIDATES, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(cand)}\b", cleaned):
+            return _normalize_visual_subject(cand)
+
+    return _normalize_visual_subject(fallback_subject)
+
+
+def _visual_attributes_for_query_type(query_type: Optional[str]) -> List[str]:
+    mapping = {
+        "identify_color": ["color"],
+        "read_text": ["text"],
+        "detect_objects": ["objects"],
+        "detect_faces": ["faces"],
+        "track_motion": ["motion"],
+        "estimate_distance": ["distance"],
+        "inspect_safety_zone": ["distance", "safety_zone"],
+        "compare_before_after": ["comparison", "change"],
+        "assess_style_or_fit": ["style", "fit"],
+        "scene_summary": ["scene"],
+    }
+    return list(mapping.get(query_type or "", []))
+
+
+def _infer_action_expectation(
+    text: str,
+    query_type: Optional[str],
+    intent_family: Optional[str],
+    lane: Optional[str],
+) -> Optional[str]:
+    """Infer whether the request is answer-only, advisory, monitoring, or a governed action candidate."""
+    lt = _normalize_text(text).lower()
+    if not query_type:
+        if lane == "action" or intent_family == "ACTION":
+            return "governed_action_candidate"
+        return None
+
+    if query_type == "inspect_safety_zone":
+        if any(tok in lt for tok in _VISUAL_ACTION_HINTS):
+            return "governed_action_candidate"
+        return "answer_with_monitoring_guidance"
+
+    if query_type in ("track_motion", "estimate_distance"):
+        if any(tok in lt for tok in ("track", "monitor", "follow", "alert", "notify", "report", "warn")):
+            return "answer_with_monitoring_guidance"
+        return "answer_only"
+
+    if lane == "action" or intent_family == "ACTION":
+        return "governed_action_candidate"
+
+    return "answer_only"
+
+
+def _merge_priority_attributes(priority: List[str], existing: List[str], limit: int = 8) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for seq in (priority or [], existing or []):
+        for item in seq:
+            t = _normalize_text(item).lower().strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+            if len(out) >= limit:
+                return out
+    return out
+
+
 def _detect_output_type(text: str, intent_label: str, action: Optional[str] = None) -> Optional[str]:
     """Infer the primary requested output/artifact type."""
     t = (text or "").lower()
@@ -1195,12 +1453,15 @@ def _infer_query_type(
     text: str,
     intent_label: str,
     output_type: Optional[str],
-    math_expr: Optional[str]
+    math_expr: Optional[str],
+    visual_query_type: Optional[str] = None,
 ) -> str:
     """Produce a normalized query_type field for compact semantic packets."""
     t = (text or "").lower()
     if math_expr or intent_label == "math":
         return "deterministic_math"
+    if visual_query_type:
+        return visual_query_type
     if intent_label == "diagnostics":
         return "diagnostics"
     if output_type in ("image", "video", "music", "avatar"):
@@ -1252,6 +1513,7 @@ def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
         "attributes": list(cmd.attributes[:4]),
         "keywords": list(cmd.keywords[:6]),
         "query_type": cmd.query_type,
+        "action_expectation": cmd.action_expectation,
         "output_type": cmd.output_type,
         "math_expr": cmd.math_expr,
         "semantic_summary": cmd.semantic_summary,
@@ -1269,6 +1531,16 @@ def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
         payload["task"] = "fill missing network intent details only"
     else:
         payload["task"] = "fill missing semantic gap only"
+
+    if cmd.query_type in _VISUAL_QUERY_TYPES:
+        payload["vision"] = {
+            "query_type": cmd.query_type,
+            "requested_subject": cmd.subject,
+            "requested_attributes": list((cmd.attributes or [])[:4]),
+            "action_expectation": cmd.action_expectation or "answer_only",
+            "needs_optical_input": True,
+            "module_hints": [m for m in (cmd.module_hints or []) if m in ("SarahMemorySOBJE", "SarahMemoryFacialRecognition")],
+        }
 
     return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
 
@@ -1587,6 +1859,26 @@ def parse_command(
             action=action,
             existing_subject=subject
         )
+
+    visual_query_type = _detect_visual_query_type(
+        t,
+        subject=subject,
+        output_type=output_type,
+        intent_label=label,
+    )
+    if visual_query_type:
+        is_question_form = bool(re.match(r"^\s*(is|are|does|do|what|which|who|can|could|should|would|how)\b", t.lower()))
+        if is_question_form and label in ("close_quit", "command", "system_control"):
+            label = "question"
+            confidence = max(float(confidence or 0.0), 0.72)
+        if is_question_form and action in ("close_quit", "system_control"):
+            action = None
+        if output_type in ("music", "video", "avatar", "website", "application", "action") and not any(v in t.lower() for v in _CREATIVE_VERBS):
+            output_type = None
+        visual_subject = _extract_visual_subject_from_text(t, visual_query_type, fallback_subject=subject)
+        if visual_subject:
+            subject = visual_subject
+
     intent_family, likely_lane = _detect_intent_family_and_lane(
         t,
         label,
@@ -1594,9 +1886,12 @@ def parse_command(
         output_type=output_type,
         math_expr=math_expr
     )
-    query_type = _infer_query_type(t, label, output_type, math_expr)
+    query_type = _infer_query_type(t, label, output_type, math_expr, visual_query_type=visual_query_type)
     keywords = _extract_keywords(t)
     attributes = _extract_attributes(t, subject=subject, action=action, output_type=output_type)
+    if visual_query_type:
+        attributes = _merge_priority_attributes(_visual_attributes_for_query_type(visual_query_type), attributes)
+    action_expectation = _infer_action_expectation(t, query_type, intent_family, likely_lane)
     semantic_summary = _build_semantic_summary(
         label,
         subject=subject,
@@ -1606,6 +1901,9 @@ def parse_command(
         math_expr=math_expr
     )
     module_hints = _module_hints_for_packet(likely_lane, output_type, label)
+    if visual_query_type:
+        vision_helpers = ["SarahMemorySOBJE", "SarahMemoryFacialRecognition"]
+        module_hints = vision_helpers + [m for m in module_hints if m not in vision_helpers]
 
     # Store context in extra
     extra["user_context"] = user_context
@@ -1615,7 +1913,15 @@ def parse_command(
     extra["intent_family"] = intent_family
     extra["likely_lane"] = likely_lane
     extra["output_type"] = output_type
+    extra["action_expectation"] = action_expectation
     extra["module_hints"] = module_hints
+    if visual_query_type:
+        extra["vision"] = {
+            "query_type": visual_query_type,
+            "requested_subject": subject,
+            "requested_attributes": list(_visual_attributes_for_query_type(visual_query_type)),
+            "action_expectation": action_expectation,
+        }
 
     parsed = ParsedCommand(
         intent=label,
@@ -1631,6 +1937,7 @@ def parse_command(
         likely_lane=likely_lane,
         output_type=output_type,
         query_type=query_type,
+        action_expectation=action_expectation,
         semantic_summary=semantic_summary,
         attributes=attributes,
         keywords=keywords,

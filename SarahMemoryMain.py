@@ -2,9 +2,9 @@
 File: SarahMemoryMain.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2026-01-06
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025,2026 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,6 +12,7 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 SarahMemory v8.0 - The First True AI Operating System (AiOS)
 World-Class Bootup Sequence with Full Media Integration
