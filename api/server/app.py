@@ -393,33 +393,42 @@ _cached_globals_paths = None
 def _globals_paths():
     """
     Locate key SarahMemory paths from SarahMemoryGlobals.py.
-    Returns a dict with: DATA_DIR, ROOT_DIR, SANDBOX_DIR, ADDONS_DIR, MODS_DIR, SETTINGS_DIR
+    Returns a dict with stable directory keys used by the server and WebUI.
+    Discovery of files is NOT activation; these are path hints only.
     """
     global _cached_globals_paths
     if _cached_globals_paths is not None:
         return _cached_globals_paths
 
     # Defaults (work on PythonAnywhere / headless Linux too)
-    root_dir = os.path.abspath(Path(__file__).resolve().parents[2])  # v800 patch: stable BASE_DIR
+    root_dir = os.path.abspath(Path(__file__).resolve().parents[2])
     data_dir = os.path.join(root_dir, "data")
     sandbox_dir = os.path.join(root_dir, "sandbox")
     addons_dir = os.path.join(data_dir, "addons")
     mods_dir = os.path.join(root_dir, "mods")
     settings_dir = os.path.join(data_dir, "settings")
+    datasets_dir = os.path.join(data_dir, "memory", "datasets")
+    documents_dir = os.path.join(data_dir, "documents")
+    drivers_dir = os.path.join(data_dir, "drivers")
+    core_registry_dir = os.path.join(settings_dir, "core_registry")
 
     try:
         import SarahMemoryGlobals as smg  # type: ignore
-        root_dir = os.path.abspath(getattr(smg, "ROOT_DIR", root_dir))
+        root_dir = os.path.abspath(getattr(smg, "ROOT_DIR", getattr(smg, "BASE_DIR", root_dir)))
         data_dir = os.path.abspath(getattr(smg, "DATA_DIR", data_dir))
         sandbox_dir = os.path.abspath(getattr(smg, "SANDBOX_DIR", sandbox_dir))
         addons_dir = os.path.abspath(getattr(smg, "ADDONS_DIR", addons_dir))
         mods_dir = os.path.abspath(getattr(smg, "MODS_DIR", mods_dir))
         settings_dir = os.path.abspath(getattr(smg, "SETTINGS_DIR", settings_dir))
+        datasets_dir = os.path.abspath(getattr(smg, "DATASETS_DIR", datasets_dir))
+        documents_dir = os.path.abspath(getattr(smg, "DOCUMENTS_DIR", documents_dir))
+        drivers_dir = os.path.abspath(getattr(smg, "DRIVERS_DIR", drivers_dir))
+        core_registry_dir = os.path.abspath(getattr(smg, "CORE_REGISTRY_DIR", core_registry_dir))
     except Exception:
         pass
 
     # Ensure dirs exist (best-effort)
-    for d in (data_dir, sandbox_dir, addons_dir, mods_dir, settings_dir):
+    for d in (data_dir, sandbox_dir, addons_dir, mods_dir, settings_dir, datasets_dir, documents_dir, drivers_dir, core_registry_dir):
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:
@@ -432,6 +441,10 @@ def _globals_paths():
         "ADDONS_DIR": addons_dir,
         "MODS_DIR": mods_dir,
         "SETTINGS_DIR": settings_dir,
+        "DATASETS_DIR": datasets_dir,
+        "DOCUMENTS_DIR": documents_dir,
+        "DRIVERS_DIR": drivers_dir,
+        "CORE_REGISTRY_DIR": core_registry_dir,
     }
     return _cached_globals_paths
 
@@ -448,6 +461,154 @@ def _globals_dir(key: str, default_rel: str) -> str:
     except Exception:
         pass
     return os.path.join(os.path.abspath(os.getcwd()), default_rel)
+
+
+def _sm_refresh_core_registry(force: bool = False) -> dict:
+    """Best-effort registry warmup. Discovery is not activation."""
+    try:
+        import SarahMemoryGlobals as G  # type: ignore
+        fn = _safe_getattr(G, "sm_refresh_core_registry")
+        if callable(fn):
+            data = fn(force=force)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        app_logger.warning(f"Core registry refresh failed: {e}")
+    return {}
+
+
+def _sm_core_governance_profile() -> dict:
+    try:
+        import SarahMemoryGlobals as G  # type: ignore
+        fn = _safe_getattr(G, "sm_get_core_governance_profile")
+        if callable(fn):
+            data = fn()
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {
+        "dynamic_registration": False,
+        "auto_expose_approved": True,
+        "contract_validation_required": False,
+        "discovery_is_not_activation": True,
+    }
+
+
+def _sm_module_approved(module_name: str, capability: str | None = None) -> bool:
+    """Governed activation check. Presence/importability is not acceptance."""
+    if not module_name:
+        return False
+    try:
+        _sm_refresh_core_registry(force=False)
+        import SarahMemoryGlobals as G  # type: ignore
+        fn = _safe_getattr(G, "sm_is_core_module_approved")
+        if callable(fn):
+            return bool(fn(module_name, capability=capability))
+    except Exception as e:
+        app_logger.warning(f"Core module approval check failed for {module_name}: {e}")
+    return True
+
+
+def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, complexity: str, avatar_request: bool, *, local_only: bool, safe_mode: bool, neoskymatrix: bool, developersmode: bool) -> dict:
+    meta_in = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    return {
+        "text": text,
+        "session_id": payload.get("session_id") or payload.get("sid"),
+        "user_id": payload.get("user_id") or payload.get("uid"),
+        "source": str(payload.get("source") or "api").strip() or "api",
+        "mode": str(payload.get("mode") or ("LOCAL" if local_only else "ANY")).strip().upper() or "ANY",
+        "intent": intent,
+        "tone": tone,
+        "complexity": complexity,
+        "avatar_request": bool(avatar_request),
+        "request_source": "api_chat",
+        "ui": str(payload.get("ui") or "webui"),
+        "meta": {
+            "files": payload.get("files") or [],
+            "images": payload.get("images") or [],
+            "audio": payload.get("audio") or [],
+            "video": payload.get("video") or [],
+            "offline": bool(local_only or payload.get("offline") or payload.get("local_only")),
+            "local_only": bool(local_only),
+            "safe_mode": bool(safe_mode),
+            "diagnostics_ping": bool(payload.get("diagnostics_ping") or payload.get("diag_ping") or False),
+            "force_neuron": bool(payload.get("force_neuron") or payload.get("use_neuron") or True),
+            "panel": payload.get("panel"),
+            "addon": payload.get("addon"),
+            "driver": payload.get("driver"),
+            "display_requested": bool(payload.get("display_requested") or False),
+            "download_requested": bool(payload.get("download_requested") or False),
+            "user_consented": bool(payload.get("user_consented") or payload.get("consented") or False),
+            "proposed_action": payload.get("proposed_action") if isinstance(payload.get("proposed_action"), dict) else None,
+            "mode_flags": {
+                "LOCAL_ONLY_MODE": bool(local_only),
+                "SAFE_MODE": bool(safe_mode),
+                "NEOSKYMATRIX": bool(neoskymatrix),
+                "DEVELOPERSMODE": bool(developersmode),
+            },
+            "ingress_meta": meta_in,
+        },
+    }
+
+
+def _sm_present_text(raw_text: str, *, intent: str = "", meta: dict | None = None) -> str:
+    text = (raw_text or "").strip()
+    if not text:
+        return ""
+    low_intent = str(intent or (meta or {}).get("intent") or "").strip().lower()
+    if low_intent == "math":
+        if text.lower().startswith("the answer") or text.lower().startswith("the result"):
+            return text
+        return f"The answer is {text}."
+    if low_intent in {"diagnostics", "system_status", "status"} and text and text[-1] not in ".!?":
+        return text + "."
+    return text
+
+
+def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None, artifacts=None, actions=None, errors=None, raw_answer: str | None = None):
+    meta = dict(meta or {})
+    meta.setdefault("presentation_only", True)
+    meta.setdefault("outward_formatter", "app.py")
+    meta.pop("raw_answer", None)
+    meta.pop("canonical_answer", None)
+
+    try:
+        import SarahMemoryReply as R  # type: ignore
+        make_bundle = _safe_getattr(R, "_sm_make_outward_bundle")
+        if callable(make_bundle):
+            bundle = make_bundle(
+                presentation_text,
+                meta=meta,
+                artifacts=artifacts or [],
+                actions=actions or [],
+                errors=errors or [],
+            )
+            enforce = _safe_getattr(R, "_sm_enforce_provenance")
+            if callable(enforce):
+                bundle = enforce(bundle)
+            stamp = _safe_getattr(R, "_stamp_bundle")
+            if callable(stamp):
+                try:
+                    bundle = stamp(bundle)
+                except Exception:
+                    pass
+            if isinstance(bundle, dict):
+                bundle["ok"] = True
+                bundle["reply"] = bundle.get("presentation_reply") or bundle.get("response") or presentation_text
+                return bundle
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "presentation_reply": presentation_text,
+        "reply": presentation_text,
+        "response": presentation_text,
+        "meta": meta,
+        "artifacts": list(artifacts or []),
+        "actions": list(actions or []),
+        "errors": list(errors or []),
+    }
 
 
 
@@ -1153,90 +1314,23 @@ def api_health():
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
-    Primary chat endpoint used by the Web UI (app.js).
+    Primary chat endpoint used by the Web UI.
 
-    Expects JSON like:
-      { "text": "user message here", "files": ... }
-
-    Returns JSON like:
-      {
-        "ok": true,
-        "reply": "<assistant text>",
-        "meta": { "source": "api", "engine": "..." }
-      }
-
-    Diagnostics support:
-      - If caller sends {"diagnostics_ping": true} with no text, returns HTTP 200.
-      - This keeps strict validation for normal clients while making diagnostics PASS.
+    Hardcoded to the SarahMemory governed flow:
+    Ingress -> Context Packet -> Governor -> AdvCU/Neuron -> Compare -> Presentation -> Reply Bundle
     """
     try:
         payload = request.get_json(silent=True) or {}
 
-        # Optional metadata (kept lightweight; used by UI when available)
-        intent = str(payload.get("intent") or "")
-        tone = str(payload.get("tone") or "")
-        complexity = str(payload.get("complexity") or "")
+        intent = str(payload.get("intent") or "").strip()
+        tone = str(payload.get("tone") or "").strip()
+        complexity = str(payload.get("complexity") or "").strip()
         avatar_request = bool(payload.get("avatar_request") or payload.get("avatar") or False)
-
-        # Diagnostics handshake (do this BEFORE strict text validation)
         diagnostics_ping = bool(payload.get("diagnostics_ping") or payload.get("diag_ping") or False)
-
         text = (payload.get("text") or "").strip()
 
-        if not text:
-            if diagnostics_ping:
-                return jsonify({
-                    "ok": True,
-                    "reply": "Diagnostics ping acknowledged.",
-                    "meta": {
-                        "source": "api",
-                        "diagnostics": True,
-                        "version": PROJECT_VERSION,
-                    },
-                }), 200
-
-            return jsonify({
-                "ok": False,
-                "error": "Missing 'text' in request body.",
-                "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
-            }), 400
-
-        # ------------------------------------------------------------------
-        # Identity guardrails (keep branding consistent; prevent model/provider drift)
-        # ------------------------------------------------------------------
-        if _is_identity_question(text):
-            ident = _identity_payload()
-            low = (text or "").strip().lower()
-
-            if "version" in low:
-                reply = (
-                    f"My name is {ident['name']} — your {ident['platform']} companion. "
-                    f"Server version: {ident['version']}."
-                )
-            elif any(k in low for k in (
-                "who made you", "who created you", "creator", "who built you",
-                "who designed you", "designer", "engineer", "who engineered you",
-            )):
-                reply = f"I was created by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}."
-            elif "mission" in low:
-                reply = f"My mission is to help you as {ident['platform']} — fast, accurate, and user-controlled."
-            elif "brian lee baros" in low:
-                reply = f"{ident['creator']} is the creator/lead engineer of the {ident['platform']} project."
-            else:
-                reply = f"I'm {ident['name']} — your {ident['platform']} companion."
-
-            return jsonify({
-                "ok": True,
-                "reply": reply,
-                "identity": ident,
-                "meta": {"source": "identity_guard", "version": ident["version"]},
-            }), 200
-
-        # ------------------------------------------------------------------
-        # Build Context Packet + Mode Flags (single ingress contract)
-        # ------------------------------------------------------------------
         try:
-            import SarahMemoryGlobals as G
+            import SarahMemoryGlobals as G  # type: ignore
             payload_local_only = bool(payload.get("local_only") or payload.get("offline") or payload.get("LOCAL_ONLY_MODE") or payload.get("force_local_only"))
             local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False) or payload_local_only)
             payload_safe_mode = bool(payload.get("safe_mode") or payload.get("SAFE_MODE") or payload.get("force_safe_mode"))
@@ -1249,46 +1343,79 @@ def api_chat():
             neoskymatrix = False
             developersmode = False
 
-        # Caller-provided hints (do NOT widen permissions; only add metadata)
-        user_consented = bool(payload.get("user_consented") or payload.get("consented") or False)
-        proposed_action = payload.get("proposed_action") if isinstance(payload.get("proposed_action"), dict) else None
+        context_packet = _sm_build_context_packet(
+            payload,
+            text,
+            intent,
+            tone,
+            complexity,
+            avatar_request,
+            local_only=local_only,
+            safe_mode=safe_mode,
+            neoskymatrix=neoskymatrix,
+            developersmode=developersmode,
+        )
+        _sm_refresh_core_registry(force=False)
 
-        context_packet = {
-            "text": text,
-            "intent": intent,
-            "tone": tone,
-            "complexity": complexity,
-            "avatar_request": avatar_request,
-            "files": payload.get("files"),
-            "meta": payload.get("meta") if isinstance(payload.get("meta"), dict) else {},
-            "mode_flags": {
-                "LOCAL_ONLY_MODE": local_only,
-                "SAFE_MODE": safe_mode,
-                "NEOSKYMATRIX": neoskymatrix,
-                "DEVELOPERSMODE": developersmode,
-            },
-            "request_source": "api_chat",
-            "ui": str(payload.get("ui") or "webui"),
-            "session_id": payload.get("session_id") or payload.get("sid"),
-            "user_id": payload.get("user_id") or payload.get("uid"),
-        }
+        if not text:
+            if diagnostics_ping:
+                bundle = _sm_make_outward_bundle(
+                    "Diagnostics ping acknowledged.",
+                    meta={
+                        "source": "api",
+                        "engine": "diagnostics_ping",
+                        "intent": "diagnostics",
+                        "local_only": local_only,
+                        "version": PROJECT_VERSION,
+                    },
+                )
+                return jsonify(bundle), 200
+            return jsonify({
+                "ok": False,
+                "error": "Missing 'text' in request body.",
+                "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
+            }), 400
 
-        # ------------------------------------------------------------------
-        # Governor/Judge (CognitiveServices) — per-request governance decision
-        # ------------------------------------------------------------------
+        if _is_identity_question(text):
+            ident = _identity_payload()
+            low = text.strip().lower()
+            if "version" in low:
+                raw_reply = f"My name is {ident['name']} — your {ident['platform']} companion. Server version: {ident['version']}."
+            elif any(k in low for k in (
+                "who made you", "who created you", "creator", "who built you",
+                "who designed you", "designer", "engineer", "who engineered you",
+            )):
+                raw_reply = f"I was created by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}."
+            elif "mission" in low:
+                raw_reply = f"My mission is to help you as {ident['platform']} — fast, accurate, and user-controlled."
+            elif "brian lee baros" in low:
+                raw_reply = f"{ident['creator']} is the creator and lead engineer of the {ident['platform']} project."
+            else:
+                raw_reply = f"I'm {ident['name']} — your {ident['platform']} companion."
+            bundle = _sm_make_outward_bundle(
+                _sm_present_text(raw_reply, intent="identity"),
+                meta={"source": "identity_guard", "engine": "identity_guard", "intent": "identity", "version": ident["version"]},
+            )
+            bundle["identity"] = ident
+            return jsonify(bundle), 200
+
         gov = None
         try:
-            from SarahMemoryCognitiveServices import govern_request
-            gov = govern_request(
-                text,
-                caller="api_chat",
-                caller_context=context_packet,
-                user_present=True,
-                user_consented=user_consented,
-                proposed_action=proposed_action,
-            )
+            if _sm_module_approved("SarahMemoryCognitiveServices", capability="governor"):
+                from SarahMemoryCognitiveServices import govern_request  # type: ignore
+                gov = govern_request(
+                    text,
+                    caller="api_chat",
+                    caller_context=context_packet,
+                    user_present=True,
+                    user_consented=bool(context_packet["meta"].get("user_consented")),
+                    proposed_action=context_packet["meta"].get("proposed_action"),
+                )
         except Exception as e:
             app_logger.warning(f"CognitiveServices govern_request failed; continuing with safe defaults: {e}", exc_info=True)
+            gov = None
+
+        if not isinstance(gov, dict):
             gov = {
                 "ok": False,
                 "decision": "ALLOW",
@@ -1297,11 +1424,11 @@ def api_chat():
                 "reasons": ["governor_unavailable"],
                 "rationale": "Governor unavailable; proceeding with safe defaults.",
                 "routing_policy": {
-                    "allowed_tiers": {"tier0": True, "tier1": True, "tier2": False, "tier3": (not local_only)},
+                    "allowed_tiers": {"tier0": True, "tier1": True, "tier2": True, "tier3": (not local_only)},
                     "budgets": {"latency_ms": 4000, "max_steps": 12, "max_retries": 1},
                     "side_effects": {"tts": True, "db_write": True, "compare": True},
                 },
-                "trace": {"governor_error": str(e)},
+                "trace": {},
             }
 
         gov_decision = str(gov.get("decision") or ("ALLOW" if bool(gov.get("allow")) else "DEFER")).upper()
@@ -1312,23 +1439,19 @@ def api_chat():
         gov_trace = gov.get("trace") if isinstance(gov.get("trace"), dict) else {}
         routing_policy = gov.get("routing_policy") if isinstance(gov.get("routing_policy"), dict) else None
 
-        # Immediate gate responses
         if (not gov_allow) or gov_require_user or gov_decision in ("DENY", "DEFER", "REQUIRE_USER"):
-            # Build a minimal consistent reply
             if gov_decision == "DENY":
-                reply_text = gov_rationale or "Request denied by policy."
+                raw_reply = gov_rationale or "Request denied by policy."
                 src = "governor:deny"
             elif gov_decision == "REQUIRE_USER" or gov_require_user:
-                reply_text = gov_rationale or "User confirmation required before proceeding."
+                raw_reply = gov_rationale or "User confirmation required before proceeding."
                 src = "governor:require_user"
             else:
-                reply_text = gov_rationale or "Request deferred. Provide more details or confirm intent."
+                raw_reply = gov_rationale or "Request deferred. Provide more details or confirm intent."
                 src = "governor:defer"
-
-            return jsonify({
-                "ok": True,
-                "reply": reply_text,
-                "meta": {
+            bundle = _sm_make_outward_bundle(
+                _sm_present_text(raw_reply, intent="system"),
+                meta={
                     "source": src,
                     "engine": "cognitive_governor",
                     "decision": gov_decision,
@@ -1337,99 +1460,136 @@ def api_chat():
                     "local_only": local_only,
                     "version": PROJECT_VERSION,
                 },
-            }), 200
+            )
+            return jsonify(bundle), 200
 
-        # ------------------------------------------------------------------
-        # Police/Router (Neuron) — deterministic-first routing within policy
-        # ------------------------------------------------------------------
         try:
-            from SarahMemoryNeuron import neuron_route
-            nres = neuron_route(text, meta={
-                "intent": intent,
-                "tone": tone,
-                "complexity": complexity,
-                "avatar_request": avatar_request,
-                "ui": context_packet.get("ui"),
-                "local_only": local_only,
-                "offline": local_only,
-                "mode_flags": context_packet.get("mode_flags"),
-                "governor": {
-                    "decision": gov_decision,
-                    "reasons": gov_reasons,
-                },
-            }, policy=routing_policy)
+            if _sm_module_approved("SarahMemoryNeuron", capability="router"):
+                from SarahMemoryNeuron import neuron_route  # type: ignore
+                nres = neuron_route(text, meta={
+                    "intent": intent,
+                    "tone": tone,
+                    "complexity": complexity,
+                    "avatar_request": avatar_request,
+                    "ui": context_packet.get("ui"),
+                    "local_only": local_only,
+                    "offline": local_only,
+                    "context_packet": context_packet,
+                    "mode_flags": context_packet.get("meta", {}).get("mode_flags", {}),
+                    "governor": {"decision": gov_decision, "reasons": gov_reasons},
+                }, policy=routing_policy)
 
-            nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
-                "ok": getattr(nres, "ok", True),
-                "reply": getattr(nres, "reply", ""),
-                "confidence": getattr(nres, "confidence", None),
-                "intent": getattr(nres, "intent", intent),
-                "source": getattr(nres, "source", "neuron"),
-                "artifacts": getattr(nres, "artifacts", {}) or {},
-                "trace": getattr(nres, "trace", {}) or {},
-            }
+                nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
+                    "ok": getattr(nres, "ok", True),
+                    "reply": getattr(nres, "reply", ""),
+                    "confidence": getattr(nres, "confidence", None),
+                    "intent": getattr(nres, "intent", intent),
+                    "source": getattr(nres, "source", "neuron"),
+                    "artifacts": getattr(nres, "artifacts", {}) or {},
+                    "trace": getattr(nres, "trace", {}) or {},
+                }
 
-            return jsonify({
-                "ok": bool(nres_dict.get("ok", True)),
-                "reply": str(nres_dict.get("reply") or ""),
-                "meta": {
-                    "source": str(nres_dict.get("source") or "neuron"),
+                raw_reply = str(nres_dict.get("reply") or "")
+                resolved_intent = str(nres_dict.get("intent") or intent or "chat")
+                source_label = str(nres_dict.get("source") or "neuron")
+                meta_out = {
+                    "source": source_label,
                     "engine": "neuron_route",
-                    "intent": str(nres_dict.get("intent") or intent),
+                    "intent": resolved_intent,
                     "confidence": nres_dict.get("confidence"),
-                    "trace": nres_dict.get("trace") or {},
-                    "governor": {
-                        "decision": gov_decision,
-                        "reasons": gov_reasons,
-                    } if developersmode else {"decision": gov_decision},
+                    "governor": {"decision": gov_decision, "reasons": gov_reasons} if developersmode else {"decision": gov_decision},
                     "local_only": local_only,
                     "version": PROJECT_VERSION,
-                },
-                "artifacts": nres_dict.get("artifacts") or {},
-            }), 200
-
+                    "neuron_trace": nres_dict.get("trace") or {},
+                }
+                artifacts = []
+                actions = []
+                try:
+                    import SarahMemoryReply as _SMReply  # type: ignore
+                    art_fn = _safe_getattr(_SMReply, "_sm_creative_artifacts_from_meta")
+                    if callable(art_fn):
+                        artifacts = art_fn({"source": source_label, "artifacts": nres_dict.get("artifacts") or {}, "neuron_trace": nres_dict.get("trace") or {}}) or []
+                except Exception:
+                    artifacts = []
+                if not artifacts and isinstance(nres_dict.get("artifacts"), dict):
+                    for key, value in (nres_dict.get("artifacts") or {}).items():
+                        if value in (None, "", [], {}):
+                            continue
+                        path = value if isinstance(value, str) else json.dumps(value)
+                        artifacts.append({"name": key, "type": "file", "path": path, "display_ready": True, "download_ready": True, "source": source_label})
+                if isinstance(nres_dict.get("actions"), list):
+                    actions = list(nres_dict.get("actions") or [])
+                presentation_text = _sm_present_text(raw_reply, intent=resolved_intent, meta=meta_out)
+                bundle = _sm_make_outward_bundle(
+                    presentation_text,
+                    meta=meta_out,
+                    artifacts=artifacts,
+                    actions=actions,
+                    raw_answer=raw_reply,
+                )
+                bundle["ok"] = bool(nres_dict.get("ok", True))
+                return jsonify(bundle), 200
         except Exception as e:
             app_logger.error(f"Neuron route failed: {e}", exc_info=True)
 
-        # ------------------------------------------------------------------
-        # Final fallback: SarahMemoryReply bundle builder (best-effort)
-        # ------------------------------------------------------------------
         try:
-            from SarahMemoryReply import generate_reply
-            bundle = generate_reply(None, text, intent=intent, tone=tone, complexity=complexity)
-            if isinstance(bundle, dict):
-                reply_str = str(bundle.get("response") or bundle.get("text") or "").strip()
-                meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
+            import SarahMemoryReply as _SMReply  # type: ignore
+            generate_reply = _safe_getattr(_SMReply, "generate_reply")
+            if callable(generate_reply):
+                rb = generate_reply(None, text)
             else:
-                reply_str = str(bundle or "").strip()
-                meta = {}
+                rb = None
         except Exception as e:
-            reply_str = ""
-            meta = {}
+            rb = None
             app_logger.error(f"SarahMemoryReply.generate_reply failed: {e}", exc_info=True)
 
-        if not reply_str:
-            reply_str = "I’m having trouble generating a response right now."
+        if isinstance(rb, dict):
+            raw_reply = str(rb.get("presentation_reply") or rb.get("response") or rb.get("reply") or rb.get("text") or "").strip()
+            meta_out = rb.get("meta") if isinstance(rb.get("meta"), dict) else {}
+            artifacts = rb.get("artifacts") if isinstance(rb.get("artifacts"), list) else []
+            actions = rb.get("actions") if isinstance(rb.get("actions"), list) else []
+            errors = rb.get("errors") if isinstance(rb.get("errors"), list) else []
+        else:
+            raw_reply = str(rb or "").strip()
+            meta_out = {}
+            artifacts = []
+            actions = []
+            errors = []
+
+        if not raw_reply:
+            raw_reply = "I’m having trouble generating a response right now."
 
         meta_out = {
-            "source": str(meta.get("source") or "sarahmemory_reply"),
-            "engine": str(meta.get("engine") or "generate_reply"),
-            "intent": intent,
+            **(meta_out or {}),
+            "source": str((meta_out or {}).get("source") or "sarahmemory_reply"),
+            "engine": str((meta_out or {}).get("engine") or "generate_reply"),
+            "intent": str((meta_out or {}).get("intent") or intent or "chat"),
             "governor": {"decision": gov_decision},
             "local_only": local_only,
             "version": PROJECT_VERSION,
         }
-
-        return jsonify({"ok": True, "reply": reply_str, "meta": meta_out}), 200
+        presentation_text = _sm_present_text(raw_reply, intent=str(meta_out.get("intent") or intent or "chat"), meta=meta_out)
+        bundle = _sm_make_outward_bundle(
+            presentation_text,
+            meta=meta_out,
+            artifacts=artifacts,
+            actions=actions,
+            errors=errors,
+            raw_answer=raw_reply,
+        )
+        return jsonify(bundle), 200
 
     except Exception as e:
         app_logger.error(f"Fatal /api/chat error: {e}", exc_info=True)
-        return jsonify({
-            "ok": False,
-            "error": str(e),
-            "meta": {"source": "api", "engine": "api_chat_exception", "version": PROJECT_VERSION},
-        }), 500
-
+        meta = {"source": "api", "engine": "api_chat_exception", "version": PROJECT_VERSION}
+        bundle = _sm_make_outward_bundle(
+            "I’m having trouble processing that request right now.",
+            meta=meta,
+            errors=[str(e)],
+        )
+        bundle["ok"] = False
+        bundle["error"] = str(e)
+        return jsonify(bundle), 500
 
 
 @app.route("/api/media/job", methods=["POST"])
@@ -2113,7 +2273,7 @@ def ingest_local_file():
 
 
 # Contacts
-USER_DB_PATH = _globals_paths() # Cache user DB path
+USER_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "user_data.db")
 
 def _init_contacts_db(db_path):
     """Helper to initialize contacts table."""
