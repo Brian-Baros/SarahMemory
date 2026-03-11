@@ -3,7 +3,7 @@
 * Version:** 8.0.0  - THE FUNCTIONAL DEVELOPING AND DEVELOPERS VERSION -
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** March 10, 2026  
+* Last Update Date:** March 11, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
