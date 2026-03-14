@@ -16,7 +16,25 @@ https://store.sarahmemory.com
 ===============================================================================
 
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "data_layer"
+# CATEGORY = "database_and_memory"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "data_memory"
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "database_core"
+# FAMILY = "core_memory"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Primary database and memory access layer for SQLite/MySQL, response-layer storage, QA cache, device identity/capabilities, and dataset access wrappers."
+# --- SARAHMETA END ---
 import logging
 import sqlite3
 import time

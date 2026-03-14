@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "indexing_engine"
+# CATEGORY = "system_indexing"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = "data_memory"
+# HARDWARE_DOMAIN = "filesystem_registry"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "system_indexer"
+# FAMILY = "learning"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Filesystem and Windows-registry indexing engine that builds system_index.db for downstream learning and discovery workflows."
+# --- SARAHMETA END ---
 import os
 import sqlite3
 import time

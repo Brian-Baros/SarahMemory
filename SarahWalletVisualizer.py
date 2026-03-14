@@ -2,9 +2,9 @@
 File: SarahWalletVisualizer.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-12-21
+Date: 2025-03-01
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,12 +12,32 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
 ===============================================================================
 """
 # Visualizes wallet balance over time.
 # - Primary source: SarahMemory Ledger API  (env: LEDGER_API_BASE, SARAH_NODE_ID)
 # - Fallback: legacy JSON wallet at data/crypto/wallet.srh
 
+# --- SARAHMETA START ---
+# GRADE = "D"
+# ROLE = "utility_tool"
+# CATEGORY = "wallet_visualization"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = "ledger"
+# HARDWARE_DOMAIN = "display_filesystem_network"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "wallet_visualizer"
+# FAMILY = "utilities"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Wallet balance visualization utility using Ledger API or legacy wallet data to plot transaction-derived balance history."
+# --- SARAHMETA END ---
 import os
 import json
 import math

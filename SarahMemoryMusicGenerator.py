@@ -188,7 +188,25 @@ All exceptions are logged to SarahMemory unified logging system.
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "creative_engine"
+# CATEGORY = "music_production"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "audio_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "music_generator"
+# FAMILY = "creative_studios"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Music production and synthesis suite with sequencing, instruments, effects, mixing, mastering, and AI-assisted composition workflows."
+# --- SARAHMETA END ---
 import os
 import sys
 import json

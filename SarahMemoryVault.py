@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "security_core"
+# CATEGORY = "vault_and_secret_storage"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "vault"
+# FAMILY = "core_security"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Encrypted vault and secure configuration layer providing Fernet-based storage plus passphrase-protected secure config with KDF-derived keys."
+# --- SARAHMETA END ---
 import os
 import json
 import logging

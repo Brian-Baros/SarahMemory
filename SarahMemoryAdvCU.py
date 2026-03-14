@@ -80,7 +80,25 @@ DATABASE TABLES (functions.db):
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "semantic_core"
+# CATEGORY = "intent_and_context"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "advanced_context_unit"
+# FAMILY = "core_cognition"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Advanced Context Unit for intent classification, command parsing, embeddings, semantic compression, and code introspection. Foundational cognitive core module."
+# --- SARAHMETA END ---
 import re
 import os
 import json

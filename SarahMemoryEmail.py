@@ -30,7 +30,25 @@ SUPPORTED PATH:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "capability"
+# CATEGORY = "communication"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = "comm"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "email"
+# FAMILY = "communications"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Local-first sealed email lane for mailbox intake, classification, storage, forwarding, and safe auto-reply. Email is content, not commands."
+# --- SARAHMETA END ---
 import os
 import re
 import sys

@@ -86,7 +86,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "optimization_engine"
+# CATEGORY = "runtime_optimization"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "cpu_memory_disk_network"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "optimization"
+# FAMILY = "performance"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "System optimization and resource-management engine for monitoring, thresholds, idle-time tasks, predictive tuning, and bounded cognitive partitioning."
+# --- SARAHMETA END ---
 import logging
 import psutil
 import time

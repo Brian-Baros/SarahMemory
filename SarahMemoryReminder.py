@@ -36,7 +36,25 @@ the SarahMemory AiOS platform, supporting:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "capability"
+# CATEGORY = "calendar_and_scheduler"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = "comm"
+# HARDWARE_DOMAIN = "filesystem_optional_notifications"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "reminder"
+# FAMILY = "communications"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Calendar, reminder, task, contact, password, and scheduling capability with recurrence, NLP date parsing, sync hooks, and notification types."
+# --- SARAHMETA END ---
 import logging
 import datetime
 import time

@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "vision_engine"
+# CATEGORY = "object_detection"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "camera_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "sobje"
+# FAMILY = "vision"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Object and scene observation engine with lazy YOLO loading, contour fallback, label normalization, color extraction, and observation logging for local visual reasoning."
+# --- SARAHMETA END ---
 import cv2
 import logging
 import os

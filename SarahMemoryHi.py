@@ -88,7 +88,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "telemetry_engine"
+# CATEGORY = "system_info_and_network"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_network_sensors"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "system_information"
+# FAMILY = "telemetry"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "System information and network telemetry engine for hardware detection, health metrics, GPU/thermal info, connectivity state, and async network status updates."
+# --- SARAHMETA END ---
 import logging
 import platform
 import psutil

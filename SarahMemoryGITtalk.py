@@ -43,7 +43,25 @@ SECURITY:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "frontend_patch_tool"
+# CATEGORY = "frontend_patch_operations"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "sandbox"
+# API_DOMAIN = "webui_admin"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "gittalk"
+# FAMILY = "ui_governance"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Restricted frontend-only patch planning/apply/push tool for sarah-s-dashboard with admin-key gating, git safety checks, and optional UI rebuild trigger."
+# --- SARAHMETA END ---
 import os
 import sys
 import re

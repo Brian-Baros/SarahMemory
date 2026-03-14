@@ -154,7 +154,25 @@ All exceptions are logged to SarahMemory unified logging system.
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "creative_engine"
+# CATEGORY = "video_production"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "gpu_audio_video_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "video_editor_core"
+# FAMILY = "creative_studios"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Professional video editing and multimedia creation engine with timeline editing, effects, audio integration, AI-assisted features, and rendering/export workflows."
+# --- SARAHMETA END ---
 import os
 import sys
 import json

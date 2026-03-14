@@ -62,7 +62,25 @@ NEW (CURRENT UPDATES DISCUSSED):
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "evolution_tool"
+# CATEGORY = "self_repair_and_patching"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "sandbox"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "evolution"
+# FAMILY = "self_evolution"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Self-evolution and repair tool that diagnoses issues, researches fixes, and stages ONLY monkey patches into data/mods/v800 without modifying core files directly."
+# --- SARAHMETA END ---
 import os
 import re
 import sys

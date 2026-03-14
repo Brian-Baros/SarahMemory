@@ -74,7 +74,25 @@ INTEGRATION POINTS:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "update_engine"
+# CATEGORY = "self_update_and_patch_feeds"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "update_management"
+# HARDWARE_DOMAIN = "filesystem_network_security"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "updater"
+# FAMILY = "self_evolution"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Governed auto-updater with backup, hashing, syntax validation, patch-feed sync, license-gated corporate feeds, rollback, and safe multi-mode update handling."
+# --- SARAHMETA END ---
 import os
 import sys
 import re

@@ -20,7 +20,25 @@ https://store.sarahmemory.com
 
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "network_core"
+# CATEGORY = "mesh_transport"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "sarahnet"
+# HARDWARE_DOMAIN = "network"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "network"
+# FAMILY = "core_network"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "SarahNet transport core implementing protocol framing, encryption, IDS/rate limiting, peer messaging, TCP/UDP handling, and network-node runtime."
+# --- SARAHMETA END ---
 import sys
 import os
 import logging

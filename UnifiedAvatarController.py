@@ -95,7 +95,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "avatar_orchestrator"
+# CATEGORY = "avatar_management"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "display_audio_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "unified_avatar_controller"
+# FAMILY = "avatar"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "High-level avatar orchestration layer for avatar creation, modification, emotion sync, Blender rendering, and voice-avatar coordination."
+# --- SARAHMETA END ---
 import logging
 import time
 import threading

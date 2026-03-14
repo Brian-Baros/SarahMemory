@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "vision_engine"
+# CATEGORY = "facial_recognition"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "camera_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "facial_recognition"
+# FAMILY = "vision"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Facial recognition and object-assisted vision engine with DNN/YOLO/ONNX/TorchScript fallback order, Haar cascade fallback, vector memory hooks, and facial event logging."
+# --- SARAHMETA END ---
 import cv2
 import logging
 import os

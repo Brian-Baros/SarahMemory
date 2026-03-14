@@ -1,34 +1,53 @@
-# --==The SarahMemory Project==--
-# File: SarahMemoryVoice.py
-# Part of the SarahMemory Companion AI-bot Platform
-# Version: v8.0.0
-# Date: 2025-03-01
-# Time: 10:11:54
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-###'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-# SarahMemory v8.0 - Voice & Sound Synthesis Module
-#
-# CORE GOALS
-# - One authoritative backend voice pipeline (no FE speech injection required).
-# - Avoid mid-sentence cutoffs by serializing TTS requests through a single worker.
-# - Remain headless-safe on cloud servers (PythonAnywhere) and Windows-safe locally.
-# - Preserve existing public APIs (synthesize_voice, transcribe_once, etc.) while
-#   adding a robust queue-based speak_text().
-#
-# NOTES
-# - WebUI speech should call backend endpoints (e.g., /api/ui/event) which in turn
-#   call speak_text() in this file. This eliminates the need for FE_v800_app_speech.py
-#   and any speech.js concept.
+"""
+--==The SarahMemory Project==--
+ File: SarahMemoryVoice.py
+ Part of the SarahMemory Companion AI-bot Platform
+ Version: v8.0.0
+ Date: 2025-03-01
+ Time: 10:11:54
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+ SarahMemory v8.0 - Voice & Sound Synthesis Module
 
+ CORE GOALS
+ - One authoritative backend voice pipeline (no FE speech injection required).
+ - Avoid mid-sentence cutoffs by serializing TTS requests through a single worker.
+ - Remain headless-safe on cloud servers (PythonAnywhere) and Windows-safe locally.
+ - Preserve existing public APIs (synthesize_voice, transcribe_once, etc.) while
+   adding a robust queue-based speak_text().
+
+ NOTES
+ - WebUI speech should call backend endpoints (e.g., /api/ui/event) which in turn
+   call speak_text() in this file. This eliminates the need for FE_v800_app_speech.py
+   and any speech.js concept.
+"""
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "voice_engine"
+# CATEGORY = "voice_and_audio_io"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "voice"
+# HARDWARE_DOMAIN = "audio_microphone_speakers"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "voice"
+# FAMILY = "core_voice"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Authoritative backend voice pipeline for TTS/STT, queue-based speech output, engine fallback, voice settings, sanitization, and headless-safe audio behavior."
+# --- SARAHMETA END ---
 import base64
 import json
 import logging

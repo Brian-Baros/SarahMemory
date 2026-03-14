@@ -83,7 +83,25 @@ DESIGN PRINCIPLES:
 ==============================================================================="""
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "research_engine"
+# CATEGORY = "research_and_retrieval"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "research"
+# HARDWARE_DOMAIN = "network_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "research"
+# FAMILY = "knowledge"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Multi-tier research engine with local datasets/cache, web research, API research, caching, synthesis, and graceful offline degradation."
+# --- SARAHMETA END ---
 import asyncio
 import aiohttp
 import json

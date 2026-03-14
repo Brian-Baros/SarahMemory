@@ -67,7 +67,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "startup_manager"
+# CATEGORY = "startup_registration"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_os"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "startup"
+# FAMILY = "boot_sequence"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Cross-platform startup registration and verification module for Windows registry, Linux autostart/systemd, and macOS LaunchAgents with validation and retry handling."
+# --- SARAHMETA END ---
 import logging
 import sys
 import os

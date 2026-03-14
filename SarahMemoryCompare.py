@@ -32,7 +32,25 @@ These guarddogs act as the final answer acceptance judge before a response
 may move into presentation generation.
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "guarddog_engine"
+# CATEGORY = "response_validation"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "compare_guarddogs"
+# FAMILY = "core_quality_control"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Response comparison and final-answer judging engine implementing Output Validity, Source Consensus, and Intent Policy GuardDogs."
+# --- SARAHMETA END ---
 import datetime
 import hashlib
 import json

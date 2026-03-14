@@ -28,7 +28,25 @@ Phase C Features:
 - Comprehensive testing suite
 
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "sync_engine"
+# CATEGORY = "cross_device_sync"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "sync"
+# HARDWARE_DOMAIN = "network_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "sync"
+# FAMILY = "device_link"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Legacy Dropbox/FTPS plus Phase C mobile sync infrastructure for cross-device contacts, history, reminders, conflict handling, and sync event logging."
+# --- SARAHMETA END ---
 import os
 import sys
 import logging

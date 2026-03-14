@@ -82,7 +82,25 @@ INTEGRATION POINTS:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "personality_engine"
+# CATEGORY = "personality_and_emotion"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "personality"
+# FAMILY = "presentation"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Personality and emotional-intelligence engine for response tone, context continuity, adaptive behavior, and styled output integration."
+# --- SARAHMETA END ---
 import logging
 import sqlite3
 import datetime

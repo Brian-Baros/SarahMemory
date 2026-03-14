@@ -18,7 +18,25 @@ SarahMemory v8.0 - Integration & Main Menu System
 Integration with Enhanced Features
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "integration_orchestrator"
+# CATEGORY = "runtime_integration"
+# USER_FACING = True
+# UI_EXPOSURE = "family_shell_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "integration"
+# FAMILY = "runtime"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Main integration and runtime orchestration layer for menu flow, GUI launch, action ticket execution, bootstrap sequencing, runtime service startup, and controlled system coordination."
+# --- SARAHMETA END ---
 import logging
 import os
 import subprocess

@@ -55,7 +55,25 @@ PLATFORM SUPPORT:
   - WebUI accessible via https://ai.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "ui_panel"
+# CATEGORY = "avatar_display"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "custom_ui"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "display_camera_media"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "avatar_panel"
+# FAMILY = "avatar"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Multifunction avatar/media/conference/display panel for WebUI/Desktop with 2D/3D avatar, desktop mirror, conference mode, and media preview."
+# --- SARAHMETA END ---
 import sys
 import os
 import logging

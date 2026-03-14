@@ -21,7 +21,25 @@ https://store.sarahmemory.com
 ✓ 100% backward compatible
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "agent_orchestrator"
+# CATEGORY = "ai_operations"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "ai_functions"
+# FAMILY = "agent_runtime"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Advanced agent runtime/orchestration layer with task planning, tool orchestration, knowledge graph, predictive modeling, and governed execution helpers."
+# --- SARAHMETA END ---
 from SarahMemoryAdvCU import classify_intent
 import re
 import logging

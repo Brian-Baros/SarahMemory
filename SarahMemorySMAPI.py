@@ -28,7 +28,25 @@ GOLDEN RULES:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "system_management_api"
+# CATEGORY = "runtime_introspection"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "internal_smapi"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "smapi"
+# FAMILY = "core_governance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Safe, auditable internal system-management and introspection API for runtime status snapshots and controlled settings access with SAFE_MODE enforcement."
+# --- SARAHMETA END ---
 import json
 import logging
 import os

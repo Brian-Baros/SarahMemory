@@ -33,7 +33,25 @@ SECURITY POSTURE
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "self_awareness_engine"
+# CATEGORY = "autonomous_meta_cognition"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "self_aware"
+# FAMILY = "self_evolution"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Autonomous meta-cognition loop gated by NEOSKYMATRIX and DEVELOPERSMODE. Performs self-introspection, diagnostics mining, and governed remediation planning without silently rewriting core files." 
+# --- SARAHMETA END ---
 import os
 import re
 import sys

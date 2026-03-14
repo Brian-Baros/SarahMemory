@@ -98,7 +98,25 @@ PLATFORM SUPPORT:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "software_control_engine"
+# CATEGORY = "software_interaction"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_process_window_media"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "software_interaction"
+# FAMILY = "system_control"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Software interaction module for app discovery, launching, focus/minimize/maximize, media playback control, and process lifecycle management across platforms."
+# --- SARAHMETA END ---
 import os
 import subprocess
 import sqlite3

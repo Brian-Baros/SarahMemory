@@ -83,7 +83,25 @@ DATABASE TABLES (system_logs.db):
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_orchestrator"
+# CATEGORY = "provider_routing"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "multi_provider_ai"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "api_orchestration"
+# FAMILY = "core_integration"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Central multi-provider API orchestration layer for local models, external AI APIs, routing, failover, caching, and prompt/context assembly."
+# --- SARAHMETA END ---
 import json
 import re
 import logging

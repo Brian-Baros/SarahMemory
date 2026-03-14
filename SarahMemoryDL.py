@@ -33,7 +33,25 @@ SarahMemory AiOS platform, including:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "learning_engine"
+# CATEGORY = "deep_learning"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "cpu_gpu"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "deep_learning_engine"
+# FAMILY = "learning"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Deep learning engine providing neural architectures, training infrastructure, embeddings/model management, continual learning, and performance tracking with graceful degradation."
+# --- SARAHMETA END ---
 import logging
 import sqlite3
 import os

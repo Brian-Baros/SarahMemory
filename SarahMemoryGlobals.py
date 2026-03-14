@@ -15,6 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "configuration_core"
+# CATEGORY = "runtime_governance"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "globals"
+# FAMILY = "core_governance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Central runtime configuration and governance plane for environment identity, modes, hardware scoring, model selection, feature flags, paths, and safety policy."
+# --- SARAHMETA END ---
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -1635,7 +1654,7 @@ API_RESEARCH_ENABLED = True #False = Disable from Learning from An Ai API.
 
 # Individual Provider Toggles 
 # Should only work if API_RESEARCH_ENABLE flag on line 1443 is set to 'True'
-OPEN_AI_API     = False
+OPEN_AI_API     = True
 CLAUDE_API      = False
 ANTHROPIC_API   = False
 MISTRAL_API     = False
@@ -1647,7 +1666,7 @@ COHERE_API      = False
 
 LOCAL_LLM_API   = True # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
 LOCAL_API       = True # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
-MESH_API        = False # MESH_API is the SarahMemory Network https://api.sarahmemory.net
+MESH_API        = True # MESH_API is the SarahMemory Network https://api.sarahmemory.net
 # MESH_API is the NODE NETWORK of other systems running the SARAHMEMORY AiOS systems
 
 # ---------------------------------------------------------------------------

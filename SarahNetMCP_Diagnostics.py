@@ -33,7 +33,25 @@ Usage:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "D"
+# ROLE = "diagnostic_tool"
+# CATEGORY = "network_diagnostics"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = "sarahnet"
+# HARDWARE_DOMAIN = "network"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "sarahnet_mcp_diagnostics"
+# FAMILY = "diagnostics"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Standalone SarahNet/MCP broker diagnostics suite for ping, rendezvous, message, file, and signaling round-trip tests."
+# --- SARAHMETA END ---
 import argparse
 import base64
 import hashlib

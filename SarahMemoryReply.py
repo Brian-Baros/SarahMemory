@@ -59,7 +59,25 @@ https://store.sarahmemory.com
 # =============================================================================
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "reply_router"
+# CATEGORY = "response_generation"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "reply_pipeline"
+# HARDWARE_DOMAIN = "audio_visual_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "reply"
+# FAMILY = "presentation"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Central reply-routing and response-bundle generator connecting GUI/WebUI input to local reasoning, research, personality styling, and presentation-safe output."
+# --- SARAHMETA END ---
 import os
 import re
 import sys

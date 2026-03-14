@@ -31,7 +31,25 @@ This module provides:
 - File analysis and reporting
 
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "filesystem_engine"
+# CATEGORY = "filesystem_and_backup"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "filesystem"
+# FAMILY = "core_operations"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Core filesystem action layer for backup/restore, file operations, integrity checks, malware scanning, quarantine, audit logging, and retention management."
+# --- SARAHMETA END ---
 import os
 import sys
 import zipfile

@@ -35,7 +35,25 @@ This module provides enterprise-grade mathematical computation capabilities incl
 The calculator maintains backward compatibility with existing SarahMemory modules
 while providing advanced mathematical capabilities for professional use.
 ==============================================================================="""
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "math_engine"
+# CATEGORY = "calculator_and_symbolic_math"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "math_research"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "websym"
+# FAMILY = "knowledge"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Calculator and symbolic mathematics engine covering arithmetic, science, finance, statistics, unit conversion, matrix operations, and query synthesis."
+# --- SARAHMETA END ---
 import re
 import html
 import logging

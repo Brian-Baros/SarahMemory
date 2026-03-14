@@ -75,7 +75,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "maintenance_engine"
+# CATEGORY = "scheduled_cleanup"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "daily_cleanup"
+# FAMILY = "maintenance"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Automated maintenance engine for vacuum, log rotation, temp cleanup, disk checks, optimization, and resource-aware scheduled cleanup."
+# --- SARAHMETA END ---
 import os
 import shutil
 import sqlite3

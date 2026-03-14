@@ -41,7 +41,25 @@ Behavior:
     - Creates missing folders:
         data/ui, data/ui/V8, data/ui/V8_ui_src
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "ui_update_tool"
+# CATEGORY = "frontend_build_and_deploy"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = "webui_admin"
+# HARDWARE_DOMAIN = "filesystem_network"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "ui_updater"
+# FAMILY = "ui_governance"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Web UI repo sync/build/deploy updater for V8_ui_src to V8. Handles clone/pull, npm install, npm build, backup, and static deployment."
+# --- SARAHMETA END ---
 import os
 import sys
 import subprocess

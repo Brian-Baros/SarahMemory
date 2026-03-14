@@ -40,7 +40,25 @@ Key World-Class Features:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "autonomous_lab"
+# CATEGORY = "code_generation_and_model_ops"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "sandbox"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem_cpu_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "synapes"
+# FAMILY = "self_evolution"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Neural self-learning architecture and governed lab for AST-based code generation, sandbox validation, provenance tracking, dataset ledgering, model registry, and training-job orchestration."
+# --- SARAHMETA END ---
 import sqlite3
 import logging
 import os

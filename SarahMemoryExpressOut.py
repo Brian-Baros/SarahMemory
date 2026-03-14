@@ -85,7 +85,25 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "expression_engine"
+# CATEGORY = "output_formatting"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "audio_visual_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "expressive_output"
+# FAMILY = "presentation"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Expressive output engine for emotional phrasing, emoji policy, voice prosody parameters, ethics filtering, and multi-modal presentation formatting."
+# --- SARAHMETA END ---
 import logging
 import random
 import os

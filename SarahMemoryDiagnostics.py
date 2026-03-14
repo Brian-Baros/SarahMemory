@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "diagnostics_engine"
+# CATEGORY = "system_diagnostics"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_network_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "diagnostics"
+# FAMILY = "core_maintenance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "System diagnostics and health-check engine for required files, governed core status, response-memory schema, network/API reachability, WebUI bridge checks, and module self-tests."
+# --- SARAHMETA END ---
 import os
 import logging
 import platform
@@ -63,7 +81,8 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryCompare.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryDatabase.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryDiagnostics.py"),
-    os.path.join(config.BASE_DIR, "SarahMemoryDL.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryDL.py"), 
+    os.path.join(config.BASE_DIR, "SarahMemoryEmail.py"), # Eamiling capabilites
     os.path.join(config.BASE_DIR, "SarahMemoryEncryption.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryEvolution.py"), #Self Evolving Module Creator.
     os.path.join(config.BASE_DIR, "SarahMemoryExpressOut.py"),

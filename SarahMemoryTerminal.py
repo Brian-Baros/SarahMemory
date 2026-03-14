@@ -36,7 +36,25 @@ SECURITY MODEL:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "developer_terminal"
+# CATEGORY = "developer_execution"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "developer_tools"
+# HARDWARE_DOMAIN = "system_shell"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "terminal"
+# FAMILY = "developer_mode"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Enterprise-grade terminal execution backend gated by DEVELOPERSMODE with constrained workdir, denylist controls, timeouts, audit logging, and cross-platform shell routing."
+# --- SARAHMETA END ---
 import os
 import json
 import time

@@ -182,7 +182,25 @@ PERFORMANCE NOTES:
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "creative_engine"
+# CATEGORY = "vocal_synthesis"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "audio_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "lyrics_to_song"
+# FAMILY = "creative_studios"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Vocal synthesis and performance engine for lyrics, singing, harmony generation, TTS/voice models, and audio export workflows."
+# --- SARAHMETA END ---
 import os
 import sys
 import logging

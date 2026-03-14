@@ -14,7 +14,25 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "research_helper"
+# CATEGORY = "software_research"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "research"
+# HARDWARE_DOMAIN = "system_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "software_research"
+# FAMILY = "knowledge"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Local software research helper for installed-software discovery, operational guideline loading, topic research placeholders, and programming-db event logging."
+# --- SARAHMETA END ---
 import logging
 import os
 import sys

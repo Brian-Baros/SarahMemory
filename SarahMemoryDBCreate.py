@@ -24,7 +24,25 @@ Cross‑platform DB bootstrapper.
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "bootstrapper"
+# CATEGORY = "database_bootstrap"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = "data_memory"
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "db_create"
+# FAMILY = "maintenance"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Cross-platform standalone database bootstrapper that resolves BASE_DIR, creates required folders, builds core .db files, and seeds reply pools/web facts."
+# --- SARAHMETA END ---
 import os
 import sys
 import sqlite3

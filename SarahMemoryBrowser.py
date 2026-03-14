@@ -22,6 +22,25 @@ https://store.sarahmemory.com
 # B) New WebUI wrapper that prefers pywebview for modern HTML/JS/CSS and JS↔Python bridge.
 #    Falls back to HtmlFrame if pywebview is unavailable. No def renames of existing parts.
 from __future__ import annotations
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "ui_app"
+# CATEGORY = "browser_and_webui"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "classic_ui"
+# API_DOMAIN = "webui_bridge"
+# HARDWARE_DOMAIN = "camera_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "browser"
+# FAMILY = "research"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "User-facing browser and WebUI wrapper with legacy embedded browser, pywebview bridge, drag-drop ingest helper, and JS/Python interface."
+# --- SARAHMETA END ---
 import os, sys, threading, time, base64, io, logging, webbrowser
 from pathlib import Path
 import tkinter as tk

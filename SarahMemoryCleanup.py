@@ -16,7 +16,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "maintenance_tool"
+# CATEGORY = "cleanup_and_restore"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "classic_ui"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "cleanup_gui"
+# FAMILY = "maintenance"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "User-facing cleanup, backup, restore, and log maintenance GUI for databases and local data retention management."
+# --- SARAHMETA END ---
 import os, sqlite3, shutil, time, traceback
 from datetime import datetime, timedelta
 import tkinter as tk

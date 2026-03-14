@@ -41,7 +41,25 @@ It consolidates:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "router"
+# CATEGORY = "cognition"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "neuron_axis"
+# FAMILY = "core_cognition"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Central cognitive axis and lane selector. Owns primary routing, deterministic-first reasoning, helper delegation, research insertion, creative tickets, and QA gating."
+# --- SARAHMETA END ---
 import os
 import re
 import shutil

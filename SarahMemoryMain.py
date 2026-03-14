@@ -18,6 +18,25 @@ SarahMemory v8.0 - The First True AI Operating System (AiOS)
 World-Class Bootup Sequence with Full Media Integration
 ===============================================================================
 """
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "main_entrypoint"
+# CATEGORY = "boot_and_runtime_start"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "system_filesystem_network"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "main"
+# FAMILY = "boot_sequence"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Primary boot entrypoint launched by python SarahMemoryMain.py. Writes main heartbeat, starts services, gates autonomous lab-mode services, and orchestrates startup."
+# --- SARAHMETA END ---
 
 # =============================================================================
 # CRITICAL IMPORTS - Database Functions

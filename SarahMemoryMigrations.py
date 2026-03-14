@@ -81,7 +81,25 @@ v8.0 - World-class enterprise features
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "migration_engine"
+# CATEGORY = "database_schema_migrations"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "data_memory"
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "migrations"
+# FAMILY = "core_data"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Database migration and schema-version engine with backup, rollback, verification, audit history, and startup compatibility checks."
+# --- SARAHMETA END ---
 import os
 import sqlite3
 import logging

@@ -18,6 +18,25 @@ https://store.sarahmemory.com
 
 
 from __future__ import annotations
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "security_core"
+# CATEGORY = "encryption_and_crypto"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "encryption"
+# FAMILY = "core_security"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Core encryption and cryptographic utility layer for Fernet data encryption, SarahNet transport crypto, and license-signing/verification helpers."
+# --- SARAHMETA END ---
 import logging
 import os
 from cryptography.fernet import Fernet

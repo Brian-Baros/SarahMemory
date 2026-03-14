@@ -15,7 +15,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "learning_engine"
+# CATEGORY = "indexed_learning"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "classic_ui"
+# API_DOMAIN = "data_memory"
+# HARDWARE_DOMAIN = "filesystem_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "system_learn"
+# FAMILY = "learning"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Indexed learning and dataset-ingestion engine with Tk GUI, text/media extraction, vectorization hooks, external dataset import, and database learning flows."
+# --- SARAHMETA END ---
 import sys
 import os
 import sqlite3

@@ -22,7 +22,25 @@ Notes:
 - Only downloads models when missing/invalid locally.
 - Uses category-based stacks + hardware tier recommendations from SarahMemoryGlobals.
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "model_manager"
+# CATEGORY = "model_download_and_validation"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "model_management"
+# HARDWARE_DOMAIN = "disk_network_cpu_gpu"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "llm_manager"
+# FAMILY = "models"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Model verification, download, integrity, storage-budget, and tier-aware model installation manager. Headless-safe and helper-only."
+# --- SARAHMETA END ---
 import os
 import json
 import logging

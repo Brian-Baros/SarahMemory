@@ -24,7 +24,25 @@ This module serves as the launching platform for MODS and Additional Modules tha
 to the SarahMemory Platform, The Ai should be able to Learn and adapt to other Modules and 
 to user preferences, patterns, timing, and operational habits. Making SarahMemory the dynamic functional foundation.
 """
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "addon_manager"
+# CATEGORY = "addon_operations"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "classic_ui"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "addon_launcher"
+# FAMILY = "addons"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Tk-based addon launcher and manifest-aware loader for addons, bundles, legacy scripts, lifecycle control, and shutdown handling."
+# --- SARAHMETA END ---
 import os
 import sys
 import subprocess

@@ -126,7 +126,25 @@ All exceptions are logged to SarahMemory unified logging system.
 
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "creative_engine"
+# CATEGORY = "graphics_and_art"
+# USER_FACING = True
+# UI_EXPOSURE = "candidate"
+# DEPLOYMENT_TARGET = "addon"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "canvas_studio"
+# FAMILY = "creative_studios"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = True
+# DRIVER_CANDIDATE = False
+# NOTES = "Professional art and graphics editing engine for image creation, editing, rendering, filters, layer workflows, and AI-assisted visual generation."
+# --- SARAHMETA END ---
 import os
 import sys
 import json

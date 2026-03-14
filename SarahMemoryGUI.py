@@ -16,7 +16,25 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
-
+# --- SARAHMETA START ---
+# GRADE = "C"
+# ROLE = "ui_shell"
+# CATEGORY = "classic_desktop_ui"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "classic_ui"
+# API_DOMAIN = "ui_bridge"
+# HARDWARE_DOMAIN = "display_camera_audio_input"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "classic_gui"
+# FAMILY = "ui"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Primary classic desktop GUI shell with chat, camera/video panels, addon launcher access, browser integration, avatar display, and user interaction surface."
+# --- SARAHMETA END ---
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()

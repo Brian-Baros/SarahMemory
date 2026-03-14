@@ -52,7 +52,25 @@ This file implements a deterministic “self-questioning” framework:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "governor"
+# CATEGORY = "governance"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "cognitive_governor"
+# FAMILY = "core_governance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Cognitive governor / judge. Returns ALLOW, DENY, DEFER, REQUIRE_USER. Does not execute upgrades, patches, file writes, or schedulers."
+# --- SARAHMETA END ---
 import json
 import logging
 import os

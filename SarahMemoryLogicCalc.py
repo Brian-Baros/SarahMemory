@@ -32,7 +32,25 @@ DESIGN GOALS:
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "reasoning_core"
+# CATEGORY = "deterministic_reasoning"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "logiccalc"
+# FAMILY = "core_reasoning"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Deterministic scientific calculator, engineering solver, dimensional-analysis engine, semantic interlingua, and auditable rational core."
+# --- SARAHMETA END ---
 import math
 import re
 import time
