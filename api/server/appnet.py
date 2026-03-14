@@ -1,3 +1,4 @@
+"""
 # --==The SarahMemory Project==--
 # File: /app/server/appnet.py
 # Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
@@ -39,9 +40,27 @@
 #     POST /api/net/file/chunk/ack
 #     POST /api/net/file/finish
 # - Adds CRC32 + SHA256 per chunk, optional zlib compression, resume-friendly polling.
-
+"""
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_bridge"
+# CATEGORY = "network_broker"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "net"
+# HARDWARE_DOMAIN = "network_filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "sarahnet_broker_api"
+# FAMILY = "core_network"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "SarahNet broker API under /api/net/* for store-and-forward messaging, commands, signaling, file transfer, privacy controls, and broker persistence. Broker never executes commands."
+# --- SARAHMETA END ---
 import base64
 import hashlib
 import json

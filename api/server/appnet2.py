@@ -1,3 +1,4 @@
+"""
 # --==The SarahMemory Project==--
 # File: /app/server/appnet2.py
 # Purpose: SarahNet "Bravo" — Identity/Trust + Overlay Tunnel Control + Virtual DNS/Name Directory
@@ -17,16 +18,34 @@
 # - Everything is namespaced under /api/net2/*
 # - Pure control-plane (HTTP + sqlite). No OS-level VPN claims here.
 # - Cross-platform safe: Windows/Linux/macOS/headless/cloud.
-#
-# NOTE:
 # - app.py should call:
 #     import appnet
 #     import appnet2
 #     appnet.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
 #     appnet2.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
 #
-from __future__ import annotations
+"""
 
+from __future__ import annotations
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_bridge"
+# CATEGORY = "network_identity_and_trust"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "net2"
+# HARDWARE_DOMAIN = "network"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "sarahnet_control_plane_api"
+# FAMILY = "core_network"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "SarahNet Bravo control-plane API under /api/net2/* for node identity, trust tiers, challenge/attest flows, virtual DNS/name directory, and overlay tunnel session control."
+# --- SARAHMETA END ---
 import base64
 import hashlib
 import json

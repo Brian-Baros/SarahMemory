@@ -1,4 +1,4 @@
-# --==The SarahMemory Project==--
+""" --==The SarahMemory Project==--
 # File: /app/server/app.py
 # ULTIMATE merged Flask server for SarahMemory (v8.0.0)
 # Part of the SarahMemory Companion AI-bot Platform
@@ -21,8 +21,27 @@
 # - File ingest / remote transfer
 # - Camera/Mic/Voice toggles + simple telecom stubs
 # - Safe fallbacks against missing core modules
-
+"""
 from __future__ import annotations
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_server_hub"
+# CATEGORY = "primary_api_gateway"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "primary_api"
+# HARDWARE_DOMAIN = "system_network_filesystem_audio_visual"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "api_hub"
+# FAMILY = "server_runtime"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Primary Flask server and integration hub. Serves Web UI, mounts app*.py domain adapters, builds governed context packets, routes chat, manages health/bootstrap, and hosts core API surfaces."
+# --- SARAHMETA END ---
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
 from pathlib import Path
 from decimal import Decimal
@@ -2507,169 +2526,12 @@ def ingest_local_file():
         return jsonify({"status": "error", "error": f"Failed to store file locally: {e}"}), 500
 
 
-# Contacts
-USER_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "user_data.db")
-
-def _init_contacts_db(db_path):
-    """Helper to initialize contacts table."""
-    con = None
-    try:
-        con = _connect_sqlite(db_path)
-        cur = con.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, number TEXT)")
-        con.commit()
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to initialize contacts database at {db_path}: {e}")
-        raise # Re-raise to ensure caller knows about failure
-    finally:
-        if con: con.close()
-
-
-@app.route("/get_all_contacts")
-def get_all_contacts():
-    con = None
-    try:
-        _init_contacts_db(USER_DB_PATH) # Ensure table exists
-        con = _connect_sqlite(USER_DB_PATH)
-        cur = con.cursor()
-        con.row_factory = sqlite3.Row
-        cur = con.cursor()
-        cur.execute("SELECT id, name, number FROM contacts ORDER BY name COLLATE NOCASE")
-        rows = [dict(r) for r in cur.fetchall()]
-        return jsonify({"contacts": rows})
-    except Exception as e:
-        app_logger.exception(f"Error fetching contacts from {USER_DB_PATH}.")
-        return jsonify({"error": "Failed to retrieve contacts."}), 500
-    finally:
-        if con: con.close()
-
-@app.route("/add_contact", methods=['POST'])
-def add_contact():
-    data = request.get_json(silent=True) or {}
-    name = (data.get("name") or "").strip()
-    number = (data.get("number") or "").strip()
-
-    if not name or not number:
-        return jsonify({"status":"error", "error":"Name and number are required to add contact."}), 400
-
-    con = None
-    try:
-        _init_contacts_db(USER_DB_PATH) # Ensure table exists
-        con = _connect_sqlite(USER_DB_PATH)
-        cur = con.cursor()
-        cur.execute("INSERT INTO contacts(name,number) VALUES(?,?)",(name,number))
-        con.commit()
-        return jsonify({"status":"ok"}), 200
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to add contact {name} to {USER_DB_PATH}: {e}", exc_info=True)
-        return jsonify({"status":"error", "error": "Database error adding contact."}), 500
-    finally:
-        if con: con.close()
-
-@app.route("/delete_contact", methods=['POST'])
-def delete_contact():
-    data = request.get_json(silent=True) or {}
-    rid = data.get("id")
-    if not isinstance(rid, int):
-        return jsonify({"status": "error", "error": "Invalid contact ID provided."}), 400
-
-    con = None
-    try:
-        con = _connect_sqlite(USER_DB_PATH)
-        cur = con.cursor()
-        cur.execute("DELETE FROM contacts WHERE id=?", (rid,))
-        if cur.rowcount == 0:
-            return jsonify({"status": "error", "error": f"Contact with ID {rid} not found."}), 404
-        con.commit()
-        return jsonify({"status":"deleted", "id": rid}), 200
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to delete contact with ID {rid} from {USER_DB_PATH}: {e}", exc_info=True)
-        return jsonify({"status":"error", "error": "Database error deleting contact."}), 500
-    finally:
-        if con: con.close()
-
-# Reminders
-REMINDERS_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "reminders.db")
-
-def _init_reminders_db(db_path):
-    """Helper to initialize reminders table."""
-    con = None
-    try:
-        con = _connect_sqlite(db_path)
-        cur = con.cursor()
-        cur.execute('CREATE TABLE IF NOT EXISTS reminders (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, time TEXT, note TEXT)')
-        con.commit()
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to initialize reminders database at {db_path}: {e}")
-        raise # Re-raise to ensure caller knows about failure
-    finally:
-        if con: con.close()
-
-@app.route("/get_reminders")
-def get_reminders():
-    con = None
-    try:
-        _init_reminders_db(REMINDERS_DB_PATH) # Ensure table exists
-        con = _connect_sqlite(REMINDERS_DB_PATH)
-        cur = con.cursor()
-        con.row_factory = sqlite3.Row
-        cur = con.cursor()
-        cur.execute('SELECT id, title, time, note FROM reminders ORDER BY time ASC')
-        rows = [dict(r) for r in cur.fetchall()]
-        return jsonify({'reminders': rows})
-    except Exception as e:
-        app_logger.exception(f"Error fetching reminders from {REMINDERS_DB_PATH}.")
-        return jsonify({"error": "Failed to retrieve reminders."}), 500
-    finally:
-        if con: con.close()
-
-@app.route("/save_reminder", methods=['POST'])
-def save_reminder():
-    payload = request.get_json(silent=True) or {}
-    title = (payload.get("title") or "").strip()
-    time_s = (payload.get("time") or "").strip()
-    note = payload.get("note") or ""
-
-    if not title or not time_s:
-        return jsonify({"status":"error", "error":"Title and time are required to save reminder."}), 400
-
-    con = None
-    try:
-        _init_reminders_db(REMINDERS_DB_PATH) # Ensure table exists
-        con = _connect_sqlite(REMINDERS_DB_PATH)
-        cur = con.cursor()
-        cur.execute('INSERT INTO reminders(title, time, note) VALUES(?,?,?)',(title, time_s, note))
-        con.commit()
-        rid = cur.lastrowid
-        return jsonify({"status":"ok","id":rid}), 200
-    except sqlite3.Error as e:
-        app_logger.error(f"Failed to save reminder '{title}' to {REMINDERS_DB_PATH}: {e}", exc_info=True)
-        return jsonify({"status":"error", "error": "Database error saving reminder."}), 500
-    finally:
-        if con: con.close()
-
-@app.route("/delete_reminder", methods=['POST'])
-def delete_reminder():
-    payload = request.get_json(silent=True) or {}
-    rid = payload.get("id")
-
-    if not isinstance(rid, int):
-        return jsonify({"status": "error", "error": "Invalid reminder ID provided."}), 400
-
-    con = None
-    try:
-        con = _connect_sqlite(REMINDERS_DB_PATH)
-        cur = con.cursor()
-        cur.execute('DELETE FROM reminders WHERE id=?', (rid,))
-        if cur.rowcount == 0:
-            return jsonify({"status": "error", "error": f"Reminder with ID {rid} not found."}), 404
-        con.commit()
-        return jsonify({"status":"deleted", "id": rid}), 200
-    except sqlite3.Error as e:
-        app_logger.exception(f"Failed to delete reminder with ID {rid} from {REMINDERS_DB_PATH}.")
-        return jsonify({"status":"error", "error": "Database error deleting reminder."}), 500
-    finally:
-        if con: con.close()
+# Communications domain ownership
+# Contacts and reminders now live under appcomm.py:
+#   /api/comm/contacts/*
+#   /api/comm/reminders/*
+# Legacy duplicate routes were removed from app.py to keep communications
+# traffic on the dedicated appcomm domain adapter.
 
 @app.route("/run_automation_trigger", methods=['POST'])
 def run_automation_trigger():
@@ -4149,6 +4011,30 @@ except Exception as _e:
         app_logger.error(f"appnet2 init failed: {_e}", exc_info=True)
     except Exception:
         pass
+# --- v8 appcomm endpoints (SarahMemory Email: email/calender/SMTP/POP/IMPAI etc.) ---
+try:
+    # If your app.py has this helper, use it; otherwise no-op.
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appcomm as _appcomm  # type: ignore
+    except Exception:
+        import appcomm as _appcomm  # type: ignore
+
+    _appcomm.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appcommmounted: /api/comm/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appcomm init failed: {_e}", exc_info=True)
+    except Exception:
+        pass    
 # --- v8 appstore endpoints (SarahMemory Power StoreFront) ---
 try:
     # If your app.py has this helper, use it; otherwise no-op.

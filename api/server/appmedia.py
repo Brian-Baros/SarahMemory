@@ -1,3 +1,4 @@
+"""
 # --==The SarahMemory Project==--
 # File: /api/server/appmedia.py
 # Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
@@ -12,7 +13,7 @@
 # https://ai.sarahmemory.com
 # https://store.sarahmemory.com
 #==============================================================================================
-"""appmedia.py
+appmedia.py
 
 Enterprise intent
 - Stand up a stable, cloud-safe API surface for Creative Studio outputs.
@@ -33,7 +34,25 @@ Notes
 """
 
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "api_bridge"
+# CATEGORY = "creative_media_operations"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "media"
+# HARDWARE_DOMAIN = "filesystem_audio_video_gpu_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "media_broker_api"
+# FAMILY = "creative_studios"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Creative Studio media broker API under /api/media/* and /api/creative/* for job packaging, render orchestration, manifest/download handling, and fail-soft engine exposure."
+# --- SARAHMETA END ---
 import base64
 import hashlib
 import json

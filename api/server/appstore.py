@@ -1,3 +1,4 @@
+"""
 # --==The SarahMemory Project==--
 # File: /app/server/appstore.py
 # Purpose: SarahMemory Power Store Endpoints
@@ -20,9 +21,27 @@
 # Key rules:
 # - No secrets in frontend. All secrets live in PythonAnywhere .env and are read server-side.
 # - "Kitchen sink" module: store/auth/products/payments/integrations, without endpoint collisions.
-
+"""
 from __future__ import annotations
-
+# --- SARAHMETA START ---
+# GRADE = "B"
+# ROLE = "api_bridge"
+# CATEGORY = "storefront_operations"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "store"
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "store_api"
+# FAMILY = "commerce"
+# GOVERNANCE_LEVEL = "restricted"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Storefront and Power Store API bridge under /api/store/* for auth, products, payments/integrations, generated product concepts, and server-side secret handling."
+# --- SARAHMETA END ---
 import base64
 import hashlib
 import hmac
