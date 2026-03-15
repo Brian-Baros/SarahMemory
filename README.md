@@ -3,7 +3,7 @@
 * Version:** 8.0.0  - THE FUNCTIONAL DEVELOPING AND DEVELOPERS VERSION -
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** March 11, 2026  
+* Last Update Date:** March 15, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
@@ -886,4 +886,11 @@ DEFER
 missing reason/scope/tests/rollback for update requests
 This is a real governor behavior pattern, not placeholder text. It means the system is already moving toward policy-mediated execution, which is one of the most OS-like aspects of the project.
 
-March 11th, 2026 - update - New Core File for the system called SarahMemoryEmail.py has been designed and released, updated enpoints in ./api/server/appsys.py to assist with email automation, also added Flags in the .env example 2 file so users can use this system to answer their emails. IMAPI, SMTP, and POP3 flags are all there. 
+March 11th, 2026 - Update - New Core File for the system called SarahMemoryEmail.py has been designed and released, updated enpoints in ./api/server/appsys.py to assist with email automation, also added Flags in the .env example 2 file so users can use this system to answer their emails. IMAPI, SMTP, and POP3 flags are all there. 
+
+March 12-15th, 2026 - Update - Removed Patch file for Drivers, and created an api for the Drivers called appdrivers.py now, to allow communication though the API chat with hardware connected to local system., Also added in SarahMemoryCognitiveThinker.py and updated SarahMemoryCognitiveServices.py along with SarahMemoryNeuron.py This creates a YingYang effect from Imaginitive/Emotional to Factual/Allow/Deny guardrail forming and allowing the system to think and make judgements using emotionals and morals better.
+
+
+
+
+ 
