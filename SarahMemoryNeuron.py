@@ -2028,6 +2028,56 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     inp.meta["intent"] = intent
     trace["intent"] = intent
 
+    # Governance handshake: ask CognitiveServices for request-scoped policy and
+    # optional CognitiveThinker co-review before routing high-impact work.
+    gov_decision = None
+    if _Cog and approved_modules.get("cognitive") and hasattr(_Cog, "govern_request"):
+        try:
+            gov_ctx = dict(inp.meta or {})
+            gov_ctx.setdefault("local_only", bool(inp.meta.get("local_only") or inp.meta.get("offline")))
+            gov_ctx.setdefault("safe_mode", _is_safe_mode())
+            gov_ctx.setdefault("neuron_route", True)
+            gov_ctx.setdefault("caller", "SarahMemoryNeuron.neuron_route")
+            gov_ctx.setdefault("force_cognitive_thinker_consult", False)
+            gov_decision = _Cog.govern_request(  # type: ignore[attr-defined]
+                inp.text,
+                caller="SarahMemoryNeuron.neuron_route",
+                caller_context=gov_ctx,
+                user_present=bool(inp.meta.get("user_present", True)),
+                user_consented=bool(inp.meta.get("user_consented", False)),
+                proposed_action=dict(inp.meta.get("proposed_action") or {}),
+            )
+            if isinstance(gov_decision, dict):
+                policy_from_governor = dict(gov_decision.get("routing_policy") or {})
+                if isinstance(policy_from_governor.get("allowed_tiers"), dict):
+                    for tier_name, tier_allowed in policy_from_governor.get("allowed_tiers", {}).items():
+                        allowed_tiers[tier_name] = bool(allowed_tiers.get(tier_name, True) and tier_allowed)
+                trace["governance"] = {
+                    "decision": gov_decision.get("decision"),
+                    "risk": gov_decision.get("risk"),
+                    "risk_score": gov_decision.get("risk_score"),
+                    "require_user": gov_decision.get("require_user"),
+                    "recommended_next": gov_decision.get("recommended_next"),
+                    "coequal_governance": gov_decision.get("coequal_governance") or {},
+                }
+                trace["policy"]["allowed_tiers"] = allowed_tiers
+
+                decision_name = str(gov_decision.get("decision") or "").upper()
+                lane_family = str(gov_decision.get("lane_family") or "").lower()
+                if decision_name in ("DENY", "REQUIRE_USER", "DEFER") and lane_family in ("action", "network", "system"):
+                    msg = str(gov_decision.get("recommended_next") or "Request blocked by governance.")
+                    return NeuronResult(
+                        ok=(decision_name == "DEFER"),
+                        reply=msg,
+                        confidence=0.90 if decision_name != "DEFER" else 0.70,
+                        intent=intent,
+                        source="governance",
+                        artifacts={"governance": gov_decision},
+                        trace=trace,
+                    )
+        except Exception as e:
+            trace.setdefault("governance", {})["error"] = str(e)
+
     # System/Diagnostics lane (Tier-0, safe reads; blocked in Public Web mode)
     system_kind = _detect_system_kind(inp.text, intent)
     if system_kind:

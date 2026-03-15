@@ -71,6 +71,7 @@ from __future__ import annotations
 # DRIVER_CANDIDATE = False
 # NOTES = "Cognitive governor / judge. Returns ALLOW, DENY, DEFER, REQUIRE_USER. Does not execute upgrades, patches, file writes, or schedulers."
 # --- SARAHMETA END ---
+import importlib
 import json
 import logging
 import os
@@ -91,6 +92,9 @@ logger.setLevel(logging.DEBUG)
 _null = logging.NullHandler()
 _null.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
 logger.addHandler(_null)
+
+# Thread-local guard to prevent recursive dual-governor consultation
+_THINKER_CONSULT_STATE = threading.local()
 
 # -----------------------------------------------------------------------------
 # Safety defaults (offline-first)
@@ -778,6 +782,158 @@ def _safe_str(v: Any, limit: int = 400) -> str:
         s = s[:limit] + "..."
     return s
 
+
+# -----------------------------------------------------------------------------
+# Optional CognitiveThinker peer consultation (high-impact only)
+# -----------------------------------------------------------------------------
+def _cognitive_thinker_enabled(caller_context: Optional[Dict[str, Any]] = None) -> bool:
+    ctx = caller_context or {}
+    if bool(ctx.get("skip_cognitive_thinker_consult")):
+        return False
+    if "force_cognitive_thinker_consult" in ctx:
+        return bool(ctx.get("force_cognitive_thinker_consult"))
+    if hasattr(config, "COGNITIVE_THINKER_CONSULT_ENABLED"):
+        try:
+            return bool(getattr(config, "COGNITIVE_THINKER_CONSULT_ENABLED"))
+        except Exception:
+            pass
+    env_v = os.getenv("SARAHMEMORY_COGNITIVE_THINKER_CONSULT_ENABLED", "true").strip().lower()
+    return env_v not in ("0", "false", "off", "no")
+
+
+def _is_high_impact_governance_request(intent: str, risk_score: int, proposed_action: Optional[Dict[str, Any]] = None) -> bool:
+    pa = proposed_action or {}
+    high_impact_intents = {
+        "PATCH_OR_UPDATE",
+        "FILESYSTEM_WRITE",
+        "NETWORK_ACCESS",
+        "PRIVACY_SENSITIVE",
+        "EXECUTE_COMMAND",
+    }
+    if str(intent or "") in high_impact_intents:
+        return True
+    if int(risk_score or 0) >= 35:
+        return True
+    if bool(pa.get("touches_network")) or bool(pa.get("touches_privacy")) or bool(pa.get("touches_filesystem")):
+        return True
+    if pa.get("target_files") or pa.get("subsystems"):
+        return True
+    return False
+
+
+def _can_consult_cognitive_thinker(caller_context: Optional[Dict[str, Any]] = None) -> bool:
+    if not _cognitive_thinker_enabled(caller_context):
+        return False
+    if bool(getattr(_THINKER_CONSULT_STATE, "active", False)):
+        return False
+    return True
+
+
+def _consult_cognitive_thinker(
+    request_text: str,
+    *,
+    caller: str,
+    caller_context: Optional[Dict[str, Any]],
+    user_present: Optional[bool],
+    user_consented: bool,
+    proposed_action: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    ctx = dict(caller_context or {})
+    ctx["skip_cognitive_thinker_consult"] = True
+
+    try:
+        _THINKER_CONSULT_STATE.active = True
+        thinker = importlib.import_module("SarahMemoryCognitiveThinker")
+        fn = getattr(thinker, "paired_governance_view", None)
+        if callable(fn):
+            return fn(
+                request_text,
+                caller=caller,
+                caller_context=ctx,
+                user_present=True if user_present is None else bool(user_present),
+                user_consented=bool(user_consented),
+                proposed_action=proposed_action,
+            ) or {}
+    except Exception as e:
+        logger.debug("CognitiveThinker consult failed: %s", e)
+    finally:
+        try:
+            _THINKER_CONSULT_STATE.active = False
+        except Exception:
+            pass
+
+    return {}
+
+
+def _apply_cognitive_thinker_balance(dec: Dict[str, Any], thinker_view: Dict[str, Any]) -> Dict[str, Any]:
+    if not thinker_view:
+        return dec
+
+    thinker_decision = str(thinker_view.get("thinker_decision") or "")
+    final_balance = str(thinker_view.get("final_balance_decision") or "")
+    thinker_payload = thinker_view.get("thinker") if isinstance(thinker_view.get("thinker"), dict) else {}
+
+    dec["coequal_governance"] = {
+        "enabled": True,
+        "peer": "SarahMemoryCognitiveThinker",
+        "thinker_decision": thinker_decision,
+        "final_balance_decision": final_balance,
+        "common_interest": thinker_view.get("common_interest") or {},
+        "ticket_id": thinker_payload.get("ticket_id"),
+        "priority": thinker_payload.get("priority"),
+        "state": thinker_payload.get("state"),
+        "recommendations": thinker_payload.get("recommendations") or [],
+    }
+
+    if not isinstance(dec.get("trace"), dict):
+        dec["trace"] = {}
+    dec["trace"]["coequal_governance"] = {
+        "peer": "SarahMemoryCognitiveThinker",
+        "thinker_decision": thinker_decision,
+        "final_balance_decision": final_balance,
+    }
+
+    dec.setdefault("reasons", [])
+    dec.setdefault("risk_factors", [])
+
+    if thinker_decision == "ETHICALLY_BLOCKED" or final_balance == "DENY":
+        dec["decision"] = "DENY"
+        dec["allow"] = False
+        dec["execution_allowed"] = False
+        dec["require_user"] = False
+        if "ethical_block_from_cognitive_thinker" not in dec["risk_factors"]:
+            dec["risk_factors"].append("ethical_block_from_cognitive_thinker")
+        dec["reasons"].append("CognitiveThinker denied the request on ethical / compassionate grounds.")
+    elif final_balance == "REQUIRE_USER":
+        dec["decision"] = "REQUIRE_USER"
+        dec["allow"] = False
+        dec["execution_allowed"] = False
+        dec["require_user"] = True
+        if "cognitive_thinker_requires_user_review" not in dec["risk_factors"]:
+            dec["risk_factors"].append("cognitive_thinker_requires_user_review")
+        dec["reasons"].append("CognitiveThinker requires explicit user review before this high-impact action may proceed.")
+    elif final_balance == "SANDBOX_ONLY":
+        dec["decision"] = "DEFER"
+        dec["allow"] = False
+        dec["execution_allowed"] = False
+        dec["require_user"] = True
+        dec["recommended_next"] = "Route to sandbox / Synapes / Evolution validation path before any live action."
+        if "sandbox_only_by_cognitive_thinker" not in dec["risk_factors"]:
+            dec["risk_factors"].append("sandbox_only_by_cognitive_thinker")
+        dec["reasons"].append("CognitiveThinker marked the request as worthy of exploration only in sandbox.")
+    elif final_balance == "DEFER" and str(dec.get("decision") or "") == "ALLOW":
+        dec["decision"] = "DEFER"
+        dec["allow"] = False
+        dec["execution_allowed"] = False
+        dec["require_user"] = True
+        if "deferred_by_cognitive_thinker" not in dec["risk_factors"]:
+            dec["risk_factors"].append("deferred_by_cognitive_thinker")
+        dec["reasons"].append("CognitiveThinker judged the request meaningful but not ready for live approval.")
+    else:
+        dec["reasons"].append("CognitiveThinker peer review completed without overriding the logical governor.")
+
+    return dec
+
 # -----------------------------------------------------------------------------
 # Governance engine (THE HEART)
 # -----------------------------------------------------------------------------
@@ -890,6 +1046,7 @@ def govern_request(
             "kill_switch_neoskymatrix": snap["kill_switch_neoskymatrix"],
             "context_engine_enabled": snap["context_engine_enabled"],
             "core_governance": snap.get("core_governance", {}),
+            "cognitive_thinker_consult_enabled": _cognitive_thinker_enabled(ctx),
         },
     }
 
@@ -897,6 +1054,26 @@ def govern_request(
     # Attach policy to decision (immutable baseline for this request)
     decision["routing_policy"] = routing_policy
     def _finalize(dec: Dict[str, Any]) -> Dict[str, Any]:
+        # Optional co-equal thinker consultation for high-impact decisions.
+        try:
+            if _can_consult_cognitive_thinker(ctx) and _is_high_impact_governance_request(
+                str(dec.get("intent") or intent),
+                int(dec.get("risk_score") or 0),
+                pa,
+            ):
+                thinker_view = _consult_cognitive_thinker(
+                    request_text,
+                    caller=caller,
+                    caller_context=ctx,
+                    user_present=user_present,
+                    user_consented=user_consented,
+                    proposed_action=pa,
+                )
+                if thinker_view:
+                    dec = _apply_cognitive_thinker_balance(dec, thinker_view)
+        except Exception as e:
+            logger.debug("CognitiveThinker balance application failed: %s", e)
+
         # Risk banding
         try:
             score = int(dec.get("risk_score") or 0)
