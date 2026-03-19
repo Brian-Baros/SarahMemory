@@ -2,5 +2,19 @@
   "enabled": true,
   "autoload": false,
   "backend": "",
-  "profile": "default"
+  "backend_priority": ["pygame", "inputs", "hid"],
+  "profile": "default",
+  "device_index": 0,
+  "device_name": "",
+  "vendor_id": "",
+  "product_id": "",
+  "deadzone": 0.1,
+  "poll_interval_ms": 20,
+  "event_buffer_limit": 256,
+  "auto_connect": false,
+  "normalize_axes": true,
+  "trigger_mode": "signed",
+  "allow_rumble": true,
+  "allow_light_control": true,
+  "vendor_passthrough": false
 }

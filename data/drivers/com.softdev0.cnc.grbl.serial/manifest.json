@@ -1,0 +1,55 @@
+{
+  "id": "com.softdev0.cnc.grbl.serial",
+  "name": "CNC GRBL Controller Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Governed serial driver for GRBL-based CNC controllers with serial discovery, connect lifecycle, status/alarm queries, unlock/home, jog/motion confirmation gates, macro streaming, realtime controls, and settings interrogation.",
+  "tags": ["cnc", "grbl", "serial", "usb-serial", "motion-control"],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": ["serial", "usb_serial"],
+    "os": ["windows", "linux", "macos"],
+    "targets": ["GRBL 0.9+", "GRBL 1.1+"]
+  },
+  "permissions": [
+    "hardware.serial",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_callable": [
+    "ping",
+    "list_ports",
+    "connect",
+    "disconnect",
+    "get_status",
+    "query_status",
+    "unlock",
+    "home",
+    "safe_stop",
+    "feed_hold",
+    "resume",
+    "soft_reset",
+    "send_gcode",
+    "send_realtime",
+    "run_macro",
+    "jog",
+    "set_zero",
+    "goto_zero",
+    "get_settings",
+    "get_parameters",
+    "get_parser_state",
+    "drain_buffer",
+    "get_config",
+    "set_config"
+  ]
+}

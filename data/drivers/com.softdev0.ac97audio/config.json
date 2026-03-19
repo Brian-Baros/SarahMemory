@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "default_volume": 50,
+  "history_limit": 200
+}

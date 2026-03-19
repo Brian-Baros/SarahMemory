@@ -22,6 +22,12 @@
           "type": "int",
           "min": 1200,
           "max": 2000000
+        },
+        {
+          "key": "discovery_timeout",
+          "label": "Discovery Timeout",
+          "type": "string",
+          "placeholder": "5s"
         }
       ]
     },
@@ -37,7 +43,7 @@
         },
         {
           "key": "arduino_cli_path",
-          "label": "arduino-cli path (optional)",
+          "label": "arduino-cli path",
           "type": "string",
           "placeholder": "arduino-cli"
         },
@@ -46,6 +52,12 @@
           "label": "Sketch working folder",
           "type": "string",
           "placeholder": "../data/sandbox/arduino"
+        },
+        {
+          "key": "compile_warnings",
+          "label": "Compile warnings",
+          "type": "string",
+          "placeholder": "default"
         }
       ]
     },
@@ -64,6 +76,11 @@
           "type": "int",
           "min": 0,
           "max": 600
+        },
+        {
+          "key": "verify_upload",
+          "label": "Verify after upload",
+          "type": "bool"
         }
       ]
     },
@@ -90,6 +107,14 @@
       "label": "Scan Ports"
     },
     {
+      "id": "list_boards",
+      "label": "List Boards"
+    },
+    {
+      "id": "write_sketch",
+      "label": "Write Sketch"
+    },
+    {
       "id": "dry_run_compile",
       "label": "Dry Run Compile"
     },
@@ -100,6 +125,10 @@
     {
       "id": "safe_stop",
       "label": "Safe Stop"
+    },
+    {
+      "id": "status",
+      "label": "Driver Status"
     },
     {
       "id": "reset_defaults",

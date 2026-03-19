@@ -1,0 +1,155 @@
+{
+  "title": "IR Sensor (USB) Driver",
+  "sections": [
+    {
+      "id": "device",
+      "label": "Device",
+      "fields": [
+        {
+          "key": "device_filter",
+          "label": "Device Filter",
+          "type": "string",
+          "placeholder": "name or VID:PID"
+        },
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID",
+          "type": "string",
+          "placeholder": "0x057E"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID",
+          "type": "string",
+          "placeholder": "0x0306"
+        },
+        {
+          "key": "usage_page",
+          "label": "Usage Page",
+          "type": "string",
+          "placeholder": "0x01"
+        },
+        {
+          "key": "usage",
+          "label": "Usage",
+          "type": "string",
+          "placeholder": "0x00"
+        },
+        {
+          "key": "serial_port",
+          "label": "Serial Port",
+          "type": "string",
+          "placeholder": "COM4 or /dev/ttyUSB0"
+        },
+        {
+          "key": "mode",
+          "label": "Mode",
+          "type": "string",
+          "placeholder": "tracking|raw|events"
+        }
+      ]
+    },
+    {
+      "id": "capture",
+      "label": "Capture",
+      "fields": [
+        {
+          "key": "point_count",
+          "label": "Point Count",
+          "type": "number"
+        },
+        {
+          "key": "normalize_points",
+          "label": "Normalize Points",
+          "type": "bool"
+        },
+        {
+          "key": "frame_width",
+          "label": "Frame Width",
+          "type": "number"
+        },
+        {
+          "key": "frame_height",
+          "label": "Frame Height",
+          "type": "number"
+        },
+        {
+          "key": "poll_interval_ms",
+          "label": "Poll Interval (ms)",
+          "type": "number"
+        },
+        {
+          "key": "report_size",
+          "label": "Report Size",
+          "type": "number"
+        },
+        {
+          "key": "buffer_limit",
+          "label": "Buffer Limit",
+          "type": "number"
+        },
+        {
+          "key": "emit_raw_reports",
+          "label": "Emit Raw Reports",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "label": "Runtime",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        },
+        {
+          "key": "allow_shell_probe",
+          "label": "Allow Shell Probe",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": {
+    "probe_backends": {},
+    "discover_devices": {},
+    "connect": {},
+    "disconnect": {},
+    "read_once": {},
+    "start_listen": {},
+    "stop_listen": {},
+    "get_buffer": {
+      "limit": 20
+    },
+    "clear_buffer": {},
+    "inject_report": {
+      "report": [
+        10,
+        20,
+        255,
+        50,
+        60,
+        200
+      ]
+    },
+    "feed_points": {
+      "points": [
+        {
+          "id": 0,
+          "x": 400,
+          "y": 300,
+          "confidence": 1.0
+        }
+      ]
+    },
+    "get_config": {},
+    "safe_stop": {}
+  }
+}

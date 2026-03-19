@@ -1,0 +1,69 @@
+{
+  "id": "com.softdev0.ir.sensor.usb",
+  "name": "IR Sensor (USB) Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Generic USB IR sensor / tracker driver with HID and serial backends, buffered event capture, and point-tracking support.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": "usb",
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "backends": [
+      "hid",
+      "serial"
+    ],
+    "device_classes": [
+      "ir_sensor",
+      "ir_tracker",
+      "usb_hid",
+      "usb_serial"
+    ]
+  },
+  "permissions": [
+    "hardware.usb",
+    "hardware.hid",
+    "hardware.serial",
+    "subprocess.exec"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_callable": [
+    "ping",
+    "probe_backends",
+    "discover_devices",
+    "shell_probe",
+    "connect",
+    "disconnect",
+    "read_once",
+    "start_listen",
+    "stop_listen",
+    "get_buffer",
+    "clear_buffer",
+    "inject_report",
+    "feed_points",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ],
+  "tags": [
+    "ir",
+    "sensor",
+    "usb",
+    "hid",
+    "serial",
+    "tracking"
+  ]
+}

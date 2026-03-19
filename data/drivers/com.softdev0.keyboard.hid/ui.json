@@ -1,0 +1,154 @@
+{
+  "title": "Keyboard HID Driver",
+  "sections": [
+    {
+      "id": "device",
+      "label": "Device",
+      "fields": [
+        {
+          "key": "capture_mode",
+          "label": "Capture Mode",
+          "type": "string",
+          "placeholder": "listen|exclusive"
+        },
+        {
+          "key": "device_filter",
+          "label": "Device Filter",
+          "type": "string",
+          "placeholder": "VID:PID, name, serial"
+        },
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID",
+          "type": "number"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID",
+          "type": "number"
+        },
+        {
+          "key": "usage_page",
+          "label": "Usage Page",
+          "type": "number"
+        },
+        {
+          "key": "usage",
+          "label": "Usage",
+          "type": "number"
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "label": "Runtime",
+      "fields": [
+        {
+          "key": "read_timeout_ms",
+          "label": "Read Timeout (ms)",
+          "type": "number"
+        },
+        {
+          "key": "poll_interval_ms",
+          "label": "Poll Interval (ms)",
+          "type": "number"
+        },
+        {
+          "key": "buffer_limit",
+          "label": "Buffer Limit",
+          "type": "number"
+        },
+        {
+          "key": "emit_raw",
+          "label": "Emit Raw Reports",
+          "type": "bool"
+        },
+        {
+          "key": "emit_keyup",
+          "label": "Emit Key Up",
+          "type": "bool"
+        },
+        {
+          "key": "case_mode",
+          "label": "Case Mode",
+          "type": "string",
+          "placeholder": "native|upper|lower"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "label": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "probe_backend",
+      "label": "Probe Backend"
+    },
+    {
+      "id": "list_hid",
+      "label": "List HID Devices"
+    },
+    {
+      "id": "open_device",
+      "label": "Open Device"
+    },
+    {
+      "id": "close_device",
+      "label": "Close Device"
+    },
+    {
+      "id": "read_once",
+      "label": "Read Once"
+    },
+    {
+      "id": "start_listen",
+      "label": "Start Listen"
+    },
+    {
+      "id": "stop_listen",
+      "label": "Stop Listen"
+    },
+    {
+      "id": "get_buffer",
+      "label": "Get Buffer"
+    },
+    {
+      "id": "clear_buffer",
+      "label": "Clear Buffer"
+    },
+    {
+      "id": "get_config",
+      "label": "Get Config"
+    },
+    {
+      "id": "set_config",
+      "label": "Set Config"
+    },
+    {
+      "id": "inject_report",
+      "label": "Inject Report"
+    },
+    {
+      "id": "feed_keystrokes",
+      "label": "Feed Keystrokes"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ]
+}

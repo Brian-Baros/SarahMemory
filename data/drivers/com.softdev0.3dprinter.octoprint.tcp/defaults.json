@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "base_url": "",
+  "api_key": "",
+  "timeout_sec": 10,
+  "verify_tls": true,
+  "auto_connect_on_init": false,
+  "connection": {
+    "port": "",
+    "baudrate": 0,
+    "printerProfile": "",
+    "save": false,
+    "autoconnect": false
+  },
+  "safe_stop": {
+    "cancel_job_first": true,
+    "cooldown_hotend": true,
+    "cooldown_bed": true,
+    "disable_steppers": false,
+    "park_head": false,
+    "park_x": 0,
+    "park_y": 0,
+    "park_z_lift": 5
+  }
+}

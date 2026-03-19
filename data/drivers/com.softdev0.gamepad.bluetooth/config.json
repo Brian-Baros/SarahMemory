@@ -2,5 +2,21 @@
   "enabled": true,
   "autoload": false,
   "device_name": "",
-  "device_mac": ""
+  "device_mac": "",
+  "backend_priority": ["pygame", "inputs", "hid"],
+  "auto_pair": false,
+  "auto_connect": false,
+  "allow_os_pairing_commands": true,
+  "scan_seconds": 6,
+  "poll_hz": 60,
+  "deadzone": 0.12,
+  "buffer_limit": 256,
+  "normalize_axes": true,
+  "button_map": {},
+  "axis_map": {},
+  "hat_map": {},
+  "rumble_supported": true,
+  "lightbar_supported": true,
+  "vendor_passthrough_enabled": false,
+  "pairing_mode": "standard"
 }

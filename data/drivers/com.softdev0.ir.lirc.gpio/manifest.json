@@ -1,0 +1,86 @@
+{
+  "id": "com.softdev0.ir.lirc.gpio",
+  "name": "IR Receiver (LIRC/GPIO) Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "summary": "Governed Linux IR receiver driver using LIRC tools, lircd socket listening, and GPIO/rc-core character devices.",
+  "description": [
+    {
+      "id": "receiver",
+      "title": "Receiver / LIRC",
+      "fields": [
+        {"key": "gpio_pin", "label": "GPIO Pin", "type": "int", "min": 0, "max": 40},
+        {"key": "driver", "label": "LIRC Driver", "type": "string", "placeholder": "default"},
+        {"key": "device", "label": "LIRC Device", "type": "string", "placeholder": "/dev/lirc0"},
+        {"key": "socket_path", "label": "lircd Socket", "type": "string", "placeholder": "/var/run/lirc/lircd"},
+        {"key": "lirc_conf", "label": "LIRC Config Path", "type": "string", "placeholder": "/etc/lirc/lircd.conf"}
+      ]
+    },
+    {
+      "id": "learning",
+      "title": "Learning / Capture",
+      "fields": [
+        {"key": "mode2_capture_seconds", "label": "mode2 Capture Seconds", "type": "int", "min": 1, "max": 120},
+        {"key": "mode2_gap_us", "label": "mode2 Gap (us)", "type": "int", "min": 1000, "max": 1000000},
+        {"key": "learn_timeout_seconds", "label": "Learn Timeout", "type": "int", "min": 5, "max": 300},
+        {"key": "irrecord_force_raw", "label": "irrecord Force Raw", "type": "bool"}
+      ]
+    },
+    {
+      "id": "controls",
+      "title": "Controls",
+      "fields": [
+        {"key": "enabled", "label": "Enabled", "type": "bool"},
+        {"key": "autoload", "label": "Autoload on boot", "type": "bool"},
+        {"key": "allow_daemon_control", "label": "Allow lircd Reload", "type": "bool"},
+        {"key": "allow_shell_commands", "label": "Allow Shell Commands", "type": "bool"}
+      ]
+    }
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "os": ["linux"],
+    "transport": ["gpio", "lirc", "unix_socket"],
+    "runtime": ["python3"],
+    "notes": "Designed for Linux SBC and rc-core/LIRC receive paths."
+  },
+  "permissions": [
+    "hardware.gpio",
+    "hardware.ir_receive",
+    "ipc.unix_socket",
+    "subprocess.exec",
+    "filesystem.read_local",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_supported": [
+    "ping",
+    "probe_tools",
+    "discover_devices",
+    "check_lircd",
+    "read_socket_once",
+    "start_listen",
+    "stop_listen",
+    "get_events",
+    "clear_events",
+    "mode2_capture",
+    "learn_remote",
+    "analyse_config",
+    "reload_lircd",
+    "list_namespace",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ],
+  "tags": ["infrared", "lirc", "gpio", "remote", "linux"]
+}
