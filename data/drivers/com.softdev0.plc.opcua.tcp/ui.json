@@ -2,12 +2,52 @@
   "title": "PLC OPC UA Driver",
   "sections": [
     {
-      "id": "ping",
-      "label": "Ping"
+      "id": "probe_backends",
+      "label": "Probe Backends"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
     },
     {
       "id": "browse",
       "label": "Browse Nodes"
+    },
+    {
+      "id": "read_node",
+      "label": "Read Node"
+    },
+    {
+      "id": "write_node",
+      "label": "Write Node"
+    },
+    {
+      "id": "call_method",
+      "label": "Call Method"
+    },
+    {
+      "id": "create_subscription",
+      "label": "Create Subscription"
+    },
+    {
+      "id": "delete_subscription",
+      "label": "Delete Subscription"
+    },
+    {
+      "id": "get_events",
+      "label": "Get Events"
+    },
+    {
+      "id": "clear_events",
+      "label": "Clear Events"
+    },
+    {
+      "id": "namespace_array",
+      "label": "Namespace Array"
     },
     {
       "id": "safe_stop",
@@ -17,7 +57,19 @@
   "actions": {
     "enabled": true,
     "autoload": false,
-    "endpoint": "",
-    "security_mode": "None"
+    "endpoint": "opc.tcp://127.0.0.1:4840",
+    "security_mode": "None",
+    "security_policy": "None",
+    "username": "",
+    "password": "",
+    "timeout": 4.0,
+    "session_timeout": 60.0,
+    "read_only": true,
+    "require_write_confirmation": true,
+    "allow_method_calls": false,
+    "require_method_confirmation": true,
+    "subscription_period_ms": 500,
+    "event_buffer_limit": 500,
+    "history_limit": 200
   }
 }

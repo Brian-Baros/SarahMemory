@@ -24,6 +24,13 @@
           "type": "int",
           "min": 0,
           "max": 255
+        },
+        {
+          "key": "timeout_sec",
+          "label": "Timeout (sec)",
+          "type": "float",
+          "min": 0.1,
+          "max": 60.0
         }
       ]
     },
@@ -37,11 +44,9 @@
           "type": "bool"
         },
         {
-          "key": "timeout_sec",
-          "label": "Timeout (sec)",
-          "type": "int",
-          "min": 1,
-          "max": 60
+          "key": "require_write_confirmation",
+          "label": "Require write confirmation",
+          "type": "bool"
         },
         {
           "key": "enabled",
@@ -52,6 +57,13 @@
           "key": "autoload",
           "label": "Autoload on boot",
           "type": "bool"
+        },
+        {
+          "key": "history_limit",
+          "label": "History Limit",
+          "type": "int",
+          "min": 10,
+          "max": 5000
         }
       ]
     }
@@ -59,15 +71,63 @@
   "actions": [
     {
       "id": "ping",
-      "label": "Ping"
+      "label": "Ping Target"
     },
     {
-      "id": "read_registers",
-      "label": "Read Registers"
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    },
+    {
+      "id": "read_coils",
+      "label": "Read Coils"
+    },
+    {
+      "id": "read_discrete_inputs",
+      "label": "Read Discrete Inputs"
+    },
+    {
+      "id": "read_holding_registers",
+      "label": "Read Holding Registers"
+    },
+    {
+      "id": "read_input_registers",
+      "label": "Read Input Registers"
+    },
+    {
+      "id": "write_coil",
+      "label": "Write Coil"
+    },
+    {
+      "id": "write_coils",
+      "label": "Write Coils"
     },
     {
       "id": "write_register",
       "label": "Write Register"
+    },
+    {
+      "id": "write_registers",
+      "label": "Write Registers"
+    },
+    {
+      "id": "read_exception_status",
+      "label": "Read Exception Status"
+    },
+    {
+      "id": "get_config",
+      "label": "Get Config"
+    },
+    {
+      "id": "set_config",
+      "label": "Set Config"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
     }
   ]
 }

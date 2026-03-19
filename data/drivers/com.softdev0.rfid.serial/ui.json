@@ -5,55 +5,63 @@
       "id": "connection",
       "title": "Serial Connection",
       "fields": [
-        {
-          "key": "port",
-          "label": "Port (COMx or /dev/tty*)",
-          "type": "string",
-          "placeholder": "COM6"
-        },
-        {
-          "key": "baud",
-          "label": "Baud Rate",
-          "type": "int",
-          "min": 1200,
-          "max": 2000000
-        }
+        {"key": "port", "label": "Port (COMx or /dev/tty*)", "type": "string", "placeholder": "COM6"},
+        {"key": "baud", "label": "Baud Rate", "type": "int", "min": 1200, "max": 2000000},
+        {"key": "bytesize", "label": "Data Bits", "type": "int", "min": 5, "max": 8},
+        {"key": "parity", "label": "Parity", "type": "select", "options": ["N", "E", "O", "M", "S"]},
+        {"key": "stopbits", "label": "Stop Bits", "type": "select", "options": [1, 2]},
+        {"key": "timeout_s", "label": "Read Timeout (s)", "type": "float", "min": 0.0, "max": 30.0},
+        {"key": "write_timeout_s", "label": "Write Timeout (s)", "type": "float", "min": 0.0, "max": 30.0}
+      ]
+    },
+    {
+      "id": "protocol",
+      "title": "Reader Protocol",
+      "fields": [
+        {"key": "protocol_profile", "label": "Protocol Profile", "type": "select", "options": ["generic_ascii", "newline_ascii", "xbee_like_hex"]},
+        {"key": "line_terminator", "label": "Line Terminator", "type": "string", "placeholder": "\\n"},
+        {"key": "command_terminator", "label": "Command Terminator", "type": "string", "placeholder": "\\r\\n"},
+        {"key": "tag_prefix", "label": "Tag Prefix", "type": "string"},
+        {"key": "tag_suffix", "label": "Tag Suffix", "type": "string"},
+        {"key": "hex_input", "label": "Commands Are Hex", "type": "bool"},
+        {"key": "emit_raw", "label": "Emit Raw Lines", "type": "bool"}
+      ]
+    },
+    {
+      "id": "runtime",
+      "title": "Runtime",
+      "fields": [
+        {"key": "poll_interval_s", "label": "Poll Interval (s)", "type": "float", "min": 0.01, "max": 5.0},
+        {"key": "buffer_limit", "label": "Buffer Limit", "type": "int", "min": 10, "max": 10000},
+        {"key": "dedupe_window_ms", "label": "Duplicate Suppression (ms)", "type": "int", "min": 0, "max": 10000},
+        {"key": "auto_reconnect", "label": "Auto Reconnect", "type": "bool"}
       ]
     },
     {
       "id": "safety",
       "title": "Safety",
       "fields": [
-        {
-          "key": "read_only",
-          "label": "Read-only mode",
-          "type": "bool"
-        },
-        {
-          "key": "enabled",
-          "label": "Enabled",
-          "type": "bool"
-        },
-        {
-          "key": "autoload",
-          "label": "Autoload on boot",
-          "type": "bool"
-        }
+        {"key": "read_only", "label": "Read-only mode", "type": "bool"},
+        {"key": "require_write_confirmation", "label": "Require Write Confirmation", "type": "bool"},
+        {"key": "enabled", "label": "Enabled", "type": "bool"},
+        {"key": "autoload", "label": "Autoload on boot", "type": "bool"}
       ]
     }
   ],
   "actions": [
-    {
-      "id": "scan_ports",
-      "label": "Scan Ports"
-    },
-    {
-      "id": "read_tag",
-      "label": "Read Tag"
-    },
-    {
-      "id": "write_tag",
-      "label": "Write Tag"
-    }
+    {"id": "scan_ports", "label": "Scan Ports"},
+    {"id": "connect", "label": "Connect"},
+    {"id": "disconnect", "label": "Disconnect"},
+    {"id": "start_listen", "label": "Start Listen"},
+    {"id": "stop_listen", "label": "Stop Listen"},
+    {"id": "inventory", "label": "Inventory Tags"},
+    {"id": "read_tag", "label": "Read Tag"},
+    {"id": "write_tag", "label": "Write Tag"},
+    {"id": "send_raw", "label": "Send Raw Command"},
+    {"id": "get_buffer", "label": "Get Buffer"},
+    {"id": "clear_buffer", "label": "Clear Buffer"},
+    {"id": "get_config", "label": "Get Config"},
+    {"id": "set_config", "label": "Set Config"},
+    {"id": "safe_stop", "label": "Safe Stop"}
   ]
 }

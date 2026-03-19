@@ -2,135 +2,60 @@
   "id": "com.softdev0.zigbee.coordinator.usb",
   "name": "Zigbee Coordinator Driver",
   "type": "driver",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "SOFTDEV0 LLC / Brian Lee Baros",
-  "description": [
-    {
-      "id": "connection",
-      "title": "Connection",
-      "fields": [
-        {
-          "key": "port",
-          "label": "Serial Port",
-          "type": "string",
-          "placeholder": "COM6"
-        },
-        {
-          "key": "baud",
-          "label": "Baud",
-          "type": "int",
-          "min": 1200,
-          "max": 2000000
-        },
-        {
-          "key": "stack",
-          "label": "Stack",
-          "type": "string",
-          "placeholder": "zigbee2mqtt|deconz"
-        }
-      ]
-    },
-    {
-      "id": "autoload",
-      "title": "Autoload",
-      "fields": [
-        {
-          "key": "enabled",
-          "label": "Enabled",
-          "type": "bool"
-        },
-        {
-          "key": "autoload",
-          "label": "Autoload on boot",
-          "type": "bool"
-        }
-      ]
-    }
-  ],
+  "description": "USB Zigbee coordinator bridge for serial coordinators and external stack integrations.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "S",
-    "k",
-    "e",
-    "l",
-    "e",
-    "t",
-    "o",
-    "n",
-    " ",
-    "f",
-    "o",
-    "r",
-    " ",
-    "Z",
-    "i",
-    "g",
-    "b",
-    "e",
-    "e",
-    " ",
-    "c",
-    "o",
-    "o",
-    "r",
-    "d",
-    "i",
-    "n",
-    "a",
-    "t",
-    "o",
-    "r",
-    "s",
-    " ",
-    "(",
-    "e",
-    ".",
-    "g",
-    ".",
-    ",",
-    " ",
-    "C",
-    "C",
-    "2",
-    "6",
-    "5",
-    "2",
-    "/",
-    "C",
-    "o",
-    "n",
-    "B",
-    "e",
-    "e",
-    ")",
-    " ",
-    "o",
-    "v",
-    "e",
-    "r",
-    " ",
-    "U",
-    "S",
-    "B",
-    " ",
-    "s",
-    "e",
-    "r",
-    "i",
-    "a",
-    "l",
-    "."
-  ],
+  "platform": {
+    "transport": "usb_serial",
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "stacks": [
+      "raw_serial",
+      "zigbee2mqtt",
+      "deconz",
+      "zha_bridge",
+      "vendor"
+    ]
+  },
   "permissions": [
     "hardware.usb",
     "hardware.serial",
-    "filesystem.write_local"
+    "filesystem.write_local",
+    "process.exec"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
-  }
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_supported": [
+    "ping",
+    "probe_backends",
+    "list_ports",
+    "connect",
+    "disconnect",
+    "start_listener",
+    "stop_listener",
+    "read_once",
+    "send_raw",
+    "feed_text",
+    "get_frames",
+    "get_events",
+    "clear_buffers",
+    "list_devices",
+    "set_network_state",
+    "launch_stack",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
 }

@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "preferred_mode": "1920x1080",
+  "history_limit": 200,
+  "scene_request_dir": "./data/xr_scene_requests"
+}

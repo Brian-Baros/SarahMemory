@@ -1,16 +1,10 @@
 {
-  "title": "VR Headset USB Driver",
+  "title": "VR Headset XR Bridge Driver",
   "sections": [
     {
       "id": "device",
-      "title": "VR Headset",
+      "title": "XR Runtime & Target",
       "fields": [
-        {
-          "key": "runtime",
-          "label": "Runtime",
-          "type": "string",
-          "placeholder": "OpenXR"
-        },
         {
           "key": "enabled",
           "label": "Enabled",
@@ -20,33 +14,238 @@
           "key": "autoload",
           "label": "Autoload on boot",
           "type": "bool"
+        },
+        {
+          "key": "target_runtime",
+          "label": "Target Runtime",
+          "type": "string",
+          "placeholder": "OpenXR / SteamVR / Monado"
+        },
+        {
+          "key": "target_headset_name",
+          "label": "Target Headset Name",
+          "type": "string"
+        },
+        {
+          "key": "target_headset_serial",
+          "label": "Target Headset Serial",
+          "type": "string"
+        },
+        {
+          "key": "runtime_command",
+          "label": "Runtime Launch Command",
+          "type": "string"
+        },
+        {
+          "key": "runtime_stop_command",
+          "label": "Runtime Stop Command",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "display",
+      "title": "Display & Render",
+      "fields": [
+        {
+          "key": "display_mode",
+          "label": "Display Mode",
+          "type": "string",
+          "placeholder": "auto / direct / extended / secondary"
+        },
+        {
+          "key": "mirror_mode",
+          "label": "Mirror Mode",
+          "type": "string",
+          "placeholder": "auto / off / desktop / window"
+        },
+        {
+          "key": "target_width",
+          "label": "Target Width",
+          "type": "int"
+        },
+        {
+          "key": "target_height",
+          "label": "Target Height",
+          "type": "int"
+        },
+        {
+          "key": "target_refresh_hz",
+          "label": "Target Refresh Hz",
+          "type": "int"
+        },
+        {
+          "key": "render_scale",
+          "label": "Render Scale",
+          "type": "float"
+        },
+        {
+          "key": "allow_resolution_changes",
+          "label": "Allow Resolution Changes",
+          "type": "bool"
+        },
+        {
+          "key": "allow_secondary_display",
+          "label": "Allow Secondary Display",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "interaction",
+      "title": "Tracking, Audio, Inputs",
+      "fields": [
+        {
+          "key": "allow_pose_tracking",
+          "label": "Allow Pose Tracking",
+          "type": "bool"
+        },
+        {
+          "key": "allow_eye_tracking",
+          "label": "Allow Eye Tracking",
+          "type": "bool"
+        },
+        {
+          "key": "allow_hand_tracking",
+          "label": "Allow Hand Tracking",
+          "type": "bool"
+        },
+        {
+          "key": "allow_passthrough",
+          "label": "Allow Passthrough",
+          "type": "bool"
+        },
+        {
+          "key": "allow_microphone",
+          "label": "Allow Microphone",
+          "type": "bool"
+        },
+        {
+          "key": "allow_bluetooth_glasses",
+          "label": "Allow Bluetooth Glasses",
+          "type": "bool"
+        },
+        {
+          "key": "preferred_audio_output",
+          "label": "Preferred Audio Output",
+          "type": "string"
+        },
+        {
+          "key": "preferred_audio_input",
+          "label": "Preferred Audio Input",
+          "type": "string"
+        },
+        {
+          "key": "preferred_controller_mode",
+          "label": "Preferred Controller Mode",
+          "type": "string",
+          "placeholder": "auto / vr / gamepad / keyboard_mouse / voice / ps_move"
+        }
+      ]
+    },
+    {
+      "id": "scene",
+      "title": "Scene & Avatar Bridge",
+      "fields": [
+        {
+          "key": "allow_scene_requests",
+          "label": "Allow Scene Requests",
+          "type": "bool"
+        },
+        {
+          "key": "scene_request_dir",
+          "label": "Scene Request Directory",
+          "type": "string"
+        },
+        {
+          "key": "session_name",
+          "label": "Session Name",
+          "type": "string"
+        },
+        {
+          "key": "preferred_scene_transport",
+          "label": "Scene Transport",
+          "type": "string",
+          "placeholder": "file"
         }
       ]
     },
     {
       "id": "safety",
-      "title": "Safety",
+      "title": "Governance",
       "fields": [
         {
-          "key": "allow_pose_tracking",
-          "label": "Allow pose tracking",
+          "key": "allow_runtime_launch",
+          "label": "Allow Runtime Launch",
           "type": "bool"
+        },
+        {
+          "key": "require_confirm_for_runtime_launch",
+          "label": "Confirm Runtime Launch",
+          "type": "bool"
+        },
+        {
+          "key": "require_confirm_for_scene_launch",
+          "label": "Confirm Scene Launch",
+          "type": "bool"
+        },
+        {
+          "key": "allow_vendor_tools",
+          "label": "Allow Vendor Tools",
+          "type": "bool"
+        },
+        {
+          "key": "history_limit",
+          "label": "History Limit",
+          "type": "int"
         }
       ]
     }
   ],
   "actions": [
     {
-      "id": "detect",
-      "label": "Detect Headset"
+      "id": "probe_backends",
+      "label": "Probe Backends"
     },
     {
-      "id": "start",
+      "id": "detect_headsets",
+      "label": "Detect Headsets"
+    },
+    {
+      "id": "list_inputs",
+      "label": "List Input Routes"
+    },
+    {
+      "id": "start_runtime",
       "label": "Start Runtime"
     },
     {
-      "id": "stop",
+      "id": "stop_runtime",
       "label": "Stop Runtime"
+    },
+    {
+      "id": "set_resolution",
+      "label": "Set Resolution"
+    },
+    {
+      "id": "launch_scene_request",
+      "label": "Launch Scene Request"
+    },
+    {
+      "id": "start_avatar_mode",
+      "label": "Start Avatar Mode"
+    },
+    {
+      "id": "stop_avatar_mode",
+      "label": "Stop Avatar Mode"
+    },
+    {
+      "id": "describe_capabilities",
+      "label": "Describe Capabilities"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
     }
   ]
 }

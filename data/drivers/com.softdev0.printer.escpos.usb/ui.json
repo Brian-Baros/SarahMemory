@@ -2,23 +2,189 @@
   "title": "ESC/POS Receipt Printer Driver",
   "sections": [
     {
-      "id": "ping",
-      "label": "Ping"
+      "id": "device",
+      "label": "USB Device",
+      "fields": [
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID",
+          "type": "string",
+          "placeholder": "0x0416"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID",
+          "type": "string",
+          "placeholder": "0x5011"
+        },
+        {
+          "key": "interface",
+          "label": "Interface",
+          "type": "int",
+          "min": 0,
+          "max": 10
+        },
+        {
+          "key": "in_ep",
+          "label": "In Endpoint",
+          "type": "int",
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "out_ep",
+          "label": "Out Endpoint",
+          "type": "int",
+          "min": 0,
+          "max": 255
+        },
+        {
+          "key": "timeout_ms",
+          "label": "Timeout (ms)",
+          "type": "int",
+          "min": 100,
+          "max": 30000
+        }
+      ]
     },
     {
-      "id": "print_test",
-      "label": "Print Test Page"
+      "id": "print_defaults",
+      "label": "Print Defaults",
+      "fields": [
+        {
+          "key": "encoding",
+          "label": "Encoding",
+          "type": "string"
+        },
+        {
+          "key": "profile",
+          "label": "Profile",
+          "type": "string"
+        },
+        {
+          "key": "align",
+          "label": "Alignment",
+          "type": "select",
+          "options": [
+            "left",
+            "center",
+            "right"
+          ]
+        },
+        {
+          "key": "line_spacing",
+          "label": "Line Spacing",
+          "type": "int",
+          "min": 1,
+          "max": 255
+        },
+        {
+          "key": "feed_after_print",
+          "label": "Feed Lines After Print",
+          "type": "int",
+          "min": 0,
+          "max": 20
+        },
+        {
+          "key": "image_max_width",
+          "label": "Image Max Width",
+          "type": "int",
+          "min": 64,
+          "max": 2048
+        }
+      ]
     },
     {
-      "id": "safe_stop",
-      "label": "Safe Stop"
+      "id": "capabilities",
+      "label": "Capabilities",
+      "fields": [
+        {
+          "key": "barcode_enabled",
+          "label": "Enable Barcode Printing",
+          "type": "bool"
+        },
+        {
+          "key": "qr_enabled",
+          "label": "Enable QR Printing",
+          "type": "bool"
+        },
+        {
+          "key": "image_enabled",
+          "label": "Enable Image Printing",
+          "type": "bool"
+        },
+        {
+          "key": "cut_enabled",
+          "label": "Enable Cut",
+          "type": "bool"
+        },
+        {
+          "key": "allow_cash_drawer",
+          "label": "Allow Cash Drawer Pulse",
+          "type": "bool"
+        },
+        {
+          "key": "allow_raw",
+          "label": "Allow Raw ESC/POS Commands",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "autoload",
+      "label": "Autoload",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        }
+      ]
     }
   ],
   "actions": {
-    "enabled": true,
-    "autoload": false,
-    "vendor_id": "",
-    "product_id": "",
-    "interface": 0
+    "probe_backends": {},
+    "discover_devices": {},
+    "connect": {},
+    "disconnect": {},
+    "print_text": {
+      "text": ""
+    },
+    "print_test": {
+      "cut": true,
+      "cut_mode": "full"
+    },
+    "print_barcode": {
+      "data": "",
+      "code_type": "CODE128"
+    },
+    "print_qr": {
+      "data": "",
+      "size": 6
+    },
+    "print_image": {
+      "path": ""
+    },
+    "feed": {
+      "lines": 2
+    },
+    "cut": {
+      "mode": "full"
+    },
+    "cash_drawer": {
+      "pin": 2
+    },
+    "send_raw": {
+      "raw": ""
+    },
+    "safe_stop": {
+      "cut": false,
+      "cut_mode": "partial"
+    }
   }
 }

@@ -2,28 +2,54 @@
   "id": "com.softdev0.plc.modbus.tcp",
   "name": "PLC Modbus/TCP Driver",
   "type": "driver",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "SOFTDEV0 LLC / SarahMemory Community",
-  "description": "Skeleton PLC Modbus/TCP driver (optional 'pymodbus'). Writes should require explicit confirmation.",
+  "description": "Governed PLC Modbus/TCP driver with optional pymodbus backend. Writes require explicit confirmation by default.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "windows",
-    "linux",
-    "mac"
-  ],
+  "platform": {
+    "os": [
+      "windows",
+      "linux",
+      "mac"
+    ],
+    "architectures": [
+      "x86_64",
+      "arm64"
+    ],
+    "python": ">=3.10"
+  },
   "transport": "tcp",
   "category": "plc",
   "permissions": [
     "network.outbound",
-    "network.inbound",
     "hardware.plc",
     "filesystem.write_local"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
-  }
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_supported": [
+    "ping",
+    "connect",
+    "disconnect",
+    "get_config",
+    "set_config",
+    "read_coils",
+    "read_discrete_inputs",
+    "read_holding_registers",
+    "read_input_registers",
+    "write_coil",
+    "write_coils",
+    "write_register",
+    "write_registers",
+    "read_exception_status",
+    "safe_stop"
+  ]
 }

@@ -5,62 +5,58 @@
       "id": "connection",
       "title": "Bluetooth Audio",
       "fields": [
-        {
-          "key": "device_name",
-          "label": "Device name",
-          "type": "string",
-          "placeholder": "Soundbar"
-        },
-        {
-          "key": "device_mac",
-          "label": "MAC (optional)",
-          "type": "string",
-          "placeholder": "AA:BB:CC:DD:EE:FF"
-        }
+        {"key": "device_name", "label": "Device name", "type": "string", "placeholder": "Soundbar"},
+        {"key": "device_mac", "label": "MAC (optional)", "type": "string", "placeholder": "AA:BB:CC:DD:EE:FF"},
+        {"key": "connection_timeout_sec", "label": "Connect timeout (sec)", "type": "int", "min": 5, "max": 120},
+        {"key": "auto_pair", "label": "Auto pair when possible", "type": "bool"},
+        {"key": "auto_connect", "label": "Auto connect on init", "type": "bool"},
+        {"key": "allow_pair", "label": "Allow pairing actions", "type": "bool"},
+        {"key": "allow_disconnect", "label": "Allow disconnect actions", "type": "bool"}
       ]
     },
     {
       "id": "controls",
-      "title": "Controls",
+      "title": "Audio Controls",
       "fields": [
-        {
-          "key": "volume_step",
-          "label": "Volume step (%)",
-          "type": "int",
-          "min": 1,
-          "max": 20
-        }
+        {"key": "volume_step", "label": "Volume step (%)", "type": "int", "min": 1, "max": 20},
+        {"key": "allow_volume_control", "label": "Allow volume control", "type": "bool"},
+        {"key": "allow_media_control", "label": "Allow media control", "type": "bool"},
+        {"key": "poll_interval_sec", "label": "Listener poll interval (sec)", "type": "number", "min": 0.25, "max": 30}
+      ]
+    },
+    {
+      "id": "governance",
+      "title": "Governance",
+      "fields": [
+        {"key": "allow_device_commands", "label": "Allow device commands", "type": "bool"},
+        {"key": "pairing_pin", "label": "Pairing PIN (optional)", "type": "string", "placeholder": "0000"}
       ]
     },
     {
       "id": "autoload",
       "title": "Autoload",
       "fields": [
-        {
-          "key": "enabled",
-          "label": "Enabled",
-          "type": "bool"
-        },
-        {
-          "key": "autoload",
-          "label": "Autoload on boot",
-          "type": "bool"
-        }
+        {"key": "enabled", "label": "Enabled", "type": "bool"},
+        {"key": "autoload", "label": "Autoload on boot", "type": "bool"}
       ]
     }
   ],
   "actions": [
-    {
-      "id": "scan_bt",
-      "label": "Scan Bluetooth"
-    },
-    {
-      "id": "connect",
-      "label": "Connect"
-    },
-    {
-      "id": "set_volume",
-      "label": "Set Volume"
-    }
+    {"id": "probe_backends", "label": "Probe Backends"},
+    {"id": "scan_bt", "label": "Scan Bluetooth"},
+    {"id": "connect", "label": "Connect"},
+    {"id": "disconnect", "label": "Disconnect"},
+    {"id": "set_volume", "label": "Set Volume"},
+    {"id": "mute", "label": "Mute"},
+    {"id": "unmute", "label": "Unmute"},
+    {"id": "toggle_mute", "label": "Toggle Mute"},
+    {"id": "play", "label": "Play/Pause"},
+    {"id": "pause", "label": "Pause"},
+    {"id": "next", "label": "Next Track"},
+    {"id": "previous", "label": "Previous Track"},
+    {"id": "stop", "label": "Stop"},
+    {"id": "start_listener", "label": "Start Listener"},
+    {"id": "stop_listener", "label": "Stop Listener"},
+    {"id": "safe_stop", "label": "Safe Stop"}
   ]
 }

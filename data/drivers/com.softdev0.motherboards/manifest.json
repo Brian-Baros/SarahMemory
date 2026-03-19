@@ -1,0 +1,38 @@
+{
+  "driver_id": "com.softdev0.motherboards",
+  "version": "2.0.0",
+  "display_name": "Motherboard and Firmware Bridge",
+  "description": "Governed motherboard, firmware, BIOS/UEFI, and chipset inventory bridge.",
+  "platform": {
+    "transport": [
+      "local_os"
+    ],
+    "os": [
+      "Windows",
+      "Linux",
+      "macOS"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "entry": "driver.py",
+  "tags": [
+    "motherboard",
+    "bios",
+    "uefi",
+    "firmware",
+    "dmi",
+    "smbios"
+  ],
+  "actions": [
+    "probe_backends",
+    "inventory",
+    "firmware_info",
+    "dump_dmidecode",
+    "fwupd_get_devices",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
+}

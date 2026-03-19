@@ -1,29 +1,73 @@
 {
   "id": "com.softdev0.vr.headset.usb",
-  "name": "VR Headset USB Driver",
+  "name": "VR Headset XR Bridge Driver",
   "type": "driver",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "author": "SOFTDEV0 LLC / SarahMemory Community",
-  "description": "Skeleton VR driver; real integration via OpenXR runtime/SDK.",
+  "description": "Governed XR runtime/headset bridge for SarahMemory AiOS. Detects XR-capable runtimes and devices, negotiates resolution/runtime launch, exports scene/avatar requests, and degrades cleanly when optional VR stacks are absent.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "windows",
-    "linux",
-    "mac"
-  ],
-  "transport": "usb",
+  "platform": {
+    "os": [
+      "windows",
+      "linux",
+      "macos",
+      "android"
+    ],
+    "runtime": [
+      "OpenXR",
+      "SteamVR",
+      "Monado",
+      "OpenVR-compatible bridge"
+    ],
+    "transport": [
+      "usb",
+      "bluetooth",
+      "displayport",
+      "hdmi",
+      "wifi_link"
+    ]
+  },
+  "transport": "hybrid",
   "category": "vr",
   "permissions": [
     "hardware.usb",
+    "hardware.bluetooth",
     "media.video",
+    "media.audio_input",
+    "media.audio_output",
+    "os.display_control",
     "os.input_control",
-    "filesystem.write_local"
+    "filesystem.write_local",
+    "subprocess.execute"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backends",
+    "detect_headsets",
+    "list_inputs",
+    "get_config",
+    "set_config",
+    "start_runtime",
+    "stop_runtime",
+    "set_resolution",
+    "launch_scene_request",
+    "start_avatar_mode",
+    "stop_avatar_mode",
+    "describe_capabilities",
+    "safe_stop"
+  ],
+  "notes": {
+    "design_boundary": "This package is a hardware/runtime bridge, not a full scene-generation or render engine.",
+    "primary_contract": "Use OpenXR-capable runtimes when present; export scene/avatar requests into the wider SarahMemory creative/runtime pipeline."
   }
 }

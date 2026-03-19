@@ -2,12 +2,16 @@
   "title": "Generic Network Printer Driver",
   "sections": [
     {
-      "id": "ping",
-      "label": "Ping"
+      "id": "connection",
+      "label": "Connection"
     },
     {
-      "id": "safe_stop",
-      "label": "Safe Stop"
+      "id": "printing",
+      "label": "Printing"
+    },
+    {
+      "id": "controls",
+      "label": "Controls"
     }
   ],
   "actions": {
@@ -15,6 +19,102 @@
     "autoload": false,
     "host": "",
     "port": 9100,
-    "mode": "raw_tcp"
-  }
+    "mode": "raw_tcp",
+    "queue": "lp",
+    "uri": "",
+    "job_name": "SarahMemory Job",
+    "copies": 1,
+    "duplex": "none",
+    "media": "",
+    "color_mode": "auto",
+    "allow_raw_bytes": false,
+    "require_print_confirmation": false
+  },
+  "fields": [
+    {
+      "key": "host",
+      "label": "Printer Host/IP",
+      "type": "string",
+      "placeholder": "192.168.1.50"
+    },
+    {
+      "key": "port",
+      "label": "Port",
+      "type": "int",
+      "min": 1,
+      "max": 65535
+    },
+    {
+      "key": "mode",
+      "label": "Mode",
+      "type": "string",
+      "placeholder": "raw_tcp|lpr|ipp|ipps|cups_socket|shell_lp|shell_lpr"
+    },
+    {
+      "key": "queue",
+      "label": "Queue",
+      "type": "string",
+      "placeholder": "lp"
+    },
+    {
+      "key": "uri",
+      "label": "Printer URI",
+      "type": "string",
+      "placeholder": "socket://host:9100 or ipp://host/ipp/print"
+    },
+    {
+      "key": "job_name",
+      "label": "Job Name",
+      "type": "string"
+    },
+    {
+      "key": "copies",
+      "label": "Copies",
+      "type": "int",
+      "min": 1,
+      "max": 999
+    },
+    {
+      "key": "duplex",
+      "label": "Duplex",
+      "type": "string",
+      "placeholder": "none|long_edge|short_edge"
+    },
+    {
+      "key": "media",
+      "label": "Media",
+      "type": "string",
+      "placeholder": "A4|Letter|Legal"
+    },
+    {
+      "key": "color_mode",
+      "label": "Color Mode",
+      "type": "string",
+      "placeholder": "auto|monochrome|color"
+    },
+    {
+      "key": "allow_raw_bytes",
+      "label": "Allow Raw Bytes",
+      "type": "bool"
+    },
+    {
+      "key": "require_print_confirmation",
+      "label": "Require Print Confirmation",
+      "type": "bool"
+    }
+  ],
+  "supported_actions": [
+    "ping",
+    "probe_backends",
+    "connect",
+    "disconnect",
+    "print_text",
+    "print_raw",
+    "print_file",
+    "print_test",
+    "describe_capabilities",
+    "safe_stop",
+    "get_config",
+    "set_config"
+  ]
 }

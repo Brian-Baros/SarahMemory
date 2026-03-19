@@ -4,132 +4,61 @@
   "type": "driver",
   "version": "1.0.0",
   "author": "SOFTDEV0 LLC / Brian Lee Baros",
-  "description": [
-    {
-      "id": "device",
-      "title": "Device",
-      "fields": [
-        {
-          "key": "capture_mode",
-          "label": "Capture Mode",
-          "type": "string",
-          "placeholder": "listen|exclusive"
-        },
-        {
-          "key": "device_filter",
-          "label": "Device Filter (optional)",
-          "type": "string",
-          "placeholder": "VID:PID or name"
-        }
-      ]
-    },
-    {
-      "id": "autoload",
-      "title": "Autoload",
-      "fields": [
-        {
-          "key": "enabled",
-          "label": "Enabled",
-          "type": "bool"
-        },
-        {
-          "key": "autoload",
-          "label": "Autoload on boot",
-          "type": "bool"
-        }
-      ]
-    }
-  ],
+  "description": "HID mouse enumeration, capture, report decoding, motion/button/wheel buffering, and governed output-control gating for SarahMemory AiOS.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "S",
-    "k",
-    "e",
-    "l",
-    "e",
-    "t",
-    "o",
-    "n",
-    " ",
-    "f",
-    "o",
-    "r",
-    " ",
-    "H",
-    "I",
-    "D",
-    " ",
-    "m",
-    "o",
-    "u",
-    "s",
-    "e",
-    " ",
-    "m",
-    "o",
-    "n",
-    "i",
-    "t",
-    "o",
-    "r",
-    "i",
-    "n",
-    "g",
-    "/",
-    "m",
-    "a",
-    "p",
-    "p",
-    "i",
-    "n",
-    "g",
-    " ",
-    "(",
-    "r",
-    "e",
-    "q",
-    "u",
-    "i",
-    "r",
-    "e",
-    "s",
-    " ",
-    "s",
-    "t",
-    "r",
-    "i",
-    "c",
-    "t",
-    " ",
-    "p",
-    "e",
-    "r",
-    "m",
-    "i",
-    "s",
-    "s",
-    "i",
-    "o",
-    "n",
-    " ",
-    "g",
-    "a",
-    "t",
-    "i",
-    "n",
-    "g",
-    ")",
-    "."
-  ],
+  "platform": {
+    "transports": [
+      "hid",
+      "usb"
+    ],
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "notes": [
+      "Live capture requires a HID backend such as hidapi/python-hid.",
+      "OS-level output control is intentionally gated and disabled by default.",
+      "Feature availability depends on what the device and OS expose."
+    ]
+  },
   "permissions": [
     "hardware.hid",
-    "os.input_control"
+    "hardware.usb",
+    "os.input_monitor"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
-  }
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backend",
+    "discover_devices",
+    "connect",
+    "disconnect",
+    "read_once",
+    "start_listen",
+    "stop_listen",
+    "get_buffer",
+    "clear_buffer",
+    "get_config",
+    "set_config",
+    "inject_report",
+    "feed_events",
+    "safe_stop"
+  ],
+  "tags": [
+    "mouse",
+    "hid",
+    "usb",
+    "input",
+    "pointer"
+  ]
 }

@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "allow_privileged_queries": false,
+  "history_limit": 200
+}

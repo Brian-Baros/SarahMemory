@@ -1,8 +1,25 @@
 {
   "enabled": true,
   "autoload": false,
+  "backend_priority": [
+    "mido",
+    "pygame.midi"
+  ],
   "auto_detect": true,
   "input_name": "",
   "output_name": "",
-  "throttle_ms": 0
+  "device_filter": "",
+  "throttle_ms": 0,
+  "poll_interval_ms": 10,
+  "event_buffer_limit": 512,
+  "emit_raw": false,
+  "ignore_active_sensing": true,
+  "ignore_clock": false,
+  "ignore_sysex": false,
+  "allow_output": true,
+  "allow_sysex_output": false,
+  "virtual_input_name": "SarahMemory MIDI In",
+  "virtual_output_name": "SarahMemory MIDI Out",
+  "default_channel": 0,
+  "velocity_default": 100
 }

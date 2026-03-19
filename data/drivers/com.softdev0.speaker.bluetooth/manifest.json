@@ -2,27 +2,52 @@
   "id": "com.softdev0.speaker.bluetooth",
   "name": "Bluetooth Speaker/Soundbar Driver",
   "type": "driver",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": "SOFTDEV0 LLC / SarahMemory Community",
-  "description": "Skeleton Bluetooth audio driver; real control uses OS audio stack.",
+  "description": "Bluetooth speaker and soundbar driver with device discovery, connect/disconnect, volume and mute control, and media control hooks through host OS audio backends.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "windows",
-    "linux",
-    "mac"
-  ],
+  "platform": {
+    "os": ["windows", "linux", "mac"],
+    "transport": ["bluetooth", "bluetooth_a2dp", "bluetooth_le_audio"],
+    "host_backends": ["bluetoothctl", "blueutil", "pactl", "wpctl", "playerctl", "osascript", "powershell"]
+  },
   "transport": "bluetooth",
-  "category": "audio",
+  "category": "audio_output",
   "permissions": [
     "hardware.bluetooth",
     "media.audio",
+    "os.audio_control",
     "filesystem.write_local"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
-  }
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backends",
+    "scan_bt",
+    "connect",
+    "disconnect",
+    "set_volume",
+    "mute",
+    "unmute",
+    "toggle_mute",
+    "play",
+    "pause",
+    "next",
+    "previous",
+    "stop",
+    "start_listener",
+    "stop_listener",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
 }

@@ -1,0 +1,25 @@
+{
+  "sections": [
+    {
+      "id": "display",
+      "title": "Display Routing",
+      "fields": [
+        "preferred_mode",
+        "history_limit",
+        "scene_request_dir"
+      ]
+    }
+  ],
+  "actions": [
+    "probe_backends",
+    "discover_displays",
+    "set_active_display",
+    "set_mode",
+    "set_brightness",
+    "mirror_on",
+    "extend_on",
+    "build_scene_request",
+    "get_config",
+    "safe_stop"
+  ]
+}

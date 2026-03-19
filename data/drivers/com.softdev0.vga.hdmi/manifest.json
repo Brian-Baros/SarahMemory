@@ -1,0 +1,40 @@
+{
+  "driver_id": "com.softdev0.vga.hdmi",
+  "version": "2.0.0",
+  "display_name": "Generic Display Bridge",
+  "description": "Governed display bridge for VGA/HDMI/DVI/DP monitors and secondary display routing.",
+  "platform": {
+    "transport": [
+      "local_os"
+    ],
+    "os": [
+      "Windows",
+      "Linux",
+      "macOS"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "entry": "driver.py",
+  "tags": [
+    "display",
+    "monitor",
+    "vga",
+    "hdmi",
+    "displayport"
+  ],
+  "actions": [
+    "probe_backends",
+    "discover_displays",
+    "set_active_display",
+    "set_mode",
+    "set_brightness",
+    "mirror_on",
+    "extend_on",
+    "build_scene_request",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
+}

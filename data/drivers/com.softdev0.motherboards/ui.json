@@ -1,0 +1,21 @@
+{
+  "sections": [
+    {
+      "id": "firmware",
+      "title": "Board and Firmware",
+      "fields": [
+        "allow_privileged_queries",
+        "history_limit"
+      ]
+    }
+  ],
+  "actions": [
+    "probe_backends",
+    "inventory",
+    "firmware_info",
+    "dump_dmidecode",
+    "fwupd_get_devices",
+    "get_config",
+    "safe_stop"
+  ]
+}

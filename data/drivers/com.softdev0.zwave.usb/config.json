@@ -1,4 +1,27 @@
 {
   "enabled": true,
-  "autoload": false
+  "autoload": false,
+  "stack_mode": "zwave_js_server",
+  "port": "",
+  "baud": 115200,
+  "timeout": 2.0,
+  "event_buffer_limit": 500,
+  "raw_buffer_limit": 500,
+  "history_limit": 200,
+  "allow_raw_send": false,
+  "allow_stack_launch": false,
+  "require_send_confirmation": true,
+  "zwave_js_server_url": "ws://127.0.0.1:3000",
+  "zwave_js_ui_url": "http://127.0.0.1:8091",
+  "openzwave_url": "",
+  "device_hints": [
+    "zwave",
+    "z-stick",
+    "aeotec",
+    "500",
+    "700",
+    "800",
+    "silabs"
+  ],
+  "line_mode": "ascii"
 }

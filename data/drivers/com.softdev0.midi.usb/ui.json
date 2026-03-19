@@ -3,38 +3,114 @@
   "sections": [
     {
       "id": "device",
-      "title": "Device",
+      "title": "Device Selection",
       "fields": [
         {
           "key": "auto_detect",
-          "label": "Auto-detect MIDI device",
+          "label": "Auto-detect device",
           "type": "bool"
         },
         {
-          "key": "input_name",
-          "label": "MIDI Input Name",
+          "key": "device_filter",
+          "label": "Device Filter",
           "type": "string",
-          "placeholder": "Your MIDI Keyboard"
+          "placeholder": "keyboard, synth, controller"
+        },
+        {
+          "key": "input_name",
+          "label": "Input Name",
+          "type": "string",
+          "placeholder": "Your MIDI Input"
         },
         {
           "key": "output_name",
-          "label": "MIDI Output Name",
+          "label": "Output Name",
           "type": "string",
-          "placeholder": "Your Synth/Device"
+          "placeholder": "Your MIDI Output"
+        },
+        {
+          "key": "backend_priority",
+          "label": "Backend Priority",
+          "type": "json"
         }
       ]
     },
     {
-      "id": "safety",
-      "title": "Safety",
+      "id": "runtime",
+      "title": "Runtime",
       "fields": [
         {
           "key": "throttle_ms",
-          "label": "Event throttle (ms)",
+          "label": "Event Throttle (ms)",
           "type": "int",
           "min": 0,
           "max": 2000
         },
+        {
+          "key": "poll_interval_ms",
+          "label": "Poll Interval (ms)",
+          "type": "int",
+          "min": 1,
+          "max": 1000
+        },
+        {
+          "key": "event_buffer_limit",
+          "label": "Event Buffer Limit",
+          "type": "int",
+          "min": 1,
+          "max": 10000
+        },
+        {
+          "key": "ignore_active_sensing",
+          "label": "Ignore Active Sensing",
+          "type": "bool"
+        },
+        {
+          "key": "ignore_clock",
+          "label": "Ignore MIDI Clock",
+          "type": "bool"
+        },
+        {
+          "key": "ignore_sysex",
+          "label": "Ignore Incoming SysEx",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "output",
+      "title": "Output Governance",
+      "fields": [
+        {
+          "key": "allow_output",
+          "label": "Allow MIDI Output",
+          "type": "bool"
+        },
+        {
+          "key": "allow_sysex_output",
+          "label": "Allow SysEx Output",
+          "type": "bool"
+        },
+        {
+          "key": "default_channel",
+          "label": "Default Channel",
+          "type": "int",
+          "min": 0,
+          "max": 15
+        },
+        {
+          "key": "velocity_default",
+          "label": "Default Velocity",
+          "type": "int",
+          "min": 0,
+          "max": 127
+        }
+      ]
+    },
+    {
+      "id": "flags",
+      "title": "Driver Flags",
+      "fields": [
         {
           "key": "enabled",
           "label": "Enabled",
@@ -44,11 +120,20 @@
           "key": "autoload",
           "label": "Autoload on boot",
           "type": "bool"
+        },
+        {
+          "key": "emit_raw",
+          "label": "Emit Raw Payloads",
+          "type": "bool"
         }
       ]
     }
   ],
   "actions": [
+    {
+      "id": "probe_backends",
+      "label": "Probe Backends"
+    },
     {
       "id": "list_devices",
       "label": "List MIDI Devices"
@@ -60,6 +145,46 @@
     {
       "id": "disconnect",
       "label": "Disconnect"
+    },
+    {
+      "id": "start_listener",
+      "label": "Start Listener"
+    },
+    {
+      "id": "stop_listener",
+      "label": "Stop Listener"
+    },
+    {
+      "id": "poll_once",
+      "label": "Poll Once"
+    },
+    {
+      "id": "get_events",
+      "label": "Get Events"
+    },
+    {
+      "id": "clear_events",
+      "label": "Clear Events"
+    },
+    {
+      "id": "send_message",
+      "label": "Send MIDI Message"
+    },
+    {
+      "id": "send_raw",
+      "label": "Send Raw MIDI Bytes"
+    },
+    {
+      "id": "get_config",
+      "label": "Get Config"
+    },
+    {
+      "id": "set_config",
+      "label": "Set Config"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
     }
   ]
 }

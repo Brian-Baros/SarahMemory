@@ -2,18 +2,220 @@
   "title": "Mouse HID Driver",
   "sections": [
     {
-      "id": "ping",
-      "label": "Ping"
+      "id": "device",
+      "label": "Device",
+      "fields": [
+        {
+          "key": "device_filter",
+          "label": "Device Filter",
+          "type": "string",
+          "placeholder": "VID:PID or name"
+        },
+        {
+          "key": "vendor_id",
+          "label": "Vendor ID",
+          "type": "string",
+          "placeholder": "0x046d"
+        },
+        {
+          "key": "product_id",
+          "label": "Product ID",
+          "type": "string",
+          "placeholder": "0xc077"
+        },
+        {
+          "key": "usage_page",
+          "label": "Usage Page",
+          "type": "number",
+          "placeholder": 1
+        },
+        {
+          "key": "usage",
+          "label": "Usage",
+          "type": "number",
+          "placeholder": 2
+        },
+        {
+          "key": "interface_number",
+          "label": "Interface Number",
+          "type": "number",
+          "placeholder": 0
+        },
+        {
+          "key": "path",
+          "label": "Exact Path",
+          "type": "string",
+          "placeholder": "optional"
+        },
+        {
+          "key": "serial_number",
+          "label": "Serial Number",
+          "type": "string",
+          "placeholder": "optional"
+        }
+      ]
+    },
+    {
+      "id": "capture",
+      "label": "Capture",
+      "fields": [
+        {
+          "key": "capture_mode",
+          "label": "Capture Mode",
+          "type": "string",
+          "placeholder": "listen|exclusive"
+        },
+        {
+          "key": "read_size",
+          "label": "Read Size",
+          "type": "number",
+          "placeholder": 8
+        },
+        {
+          "key": "read_timeout_ms",
+          "label": "Read Timeout (ms)",
+          "type": "number",
+          "placeholder": 120
+        },
+        {
+          "key": "poll_interval_ms",
+          "label": "Poll Interval (ms)",
+          "type": "number",
+          "placeholder": 20
+        },
+        {
+          "key": "buffer_limit",
+          "label": "Buffer Limit",
+          "type": "number",
+          "placeholder": 512
+        },
+        {
+          "key": "dedupe_window_ms",
+          "label": "Dedupe Window (ms)",
+          "type": "number",
+          "placeholder": 0
+        }
+      ]
+    },
+    {
+      "id": "decode",
+      "label": "Decode",
+      "fields": [
+        {
+          "key": "absolute_mode",
+          "label": "Absolute Mode",
+          "type": "bool"
+        },
+        {
+          "key": "normalize_axes",
+          "label": "Normalize Axes",
+          "type": "bool"
+        },
+        {
+          "key": "emit_raw_reports",
+          "label": "Emit Raw Reports",
+          "type": "bool"
+        },
+        {
+          "key": "emit_move_events",
+          "label": "Emit Move Events",
+          "type": "bool"
+        },
+        {
+          "key": "emit_button_events",
+          "label": "Emit Button Events",
+          "type": "bool"
+        },
+        {
+          "key": "emit_wheel_events",
+          "label": "Emit Wheel Events",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "governance",
+      "label": "Governance",
+      "fields": [
+        {
+          "key": "enabled",
+          "label": "Enabled",
+          "type": "bool"
+        },
+        {
+          "key": "autoload",
+          "label": "Autoload on boot",
+          "type": "bool"
+        },
+        {
+          "key": "allow_output_control",
+          "label": "Allow Output Control",
+          "type": "bool"
+        },
+        {
+          "key": "allow_vendor_passthrough",
+          "label": "Allow Vendor Passthrough",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": [
+    {
+      "id": "probe_backend",
+      "label": "Probe Backend"
+    },
+    {
+      "id": "discover_devices",
+      "label": "Discover Devices"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    },
+    {
+      "id": "read_once",
+      "label": "Read Once"
+    },
+    {
+      "id": "start_listen",
+      "label": "Start Listen"
+    },
+    {
+      "id": "stop_listen",
+      "label": "Stop Listen"
+    },
+    {
+      "id": "get_buffer",
+      "label": "Get Buffer"
+    },
+    {
+      "id": "clear_buffer",
+      "label": "Clear Buffer"
+    },
+    {
+      "id": "get_config",
+      "label": "Get Config"
+    },
+    {
+      "id": "set_config",
+      "label": "Set Config"
+    },
+    {
+      "id": "inject_report",
+      "label": "Inject Report"
+    },
+    {
+      "id": "feed_events",
+      "label": "Feed Events"
     },
     {
       "id": "safe_stop",
       "label": "Safe Stop"
     }
-  ],
-  "actions": {
-    "enabled": false,
-    "autoload": false,
-    "capture_mode": "listen",
-    "device_filter": ""
-  }
+  ]
 }

@@ -2,103 +2,58 @@
   "id": "com.softdev0.zwave.usb",
   "name": "Z-Wave USB Controller Driver",
   "type": "driver",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "author": "SOFTDEV0 LLC / Brian Lee Baros",
-  "description": [
-    {
-      "id": "connection",
-      "title": "Connection",
-      "fields": [
-        {
-          "key": "port",
-          "label": "Serial Port",
-          "type": "string",
-          "placeholder": "COM7"
-        },
-        {
-          "key": "baud",
-          "label": "Baud",
-          "type": "int",
-          "min": 1200,
-          "max": 2000000
-        }
-      ]
-    },
-    {
-      "id": "autoload",
-      "title": "Autoload",
-      "fields": [
-        {
-          "key": "enabled",
-          "label": "Enabled",
-          "type": "bool"
-        },
-        {
-          "key": "autoload",
-          "label": "Autoload on boot",
-          "type": "bool"
-        }
-      ]
-    }
-  ],
+  "description": "Governed Z-Wave USB bridge for controller discovery, serial connectivity, event buffering, and external stack integration.",
   "api_compat": {
     "min": "8.0.0",
     "max": "8.9.9"
   },
-  "platform": [
-    "S",
-    "k",
-    "e",
-    "l",
-    "e",
-    "t",
-    "o",
-    "n",
-    " ",
-    "f",
-    "o",
-    "r",
-    " ",
-    "Z",
-    "-",
-    "W",
-    "a",
-    "v",
-    "e",
-    " ",
-    "U",
-    "S",
-    "B",
-    " ",
-    "c",
-    "o",
-    "n",
-    "t",
-    "r",
-    "o",
-    "l",
-    "l",
-    "e",
-    "r",
-    "s",
-    " ",
-    "(",
-    "s",
-    "e",
-    "r",
-    "i",
-    "a",
-    "l",
-    ")",
-    "."
-  ],
+  "platform": {
+    "transport": "usb",
+    "bus": "serial",
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "runtime": [
+      "python",
+      "node_optional"
+    ]
+  },
   "permissions": [
     "hardware.usb",
     "hardware.serial",
-    "filesystem.write_local"
+    "filesystem.write_local",
+    "process.spawn_optional",
+    "network.local_optional"
   ],
   "entry": {
     "module": "driver",
     "callable": "driver_init"
-  }
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backends",
+    "list_ports",
+    "discover_devices",
+    "connect",
+    "disconnect",
+    "start_listen",
+    "stop_listen",
+    "read_once",
+    "get_buffer",
+    "clear_buffer",
+    "send_raw",
+    "launch_stack",
+    "feed_text",
+    "describe_capabilities",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
 }
