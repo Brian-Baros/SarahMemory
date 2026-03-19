@@ -1,0 +1,8 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "allow_smart_probe": false,
+  "allow_nvme_probe": false,
+  "device_filter": "",
+  "history_limit": 300
+}
