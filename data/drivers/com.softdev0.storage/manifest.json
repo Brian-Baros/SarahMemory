@@ -1,6 +1,6 @@
 {
-  "id": "com.softdev0.motherboards",
-  "name": "Motherboard / Firmware Bridge",
+  "id": "com.softdev0.storage",
+  "name": "Storage / Vault Bridge",
   "version": "3.0.0",
   "enabled": true,
   "autoload": false,
@@ -9,24 +9,21 @@
   "signature_type": "sha256",
   "trust_level": "local_unsigned",
   "targets": [
-    "motherboard",
-    "bios",
-    "uefi",
-    "acpi",
-    "raspberry_pi_firmware"
+    "storage",
+    "smart",
+    "nvme",
+    "vault_mount"
   ],
   "transport": "local_system",
   "actions_callable": [
     "inventory",
-    "identity_packet",
-    "firmware_info",
-    "uefi_read_variable",
-    "uefi_write_variable",
-    "boot_order_read",
-    "boot_order_write",
-    "acpi_listener_start",
-    "acpi_listener_stop",
-    "acpi_snapshot"
+    "smart_summary",
+    "nvme_summary",
+    "vault_status",
+    "vault_register_mount",
+    "vault_auto_mount",
+    "mount",
+    "unmount"
   ],
   "status_callable": "driver_status",
   "action_callable": "driver_action",

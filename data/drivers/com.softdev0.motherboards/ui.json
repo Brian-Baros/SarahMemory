@@ -1,21 +1,27 @@
 {
   "sections": [
     {
+      "id": "identity",
+      "title": "Identity / SMBIOS"
+    },
+    {
       "id": "firmware",
-      "title": "Board and Firmware",
-      "fields": [
-        "allow_privileged_queries",
-        "history_limit"
-      ]
+      "title": "Firmware / UEFI"
+    },
+    {
+      "id": "acpi",
+      "title": "ACPI / Soft Power"
     }
   ],
   "actions": [
-    "probe_backends",
     "inventory",
+    "identity_packet",
     "firmware_info",
-    "dump_dmidecode",
-    "fwupd_get_devices",
-    "get_config",
+    "uefi_read_variable",
+    "boot_order_read",
+    "acpi_snapshot",
+    "acpi_listener_start",
+    "acpi_listener_stop",
     "safe_stop"
   ]
 }

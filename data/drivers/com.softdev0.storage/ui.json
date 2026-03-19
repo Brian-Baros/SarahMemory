@@ -1,0 +1,26 @@
+{
+  "sections": [
+    {
+      "id": "inventory",
+      "title": "Storage Inventory"
+    },
+    {
+      "id": "health",
+      "title": "S.M.A.R.T. / NVMe"
+    },
+    {
+      "id": "vault",
+      "title": "Vault Mounting"
+    }
+  ],
+  "actions": [
+    "inventory",
+    "smart_summary",
+    "nvme_summary",
+    "vault_status",
+    "vault_auto_mount",
+    "mount",
+    "unmount",
+    "safe_stop"
+  ]
+}
