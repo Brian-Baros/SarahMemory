@@ -3,7 +3,7 @@
 * Version:** 8.0.0  - THE FUNCTIONAL DEVELOPING AND DEVELOPERS VERSION -
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** March 15, 2026  
+* Last Update Date:** March 19, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
@@ -890,7 +890,7 @@ March 11th, 2026 - Update - New Core File for the system called SarahMemoryEmail
 
 March 12-15th, 2026 - Update - Removed Patch file for Drivers, and created an api for the Drivers called appdrivers.py now, to allow communication though the API chat with hardware connected to local system., Also added in SarahMemoryCognitiveThinker.py and updated SarahMemoryCognitiveServices.py along with SarahMemoryNeuron.py This creates a YingYang effect from Imaginitive/Emotional to Factual/Allow/Deny guardrail forming and allowing the system to think and make judgements using emotionals and morals better. All core files are now updated with SarahMeta Data, this is to allow for the new file SarahMemoryUISelfAware.py to understand each file, the plan for this file is so it can examine the Frontend, and then locate backend files in which should be displayed on a Frontend, use the same style and likeness of the current custom Flask/React Frontend and apply missing frontend interface, This is an experimental file to allow for future and better full system self autonomy, to allow the system to not only updated and evolve but to create a User interface so the EndUser can interact with new featuers and functions the system updates itself with. Therefore you'll noticed all COREFILES "SarahMemory*.py" and "UnifiedAvatarController.py" all have been updated just recently. 
 
-
+March 19th, 2026 - Update - For the last four days I've been constantly working on updating all the Drivers that are in the ./data/drivers/ folders, Which will allow the SarahMemory AiOS to function hardware. I will be creating and writing more drivers in the future. but these are just some of the basic drivers to get everything going so enjoy. 
 
 
  
