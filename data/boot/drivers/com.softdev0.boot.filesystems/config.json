@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_mount_ops": false,
+  "require_mount_confirmation": true,
+  "history_limit": 200
+}

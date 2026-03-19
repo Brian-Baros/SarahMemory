@@ -1,0 +1,125 @@
+{
+  "version": "1.0.0",
+  "drivers": [
+    {
+      "id": "com.softdev0.boot.firmware",
+      "path": "./data/boot/drivers/com.softdev0.boot.firmware",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "04c71721bc780a986c5250f98dcb1c6637089c0b231e8b6b3c8460ed806fe550"
+    },
+    {
+      "id": "com.softdev0.boot.cpuarch",
+      "path": "./data/boot/drivers/com.softdev0.boot.cpuarch",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "f1bcedd23cd8c6f3a9c142a83171758a5fa8644f981540220096aa381531daf0"
+    },
+    {
+      "id": "com.softdev0.boot.pci",
+      "path": "./data/boot/drivers/com.softdev0.boot.pci",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "e9552325e544d958403555f1b4959c65dc53c5984a17ecfd932b044de71edb86"
+    },
+    {
+      "id": "com.softdev0.boot.usbhost",
+      "path": "./data/boot/drivers/com.softdev0.boot.usbhost",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "4dc8c713194961e249f4b2b13a3c0ca782eaf1ff274fde37a7f9ec6798677fa2"
+    },
+    {
+      "id": "com.softdev0.boot.storagecore",
+      "path": "./data/boot/drivers/com.softdev0.boot.storagecore",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "d276ab71629898f6a3d8abd2ab0ee376359662719c3970e2a5f6e2cfd725bfea"
+    },
+    {
+      "id": "com.softdev0.boot.filesystems",
+      "path": "./data/boot/drivers/com.softdev0.boot.filesystems",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "7af2ef7ecc26285439b325ff7ed843e317a45be6704a4a060d0fe35fda98f517"
+    },
+    {
+      "id": "com.softdev0.boot.displaycore",
+      "path": "./data/boot/drivers/com.softdev0.boot.displaycore",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "f59cfd10a57b1b07988553be1174721458bd69acef036f13c65be8aa68c5ee75"
+    },
+    {
+      "id": "com.softdev0.boot.inputcore",
+      "path": "./data/boot/drivers/com.softdev0.boot.inputcore",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "61a8e46847dc0dd1a67b8aab7b89f0053ce1db04a15c6cbbc9f75372661f2809"
+    },
+    {
+      "id": "com.softdev0.boot.networkcore",
+      "path": "./data/boot/drivers/com.softdev0.boot.networkcore",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "4a0a8f04bdfe6e2de50cc45133d3587dc6864a0ad9c3b43807d1127511f4613e"
+    },
+    {
+      "id": "com.softdev0.boot.audiocore",
+      "path": "./data/boot/drivers/com.softdev0.boot.audiocore",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "2b97fca811602f4ca3964a5620306b1f283bd7875a3fcffa0a9991a145bf232b"
+    },
+    {
+      "id": "com.softdev0.boot.installer",
+      "path": "./data/boot/drivers/com.softdev0.boot.installer",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "a7dfc36aa7f9b34e39d07b5542baf459205be680134429635b413356aef31504"
+    },
+    {
+      "id": "com.softdev0.boot.recovery",
+      "path": "./data/boot/drivers/com.softdev0.boot.recovery",
+      "manufacturer": "SOFTDEV0",
+      "driver_signature": "unsigned-dev-bootstrap",
+      "signature_type": "bootstrap-placeholder",
+      "trust_level": "boot-foundation",
+      "source": "generated-by-chatgpt",
+      "hash": "67a19856173f305f57d5af23a64b86a6ea8b6920675beb9d39707fe283bf41d3"
+    }
+  ]
+}

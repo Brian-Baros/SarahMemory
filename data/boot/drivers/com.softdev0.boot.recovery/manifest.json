@@ -1,0 +1,51 @@
+{
+  "id": "com.softdev0.boot.recovery",
+  "name": "SarahMemory Boot Recovery Core",
+  "version": "1.0.0",
+  "driver_type": "boot",
+  "entry": "driver.py",
+  "description": "Recovery and repair bridge for safe mode, rollback, diagnostics, and rescue shell planning.",
+  "platform": {
+    "os": [
+      "linux",
+      "windows",
+      "macos",
+      "baremetal-planned"
+    ],
+    "transport": [
+      "local"
+    ],
+    "arch": [
+      "x86_64",
+      "arm64",
+      "armv7",
+      "generic"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "supported_actions": [
+    "probe_backends",
+    "describe_capabilities",
+    "generate_safe_mode_profile",
+    "generate_recovery_profile",
+    "collect_recovery_snapshot",
+    "plan_rollback",
+    "safe_stop",
+    "get_config",
+    "set_config"
+  ],
+  "manufacturer": "SOFTDEV0",
+  "driver_signature": "unsigned-dev-bootstrap",
+  "signature_type": "bootstrap-placeholder",
+  "trust_level": "boot-foundation",
+  "source": "generated-by-chatgpt",
+  "tags": [
+    "boot",
+    "recovery",
+    "rollback",
+    "repair",
+    "safe-mode"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "id": "com.softdev0.boot.filesystems",
+  "name": "SarahMemory Boot Filesystems Bridge",
+  "version": "1.0.0",
+  "driver_type": "boot",
+  "entry": "driver.py",
+  "description": "Boot-critical filesystem detection and mount capability bridge.",
+  "platform": {
+    "os": [
+      "linux",
+      "windows",
+      "macos",
+      "baremetal-planned"
+    ],
+    "transport": [
+      "local"
+    ],
+    "arch": [
+      "x86_64",
+      "arm64",
+      "armv7",
+      "generic"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "supported_actions": [
+    "probe_backends",
+    "describe_capabilities",
+    "list_supported_filesystems",
+    "detect_filesystem",
+    "check_mount_support",
+    "mount_device",
+    "unmount_device",
+    "safe_stop",
+    "get_config",
+    "set_config"
+  ],
+  "manufacturer": "SOFTDEV0",
+  "driver_signature": "unsigned-dev-bootstrap",
+  "signature_type": "bootstrap-placeholder",
+  "trust_level": "boot-foundation",
+  "source": "generated-by-chatgpt",
+  "tags": [
+    "boot",
+    "filesystem",
+    "fat32",
+    "ext4",
+    "ntfs",
+    "iso9660"
+  ]
+}

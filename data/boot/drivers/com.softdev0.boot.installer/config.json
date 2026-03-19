@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_destructive_plans": false,
+  "require_plan_confirmation": true,
+  "history_limit": 300
+}

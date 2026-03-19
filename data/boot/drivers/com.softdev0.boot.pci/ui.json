@@ -1,0 +1,63 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "list_devices",
+      "method": "POST",
+      "label": "List Devices"
+    },
+    {
+      "name": "find_by_class",
+      "method": "POST",
+      "label": "Find By Class"
+    },
+    {
+      "name": "find_by_vendor",
+      "method": "POST",
+      "label": "Find By Vendor"
+    },
+    {
+      "name": "find_boot_critical_devices",
+      "method": "POST",
+      "label": "Find Boot Critical Devices"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}
