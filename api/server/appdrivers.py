@@ -50,8 +50,6 @@ import json
 import os
 import time
 import traceback
-import inspect
-import hashlib
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -99,6 +97,77 @@ def _registry_root() -> Path:
 
 def _drivers_registry_path() -> Path:
     return (_registry_root() / "drivers.json").resolve()
+
+
+def _boot_root() -> Path:
+    return (_data_dir() / "boot").resolve()
+
+
+def _boot_drivers_root() -> Path:
+    return (_boot_root() / "drivers").resolve()
+
+
+def _boot_registry_path() -> Path:
+    return (_boot_root() / "boot_drivers.json").resolve()
+
+
+def _is_boot_driver_id(driver_id: str) -> bool:
+    return str(driver_id or "").startswith("com.softdev0.boot.")
+
+
+def _boot_registry_blob() -> Dict[str, Any]:
+    blob = _read_json(_boot_registry_path(), default={})
+    return blob if isinstance(blob, dict) else {}
+
+
+def _boot_registry_entries() -> Dict[str, Dict[str, Any]]:
+    blob = _boot_registry_blob()
+    entries = blob.get("drivers", []) if isinstance(blob, dict) else []
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(entries, list):
+        for item in entries:
+            if isinstance(item, dict) and item.get("id"):
+                out[str(item["id"])] = item
+    return out
+
+
+def _boot_driver_order() -> list[str]:
+    entries = _boot_registry_entries()
+    if not entries:
+        return []
+
+    graph: Dict[str, set[str]] = {}
+    indegree: Dict[str, int] = {}
+    levels: Dict[str, int] = {}
+    for did, meta in entries.items():
+        deps = meta.get("dependencies", [])
+        deps = deps if isinstance(deps, list) else []
+        graph[did] = set(str(x) for x in deps if str(x) in entries and str(x) != did)
+        indegree.setdefault(did, 0)
+        levels[did] = int(meta.get("level", meta.get("load_priority", 999)) or 999)
+
+    for did, deps in graph.items():
+        for dep in deps:
+            indegree[did] = indegree.get(did, 0) + 1
+            indegree.setdefault(dep, 0)
+
+    ready = sorted([did for did, deg in indegree.items() if deg == 0], key=lambda x: (levels.get(x, 999), x))
+    ordered: list[str] = []
+    while ready:
+        did = ready.pop(0)
+        ordered.append(did)
+        for other, deps in graph.items():
+            if did in deps:
+                deps.remove(did)
+                indegree[other] -= 1
+                if indegree[other] == 0:
+                    ready.append(other)
+                    ready.sort(key=lambda x: (levels.get(x, 999), x))
+
+    remaining = [did for did in entries.keys() if did not in ordered]
+    remaining.sort(key=lambda x: (levels.get(x, 999), x))
+    ordered.extend(remaining)
+    return ordered
 
 
 def _safe_mode() -> bool:
@@ -250,71 +319,6 @@ def _log_event(driver_id: str, action: str, status: str, details: Optional[Dict[
 
 # ------------------------------ Registry (enabled/autoload/trust) ------------------------------
 
-
-def _driver_content_hash(driver_id: str) -> str:
-    h = hashlib.sha256()
-    try:
-        ddir = _driver_dir(driver_id)
-        for name in ("manifest.json", "ui.json", "defaults.json", "config.json", "driver.py"):
-            p = ddir / name
-            if p.exists():
-                h.update(p.read_bytes())
-        return h.hexdigest()
-    except Exception:
-        return ""
-
-def _default_registry_entry(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    manifest = manifest or _load_manifest(driver_id)
-    sig = _driver_content_hash(driver_id)
-    return {
-        "enabled": bool(manifest.get("enabled", True)),
-        "autoload": bool(manifest.get("autoload", False)),
-        "trusted": False,
-        "manufacturer": str(manifest.get("manufacturer") or manifest.get("vendor") or "unknown"),
-        "driver_signature": sig,
-        "signature_type": str(manifest.get("signature_type") or "sha256"),
-        "trust_level": str(manifest.get("trust_level") or "local_unsigned"),
-        "source": str(manifest.get("source") or "local"),
-        "hash": sig,
-        "notes": manifest.get("notes") or "",
-    }
-
-def _merge_registry_entry(driver_id: str, entry: Dict[str, Any]) -> Dict[str, Any]:
-    merged = _default_registry_entry(driver_id)
-    if isinstance(entry, dict):
-        merged.update(entry)
-    return merged
-
-def _invoke_driver_callable(fn: Any, *, action_id: Optional[str] = None, context: Optional[Dict[str, Any]] = None, config: Optional[Dict[str, Any]] = None, payload: Optional[Dict[str, Any]] = None):
-    attempts = [
-        {"action_id": action_id, "context": context, "config": config, "payload": payload},
-        {"action": action_id, "context": context, "config": config, "payload": payload},
-        {"action_id": action_id, "context": context, "payload": payload},
-        {"action": action_id, "context": context, "payload": payload},
-        {"context": context, "config": config, "payload": payload},
-        {"context": context, "config": config},
-        {"config": config, "payload": payload},
-        {"config": config},
-        {"payload": payload},
-        {"action": action_id, "payload": payload},
-        {"action_id": action_id, "payload": payload},
-        {"action": action_id},
-        {"action_id": action_id},
-        {},
-    ]
-    last_err = None
-    for kwargs in attempts:
-        kwargs = {k: v for k, v in kwargs.items() if v is not None}
-        try:
-            return fn(**kwargs)
-        except TypeError as e:
-            last_err = e
-            continue
-    if last_err:
-        raise last_err
-    return fn()
-
-
 def _load_registry() -> Dict[str, Any]:
     reg = _read_json(_drivers_registry_path(), default={})
     if not isinstance(reg, dict):
@@ -330,27 +334,42 @@ def _get_reg_entry(reg: Dict[str, Any], driver_id: str) -> Dict[str, Any]:
     entry = reg.get(driver_id)
     if not isinstance(entry, dict):
         entry = {}
-    return _merge_registry_entry(driver_id, entry)
+    return entry
 
 
 # ------------------------------ Driver Discovery ------------------------------
 
 def _driver_dir(driver_id: str) -> Path:
+    if _is_boot_driver_id(driver_id):
+        return (_boot_drivers_root() / driver_id).resolve()
     return (_drivers_root() / driver_id).resolve()
 
 
 def _discover_driver_ids() -> list[str]:
+    runtime_ids: list[str] = []
+    boot_ids: list[str] = []
+
     root = _drivers_root()
-    if not root.exists():
-        return []
-    out: list[str] = []
-    try:
-        for p in root.iterdir():
-            if p.is_dir() and (p / "manifest.json").exists():
-                out.append(p.name)
-    except Exception:
-        pass
-    return sorted(out)
+    if root.exists():
+        try:
+            for p in root.iterdir():
+                if p.is_dir() and (p / "manifest.json").exists():
+                    runtime_ids.append(p.name)
+        except Exception:
+            pass
+
+    boot_root = _boot_drivers_root()
+    if boot_root.exists():
+        try:
+            for p in boot_root.iterdir():
+                if p.is_dir() and (p / "manifest.json").exists():
+                    boot_ids.append(p.name)
+        except Exception:
+            pass
+
+    ordered_boot = [did for did in _boot_driver_order() if did in set(boot_ids)]
+    unordered_boot = sorted([did for did in boot_ids if did not in set(ordered_boot)])
+    return ordered_boot + unordered_boot + sorted(runtime_ids)
 
 
 def _load_manifest(driver_id: str) -> Dict[str, Any]:
@@ -459,14 +478,33 @@ def _build_driver_context(driver_id: str, instance_id: Optional[str] = None, ext
 def _driver_connect(driver_id: str, cfg: Dict[str, Any], connect_payload: Optional[Dict[str, Any]] = None):
     if driver_id not in _discover_driver_ids():
         return _err("Unknown driver_id", 404)
-    if _safe_mode():
+    if _safe_mode() and not _is_boot_driver_id(driver_id):
         return _err("SAFE_MODE active: driver session start blocked", 403)
 
     reg = _load_registry()
     entry = _get_reg_entry(reg, driver_id)
-    enabled = bool(entry.get("enabled", _load_manifest(driver_id).get("enabled", True)))
+    manifest = _load_manifest(driver_id)
+    boot_meta = _boot_registry_entries().get(driver_id, {}) if _is_boot_driver_id(driver_id) else {}
+    enabled = bool(entry.get("enabled", manifest.get("enabled", True)))
+    if _is_boot_driver_id(driver_id):
+        enabled = bool(boot_meta.get("enabled", enabled))
     if not enabled:
         return _err("Driver is disabled in registry", 403)
+
+    dependencies = boot_meta.get("dependencies", manifest.get("dependencies", [])) if _is_boot_driver_id(driver_id) else manifest.get("dependencies", [])
+    dependencies = dependencies if isinstance(dependencies, list) else []
+    unmet = []
+    for dep in dependencies:
+        dep_id = str(dep)
+        dep_sess = _session_get(dep_id)
+        dep_ready = bool(dep_sess) and bool(dep_sess.get("connected"))
+        dep_meta = dep_sess.get("meta") if isinstance(dep_sess, dict) else {}
+        if isinstance(dep_meta, dict):
+            dep_ready = dep_ready and bool(dep_meta.get("ready", dep_meta.get("ok", True)))
+        if not dep_ready:
+            unmet.append(dep_id)
+    if unmet:
+        return _err("Driver dependencies not ready", 409, details={"driver_id": driver_id, "unmet_dependencies": unmet})
 
     mod, err = _load_driver_module(driver_id)
     if err:
@@ -477,9 +515,9 @@ def _driver_connect(driver_id: str, cfg: Dict[str, Any], connect_payload: Option
         instance_id = _new_instance_id(driver_id)
         context = _build_driver_context(driver_id, instance_id=instance_id, extra={"connect_payload": connect_payload or {}})
         if hasattr(mod, "driver_connect"):
-            out = _invoke_driver_callable(mod.driver_connect, context=context, config=cfg, payload=connect_payload or {})  # type: ignore[attr-defined]
+            out = mod.driver_connect(context=context, config=cfg, payload=connect_payload or {})  # type: ignore[attr-defined]
         elif hasattr(mod, "driver_init"):
-            out = _invoke_driver_callable(mod.driver_init, context=context, config=cfg, payload=connect_payload or {})  # type: ignore[attr-defined]
+            out = mod.driver_init(context=context, config=cfg)  # type: ignore[attr-defined]
         else:
             out = {"ok": True, "note": "driver_connect/driver_init not implemented"}
 
@@ -512,9 +550,9 @@ def _driver_disconnect(driver_id: str):
     try:
         ok = True
         if hasattr(mod, "driver_disconnect"):
-            ok = bool(_invoke_driver_callable(mod.driver_disconnect, context=context))  # type: ignore[attr-defined]
+            ok = bool(mod.driver_disconnect(context=context))  # type: ignore[attr-defined]
         elif hasattr(mod, "driver_shutdown"):
-            ok = bool(_invoke_driver_callable(mod.driver_shutdown, context=context))  # type: ignore[attr-defined]
+            ok = bool(mod.driver_shutdown(context=context))  # type: ignore[attr-defined]
         _session_clear(driver_id)
         _log_event(driver_id, "disconnect", "ok", {"instance_id": sess.get("instance_id")})
         return _ok(driver_id=driver_id, stopped=True, disconnected=True)
@@ -551,9 +589,9 @@ def _driver_discover(driver_id: str, payload: Optional[Dict[str, Any]] = None):
     try:
         context = _build_driver_context(driver_id, instance_id=_session_get(driver_id).get("instance_id"), extra={"discover_payload": payload or {}})
         if hasattr(mod, "driver_discover"):
-            out = _invoke_driver_callable(mod.driver_discover, context=context, config=config_data, payload=payload or {})  # type: ignore[attr-defined]
+            out = mod.driver_discover(context=context, config=config_data, payload=payload or {})  # type: ignore[attr-defined]
         elif hasattr(mod, "driver_scan"):
-            out = _invoke_driver_callable(mod.driver_scan, context=context, config=config_data, payload=payload or {})  # type: ignore[attr-defined]
+            out = mod.driver_scan(context=context, config=config_data, payload=payload or {})  # type: ignore[attr-defined]
         else:
             out = {
                 "ok": True,
@@ -576,7 +614,9 @@ def apply(app):
         return app
 
     _drivers_root().mkdir(parents=True, exist_ok=True)
+    _boot_drivers_root().mkdir(parents=True, exist_ok=True)
     _registry_root().mkdir(parents=True, exist_ok=True)
+    _boot_root().mkdir(parents=True, exist_ok=True)
     _ensure_meta_tables()
 
     @app.route("/api/drivers/capabilities", methods=["GET"])
@@ -608,8 +648,9 @@ def apply(app):
         items = []
         for did in ids:
             mf = _load_manifest(did)
-            r = _merge_registry_entry(did, _get_reg_entry(reg, did))
+            r = _get_reg_entry(reg, did)
             sess = _session_get(did)
+            boot_meta = _boot_registry_entries().get(did, {}) if _is_boot_driver_id(did) else {}
             items.append({
                 "id": did,
                 "manifest": mf,
@@ -618,6 +659,8 @@ def apply(app):
                 "trusted": bool(r.get("trusted", False)),
                 "connected": bool(sess),
                 "instance_id": sess.get("instance_id"),
+                "level": boot_meta.get("level", mf.get("level")),
+                "dependencies": boot_meta.get("dependencies", mf.get("dependencies", [])),
             })
         return jsonify({"ok": True, "safe_mode": _safe_mode(), "drivers": items})
 
@@ -673,7 +716,7 @@ def apply(app):
 
         reg = _load_registry()
         entry = _get_reg_entry(reg, driver_id)
-        for k in ("enabled", "autoload", "trusted", "notes", "manufacturer", "driver_signature", "signature_type", "trust_level", "source", "hash"):
+        for k in ("enabled", "autoload", "trusted", "notes", "manufacturer", "driver_signature", "signature_type", "trust_level", "source", "hash", "level", "load_priority", "dependencies"):
             if k in patch:
                 entry[k] = patch[k]
         reg[driver_id] = entry
@@ -698,7 +741,7 @@ def apply(app):
         try:
             context = _build_driver_context(driver_id, instance_id=_session_get(driver_id).get("instance_id"), extra={"validate_payload": body})
             if hasattr(mod, "driver_validate"):
-                res = _invoke_driver_callable(mod.driver_validate, context=context, config=cfg, payload=body)  # type: ignore[attr-defined]
+                res = mod.driver_validate(context=context, config=cfg, payload=body)  # type: ignore[attr-defined]
                 return jsonify(res if isinstance(res, dict) else {"ok": True, "result": res})
             return jsonify({"ok": True, "warnings": ["driver_validate not implemented"]})
         except Exception as e:
@@ -757,7 +800,7 @@ def apply(app):
 
         try:
             if hasattr(mod, "driver_status"):
-                st = _invoke_driver_callable(mod.driver_status, context=context)  # type: ignore[attr-defined]
+                st = mod.driver_status(context=context)  # type: ignore[attr-defined]
                 return jsonify({"ok": True, "session": sess, "status": st})
             return jsonify({"ok": True, "session": sess, "status": {"ok": True, "note": "driver_status not implemented"}})
         except Exception as e:
@@ -780,13 +823,13 @@ def apply(app):
 
         try:
             if hasattr(mod, "driver_action"):
-                out = _invoke_driver_callable(mod.driver_action, action_id=action_id, context=context, payload=payload)  # type: ignore[attr-defined]
+                out = mod.driver_action(action_id=action_id, context=context, payload=payload)  # type: ignore[attr-defined]
                 return jsonify(out if isinstance(out, dict) else {"ok": True, "result": out})
 
             fn_name = f"action_{action_id}"
             if hasattr(mod, fn_name):
                 fn = getattr(mod, fn_name)
-                out = _invoke_driver_callable(fn, context=context, payload=payload)  # type: ignore[misc]
+                out = fn(context=context, payload=payload)  # type: ignore[misc]
                 return jsonify(out if isinstance(out, dict) else {"ok": True, "result": out})
 
             return _err(f"Action '{action_id}' not implemented by driver", 404)
