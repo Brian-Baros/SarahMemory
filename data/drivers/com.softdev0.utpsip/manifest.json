@@ -1,0 +1,42 @@
+{
+  "driver_id": "com.softdev0.utpsip",
+  "name": "Unified Telephony / SIP Hardware Bridge",
+  "version": "2.0.0",
+  "entry": "driver.py",
+  "platform": {
+    "os": [
+      "windows",
+      "linux"
+    ],
+    "transport": [
+      "pci",
+      "usb",
+      "ethernet",
+      "sip"
+    ],
+    "architectures": [
+      "x86_64",
+      "arm64"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "probe_backends",
+    "discover_hardware",
+    "connect_stack",
+    "disconnect_stack",
+    "start_call",
+    "hangup",
+    "send_dtmf",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ],
+  "permissions": [
+    "subprocess",
+    "network",
+    "filesystem_read"
+  ]
+}
