@@ -1,3 +1,19 @@
+"""
+--==The SarahMemory Project==--
+ File: ./data/drivers/com.softdev0.[DRIVERNAME].[TYPE]/driver.py
+ Purpose: SarahMemory AiOS governed boot-layer bridge driver.
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+ ==============================================================================================
+"""
 # com.softdev0.midi.bluetooth/driver.py
 # BLE MIDI driver package for SarahMemory AiOS
 # Transport: bluetooth
