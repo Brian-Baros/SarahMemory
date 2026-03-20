@@ -18,6 +18,7 @@ SarahMemory v8.0 - The First True AI Operating System (AiOS)
 World-Class Bootup Sequence with Full Media Integration
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "main_entrypoint"

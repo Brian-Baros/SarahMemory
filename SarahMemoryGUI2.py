@@ -34,6 +34,7 @@ MAJOR ENHANCEMENTS:
 10. PERFORMANCE OPTIMIZATION - Hardware acceleration & caching
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "ui_enhancement_framework"

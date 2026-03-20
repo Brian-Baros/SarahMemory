@@ -31,6 +31,7 @@ This module provides:
 - File analysis and reporting
 
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "filesystem_engine"

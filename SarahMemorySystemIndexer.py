@@ -15,6 +15,7 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "indexing_engine"

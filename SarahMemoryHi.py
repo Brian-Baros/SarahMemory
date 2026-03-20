@@ -88,6 +88,7 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "telemetry_engine"

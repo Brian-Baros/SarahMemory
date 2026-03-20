@@ -18,7 +18,7 @@ https://store.sarahmemory.com
 # Visualizes wallet balance over time.
 # - Primary source: SarahMemory Ledger API  (env: LEDGER_API_BASE, SARAH_NODE_ID)
 # - Fallback: legacy JSON wallet at data/crypto/wallet.srh
-
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "D"
 # ROLE = "utility_tool"

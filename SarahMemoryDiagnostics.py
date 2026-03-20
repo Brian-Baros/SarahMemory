@@ -15,6 +15,7 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "diagnostics_engine"
@@ -40,6 +41,7 @@ import platform
 from datetime import datetime
 import json
 import subprocess
+import shutil
 import SarahMemoryGlobals as config
 import sqlite3
 import sys
@@ -69,6 +71,8 @@ REQUIRED_FILES = [
     os.path.join(config.API_DIR, "server", "appnet.py"), #SARAHNET Network for All Nodes, communications, etc
     os.path.join(config.API_DIR, "server", "appnet2.py"), #SARAHNET Sync Network for Sync'ed Bluetooth/Wifi Nodes and more.
     os.path.join(config.API_DIR, "server", "appsys.py"), #API For System Functions such as FileManager, etc
+    os.path.join(config.API_DIR, "server", "appdrivers.py"), # Governed driver router for hardware integrations
+    os.path.join(config.API_DIR, "server", "appcomm.py"), # Communications domain endpoints
     os.path.join(config.API_DIR, "server", "appmedia.py"), #API For Media Studios, Image,Video,Music
     os.path.join(config.BASE_DIR, "SarahMemoryAdaptive.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAdvCU.py"),
@@ -352,6 +356,66 @@ def _ensure_canvas_dirs():
         logging.getLogger(__name__).warning(f"[v8.0][DIAG] Canvas dirs check failed (non-critical): {e}")
         return False
 
+
+
+def get_storage_health_summary():
+    """Best-effort storage health report integrating SMART/NVMe probe tooling."""
+    summary = {"smartctl": shutil.which("smartctl") if "shutil" in globals() else None, "nvme": shutil.which("nvme") if "shutil" in globals() else None, "devices": [], "status": "unknown"}
+    try:
+        import shutil as _shutil
+        import json as _json
+        if _shutil.which("lsblk"):
+            res = subprocess.run(["lsblk", "-J", "-o", "NAME,KNAME,TYPE,PATH,MODEL,MOUNTPOINT"], capture_output=True, text=True, timeout=10)
+            if res.returncode == 0:
+                data = _json.loads(res.stdout or "{}")
+                for dev in data.get("blockdevices", []) or []:
+                    if dev.get("type") == "disk":
+                        summary["devices"].append({"path": dev.get("path") or ("/dev/" + str(dev.get("kname") or dev.get("name") or "")), "model": dev.get("model"), "mountpoint": dev.get("mountpoint")})
+        if summary["devices"]:
+            summary["status"] = "detected"
+    except Exception as e:
+        summary["status"] = "error"
+        summary["error"] = str(e)
+    return summary
+
+def get_driver_registry_health():
+    """Best-effort driver registry trust summary for appdrivers-based hardware packages."""
+    report = {"available": False, "drivers": {}, "counts": {"trusted": 0, "untrusted": 0}}
+    try:
+        drivers_root = os.path.join(getattr(config, "DATA_DIR", os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")), "drivers")
+        registry_path = os.path.join(getattr(config, "DATA_DIR", os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")), "registry", "drivers.json")
+        reg = {}
+        if os.path.exists(registry_path):
+            with open(registry_path, "r", encoding="utf-8") as f:
+                reg = json.load(f) or {}
+        if os.path.isdir(drivers_root):
+            for name in sorted(os.listdir(drivers_root)):
+                manifest_path = os.path.join(drivers_root, name, "manifest.json")
+                if not os.path.isfile(manifest_path):
+                    continue
+                manifest = {}
+                try:
+                    with open(manifest_path, "r", encoding="utf-8") as f:
+                        manifest = json.load(f) or {}
+                except Exception:
+                    manifest = {}
+                entry = reg.get(name) if isinstance(reg, dict) else {}
+                if not isinstance(entry, dict):
+                    entry = {}
+                trusted = bool(entry.get("trusted", False))
+                report["drivers"][name] = {
+                    "manufacturer": entry.get("manufacturer") or manifest.get("manufacturer") or manifest.get("vendor"),
+                    "driver_signature": entry.get("driver_signature"),
+                    "signature_type": entry.get("signature_type") or manifest.get("signature_type"),
+                    "trust_level": entry.get("trust_level") or manifest.get("trust_level"),
+                    "trusted": trusted,
+                }
+                report["counts"]["trusted" if trusted else "untrusted"] += 1
+            report["available"] = True
+    except Exception as e:
+        report["error"] = str(e)
+    return report
+
 def get_db_health_summary():
     """
     Phase B: Database / Mesh health summary helper.
@@ -596,6 +660,8 @@ def run_self_check():
     diagnostics_report["governed_core"] = governed_core
     diagnostics_report["governance_summary"] = governance_summary
     diagnostics_report["response_memory_schema"] = _get_response_layer_schema_report()
+    diagnostics_report["storage_health"] = get_storage_health_summary()
+    diagnostics_report["driver_registry_health"] = get_driver_registry_health()
 
     # Check Python version
     py_version = platform.python_version()

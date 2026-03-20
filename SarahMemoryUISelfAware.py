@@ -1,11 +1,19 @@
 """
---== The SarahMemory Project ==--
-File: SarahMemoryUISelfAware.py
-Part of the SarahMemory AiOS Platform
-Version: v8.0.0
-Date: 2026-03-14
-Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-
+ --== The SarahMemory Project ==--
+ File: SarahMemoryUISelfAware.py
+ Part of the SarahMemory AiOS Platform
+ Version: v8.0.0
+ Date: 2026-03-14
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+ ==============================================================================================
 PURPOSE:
 --------
 Sandboxed UI self-observation and frontend solution generator.

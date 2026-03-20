@@ -24,6 +24,7 @@ This module serves as the launching platform for MODS and Additional Modules tha
 to the SarahMemory Platform, The Ai should be able to Learn and adapt to other Modules and 
 to user preferences, patterns, timing, and operational habits. Making SarahMemory the dynamic functional foundation.
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "addon_manager"

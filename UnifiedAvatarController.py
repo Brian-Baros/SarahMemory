@@ -95,6 +95,7 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "avatar_orchestrator"

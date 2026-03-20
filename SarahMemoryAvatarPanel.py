@@ -55,6 +55,7 @@ PLATFORM SUPPORT:
   - WebUI accessible via https://ai.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "ui_panel"

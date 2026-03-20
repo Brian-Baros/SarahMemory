@@ -15,6 +15,7 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "security_core"
@@ -275,3 +276,52 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemoryVault.py v8.0.0
 # ====================================================================
+
+
+# -----------------------------------------------------------------------------
+# Storage bridge helpers (v8 hardware integration)
+# -----------------------------------------------------------------------------
+_VAULT_MOUNT_STATE_FILE = os.path.join(config.VAULT_DIR, "vault_mount_state.json")
+
+def _load_mount_state() -> dict:
+    try:
+        if os.path.exists(_VAULT_MOUNT_STATE_FILE):
+            with open(_VAULT_MOUNT_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.debug(f"Vault mount state load failed: {e}")
+    return {}
+
+def _save_mount_state(data: dict) -> bool:
+    try:
+        with open(_VAULT_MOUNT_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception as e:
+        logger.debug(f"Vault mount state save failed: {e}")
+        return False
+
+def get_vault_mount_targets() -> list:
+    """Best-effort declared targets for storage driver auto-mount workflows."""
+    state = _load_mount_state()
+    targets = state.get("targets")
+    if isinstance(targets, list):
+        return targets
+    default_mountpoint = os.path.join(config.VAULT_DIR, "mounted")
+    return [{"device": "", "mountpoint": default_mountpoint, "state": state.get("state", "unknown")}]
+
+def get_vault_mount_state() -> dict:
+    return _load_mount_state()
+
+def register_vault_mount_state(device: str, mountpoint: str, state: str = "mounted", extra: dict | None = None) -> bool:
+    payload = _load_mount_state()
+    payload.update({
+        "device": str(device or ""),
+        "mountpoint": str(mountpoint or ""),
+        "state": str(state or "unknown"),
+        "updated": datetime.utcnow().isoformat() + "Z",
+    })
+    if isinstance(extra, dict) and extra:
+        payload["extra"] = extra
+    return _save_mount_state(payload)

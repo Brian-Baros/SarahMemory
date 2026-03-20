@@ -21,6 +21,7 @@ https://store.sarahmemory.com
 ✓ 100% backward compatible
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "agent_orchestrator"

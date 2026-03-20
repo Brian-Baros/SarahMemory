@@ -22,6 +22,7 @@ Notes:
 - Only downloads models when missing/invalid locally.
 - Uses category-based stacks + hardware tier recommendations from SarahMemoryGlobals.
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "model_manager"

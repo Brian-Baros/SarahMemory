@@ -20,7 +20,26 @@ SarahMemoryTree.py (PythonAnywhere-safe)
 - Writes to tree_YYYYMMDD-HHMMSS.txt (never overwrites to 0 bytes)
 - Flushes output as it goes (so partial output survives interrupts)
 """
-
+from __future__ import annotations
+# --- SARAHMETA START ---
+# GRADE = "D"
+# ROLE = "utility_tool"
+# CATEGORY = "project_inventory"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_tool"
+# DEPLOYMENT_TARGET = "standalone_tool"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = "filesystem"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "tree"
+# FAMILY = "utilities"
+# GOVERNANCE_LEVEL = "bounded"
+# AUTONOMOUS_SAFE = True
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# NOTES = "Project directory tree/report generator that writes timestamped tree outputs safely without overwriting prior output."
+# --- SARAHMETA END ---
 import os
 from datetime import datetime, timezone
 

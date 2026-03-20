@@ -18,6 +18,7 @@ SarahMemory v8.0 - Integration & Main Menu System
 Integration with Enhanced Features
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "integration_orchestrator"

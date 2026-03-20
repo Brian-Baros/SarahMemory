@@ -28,6 +28,7 @@ Phase C Features:
 - Comprehensive testing suite
 
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "sync_engine"

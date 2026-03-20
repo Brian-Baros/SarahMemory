@@ -16,6 +16,7 @@ https://ai.sarahmemory.com
 https://store.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "ui_shell"

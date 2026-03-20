@@ -98,6 +98,7 @@ PLATFORM SUPPORT:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "software_control_engine"

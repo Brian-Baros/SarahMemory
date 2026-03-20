@@ -33,6 +33,7 @@ SarahMemory AiOS platform, including:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "learning_engine"

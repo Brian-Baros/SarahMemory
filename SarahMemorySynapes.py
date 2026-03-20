@@ -40,6 +40,7 @@ Key World-Class Features:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "autonomous_lab"

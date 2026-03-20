@@ -35,6 +35,7 @@ This module provides enterprise-grade mathematical computation capabilities incl
 The calculator maintains backward compatibility with existing SarahMemory modules
 while providing advanced mathematical capabilities for professional use.
 ==============================================================================="""
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "math_engine"

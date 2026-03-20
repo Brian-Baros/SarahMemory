@@ -14,6 +14,7 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "research_helper"

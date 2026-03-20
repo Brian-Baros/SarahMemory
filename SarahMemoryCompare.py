@@ -32,6 +32,7 @@ These guarddogs act as the final answer acceptance judge before a response
 may move into presentation generation.
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "guarddog_engine"

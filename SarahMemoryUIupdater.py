@@ -41,6 +41,7 @@ Behavior:
     - Creates missing folders:
         data/ui, data/ui/V8, data/ui/V8_ui_src
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "ui_update_tool"

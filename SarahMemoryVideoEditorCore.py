@@ -154,6 +154,7 @@ All exceptions are logged to SarahMemory unified logging system.
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "creative_engine"

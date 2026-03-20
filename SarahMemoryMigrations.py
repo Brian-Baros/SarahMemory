@@ -81,6 +81,7 @@ v8.0 - World-class enterprise features
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "migration_engine"

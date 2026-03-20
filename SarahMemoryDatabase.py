@@ -16,6 +16,7 @@ https://store.sarahmemory.com
 ===============================================================================
 
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "data_layer"

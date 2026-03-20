@@ -36,6 +36,7 @@ the SarahMemory AiOS platform, supporting:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "capability"

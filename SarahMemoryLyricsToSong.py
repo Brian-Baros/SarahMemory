@@ -182,6 +182,7 @@ PERFORMANCE NOTES:
 
 ===============================================================================
 """
+from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "creative_engine"
