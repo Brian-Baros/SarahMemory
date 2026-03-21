@@ -3,7 +3,7 @@
 * Version:** 8.0.0  - THE FUNCTIONAL DEVELOPING AND DEVELOPERS VERSION -
 * RND Start Date:** Febuary 21, 2025
 * 1st Release Date:** December 05, 2025  
-* Last Update Date:** March 19, 2026  
+* Last Update Date:** March 20, 2026  
 * Author:** Brian Lee Baros  
 * License:** © 2025,2026 Brian Lee Baros. All Rights Reserved.
 * Designed using:** Python 3.11 to 3.13.12 , NOTE: on Python 3.14 Dependencys in the Requirements may change or not be functional.
@@ -17,8 +17,15 @@ Cognitive/Neuron/Synaptic and Logical Data flows from the moment you submit it a
 ---
 ![SarahMemory DATAFLOW](documents/SARAHMEMORY-AIOS.png)
 ---
-UPDATED WEB UI demostrates FULL WORKSTATION concepts, Actual system Image currently as of 03/05/2026
+UPDATED WEB UI demostrates FULL WORKSTATION concepts, Actual system Image currently as of 03/05/2026, 
+SARAHMEMORY IS THE WORLDS FIRST SUPERAPP, AI OPERATING SYSTEM, 
 ![SarahMemory DATAFLOW](documents/SarahMemory-Full_Workstation.png)
+Just saying this here and showing the DOCUMENTED IMAGE because of OPEN AI stealing my ideas and Concepts. 
+here's one link showing they are all going down this rabbit hole that I've been on for a year now. Granted they might have the FUNDS to make package it faster than I can code it. but here's the link they popped out
+right after I started getting all the Drivers setup I'm posting this on 03/20/2026 - 
+https://www.msn.com/en-us/news/technology/openai-superapp-plan/vi-AA1Z50op?ocid=msedgntp&pc=BINBAN&cvid=69bde7cbf65446acb1506249e194a8bc&ei=16#details
+I'm sure once I have all bootable setups they will all of sudden say THEY have an offical AiOS system also.. time will tell, time will tell... 
+
 ACTIVE SYSTEM DEVELOPMENT PROGRESS REPORT AS OF FEBUARY 11,2026
 
 📊 System Maturity Score
