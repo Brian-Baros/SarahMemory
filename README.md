@@ -1,4 +1,5 @@
-![](documents/SMAIOSLOGO.jpeg)
+![](documents/SMAIOSLOGO.jpg)
+
 ## ** SarahMemory AI Operating System (AiOS) Platform**
 
 * Version:** 8.0.0  - THE FUNCTIONAL DEVELOPING AND DEVELOPERS VERSION -
