@@ -1,29 +1,28 @@
 """
-# --==The SarahMemory Project==--
-# File: /app/server/appnet2.py
-# Purpose: SarahNet "Bravo" — Identity/Trust + Overlay Tunnel Control + Virtual DNS/Name Directory
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-# Design goals:
-# - NO endpoint collisions with appnet.py
-# - Everything is namespaced under /api/net2/*
-# - Pure control-plane (HTTP + sqlite). No OS-level VPN claims here.
-# - Cross-platform safe: Windows/Linux/macOS/headless/cloud.
-# - app.py should call:
-#     import appnet
-#     import appnet2
-#     appnet.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
-#     appnet2.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
-#
+ --==The SarahMemory Project==--
+ File: /app/server/appnet2.py
+ Purpose: SarahNet "Bravo" — Identity/Trust + Overlay Tunnel Control + Virtual DNS/Name Directory
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+==============================================================================================
+ Design goals:
+ - NO endpoint collisions with appnet.py
+ - Everything is namespaced under /api/net2/*
+ - Pure control-plane (HTTP + sqlite). No OS-level VPN claims here.
+ - Cross-platform safe: Windows/Linux/macOS/headless/cloud.
+ - app.py should call:
+     import appnet
+     import appnet2
+     appnet.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
+     appnet2.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
 """
 
 from __future__ import annotations

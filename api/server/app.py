@@ -1538,6 +1538,348 @@ def api_vision_frame_status():
         app_logger.error(f"/api/vision/frame/status failed: {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
+
+
+
+def _sm_match_quick_system_route(text: str) -> dict | None:
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    t = t.replace("capslock", "caps lock").replace("numlock", "num lock").replace("scrolllock", "scroll lock")
+    if any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is todays date", "what day is it", "what time is it", "current time", "date and time")):
+        kind = "datetime"
+        if "time" in t and "date" not in t and "today" not in t and "day" not in t:
+            kind = "time"
+        elif any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what day is it")):
+            kind = "date"
+        return {"route_id": "system.datetime.current", "kind": kind}
+    if any(k in t for k in ("caps lock", "num lock", "scroll lock")) and any(k in t for k in ("turn", "put", "set", "enable", "disable", "switch")):
+        key_name = "caps_lock" if "caps lock" in t else ("num_lock" if "num lock" in t else "scroll_lock")
+        state = "off" if any(k in t for k in ("turn off", "switch off", "disable")) else "on"
+        return {"route_id": "system.keyboard.key_state", "key_name": key_name, "requested_state": state}
+    if "keyboard" in t and any(k in t for k in ("light", "lights", "led", "rgb", "backlight", "color", "colors", "colour", "colours")):
+        color = None
+        for c in ("red", "green", "blue", "purple", "yellow", "white", "orange", "pink"):
+            if c in t:
+                color = c
+                break
+        return {"route_id": "drivers.keyboard.lighting", "device_type": "keyboard", "value": color or "requested", "requested_state": "on" if any(k in t for k in ("turn on", "enable", "activate")) else None}
+    return None
+
+
+def _sm_now_reply(kind: str) -> str:
+    now = datetime.now()
+    if kind == "time":
+        return f"The current time is {now.strftime('%I:%M %p').lstrip('0')}."
+    if kind == "datetime":
+        return f"Today is {now.strftime('%A, %B %d, %Y')} and the current time is {now.strftime('%I:%M %p').lstrip('0')}."
+    return f"Today's date is {now.strftime('%A, %B %d, %Y')}."
+
+
+def _sm_set_lock_key_state(key_name: str, requested_state: str) -> tuple[bool, str, dict]:
+    requested_state = str(requested_state or "on").lower()
+    key_name = str(key_name or "caps_lock").lower()
+    vk_map = {"caps_lock": 0x14, "num_lock": 0x90, "scroll_lock": 0x91}
+    nice_map = {"caps_lock": "Caps Lock", "num_lock": "Num Lock", "scroll_lock": "Scroll Lock"}
+    if key_name not in vk_map:
+        return False, "Unsupported keyboard lock key.", {"key_name": key_name}
+    if os.name != 'nt':
+        return False, f"{nice_map.get(key_name, key_name)} control is not yet implemented for this operating system.", {"key_name": key_name, "os": os.name}
+    try:
+        import ctypes, time as _time
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        vk = vk_map[key_name]
+        desired_on = requested_state != 'off'
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        current_on = bool(user32.GetKeyState(vk) & 1)
+        changed = False
+        for _ in range(4):
+            current_on = bool(user32.GetKeyState(vk) & 1)
+            if current_on == desired_on:
+                break
+            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY, 0)
+            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+            changed = True
+            _time.sleep(0.05)
+        final_on = bool(user32.GetKeyState(vk) & 1)
+        if final_on == desired_on:
+            state_word = 'ON' if final_on else 'OFF'
+            if changed:
+                return True, f"{nice_map.get(key_name, key_name)} turned {state_word}.", {"key_name": key_name, "requested_state": requested_state, "final_state": state_word.lower()}
+            return True, f"{nice_map.get(key_name, key_name)} is already {state_word}.", {"key_name": key_name, "requested_state": requested_state, "final_state": state_word.lower()}
+        return False, f"Unable to set {nice_map.get(key_name, key_name)} to the requested state.", {"key_name": key_name, "requested_state": requested_state, "final_state": 'on' if final_on else 'off'}
+    except Exception as e:
+        return False, f"Failed to change {nice_map.get(key_name, key_name)}: {e}", {"key_name": key_name, "requested_state": requested_state, "error": str(e)}
+
+
+def _sm_try_keyboard_lighting(text: str, quick_route: dict) -> tuple[bool, str, dict]:
+    try:
+        import shutil as _shutil
+        import subprocess as _subprocess
+        color = str(quick_route.get('value') or 'requested').strip().lower()
+        op = _shutil.which('openrgb') or _shutil.which('OpenRGB')
+        if op:
+            cmd = [op, '--mode', 'static']
+            color_map = {
+                'red': 'FF0000', 'green': '00FF00', 'blue': '0000FF', 'purple': '800080',
+                'yellow': 'FFFF00', 'white': 'FFFFFF', 'orange': 'FFA500', 'pink': 'FFC0CB',
+            }
+            hexv = color_map.get(color)
+            if hexv:
+                cmd.extend(['--color', hexv])
+            proc = _subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+            if proc.returncode == 0:
+                return True, f"Keyboard lighting set to {color} through generic OpenRGB control.", {"driver_id": 'openrgb', 'action_id': 'keyboard_rgb_set', 'stdout': proc.stdout[-500:]}
+        import appdrivers as _drv  # type: ignore
+    except Exception as e:
+        return False, f"Keyboard lighting route matched, but no executable runtime is available: {e}", {"route_id": quick_route.get('route_id')}
+    try:
+        driver_ids = list(_drv._discover_driver_ids()) if hasattr(_drv, '_discover_driver_ids') else []
+    except Exception:
+        driver_ids = []
+    matches = []
+    for did in driver_ids:
+        try:
+            mf = _drv._load_manifest(did) if hasattr(_drv, '_load_manifest') else {}
+        except Exception:
+            mf = {}
+        raw = json.dumps(mf or {}, ensure_ascii=False).lower()
+        if 'keyboard' in raw or 'rgb' in raw or 'lighting' in raw or 'backlight' in raw:
+            matches.append((did, mf))
+    if not matches:
+        return False, 'Keyboard lighting route matched, but no governed keyboard lighting driver or OpenRGB runtime was discovered.', {"driver_matches": []}
+    preferred_actions = ['set_color', 'set_led_color', 'set_rgb', 'set_backlight', 'lighting_set', 'keyboard_lighting', 'keyboard_rgb_set']
+    for did, mf in matches:
+        try:
+            _drv._driver_discover(did, payload={"source": "api_chat_quick_route", "user_text": text})
+        except Exception:
+            pass
+        cfg = _drv._load_config(did) if hasattr(_drv, '_load_config') else {}
+        try:
+            _drv._driver_connect(did, cfg=cfg or {}, connect_payload={"source": "api_chat_quick_route", "user_text": text})
+        except Exception:
+            pass
+        mod, err = _drv._load_driver_module(did) if hasattr(_drv, '_load_driver_module') else (None, 'driver loader unavailable')
+        if err or mod is None:
+            continue
+        actions_blob = json.dumps(mf or {}, ensure_ascii=False).lower()
+        for action_id in preferred_actions:
+            if (action_id.lower() in actions_blob) or hasattr(mod, f'action_{action_id}') or hasattr(mod, 'driver_action'):
+                try:
+                    context = _drv._build_driver_context(did, instance_id=_drv._session_get(did).get('instance_id') if hasattr(_drv, '_session_get') else None, extra={"action_id": action_id})
+                    payload = {"requested_action": action_id, "entities": {"device_type": "keyboard", "value": quick_route.get('value'), "requested_state": quick_route.get('requested_state')}, "user_text": text}
+                    if hasattr(mod, 'driver_action'):
+                        out = mod.driver_action(action_id=action_id, context=context, payload=payload)
+                    else:
+                        out = getattr(mod, f'action_{action_id}')(context=context, payload=payload)
+                    if isinstance(out, dict) and bool(out.get('ok', True)):
+                        color = quick_route.get('value') or 'requested color'
+                        return True, f"Keyboard lighting set to {color} through governed driver {did}.", {"driver_id": did, "action_id": action_id, "driver_result": out}
+                except Exception:
+                    continue
+    return False, 'Keyboard lighting route matched and drivers were discovered, but no executable lighting action succeeded.', {"driver_matches": [m[0] for m in matches]}
+
+
+def _sm_execute_quick_route(text: str) -> tuple[bool, dict | None]:
+    route = _sm_match_quick_system_route(text)
+    if not route:
+        return False, None
+    route_id = str(route.get('route_id') or '')
+    if route_id == 'system.datetime.current':
+        reply = _sm_now_reply(str(route.get('kind') or 'date'))
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "local_datetime", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION})
+        bundle.setdefault('actions', [])
+        bundle['actions'].append({"type": "route_match", "route_id": route_id})
+        return True, bundle
+    if route_id == 'system.keyboard.key_state':
+        ok, reply, details = _sm_set_lock_key_state(str(route.get('key_name') or 'caps_lock'), str(route.get('requested_state') or 'on'))
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_key_state", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION}, actions=[{"type": "keyboard_key_state", **details}], errors=[] if ok else [details])
+        bundle['ok'] = bool(ok)
+        return True, bundle
+    if route_id == 'drivers.keyboard.lighting':
+        ok, reply, details = _sm_try_keyboard_lighting(text, route)
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_lighting", "intent": "drivers", "route_id": route_id, "version": PROJECT_VERSION}, actions=[{"type": "driver_route", **details}], errors=[] if ok else [details])
+        bundle['ok'] = bool(ok)
+        return True, bundle
+    return False, None
+
+def _sm_ingress_catalog() -> list[dict]:
+    return [
+        {"route_id": "research.weather.current", "domain": "research", "action": "weather_current", "target_module": "SarahMemoryResearch", "transport_target": "internal_research_lane", "keywords": ["weather", "temperature", "forecast", "rain", "sunny", "humidity", "wind"], "examples": ["what is the temperature right now in nacogdoches texas", "current weather in lufkin texas", "how hot is it outside in dallas"]},
+        {"route_id": "research.weather.forecast", "domain": "research", "action": "weather_forecast", "target_module": "SarahMemoryResearch", "transport_target": "internal_research_lane", "keywords": ["forecast", "tomorrow", "next", "day", "days", "weather", "temperature"], "examples": ["what is the weather like tomorrow in nacogdoches texas", "give me the next 3 day forecast in lufkin texas", "forecast this weekend in houston"]},
+        {"route_id": "drivers.device.control", "domain": "drivers", "action": "device_control", "target_module": "appdrivers", "transport_target": "/api/drivers", "keywords": ["driver", "device", "mouse", "keyboard", "webcam", "camera", "microphone", "led", "razer", "usb", "bluetooth"], "examples": ["turn my webcam on", "turn my mouse led color to red", "connect to my razer mouse"]},
+        {"route_id": "avatar.create.activate", "domain": "avatar", "action": "create_activate_avatar", "target_module": "UnifiedAvatarController", "transport_target": "internal_avatar_lane", "keywords": ["avatar", "3d", "unreal", "blender", "mouth", "eyes", "panel", "character"], "examples": ["make me a red 3d ball with eyes and moving mouth in unreal engine and place it into the avatar panel", "change the system avatar", "load this as my avatar"]},
+        {"route_id": "documents.office.write", "domain": "documents", "action": "write_document", "target_module": "appsys", "transport_target": "/api/system", "keywords": ["word", "document", "write", "docx", "report", "essay", "open office"], "examples": ["write me a word document on penguins in the arctic", "open word and create a report", "make a document about safety procedures"]},
+        {"route_id": "email.mail.automation", "domain": "email", "action": "mail_automation", "target_module": "appcomm", "transport_target": "/api/comm", "keywords": ["email", "gmail", "outlook", "spam", "unsubscribe", "trash", "mailbox", "inbox"], "examples": ["open my emails and unsubscribe to all known spam messages then empty my spam trash daily", "check my inbox", "delete spam mail"]},
+        {"route_id": "reminder.schedule.task", "domain": "reminder", "action": "schedule_task", "target_module": "appcomm", "transport_target": "/api/comm", "keywords": ["remind", "schedule", "daily", "every day", "weekly", "monthly", "calendar", "task"], "examples": ["remind me tomorrow at 5 pm", "empty my spam trash daily", "schedule a recurring cleanup"]},
+        {"route_id": "system.application.control", "domain": "system", "action": "application_control", "target_module": "appsys", "transport_target": "/api/system", "keywords": ["open", "close", "launch", "start", "stop", "app", "program", "application", "window"], "examples": ["open notepad", "launch unreal engine", "close the browser"]},
+        {"route_id": "research.general.web", "domain": "research", "action": "web_research", "target_module": "SarahMemoryResearch", "transport_target": "internal_research_lane", "keywords": ["research", "look up", "find", "search", "internet", "web"], "examples": ["research this topic online", "look this up for me", "find current information on this"]},
+        {"route_id": "chat.general", "domain": "chat", "action": "general_reply", "target_module": "SarahMemoryReply", "transport_target": "/api/chat", "keywords": ["chat", "question", "talk", "explain", "help"], "examples": ["hello", "how are you", "explain this to me"]},
+    ]
+
+
+def _sm_ingress_normalize_text(text: str) -> str:
+    t = str(text or "").strip().lower()
+    replacements = {"temperture": "temperature", "wether": "weather", "camra": "camera", "web cam": "webcam", "mose": "mouse", "lites": "lights", "coler": "color", "unreel": "unreal", "doccument": "document"}
+    for bad, good in replacements.items():
+        t = t.replace(bad, good)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
+    norm = _sm_ingress_normalize_text(text)
+    entities: dict[str, object] = {}
+    weather_match = re.search(r"\bin\s+([a-z0-9 .,'-]+)$", norm)
+    if route_id.startswith("research.weather") and weather_match:
+        entities["location"] = weather_match.group(1).strip(" ?.,")
+    if route_id == "research.weather.forecast":
+        if "tomorrow" in norm:
+            entities["day_offset"] = 1
+        m_days = re.search(r"next\s+(\d+)\s+day", norm)
+        if m_days:
+            entities["days"] = int(m_days.group(1))
+        elif "forecast" in norm and "days" not in entities:
+            entities["days"] = 1 if "tomorrow" in norm else 3
+    if route_id == "system.application.control":
+        app_match = re.search(r"\b(?:open|launch|start|close|stop|quit|exit)\s+(.+)$", norm)
+        if app_match:
+            entities["target_app"] = app_match.group(1).strip(" ?.,")
+        if any(k in norm for k in ("open ", "launch ", "start ")):
+            entities["requested_state"] = "open"
+        elif any(k in norm for k in ("close ", "stop ", "quit ", "exit ")):
+            entities["requested_state"] = "close"
+    if route_id == "drivers.device.control":
+        for device in ("webcam", "camera", "mouse", "keyboard", "microphone"):
+            if device in norm:
+                entities["device_type"] = "webcam" if device == "camera" else device
+                break
+        for vendor in ("razer", "logitech", "corsair", "steelseries"):
+            if vendor in norm:
+                entities["vendor"] = vendor
+                break
+        color_match = re.search(r"\b(red|green|blue|purple|yellow|white|orange|pink)\b", norm)
+        if color_match:
+            entities["value"] = color_match.group(1)
+        if any(k in norm for k in ("turn on", "activate", "enable", "start")):
+            entities["requested_state"] = "on"
+        elif any(k in norm for k in ("turn off", "disable", "stop")):
+            entities["requested_state"] = "off"
+    if route_id == "documents.office.write":
+        topic_match = re.search(r"\bon\s+(.+)$", norm)
+        if topic_match:
+            entities["topic"] = topic_match.group(1).strip(" ?.")
+        if "word" in norm:
+            entities["software_hint"] = "microsoft_word"
+    if route_id == "email.mail.automation":
+        if "daily" in norm or "every day" in norm:
+            entities["schedule"] = "daily"
+        elif "weekly" in norm or "every week" in norm:
+            entities["schedule"] = "weekly"
+        elif "monthly" in norm or "every month" in norm:
+            entities["schedule"] = "monthly"
+        entities["unsubscribe"] = "unsubscribe" in norm
+        entities["target_folder"] = "spam" if "spam" in norm else "inbox"
+    if route_id == "avatar.create.activate":
+        if "unreal" in norm:
+            entities["engine_preference"] = "unreal"
+        color_match = re.search(r"\b(red|green|blue|purple|yellow|white|orange|pink)\b", norm)
+        if color_match:
+            entities["color"] = color_match.group(1)
+        if "3d ball" in norm or "sphere" in norm or "ball" in norm:
+            entities["shape"] = "ball"
+        if "eyes" in norm:
+            entities["eyes"] = True
+        if "mouth" in norm:
+            entities["mouth"] = "moving" if "moving mouth" in norm else True
+        if "avatar panel" in norm:
+            entities["target_surface"] = "avatar_panel"
+    return entities
+
+
+def _sm_build_virtual_ingress_route(text: str, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    payload = payload or {}
+    context_packet = context_packet or {}
+    original = str(text or "").strip()
+    normalized = _sm_ingress_normalize_text(original)
+    cards = _sm_ingress_catalog()
+    query_vec = None
+    embed_fn = None
+    cos_fn = None
+    try:
+        if _sm_module_approved("SarahMemoryAdvCU", capability="classification"):
+            import SarahMemoryAdvCU as _AdvCU  # type: ignore
+            embed_fn = getattr(_AdvCU, "embed_text", None)
+            cos_fn = getattr(_AdvCU, "cosine_similarity", None)
+            if callable(embed_fn) and callable(cos_fn):
+                qv = embed_fn(normalized)
+                if isinstance(qv, list) and qv:
+                    query_vec = qv[0]
+    except Exception:
+        query_vec = None
+
+    best: dict | None = None
+    best_score = -1.0
+    scored_cards: list[dict] = []
+    query_tokens = set(re.findall(r"[a-z0-9_]+", normalized))
+    for card in cards:
+        texts = [card.get("route_id", "")] + list(card.get("examples", []))
+        semantic = 0.0
+        if query_vec is not None and callable(embed_fn) and callable(cos_fn):
+            try:
+                cvecs = embed_fn([_sm_ingress_normalize_text(t) for t in texts])
+                semantic = max(float(cos_fn(query_vec, cv)) for cv in cvecs if cv) if cvecs else 0.0
+            except Exception:
+                semantic = 0.0
+        lexical = 0.0
+        try:
+            keyword_hits = 0.0
+            for kw in card.get("keywords", []):
+                if kw in normalized:
+                    keyword_hits += 1.0
+                else:
+                    ratio = difflib.SequenceMatcher(None, normalized, kw).ratio()
+                    if ratio >= 0.86:
+                        keyword_hits += 0.6
+            if card.get("keywords"):
+                lexical = max(lexical, min(1.0, keyword_hits / max(1.0, len(card.get("keywords", [])) / 2.5)))
+            for ex in card.get("examples", []):
+                ex_norm = _sm_ingress_normalize_text(ex)
+                ex_tokens = set(re.findall(r"[a-z0-9_]+", ex_norm))
+                if ex_tokens:
+                    overlap = len(query_tokens & ex_tokens) / max(1, len(query_tokens | ex_tokens))
+                    lexical = max(lexical, float(overlap))
+        except Exception:
+            lexical = lexical or 0.0
+        score = semantic * 0.72 + lexical * 0.28 if query_vec is not None else lexical
+        scored_cards.append({"route_id": card.get("route_id"), "semantic": round(float(semantic), 4), "lexical": round(float(lexical), 4), "score": round(float(score), 4)})
+        if score > best_score:
+            best_score = float(score)
+            best = dict(card)
+
+    best = best or dict(cards[-1])
+    route_id = str(best.get("route_id") or "chat.general")
+    entities = _sm_ingress_extract_entities(original, route_id)
+    intent_hint = str(best.get("domain") or "chat")
+    if route_id.startswith("research.weather"):
+        intent_hint = "research"
+    elif route_id.startswith("avatar."):
+        intent_hint = "creative"
+    elif route_id.startswith("reminder."):
+        intent_hint = "time"
+    elif route_id.startswith(("drivers.", "system.", "documents.", "email.")):
+        intent_hint = "action"
+    return {"ok": True, "route_id": route_id, "domain": str(best.get("domain") or "chat"), "action": str(best.get("action") or "general_reply"), "target_module": str(best.get("target_module") or "SarahMemoryReply"), "transport_target": str(best.get("transport_target") or "/api/chat"), "intent_hint": intent_hint, "confidence": round(max(0.0, min(0.99, best_score if best_score >= 0 else 0.15)), 4), "entities": entities, "normalized_text": normalized, "source": "semantic_ingress_router", "needs_discovery": bool(route_id in {"avatar.create.activate", "documents.office.write", "drivers.device.control"}), "route_trace": scored_cards[:12]}
+
+
+def _sm_proposed_action_from_ingress(ingress_route: dict) -> dict:
+    route_id = str((ingress_route or {}).get("route_id") or "")
+    domain = str((ingress_route or {}).get("domain") or "chat")
+    entities = dict((ingress_route or {}).get("entities") or {})
+    return {"intent": domain.upper(), "route_id": route_id, "subsystems": [str((ingress_route or {}).get("target_module") or "")], "target_files": [], "dry_run": False, "touches_network": bool(domain in {"research", "email", "network", "store"}), "touches_privacy": bool(domain in {"email", "drivers", "system"}), "touches_filesystem": bool(domain in {"documents", "avatar", "system", "media"}), "sends_data": bool(domain in {"email", "network", "store"}), "entities": entities}
+
+
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
     """
@@ -1582,6 +1924,11 @@ def api_chat():
             neoskymatrix=neoskymatrix,
             developersmode=developersmode,
         )
+        ingress_route = _sm_build_virtual_ingress_route(text, payload=payload, context_packet=context_packet)
+        context_packet.setdefault("meta", {})["ingress_route"] = ingress_route
+        context_packet["meta"]["proposed_action"] = _sm_proposed_action_from_ingress(ingress_route)
+        if not intent and str(ingress_route.get("intent_hint") or "").strip():
+            intent = str(ingress_route.get("intent_hint") or "").strip()
         context_packet, frame_rec = _attach_cached_or_inline_vision_frame(payload, context_packet)
         _sm_refresh_core_registry(force=False)
 
@@ -1603,6 +1950,10 @@ def api_chat():
                 "error": "Missing 'text' in request body.",
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
+
+        handled, quick_bundle = _sm_execute_quick_route(text)
+        if handled and quick_bundle is not None:
+            return jsonify(quick_bundle), 200
 
         if _is_identity_question(text):
             ident = _identity_payload()
@@ -1710,6 +2061,7 @@ def api_chat():
                     "context_packet": context_packet,
                     "mode_flags": context_packet.get("meta", {}).get("mode_flags", {}),
                     "governor": {"decision": gov_decision, "reasons": gov_reasons},
+                    "ingress_route": ingress_route,
                 }, policy=routing_policy)
 
                 nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
@@ -4149,36 +4501,6 @@ except Exception as _e:
         app_logger.error(f"appnet2 init failed: {_e}", exc_info=True)
     except Exception:
         pass
-# --- v8 appdrivers endpoints (SarahMemory drivers: located at ./data/drivers/) ---
-try:
-    try:
-        _ensure_api_import_paths()  # type: ignore[name-defined]
-    except Exception:
-        pass
-
-    try:
-        from . import appdrivers as _appdrivers  # type: ignore
-    except Exception:
-        import appdrivers as _appdrivers  # type: ignore
-
-    if hasattr(_appdrivers, "init_app"):
-        _appdrivers.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
-    elif hasattr(_appdrivers, "apply"):
-        _appdrivers.apply(app)
-    else:
-        raise AttributeError("appdrivers missing init_app/apply entrypoint")
-
-    try:
-        app_logger.info("appdrivers mounted: /api/drivers/*")
-    except Exception:
-        pass
-
-except Exception as _e:
-    try:
-        app_logger.error(f"appdrivers init failed: {_e}", exc_info=True)
-    except Exception:
-        pass
-
 # --- v8 appstore endpoints (SarahMemory Power StoreFront) ---
 try:
     # If your app.py has this helper, use it; otherwise no-op.

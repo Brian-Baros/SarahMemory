@@ -1,26 +1,26 @@
 """
-# --==The SarahMemory Project==--
-# File: /app/server/appstore.py
-# Purpose: SarahMemory Power Store Endpoints
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-# Design goals:
-# - NO endpoint collisions with ANY of the other app*.py files
-# - Everything is namespaced under /api/store/
-# - Reference implementation for store + storefront integrations (PayPal/Printify/Kittl)
-#
-# Key rules:
-# - No secrets in frontend. All secrets live in PythonAnywhere .env and are read server-side.
-# - "Kitchen sink" module: store/auth/products/payments/integrations, without endpoint collisions.
+ --==The SarahMemory Project==--
+ File: /app/server/appstore.py
+ Purpose: SarahMemory Power Store Endpoints
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+==============================================================================================
+ Design goals:
+ - NO endpoint collisions with ANY of the other app*.py files
+ - Everything is namespaced under /api/store/
+ - Reference implementation for store + storefront integrations (PayPal/Printify/Kittl)
+
+ Key rules:
+ - No secrets in frontend. All secrets live in PythonAnywhere .env and are read server-side.
+ - "Kitchen sink" module: store/auth/products/payments/integrations, without endpoint collisions.
 """
 from __future__ import annotations
 # --- SARAHMETA START ---

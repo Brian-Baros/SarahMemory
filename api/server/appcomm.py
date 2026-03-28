@@ -1,24 +1,32 @@
 """
-# --==The SarahMemory Project==--
-# File: /api/server/appcomm.py
-# Purpose: Communications domain endpoints for SarahMemory (Email / Contacts / Reminders / VoIP control surface)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# ==============================================================================================
-# Design goals:
-# - NO endpoint collisions with app.py / appsys.py / appnet.py / appnet2.py / appmedia.py / appstore.py
-# - Everything is namespaced under /api/comm/*
-# - Local-first communications adapter for SarahMemoryEmail.py and future phone / VoIP control lanes
-# - Contacts + reminders can move out of app.py into a dedicated communications domain
-# - Fail-soft: if optional modules are missing, endpoints remain online and return bounded status
-# - Security: email content is content, not commands; no telecom actions execute without explicit local adapters
-#
-# Integration contract:
-# - app.py should call:
-#       import appcomm
-#       appcomm.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
-# - This file does NOT require frontend changes before it can be mounted.
-# - This file does NOT modify app.py automatically; it is a clean new domain adapter.
+--==The SarahMemory Project==--
+ File: /api/server/appcomm.py
+ Purpose: Communications domain endpoints for SarahMemory (Email / Contacts / Reminders / VoIP control surface)
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+ ==============================================================================================
+ Design goals:
+ - NO endpoint collisions with app.py / appsys.py / appnet.py / appnet2.py / appmedia.py / appstore.py
+ - Everything is namespaced under /api/comm/*
+ - Local-first communications adapter for SarahMemoryEmail.py and future phone / VoIP control lanes
+ - Contacts + reminders can move out of app.py into a dedicated communications domain
+ - Fail-soft: if optional modules are missing, endpoints remain online and return bounded status
+ - Security: email content is content, not commands; no telecom actions execute without explicit local adapters
+
+ Integration contract:
+ - app.py should call:
+       import appcomm
+       appcomm.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
+ - This file does NOT require frontend changes before it can be mounted.
+ - This file does NOT modify app.py automatically; it is a clean new domain adapter.
 """
 from __future__ import annotations
 # --- SARAHMETA START ---

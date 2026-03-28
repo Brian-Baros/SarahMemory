@@ -1,45 +1,45 @@
 """
-# --==The SarahMemory Project==--
-# File: /app/server/appnet.py
-# Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-# Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
-# Design goals:
-# - NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
-# - Everything is namespaced under /api/net/*
-# - Broker stores presence/messages/commands/groups/signals/files
-# - Broker does NOT execute commands; nodes verify/auth/execute locally
-#
-# IMPORTANT:
-# - This file FIXES your current bug: you had DUPLICATE Flask routes:
-#     /api/net/file/send
-#     /api/net/file/poll
-#     /api/net/file/ack
-#   defined TWICE (one “small file” version and one “chunked” version).
-#   That WILL cause endpoint collisions / undefined behavior.
-#
-# WHAT THIS VERSION DOES:
-# - Keeps your working “small broker file” API (Test3 compatible):
-#     POST /api/net/file/send
-#     GET  /api/net/file/poll
-#     POST /api/net/file/ack
-# - Adds CHUNKED transfers without collisions using NEW endpoints:
-#     POST /api/net/file/start
-#     POST /api/net/file/chunk
-#     GET  /api/net/file/chunk/poll
-#     POST /api/net/file/chunk/ack
-#     POST /api/net/file/finish
-# - Adds CRC32 + SHA256 per chunk, optional zlib compression, resume-friendly polling.
+ --==The SarahMemory Project==--
+ File: /app/server/appnet.py
+ Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+==============================================================================================
+ Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
+ Design goals:
+ - NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
+ - Everything is namespaced under /api/net/*
+ - Broker stores presence/messages/commands/groups/signals/files
+ - Broker does NOT execute commands; nodes verify/auth/execute locally
+
+ IMPORTANT:
+ - This file FIXES your current bug: you had DUPLICATE Flask routes:
+     /api/net/file/send
+     /api/net/file/poll
+     /api/net/file/ack
+   defined TWICE (one “small file” version and one “chunked” version).
+   That WILL cause endpoint collisions / undefined behavior.
+
+ WHAT THIS VERSION DOES:
+ - Keeps your working “small broker file” API (Test3 compatible):
+     POST /api/net/file/send
+     GET  /api/net/file/poll
+     POST /api/net/file/ack
+ - Adds CHUNKED transfers without collisions using NEW endpoints:
+     POST /api/net/file/start
+     POST /api/net/file/chunk
+     GET  /api/net/file/chunk/poll
+     POST /api/net/file/chunk/ack
+     POST /api/net/file/finish
+ - Adds CRC32 + SHA256 per chunk, optional zlib compression, resume-friendly polling.
 """
 from __future__ import annotations
 # --- SARAHMETA START ---

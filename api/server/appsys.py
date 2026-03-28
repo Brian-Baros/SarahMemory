@@ -1,30 +1,30 @@
 """
-# --==The SarahMemory Project==--
-# File: /api/server/appsys.py
-# ULTIMATE merged Flask server for SarahMemory (v8.0.0)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-# Purpose: System endpoints for local-only features (Files / OS utilities)
-# Notes:
-#  - MUST NOT expose PythonAnywhere server filesystem on ai.sarahmemory.com
-#  - Local browsing is enabled ONLY for localhost requests by default
-#  - app.py mounts this via appsys.init_app(app)
-#
-# v8.0.0 hardening:
-#  - Path traversal protection (canonicalize + enforce under BASE_DIR)
-#  - /api/files/upload (multipart + base64 JSON fallback) -> BASE_DIR/downloads
-#  - Trash workflow (BASE_DIR/dumpster/items + index.json)
-#  - Append-only activity log (DATA_DIR/logs/api_events.log)
-#  - Browser proxy fetch endpoints (Reader Mode) + native open hooks
+ --==The SarahMemory Project==--
+ File: /api/server/appsys.py
+ ULTIMATE merged Flask server for SarahMemory (v8.0.0)
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+==============================================================================================
+ Purpose: System endpoints for local-only features (Files / OS utilities)
+ Notes:
+  - MUST NOT expose PythonAnywhere server filesystem on ai.sarahmemory.com
+  - Local browsing is enabled ONLY for localhost requests by default
+  - app.py mounts this via appsys.init_app(app)
+
+ v8.0.0 hardening:
+  - Path traversal protection (canonicalize + enforce under BASE_DIR)
+  - /api/files/upload (multipart + base64 JSON fallback) -> BASE_DIR/downloads
+  - Trash workflow (BASE_DIR/dumpster/items + index.json)
+  - Append-only activity log (DATA_DIR/logs/api_events.log)
+  - Browser proxy fetch endpoints (Reader Mode) + native open hooks
 """
 from __future__ import annotations
 # --- SARAHMETA START ---

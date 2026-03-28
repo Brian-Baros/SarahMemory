@@ -1,19 +1,18 @@
 """
-# --==The SarahMemory Project==--
-# File: /api/server/appmedia.py
-# Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-appmedia.py
+ --==The SarahMemory Project==--
+ File: /api/server/appmedia.py
+ Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
+ Part of the SarahMemory Companion AI-bot Platform
+ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+ www.linkedin.com/in/brian-baros-29962a176
+ https://www.facebook.com/bbaros
+ brian.baros@sarahmemory.com
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ https://www.sarahmemory.com
+ https://api.sarahmemory.com
+ https://ai.sarahmemory.com
+ https://store.sarahmemory.com
+==============================================================================================
 
 Enterprise intent
 - Stand up a stable, cloud-safe API surface for Creative Studio outputs.
