@@ -9,7 +9,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -401,8 +401,8 @@ class NeuronResult:
     source: str = "neuron"
     artifacts: Dict[str, Any] = field(default_factory=dict)
     trace: Dict[str, Any] = field(default_factory=dict)
+    actions: List[Dict[str, Any]] = field(default_factory=list)
 
-    # ✅ FIX: required by __main__ (and useful everywhere)
     def to_dict(self) -> Dict[str, Any]:
         return {
             "ok": bool(self.ok),
@@ -412,6 +412,7 @@ class NeuronResult:
             "source": str(self.source),
             "artifacts": self.artifacts,
             "trace": self.trace,
+            "actions": list(self.actions or []),
         }
 
 
@@ -1960,6 +1961,533 @@ def _try_vision_lane(text: str, meta: Optional[Dict[str, Any]] = None, adv: Opti
 # -----------------------------------------------------------------------------
 # Public router surface
 # -----------------------------------------------------------------------------
+
+
+def _normalize_ingress_route(meta: Optional[Dict[str, Any]], user_text: str) -> Dict[str, Any]:
+    meta = dict(meta or {})
+    route = dict(meta.get("ingress_route") or {})
+    if not isinstance(route, dict):
+        route = {}
+    route_id = str(route.get("route_id") or "chat.general").strip() or "chat.general"
+    domain = str(route.get("domain") or "chat").strip() or "chat"
+    action = str(route.get("action") or "general_reply").strip() or "general_reply"
+    target_module = str(route.get("target_module") or "SarahMemoryReply").strip() or "SarahMemoryReply"
+    transport_target = str(route.get("transport_target") or "/api/chat").strip() or "/api/chat"
+    confidence = route.get("confidence")
+    try:
+        confidence = float(confidence)
+    except Exception:
+        confidence = 0.0
+    entities = route.get("entities") if isinstance(route.get("entities"), dict) else {}
+    intent_hint = str(route.get("intent_hint") or "").strip().lower()
+    if not intent_hint:
+        if route_id.startswith("research.weather") or domain == "research":
+            intent_hint = "research"
+        elif route_id.startswith("avatar."):
+            intent_hint = "creative"
+        elif route_id.startswith("reminder."):
+            intent_hint = "time"
+        elif domain in {"drivers", "system", "documents", "email", "network", "communication"}:
+            intent_hint = "action"
+        else:
+            intent_hint = domain.lower()
+    return {"route_id": route_id, "domain": domain, "action": action, "target_module": target_module, "transport_target": transport_target, "confidence": max(0.0, min(0.99, confidence)), "entities": entities, "intent_hint": intent_hint, "normalized_text": str(route.get("normalized_text") or user_text or ""), "needs_discovery": bool(route.get("needs_discovery")), "source": str(route.get("source") or "semantic_ingress_router")}
+
+
+def _datasets_db_path(name: str) -> str:
+    candidates = [os.path.join(os.path.dirname(__file__), name), os.path.join(os.getcwd(), name), os.path.join(_datasets_dir(), name), os.path.join(_data_dir(), 'memory', 'datasets', name), os.path.join(_base_dir(), 'data', 'memory', 'datasets', name)]
+    best = None
+    best_size = -1
+    for cand in candidates:
+        try:
+            if os.path.exists(cand):
+                sz = os.path.getsize(cand)
+                if sz > best_size:
+                    best = cand
+                    best_size = sz
+        except Exception:
+            pass
+    return best or candidates[0]
+
+
+def _parse_version_from_text(value: str) -> str:
+    text = str(value or "")
+    m = re.search(r"(?:version|ue[_\- ]?)(\d+(?:\.\d+){0,2})", text, re.I)
+    if m:
+        return m.group(1)
+    m = re.search(r"(\d+(?:\.\d+){1,2})", text)
+    return m.group(1) if m else ""
+
+
+def _system_index_lookup(terms: List[str], limit: int = 12) -> Dict[str, Any]:
+    out = {"files": [], "registry": [], "db": _datasets_db_path("system_index.db")}
+    db_path = out["db"]
+    if not os.path.exists(db_path):
+        return out
+    clean_terms = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
+    if not clean_terms:
+        return out
+    con = None
+    try:
+        con = sqlite3.connect(db_path, timeout=2.0)
+        cur = con.cursor()
+        file_hits = []
+        reg_hits = []
+        for term in clean_terms:
+            like = f"%{term}%"
+            try:
+                cur.execute("SELECT file_path, file_type FROM file_index WHERE lower(coalesce(file_path,'')) LIKE ? LIMIT ?", (like, int(limit)))
+                for row in cur.fetchall():
+                    item = {"file_path": row[0], "file_type": row[1], "term": term}
+                    if item not in file_hits:
+                        file_hits.append(item)
+            except Exception:
+                pass
+            try:
+                cur.execute("SELECT root_key, key_path, value_name, value_data FROM registry_index WHERE lower(coalesce(value_data,'')) LIKE ? OR lower(coalesce(value_name,'')) LIKE ? OR lower(coalesce(key_path,'')) LIKE ? LIMIT ?", (like, like, like, int(limit)))
+                for row in cur.fetchall():
+                    item = {"root_key": row[0], "key_path": row[1], "value_name": row[2], "value_data": row[3], "term": term}
+                    if item not in reg_hits:
+                        reg_hits.append(item)
+            except Exception:
+                pass
+        out["files"] = file_hits[:limit]
+        out["registry"] = reg_hits[:limit]
+    except Exception:
+        pass
+    finally:
+        try:
+            if con: con.close()
+        except Exception: pass
+    return out
+
+
+def _software_db_lookup(terms: List[str], limit: int = 8) -> List[Dict[str, Any]]:
+    db_path = _datasets_db_path("software.db")
+    if not os.path.exists(db_path):
+        return []
+    clean_terms = [str(t).strip().lower() for t in (terms or []) if str(t).strip()]
+    if not clean_terms:
+        return []
+    hits = []
+    con = None
+    try:
+        con = sqlite3.connect(db_path, timeout=2.0)
+        cur = con.cursor()
+        cur.execute("PRAGMA table_info(software_apps)")
+        cols = {str(r[1]).lower() for r in cur.fetchall()}
+        has_name = "name" in cols
+        has_app_name = "app_name" in cols
+        has_path = "path" in cols
+        has_platform = "platform" in cols
+        has_last_used = "last_used" in cols
+        has_usage_count = "usage_count" in cols
+        has_version = "version" in cols
+        has_category = "category" in cols
+        has_is_installed = "is_installed" in cols
+        if not (has_name or has_app_name or has_path):
+            return []
+        select_name = "coalesce(name, app_name)" if (has_name and has_app_name) else ("name" if has_name else ("app_name" if has_app_name else "''"))
+        select_path = "path" if has_path else "''"
+        select_platform = "platform" if has_platform else "''"
+        select_last_used = "last_used" if has_last_used else "''"
+        select_usage_count = "usage_count" if has_usage_count else "0"
+        select_version = "version" if has_version else "''"
+        select_category = "category" if has_category else "''"
+        select_installed = "is_installed" if has_is_installed else "NULL"
+        for term in clean_terms:
+            like = f"%{term}%"
+            where_parts = []
+            params = []
+            if has_name:
+                where_parts.append("lower(coalesce(name,'')) LIKE ?")
+                params.append(like)
+            if has_app_name:
+                where_parts.append("lower(coalesce(app_name,'')) LIKE ?")
+                params.append(like)
+            if has_path:
+                where_parts.append("lower(coalesce(path,'')) LIKE ?")
+                params.append(like)
+            if has_category:
+                where_parts.append("lower(coalesce(category,'')) LIKE ?")
+                params.append(like)
+            if not where_parts:
+                continue
+            sql = f"SELECT {select_name} AS resolved_name, {select_path} AS path, {select_platform} AS platform, {select_last_used} AS last_used, {select_usage_count} AS usage_count, {select_version} AS version, {select_category} AS category, {select_installed} AS is_installed FROM software_apps WHERE ({' OR '.join(where_parts)}) ORDER BY coalesce(usage_count,0) DESC, coalesce(last_used,'') DESC LIMIT ?"
+            params.append(int(limit))
+            try:
+                cur.execute(sql, tuple(params))
+                for row in cur.fetchall():
+                    item = {"name": row[0], "path": row[1], "platform": row[2], "last_used": row[3], "usage_count": row[4], "version": row[5], "category": row[6], "is_installed": row[7], "term": term}
+                    if item not in hits:
+                        hits.append(item)
+            except Exception:
+                pass
+    except Exception:
+        return []
+    finally:
+        try:
+            if con: con.close()
+        except Exception: pass
+    return hits[:limit]
+
+
+def _si_lookup(candidates: List[str]) -> List[Dict[str, Any]]:
+    out = []
+    try:
+        import SarahMemorySi as _Si  # type: ignore
+    except Exception:
+        return out
+    for name in candidates or []:
+        try:
+            path = _Si.get_app_path(name)
+        except Exception:
+            path = None
+        if path:
+            out.append({"name": name, "path": path, "source": "SarahMemorySi", "version": _parse_version_from_text(path)})
+    return out
+
+
+def _software_research_lookup(candidates: List[str], limit: int = 12) -> List[str]:
+    try:
+        import SarahMemorySoftwareResearch as _SSR  # type: ignore
+        items = _SSR.list_installed_software()
+    except Exception:
+        items = []
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in [str(x) for x in items if isinstance(x, str)]:
+        if any(str(c).lower() in item.lower() for c in (candidates or [])):
+            out.append(item)
+    return out[:limit]
+
+
+def _discover_driver_capabilities(route: Dict[str, Any], user_text: str) -> Dict[str, Any]:
+    entities = dict(route.get("entities") or {})
+    requested_device = str(entities.get("device_type") or "").strip().lower()
+    requested_vendor = str(entities.get("vendor") or "").strip().lower()
+    out = {"requested_device": requested_device, "requested_vendor": requested_vendor, "driver_ids": [], "matches": [], "available": False}
+    try:
+        import appdrivers as _AppDrivers  # type: ignore
+        ids = list(_AppDrivers._discover_driver_ids())
+    except Exception:
+        ids = []
+        return out
+    out["driver_ids"] = ids
+    for did in ids:
+        try:
+            manifest = _AppDrivers._load_manifest(did) or {}
+        except Exception:
+            manifest = {}
+        blob = json.dumps(manifest, ensure_ascii=False).lower()
+        if requested_device and requested_device not in blob and requested_device not in str(did).lower():
+            if not (requested_device == 'webcam' and ('camera' in blob or 'cam' in blob)):
+                continue
+        if requested_vendor and requested_vendor not in blob and requested_vendor not in str(did).lower():
+            continue
+        actions = manifest.get('actions') if isinstance(manifest.get('actions'), list) else []
+        out['matches'].append({'driver_id': did, 'manifest': manifest, 'actions': actions})
+    out['available'] = bool(out['matches'])
+    return out
+
+
+def _derive_schedule_spec(user_text: str, route: Dict[str, Any]) -> Dict[str, Any]:
+    text = str(user_text or '').lower()
+    if any(p in text for p in ['daily','every day','everyday']):
+        return {'requested': True, 'pattern': 'daily', 'time_hint': '09:00', 'summary': 'Recurring daily task requested'}
+    if 'weekly' in text or 'every week' in text:
+        return {'requested': True, 'pattern': 'weekly', 'time_hint': '09:00', 'summary': 'Recurring weekly task requested'}
+    if 'monthly' in text or 'every month' in text:
+        return {'requested': True, 'pattern': 'monthly', 'time_hint': '09:00', 'summary': 'Recurring monthly task requested'}
+    if str(route.get('route_id') or '').startswith('reminder.'):
+        return {'requested': True, 'pattern': 'one_shot_or_parse', 'summary': 'Reminder or calendar action requested'}
+    return {'requested': False}
+
+
+def _driver_action_hint(route: Dict[str, Any], user_text: str) -> str:
+    text = str(user_text or '').lower()
+    entities = dict(route.get('entities') or {})
+    control_name = str(entities.get('control_name') or entities.get('key_name') or '').lower()
+    state = str(entities.get('requested_state') or '').lower()
+    device_type = str(entities.get('device_type') or '').lower()
+    if control_name in {'caps_lock', 'num_lock', 'scroll_lock'} or any(k in text for k in ('caps lock', 'num lock', 'scroll lock')):
+        return 'keyboard_lock_set'
+    if device_type == 'keyboard' and (entities.get('value') or any(k in text for k in ('color','light','lights','led','rgb','backlight'))):
+        return 'keyboard_rgb_set'
+    if state in {'on','open','enable','activate','start'}:
+        return 'power_on'
+    if state in {'off','disable','stop','close'}:
+        return 'power_off'
+    if entities.get('value') or any(k in text for k in ('color','light','lights','led','rgb')):
+        return 'set_value'
+    return 'generic_action'
+
+
+def _unwrap_flaskish_response(obj: Any) -> Dict[str, Any]:
+    try:
+        if isinstance(obj, tuple) and len(obj) >= 1:
+            resp = obj[0]
+            status = obj[1] if len(obj) > 1 else None
+            if hasattr(resp, 'get_json'):
+                data = resp.get_json(silent=True) or {}
+            else:
+                data = resp if isinstance(resp, dict) else {'result': str(resp)}
+            if status is not None and isinstance(data, dict):
+                data.setdefault('status', status)
+            return data if isinstance(data, dict) else {'result': data}
+        if hasattr(obj, 'get_json'):
+            data = obj.get_json(silent=True) or {}
+            return data if isinstance(data, dict) else {'result': data}
+        if isinstance(obj, dict):
+            return obj
+        return {'result': obj}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+def _discover_runtime_capabilities(route: Dict[str, Any], user_text: str) -> Dict[str, Any]:
+    route_id = str(route.get('route_id') or '')
+    entities = dict(route.get('entities') or {})
+    software_terms = []
+    capability_type = 'generic'
+    if route_id == 'avatar.create.activate':
+        capability_type = 'avatar_engine'
+        engine_pref = str(entities.get('engine_preference') or '').lower()
+        software_terms = [engine_pref] if engine_pref else ['unreal engine','unreal','blender']
+    elif route_id == 'documents.office.write':
+        capability_type = 'office_document'
+        software_terms = ['microsoft word','word','winword','libreoffice writer']
+    elif route_id == 'system.application.control':
+        capability_type = 'application_control'
+        target = str(entities.get('target_app') or '').strip().lower()
+        software_terms = [target] if target else []
+    elif route_id == 'email.mail.automation':
+        capability_type = 'mail_automation'
+        software_terms = ['outlook','thunderbird']
+    elif route_id == 'drivers.device.control':
+        capability_type = 'driver_control'
+    clean_terms = [t for t in software_terms if t]
+    system_index = _system_index_lookup(clean_terms)
+    software_db = _software_db_lookup(clean_terms)
+    si_hits = _si_lookup(clean_terms)
+    software_research = _software_research_lookup(clean_terms)
+    driver_caps = _discover_driver_capabilities(route, user_text) if route_id == 'drivers.device.control' else {}
+    schedule_spec = _derive_schedule_spec(user_text, route) if route_id in {'email.mail.automation','reminder.schedule.task'} else {'requested': False}
+    discovered_versions = []
+    for coll in (si_hits, software_db, system_index.get('files', []), system_index.get('registry', [])):
+        for item in coll:
+            raw = json.dumps(item, ensure_ascii=False) if isinstance(item, dict) else str(item)
+            ver = _parse_version_from_text(raw)
+            if ver and ver not in discovered_versions:
+                discovered_versions.append(ver)
+    return {'capability_type': capability_type, 'software_terms': clean_terms, 'system_index': system_index, 'software_db': software_db, 'si_hits': si_hits, 'software_research': software_research, 'driver_capabilities': driver_caps, 'schedule_spec': schedule_spec, 'discovered_versions': discovered_versions[:8], 'has_discovery_hits': bool(si_hits or software_db or system_index.get('files') or system_index.get('registry') or software_research or driver_caps.get('matches'))}
+
+
+def _make_execution_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_text: str) -> Dict[str, Any]:
+    route_id = str(route.get('route_id') or 'chat.general')
+    entities = dict(route.get('entities') or {})
+    plan = {'route_id': route_id, 'transport_target': str(route.get('transport_target') or ''), 'target_module': str(route.get('target_module') or ''), 'requires_confirmation': True, 'steps': [], 'endpoint_calls': [], 'adapter_gap': None}
+    if route_id == 'drivers.device.control':
+        matches = ((discovery.get('driver_capabilities') or {}).get('matches') or [])
+        if matches:
+            driver_id = str(matches[0].get('driver_id') or '')
+            action_id = _driver_action_hint(route, user_text)
+            payload = {'payload': {'requested_action': action_id, 'entities': entities, 'user_text': user_text}}
+            plan['steps'] = [f'Discover governed driver capabilities for {driver_id}.', f'Connect driver session for {driver_id} if not already active.', f'Send action {action_id} with extracted entities.']
+            plan['endpoint_calls'] = [{'method': 'POST', 'path': f'/api/drivers/{driver_id}/discover', 'payload': payload['payload']}, {'method': 'POST', 'path': f'/api/drivers/{driver_id}/connect', 'payload': payload}, {'method': 'POST', 'path': f'/api/drivers/{driver_id}/actions/{action_id}', 'payload': payload}]
+            plan['requires_confirmation'] = False
+        else:
+            plan['steps'] = ['Run governed driver discovery and manifest scan before attempting hardware control.']
+            plan['adapter_gap'] = 'driver_or_mapping_missing'
+    elif route_id == 'email.mail.automation':
+        sched = discovery.get('schedule_spec') or {}
+        plan['steps'] = ['List inbox/spam messages through the communications lane.', 'Prepare unsubscribe actions only for messages positively classified as spam or promotional.']
+        plan['endpoint_calls'] = [{'method': 'POST', 'path': '/api/comm/email/list', 'payload': {'folder': entities.get('target_folder') or 'spam', 'limit': 50, 'source': 'neuron_ingress'}}]
+        if sched.get('requested'):
+            plan['steps'].append('Create recurring reminder/scheduler entry for ongoing cleanup.')
+            plan['endpoint_calls'].append({'method': 'POST', 'path': '/api/comm/reminders/save', 'payload': {'title': 'Empty spam trash', 'body': 'Governed recurring spam-trash cleanup task requested from chat ingress.', 'status': 'active', 'source': 'neuron_ingress', 'extra': {'pattern': sched.get('pattern'), 'time_hint': sched.get('time_hint')}}})
+    elif route_id == 'documents.office.write':
+        plan['steps'] = ['Discover a word-processing runtime from indexed/system software data.', 'Generate requested document content through the writing lane.', 'Open the document in the discovered software under user authority.']
+        if discovery.get('si_hits') or discovery.get('software_db') or discovery.get('system_index', {}).get('registry'):
+            plan['requires_confirmation'] = False
+        else:
+            plan['adapter_gap'] = 'software_runtime_not_confirmed'
+    elif route_id == 'avatar.create.activate':
+        plan['steps'] = ['Discover the preferred 3D engine/runtime from indexed system knowledge.', 'Create or extend the governed avatar adapter if the engine capability is incomplete.', 'Publish the avatar into the Avatar Panel without requiring a frontend rebuild.']
+        if not discovery.get('has_discovery_hits'):
+            plan['adapter_gap'] = 'avatar_engine_adapter_missing_or_unconfirmed'
+    elif route_id == 'system.application.control':
+        target_app = str(entities.get('target_app') or 'requested application')
+        requested_state = str(entities.get('requested_state') or 'open')
+        plan['steps'] = [f'Resolve the runtime path for {target_app} from indexed software sources.', f'Perform governed application state action: {requested_state}.']
+        if discovery.get('si_hits') or discovery.get('software_db') or discovery.get('system_index', {}).get('registry'):
+            plan['requires_confirmation'] = False
+        else:
+            plan['adapter_gap'] = 'app_runtime_not_confirmed'
+    return plan
+
+
+
+
+def _generic_set_lock_key_state(key_name: str, requested_state: str) -> Dict[str, Any]:
+    key_name = str(key_name or '').strip().lower()
+    requested_state = str(requested_state or 'on').strip().lower()
+    vk_map = {'caps_lock': 0x14, 'num_lock': 0x90, 'scroll_lock': 0x91}
+    if key_name not in vk_map:
+        return {'ok': False, 'error': 'unsupported_lock_key', 'key_name': key_name}
+    if os.name != 'nt':
+        return {'ok': False, 'error': 'unsupported_os', 'os': os.name, 'key_name': key_name}
+    try:
+        import ctypes, time as _time
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        desired_on = requested_state != 'off'
+        vk = vk_map[key_name]
+        KEYEVENTF_EXTENDEDKEY = 0x0001
+        KEYEVENTF_KEYUP = 0x0002
+        changed = False
+        for _ in range(4):
+            current_on = bool(user32.GetKeyState(vk) & 1)
+            if current_on == desired_on:
+                return {'ok': True, 'key_name': key_name, 'requested_state': requested_state, 'final_state': 'on' if current_on else 'off', 'changed': changed}
+            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY, 0)
+            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+            changed = True
+            _time.sleep(0.05)
+        final_on = bool(user32.GetKeyState(vk) & 1)
+        return {'ok': final_on == desired_on, 'key_name': key_name, 'requested_state': requested_state, 'final_state': 'on' if final_on else 'off', 'changed': changed}
+    except Exception as e:
+        return {'ok': False, 'error': str(e), 'key_name': key_name, 'requested_state': requested_state}
+
+
+def _generic_keyboard_rgb_set(color_value: str) -> Dict[str, Any]:
+    try:
+        import shutil, subprocess
+        op = shutil.which('openrgb') or shutil.which('OpenRGB')
+        if not op:
+            return {'ok': False, 'error': 'openrgb_not_found'}
+        color = str(color_value or '').strip().lower() or 'white'
+        color_map = {'red':'FF0000','green':'00FF00','blue':'0000FF','purple':'800080','yellow':'FFFF00','white':'FFFFFF','orange':'FFA500','pink':'FFC0CB'}
+        cmd = [op, '--mode', 'static']
+        if color in color_map:
+            cmd.extend(['--color', color_map[color]])
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
+        return {'ok': proc.returncode == 0, 'color': color, 'stdout': proc.stdout[-500:], 'stderr': proc.stderr[-500:], 'returncode': proc.returncode}
+    except Exception as e:
+        return {'ok': False, 'error': str(e), 'color': str(color_value or '')}
+
+def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    meta = meta or {}
+    route_id = str(route.get('route_id') or '')
+    entities = dict(route.get('entities') or {})
+    result = {'attempted': False, 'executed': False, 'mode': 'plan_only', 'details': {}}
+    if _is_safe_mode() and route_id in {'drivers.device.control', 'avatar.create.activate'}:
+        result['details'] = {'ok': False, 'reason': 'safe_mode_gate'}
+        return result
+    try:
+        if route_id == 'system.application.control':
+            target_app = str(entities.get('target_app') or '').strip()
+            requested_state = str(entities.get('requested_state') or 'open').strip().lower()
+            if target_app:
+                import SarahMemorySi as _Si  # type: ignore
+                cmd = f"{requested_state} {target_app}"
+                ok = bool(_Si.manage_application_request(cmd)) if hasattr(_Si, 'manage_application_request') else False
+                return {'attempted': True, 'executed': ok, 'mode': 'direct_internal_dispatch', 'details': {'ok': ok, 'command': cmd, 'target_app': target_app, 'requested_state': requested_state}}
+        if route_id == 'email.mail.automation':
+            import appcomm as _AppComm  # type: ignore
+            folder = str(entities.get('target_folder') or 'spam')
+            listed = _unwrap_flaskish_response(_AppComm._email_poll({'folder': folder, 'limit': 50, 'source': 'neuron_ingress'})) if hasattr(_AppComm, '_email_poll') else {'ok': False, 'error': 'email_poll_unavailable'}
+            details = {'listed': listed}
+            executed = bool(listed.get('ok'))
+            sched = discovery.get('schedule_spec') or {}
+            if sched.get('requested') and hasattr(_AppComm, '_reminder_upsert'):
+                reminder = _AppComm._reminder_upsert({'title': 'Empty spam trash', 'body': 'Governed recurring spam-trash cleanup task requested from chat ingress.', 'status': 'active', 'source': 'neuron_ingress', 'extra': {'pattern': sched.get('pattern'), 'time_hint': sched.get('time_hint')}})
+                details['scheduler'] = reminder if isinstance(reminder, dict) else {'result': reminder}
+                executed = executed or bool(details['scheduler'].get('ok'))
+            return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': details}
+        if route_id == 'drivers.device.control':
+            action_id = _driver_action_hint(route, user_text)
+            control_name = str(entities.get('control_name') or entities.get('key_name') or '').lower()
+            if action_id == 'keyboard_lock_set' and control_name in {'caps_lock', 'num_lock', 'scroll_lock'}:
+                action_res = _generic_set_lock_key_state(control_name, str(entities.get('requested_state') or 'on'))
+                return {'attempted': True, 'executed': bool(action_res.get('ok')), 'mode': 'generic_local_control', 'details': {'action': action_res, 'action_id': action_id}}
+            if action_id == 'keyboard_rgb_set':
+                action_res = _generic_keyboard_rgb_set(str(entities.get('value') or 'white'))
+                if bool(action_res.get('ok')):
+                    return {'attempted': True, 'executed': True, 'mode': 'generic_local_control', 'details': {'action': action_res, 'action_id': action_id}}
+            import appdrivers as _AppDrivers  # type: ignore
+            matches = ((discovery.get('driver_capabilities') or {}).get('matches') or [])
+            if matches and hasattr(_AppDrivers, '_driver_discover') and hasattr(_AppDrivers, '_driver_connect'):
+                driver_id = str(matches[0].get('driver_id') or '')
+                discovered = _unwrap_flaskish_response(_AppDrivers._driver_discover(driver_id, payload={'source': 'neuron_ingress', 'entities': entities}))
+                connected = _unwrap_flaskish_response(_AppDrivers._driver_connect(driver_id, cfg={}, connect_payload={'source': 'neuron_ingress', 'entities': entities}))
+                action_res = {'ok': False, 'skipped': True}
+                try:
+                    mod, err = _AppDrivers._load_driver_module(driver_id)
+                    if not err and mod is not None:
+                        context = _AppDrivers._build_driver_context(driver_id, instance_id=(_AppDrivers._session_get(driver_id) or {}).get('instance_id'), extra={'action_id': action_id})
+                        payload = {'requested_action': action_id, 'entities': entities, 'user_text': user_text}
+                        if hasattr(mod, 'driver_action'):
+                            action_res = _unwrap_flaskish_response(mod.driver_action(action_id=action_id, context=context, payload=payload))
+                        elif hasattr(mod, f'action_{action_id}'):
+                            action_res = _unwrap_flaskish_response(getattr(mod, f'action_{action_id}')(context=context, payload=payload))
+                except Exception as e:
+                    action_res = {'ok': False, 'error': str(e)}
+                executed = bool(discovered.get('ok')) or bool(connected.get('ok')) or bool(action_res.get('ok'))
+                return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': {'driver_id': driver_id, 'discover': discovered, 'connect': connected, 'action': action_res, 'action_id': action_id}}
+            return {'attempted': True, 'executed': False, 'mode': 'direct_internal_dispatch', 'details': {'ok': False, 'error': 'driver_unavailable', 'action_id': action_id, 'entities': entities}}
+    except Exception as e:
+        return {'attempted': True, 'executed': False, 'mode': 'direct_internal_dispatch', 'details': {'ok': False, 'error': str(e)}}
+    return result
+
+
+def _ingress_execution_ticket(route: Dict[str, Any], trace: Dict[str, Any], user_text: str = '') -> NeuronResult:
+    route_id = str(route.get('route_id') or 'chat.general')
+    target_module = str(route.get('target_module') or '')
+    entities = dict(route.get('entities') or {})
+    discovery = _discover_runtime_capabilities(route, user_text)
+    reply = f'Routed request to {target_module or "execution"} using virtual route {route_id}.'
+    if route_id == 'drivers.device.control':
+        device_type = str(entities.get('device_type') or 'device')
+        requested_state = str(entities.get('requested_state') or entities.get('action') or 'requested')
+        if discovery.get('driver_capabilities', {}).get('available'):
+            matches = (discovery.get('driver_capabilities') or {}).get('matches') or []
+            top_id = str(matches[0].get('driver_id') or 'driver') if matches else 'driver'
+            reply = f'Routed request to driver control for {device_type} {requested_state}. Matching driver {top_id} is available for governed execution.'
+        else:
+            reply = f'Routed request to driver control for {device_type} {requested_state}. Runtime driver discovery is still required before execution.'
+    elif route_id == 'documents.office.write':
+        topic = str(entities.get('topic') or 'the requested topic')
+        if discovery.get('si_hits') or discovery.get('software_db') or discovery.get('system_index', {}).get('registry'):
+            reply = f'Routed request to document automation for content generation on {topic}. A word-processing capability was discovered and is ready for governed execution planning.'
+        else:
+            reply = f'Routed request to document automation for content generation on {topic}. Runtime software discovery is required before execution.'
+    elif route_id == 'avatar.create.activate':
+        engine_pref = str(entities.get('engine_preference') or 'preferred engine')
+        if discovery.get('has_discovery_hits'):
+            reply = f'Routed request to avatar creation using {engine_pref}. Engine discovery located candidate runtime assets for governed adapter planning.'
+        else:
+            reply = f'Routed request to avatar creation using {engine_pref}. Runtime engine discovery is required before adapter planning.'
+    elif route_id == 'email.mail.automation':
+        sched = discovery.get('schedule_spec') or {}
+        if sched.get('requested'):
+            reply = 'Routed request to communications automation. Email handling and recurring scheduler planning were detected for governed execution.'
+        else:
+            reply = 'Routed request to communications automation. Mail capability discovery completed for governed execution planning.'
+    execution_plan = _make_execution_plan(route, discovery, user_text)
+    execution_result = _execute_ingress_plan(route, discovery, user_text, trace)
+    if execution_result.get('attempted'):
+        if execution_result.get('executed'):
+            reply = reply.rstrip('.') + '. Direct internal execution completed.'
+        elif execution_result.get('mode') == 'direct_internal_dispatch':
+            reply = reply.rstrip('.') + '. Direct execution was attempted but did not fully complete; keeping governed execution plan ready.'
+    artifacts = {'route_ticket': route, 'executor': target_module, 'entities': entities, 'runtime_discovery': discovery, 'execution_plan': execution_plan, 'execution_result': execution_result}
+    actions = list(execution_plan.get('endpoint_calls') or []) if isinstance(execution_plan.get('endpoint_calls'), list) else []
+    if execution_result.get('attempted'):
+        actions.append({'type': 'execution_result', 'data': execution_result})
+    return NeuronResult(ok=True, reply=reply, confidence=max(0.61, float(route.get('confidence') or 0.61)), intent=str(route.get('intent_hint') or route.get('domain') or 'action'), source='ingress_router', artifacts=artifacts, trace=trace, actions=actions)
+
+
 def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: Optional[Dict[str, Any]] = None) -> NeuronResult:
     _init_db()
     budget = _budget_limits()
@@ -1978,7 +2506,9 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     if bool(meta.get("local_only") or meta.get("offline")):
         allowed_tiers["tier3"] = False
     inp = NeuronInput(text=user_text or "", meta=meta)
-    trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}}
+    ingress_route = _normalize_ingress_route(meta, user_text or "")
+    inp.meta["ingress_route"] = ingress_route
+    trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}, "ingress": ingress_route}
     trace["policy"] = {"allowed_tiers": allowed_tiers, "approved_modules": approved_modules}
     trace["core_governance"] = _core_governance_trace()
 
@@ -2017,6 +2547,8 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
     # Intent selection
     intent = _classify_intent(inp.text)
+    if ingress_route.get("intent_hint") and float(ingress_route.get("confidence") or 0.0) >= 0.58:
+        intent = str(ingress_route.get("intent_hint") or intent).lower()
     try:
         adv_intent = str(adv.get("intent") or "").strip()
         adv_conf = adv.get("confidence")
@@ -2027,6 +2559,24 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
 
     inp.meta["intent"] = intent
     trace["intent"] = intent
+
+    if str(ingress_route.get("route_id") or "").startswith("research.weather") and bool(allowed_tiers.get("tier2", True)) and not inp.meta.get("offline"):
+        research_data = _try_research(inp.text)
+        if research_data:
+            _trace_primary_lane(trace, 'answer', 'SarahMemoryResearch')
+            trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngress->Research", "ok": True})
+            merged, artifacts = _synthesize_evidence_reply("Here is what I found:", research_data)
+            res = NeuronResult(ok=True, reply=merged, confidence=max(0.72, float(ingress_route.get("confidence") or 0.72)), intent=intent, source="research", artifacts={"ingress_route": ingress_route, **(artifacts or {})}, trace=trace)
+            _log_event("route", intent, res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
+            return res
+        trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngress->Research", "ok": False})
+
+    if ingress_route.get("domain") in {"drivers", "system", "documents", "email", "network", "communication", "reminder", "avatar"} and float(ingress_route.get("confidence") or 0.0) >= 0.66:
+        _trace_primary_lane(trace, 'action', str(ingress_route.get("target_module") or 'executor'))
+        trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngressExecutor", "ok": True})
+        res = _ingress_execution_ticket(ingress_route, trace, inp.text)
+        _log_event("route", intent, res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
+        return res
 
     # Governance handshake: ask CognitiveServices for request-scoped policy and
     # optional CognitiveThinker co-review before routing high-impact work.

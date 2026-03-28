@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -866,11 +866,53 @@ def fetch_reminders():
 
 def fetch_software_commands():
     try:
-        conn = sqlite3.connect(SOFTWARE_DB)
+        candidates = [SOFTWARE_DB, os.path.join(os.path.dirname(__file__), 'software.db'), os.path.join(os.getcwd(), 'software.db')]
+        db_path = None
+        best_size = -1
+        for cand in candidates:
+            try:
+                if cand and os.path.exists(cand):
+                    sz = os.path.getsize(cand)
+                    if sz > best_size:
+                        best_size = sz
+                        db_path = cand
+            except Exception:
+                pass
+        db_path = db_path or SOFTWARE_DB
+        conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT app_name, path FROM software_apps WHERE is_installed = 1")
-        entries = cursor.fetchall()
+        cursor.execute("PRAGMA table_info(software_apps)")
+        cols = {str(r[1]).lower() for r in cursor.fetchall()}
+        has_name = 'name' in cols
+        has_app_name = 'app_name' in cols
+        has_path = 'path' in cols
+        has_usage_count = 'usage_count' in cols
+        has_last_used = 'last_used' in cols
+        if not has_path or not (has_name or has_app_name):
+            conn.close()
+            return []
+        select_name = "COALESCE(name, app_name)" if (has_name and has_app_name) else ("name" if has_name else "app_name")
+        order_bits = []
+        if has_usage_count:
+            order_bits.append("COALESCE(usage_count, 0) DESC")
+        if has_last_used:
+            order_bits.append("COALESCE(last_used, '') DESC")
+        order_sql = (" ORDER BY " + ", ".join(order_bits)) if order_bits else ""
+        sql = f"SELECT {select_name} AS resolved_name, path FROM software_apps WHERE COALESCE(path, '') <> ''{order_sql}"
+        cursor.execute(sql)
+        raw_entries = cursor.fetchall()
         conn.close()
+        entries = []
+        for name, path in raw_entries:
+            if not path:
+                continue
+            resolved_name = (name or '').strip() if isinstance(name, str) else str(name or '').strip()
+            if not resolved_name:
+                try:
+                    resolved_name = os.path.splitext(os.path.basename(path))[0]
+                except Exception:
+                    resolved_name = ''
+            entries.append((resolved_name, path))
         return entries
     except Exception as e:
         logger.error(f"[SOFTWARE_DB ERROR] {e}")

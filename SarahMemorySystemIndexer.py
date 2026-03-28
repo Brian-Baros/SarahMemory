@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -221,7 +221,7 @@ def scan_registry():
             with winreg.OpenKey(root, path) as uninstall_root:
                 for i in range(winreg.QueryInfoKey(uninstall_root)[0]):
                     subkey = winreg.EnumKey(uninstall_root, i)
-                    subkey_path = f"{path}\{subkey}"
+                    subkey_path = f"{path}\\{subkey}"
                     try:
                         with winreg.OpenKey(root, subkey_path) as app_key:
                             try:
