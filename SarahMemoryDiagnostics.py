@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -108,6 +108,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryNeuron.py"),   
     os.path.join(config.BASE_DIR, "SarahMemoryOptimization.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryPersonality.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryPreTokenAnalyzer.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReminder.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReply.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryResearch.py"),
