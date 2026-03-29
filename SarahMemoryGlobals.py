@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -1633,9 +1633,9 @@ WEB_RESEARCH_ENABLED = True # True = False Disable Web search Learning. SarahMem
 # Web Homepage This will be the HomePage in which is seen when the SarahMemoryGUI.py interface is loaded.
 WEB_HOMEPAGE = "https://www.duckduckgo.com"
 # Web Research Source Flags, For SarahMemoryResearch.py - Class 2 - WebSearching and Learning mode
-DUCKDUCKGO_RESEARCH_ENABLED = False #Set True/False for testing purposes (semi-works)
+DUCKDUCKGO_RESEARCH_ENABLED = True #Set True/False for testing purposes (semi-works)
 WIKIPEDIA_RESEARCH_ENABLED = True #Set True/False for testing purposes (works)
-FREE_DICTIONARY_RESEARCH_ENABLED = False #Set True/False for Testing purposes (semi-works)
+FREE_DICTIONARY_RESEARCH_ENABLED = True #Set True/False for Testing purposes (semi-works)
 
 # Note these are set to False because of multiple different reasons and must be highly researched before setting any to TRUE
 STACKOVERFLOW_RESEARCH_ENABLED = False # Set to False until further notice
@@ -1659,7 +1659,7 @@ OPEN_AI_API     = True
 CLAUDE_API      = False
 ANTHROPIC_API   = False
 MISTRAL_API     = False
-GEMINI_API      = False
+GEMINI_API      = True
 HUGGINGFACE_API = False
 DEEPSEEK_API    = False
 GROQ_API        = False

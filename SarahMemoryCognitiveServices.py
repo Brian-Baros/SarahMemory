@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -83,6 +83,11 @@ from typing import Any, Dict, Optional, Tuple
 import threading
 import uuid
 import SarahMemoryGlobals as config
+
+try:
+    import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+except Exception:
+    _CogSelf = None
 
 # -----------------------------------------------------------------------------
 # Logger
@@ -545,7 +550,53 @@ def get_cognitive_policy_snapshot() -> Dict[str, Any]:
             snap["core_governance"] = gp() or {}
     except Exception:
         snap["core_governance"] = {}
+    try:
+        cself = _get_cognitive_self_packet("", {}, force_refresh=False)
+        if cself:
+            snap["cognitive_self_summary"] = _self_summary_from_packet(cself)
+            snap["cognitive_self_status"] = cself.get("status") or {}
+            snap["cognitive_self_temporal_awareness"] = cself.get("temporal_awareness") or {}
+            snap["tri_force_contract"] = cself.get("tri_force_contract") or {}
+    except Exception:
+        pass
     return snap
+
+
+def _get_cognitive_self_packet(request_text: str = "", caller_context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
+    ctx = dict(caller_context or {})
+    if request_text and not ctx.get("request_text") and not ctx.get("text"):
+        ctx["request_text"] = str(request_text)
+    if not _CogSelf:
+        return {}
+    try:
+        fn = getattr(_CogSelf, "get_governor_consumer_packet", None)
+        if callable(fn):
+            pkt = fn(request_text=request_text, context=ctx, force_refresh=force_refresh)
+            return pkt if isinstance(pkt, dict) else {}
+    except Exception as e:
+        logger.debug("CognitiveSelf governor packet failed: %s", e)
+    return {}
+
+
+def _self_summary_from_packet(pkt: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(pkt, dict):
+        return {}
+    status = pkt.get("status") if isinstance(pkt.get("status"), dict) else {}
+    identity = pkt.get("identity") if isinstance(pkt.get("identity"), dict) else {}
+    temporal = pkt.get("temporal_awareness") if isinstance(pkt.get("temporal_awareness"), dict) else {}
+    realtime = pkt.get("realtime_strategy") if isinstance(pkt.get("realtime_strategy"), dict) else {}
+    return {
+        "name": identity.get("name") or identity.get("entity_name"),
+        "platform": identity.get("platform"),
+        "node_name": identity.get("node_name"),
+        "run_mode": status.get("run_mode"),
+        "device_mode": status.get("device_mode"),
+        "safe_mode": status.get("safe_mode"),
+        "local_only": status.get("local_only"),
+        "online_connectivity": temporal.get("online_connectivity"),
+        "continuity_state": status.get("continuity_state"),
+        "realtime_requested": realtime.get("realtime_requested"),
+    }
 
 
 # -----------------------------------------------------------------------------
@@ -955,6 +1006,8 @@ def govern_request(
     intent = classify_intent(request_text)
     pa = _normalize_proposed_action(proposed_action)
     ctx = caller_context or {}
+    cognitive_self_packet = _get_cognitive_self_packet(request_text, ctx, force_refresh=False)
+    cognitive_self_summary = _self_summary_from_packet(cognitive_self_packet)
 
     # ---------------------------------------------------------------------
     # Build a minimal routing policy (Governor output) — monotonic restrictions.
@@ -966,8 +1019,8 @@ def govern_request(
     except Exception:
         mode_flags = {}
 
-    local_only = bool(mode_flags.get("LOCAL_ONLY_MODE") or ctx.get("local_only") or ctx.get("offline"))
-    safe_mode = bool(mode_flags.get("SAFE_MODE") or ctx.get("safe_mode"))
+    local_only = bool(mode_flags.get("LOCAL_ONLY_MODE") or ctx.get("local_only") or ctx.get("offline") or cognitive_self_summary.get("local_only"))
+    safe_mode = bool(mode_flags.get("SAFE_MODE") or ctx.get("safe_mode") or cognitive_self_summary.get("safe_mode"))
     neoskymatrix = bool(mode_flags.get("NEOSKYMATRIX") or ctx.get("neoskymatrix"))
     developersmode = bool(mode_flags.get("DEVELOPERSMODE") or ctx.get("developersmode"))
 
@@ -1048,6 +1101,15 @@ def govern_request(
             "core_governance": snap.get("core_governance", {}),
             "cognitive_thinker_consult_enabled": _cognitive_thinker_enabled(ctx),
         },
+        "cognitive_self": {
+            "summary": cognitive_self_summary,
+            "governor_packet": cognitive_self_packet,
+        },
+        "tri_force": {
+            "authority": "SarahMemoryCognitiveSelf",
+            "governor": "SarahMemoryCognitiveServices",
+            "thinker_peer": "SarahMemoryCognitiveThinker",
+        },
     }
 
 
@@ -1100,6 +1162,9 @@ def govern_request(
             dec["trace"].setdefault("primary_lane", dec.get("primary_lane"))
             dec["trace"].setdefault("module_hints", dec.get("module_hints") or [])
             dec["trace"].setdefault("execution_allowed", False)
+            if cognitive_self_summary:
+                dec["trace"].setdefault("cognitive_self_summary", cognitive_self_summary)
+                dec["trace"].setdefault("tri_force", {"authority": "SarahMemoryCognitiveSelf", "governor": "SarahMemoryCognitiveServices", "thinker_peer_enabled": _cognitive_thinker_enabled(ctx)})
         except Exception:
             pass
 # Event log (best-effort)
@@ -1175,6 +1240,10 @@ def govern_request(
 
     questions.append("Did the caller provide a structured proposed_action plan?")
     answers["has_proposed_action"] = bool(pa)
+    questions.append("What does CognitiveSelf say about current runtime, continuity, and realtime resource posture?")
+    answers["cognitive_self_summary"] = cognitive_self_summary
+    answers["cognitive_self_temporal_awareness"] = cognitive_self_packet.get("temporal_awareness") if isinstance(cognitive_self_packet, dict) else {}
+    answers["cognitive_self_realtime_strategy"] = cognitive_self_packet.get("realtime_strategy") if isinstance(cognitive_self_packet, dict) else {}
     if pa:
         answers["proposed_action_summary"] = {
             "reason": _safe_str(pa.get("reason")),
@@ -1402,6 +1471,7 @@ def govern_request(
         answers["network_purpose"] = purpose or None
         answers["network_endpoint"] = endpoint or None
         answers["network_sends_data"] = sends_data
+        answers["online_connectivity"] = bool(cognitive_self_summary.get("online_connectivity"))
 
         if not snap["cognitive_online_enabled"]:
             decision["decision"] = "DENY"
@@ -1410,6 +1480,17 @@ def govern_request(
             decision["reasons"].append("COGNITIVE_ONLINE_ENABLED is OFF; network actions are blocked by default.")
             decision["recommended_next"] = "Stay offline; ask user to enable online mode explicitly if desired."
             _risk_add(risk, 10, "blocked_offline_first_policy")
+            decision["risk_score"] = risk["risk_score"]
+            decision["risk_factors"] = risk["risk_factors"]
+            return _finalize(decision)
+
+        if snap["cognitive_online_enabled"] and not bool(cognitive_self_summary.get("online_connectivity", True)):
+            decision["decision"] = "DEFER"
+            decision["allow"] = False
+            decision["require_user"] = True
+            decision["reasons"].append("Live network access is currently unavailable according to CognitiveSelf realtime awareness.")
+            decision["recommended_next"] = "Retry when connectivity is restored or stay local-first with cached data."
+            _risk_add(risk, 8, "live_connectivity_unavailable")
             decision["risk_score"] = risk["risk_score"]
             decision["risk_factors"] = risk["risk_factors"]
             return _finalize(decision)

@@ -4,7 +4,15 @@ Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2026-03-14
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+===============================================================================
 PURPOSE:
 - Philosophical / ethical / emotional / possibility governance plane
 - The dreamer, conscience, and imaginative counterpart to SarahMemoryCognitiveServices.py
@@ -93,6 +101,11 @@ try:
     import SarahMemoryCognitiveServices as _Cog  # type: ignore
 except Exception:
     _Cog = None
+
+try:
+    import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+except Exception:
+    _CogSelf = None
 
 try:
     import SarahMemoryNeuron as _Neuron  # type: ignore
@@ -591,6 +604,38 @@ def _diag_snapshot() -> Dict[str, Any]:
     return payload
 
 
+def _cognitive_self_packet(context: Optional[Dict[str, Any]] = None, request_text: str = "") -> Dict[str, Any]:
+    ctx = dict(context or {})
+    if request_text and not ctx.get("request_text") and not ctx.get("text"):
+        ctx["request_text"] = str(request_text)
+    if not _CogSelf:
+        return {}
+    try:
+        fn = getattr(_CogSelf, "get_thinker_consumer_packet", None)
+        if callable(fn):
+            pkt = fn(request_text=request_text, context=ctx, force_refresh=False)
+            return pkt if isinstance(pkt, dict) else {}
+    except Exception as e:
+        logger.debug("Thinker cognitive self packet failed: %s", e)
+    return {}
+
+
+def _cognitive_self_summary(packet: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(packet, dict):
+        return {}
+    identity = packet.get("identity") if isinstance(packet.get("identity"), dict) else {}
+    status = packet.get("status") if isinstance(packet.get("status"), dict) else {}
+    temporal = packet.get("temporal_awareness") if isinstance(packet.get("temporal_awareness"), dict) else {}
+    return {
+        "name": identity.get("entity_name"),
+        "platform": identity.get("platform_type"),
+        "run_mode": status.get("run_mode"),
+        "device_mode": status.get("device_mode"),
+        "continuity_state": status.get("continuity_state"),
+        "online_connectivity": temporal.get("online_connectivity"),
+    }
+
+
 # -----------------------------------------------------------------------------
 # Lens scoring
 # -----------------------------------------------------------------------------
@@ -914,6 +959,7 @@ def list_possibility_tickets(limit: int = 25, state: Optional[str] = None) -> Li
 # -----------------------------------------------------------------------------
 def build_self_model(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ctx = context or {}
+    cself = _cognitive_self_packet(ctx, request_text=str(ctx.get("request_text") or ctx.get("text") or ""))
     model = {
         "ts": datetime.now().isoformat(),
         "identity": {
@@ -934,12 +980,21 @@ def build_self_model(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "neuron": _neuron_status_snapshot(),
         "selfaware": _selfaware_snapshot(),
         "diagnostics": _diag_snapshot(),
+        "cognitive_self": {
+            "summary": _cognitive_self_summary(cself),
+            "authority_packet": cself,
+        },
         "worldview_lenses": {k: asdict(v) for k, v in get_ethics_lenses().items()},
         "context": {
             "device_mode": _safe_text(ctx.get("device_mode")),
             "run_mode": _safe_text(ctx.get("run_mode")),
             "user_present": bool(ctx.get("user_present", True)),
             "user_consented": bool(ctx.get("user_consented", False)),
+        },
+        "tri_force": {
+            "authority": "SarahMemoryCognitiveSelf",
+            "governor": "SarahMemoryCognitiveServices",
+            "thinker": "SarahMemoryCognitiveThinker",
         },
     }
     _set_self_model("latest_self_model", model)
@@ -972,6 +1027,7 @@ def govern_possibility_request(
     pa = dict(proposed_action or {})
 
     self_model = build_self_model(ctx)
+    cognitive_self_authority = (self_model.get("cognitive_self") or {}).get("authority_packet") or _cognitive_self_packet(ctx, request_text=request_text)
     governance: Dict[str, Any] = {}
 
     if _Cog and hasattr(_Cog, "govern_request"):
@@ -1070,7 +1126,9 @@ def govern_possibility_request(
                 "flags": self_model.get("flags", {}),
                 "governor": self_model.get("governor", {}),
                 "neuron": self_model.get("neuron", {}),
+                "cognitive_self_summary": (self_model.get("cognitive_self") or {}).get("summary") or {},
             },
+            "cognitive_self_authority": cognitive_self_authority,
         },
         safeguards={
             "advisory_only_lenses": True,
@@ -1114,6 +1172,12 @@ def govern_possibility_request(
         "priority": priority,
         "self_model": self_model,
         "governance": governance,
+        "tri_force": {
+            "authority": "SarahMemoryCognitiveSelf",
+            "governor": "SarahMemoryCognitiveServices",
+            "thinker": "SarahMemoryCognitiveThinker",
+            "cognitive_self_summary": (self_model.get("cognitive_self") or {}).get("summary") or {},
+        },
         "lens_eval": lens_eval,
         "common_interest": common_interest,
         "score": asdict(score),
