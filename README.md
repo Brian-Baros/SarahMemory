@@ -892,7 +892,10 @@ Own it.**
 
 — *Brian Lee Baros*
 ---
-Please Donate at - https://www.paypal.com/donate/?hosted_button_id=ZV43V3NYR6FDY
+
+Visit the Main SarahMemory Website at - https://www.sarahmemory.com
+Please Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_id=ZV43V3NYR6FDY
+
 ---
 # **🌐 Identity Statement**
 
