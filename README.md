@@ -894,7 +894,10 @@ Own it.**
 ---
 
 Visit the Main SarahMemory Website at - https://www.sarahmemory.com
-Please Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_id=ZV43V3NYR6FDY
+
+or
+
+Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_id=ZV43V3NYR6FDY
 
 ---
 # **🌐 Identity Statement**
