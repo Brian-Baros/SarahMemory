@@ -1951,6 +1951,36 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
+        pretoken_analysis = None
+        session_id = str(context_packet.get('session_id') or '')
+        try:
+            if _sm_module_approved('SarahMemoryPreTokenAnalyzer', capability='helper'):
+                import SarahMemoryPreTokenAnalyzer as _PTA  # type: ignore
+                pending_frame = _load_pending_clarification_frame(session_id)
+                if pending_frame:
+                    merged = _PTA.merge_clarification_answer(pending_frame, text)
+                    if bool(merged.get('needs_clarification')):
+                        _save_clarification_frame(merged, session_id)
+                        prompt = _format_clarification_prompt(str(merged.get('clarification_question') or ''), list(merged.get('clarification_options') or []))
+                        bundle = _sm_make_outward_bundle(prompt, meta={'source': 'pretoken_clarification', 'engine': 'SarahMemoryPreTokenAnalyzer', 'intent': 'clarification', 'followup_mode': 'clarification', 'clarification_required': True, 'clarification_question': str(merged.get('clarification_question') or ''), 'clarification_options': list(merged.get('clarification_options') or []), 'followup_suggestions': list(merged.get('clarification_options') or []), 'pending_query_id': str(merged.get('query_id') or ''), 'concept_group_id': str(merged.get('concept_group_id') or ''), 'version': PROJECT_VERSION, 'session_id': session_id})
+                        return jsonify(bundle), 200
+                    pretoken_analysis = dict(merged)
+                    text = _frame_to_resolved_text(merged)
+                    pretoken_analysis['raw_text'] = text
+                    pretoken_analysis['normalized_text'] = text
+                    _clear_clarification_frame(session_id)
+                if pretoken_analysis is None:
+                    pretoken_analysis = _PTA.analyze_text(text, context_packet)
+                    if bool(pretoken_analysis.get('needs_clarification')):
+                        _save_clarification_frame(pretoken_analysis, session_id)
+                        prompt = _format_clarification_prompt(str(pretoken_analysis.get('clarification_question') or ''), list(pretoken_analysis.get('clarification_options') or []))
+                        bundle = _sm_make_outward_bundle(prompt, meta={'source': 'pretoken_clarification', 'engine': 'SarahMemoryPreTokenAnalyzer', 'intent': 'clarification', 'followup_mode': 'clarification', 'clarification_required': True, 'clarification_question': str(pretoken_analysis.get('clarification_question') or ''), 'clarification_options': list(pretoken_analysis.get('clarification_options') or []), 'followup_suggestions': list(pretoken_analysis.get('clarification_options') or []), 'pending_query_id': str(pretoken_analysis.get('query_id') or ''), 'concept_group_id': str(pretoken_analysis.get('concept_group_id') or ''), 'version': PROJECT_VERSION, 'session_id': session_id})
+                        return jsonify(bundle), 200
+                context_packet.setdefault('meta', {})['pretoken_analysis'] = pretoken_analysis
+        except Exception as e:
+            app_logger.warning(f"PreTokenAnalyzer path failed; continuing: {e}", exc_info=True)
+            pretoken_analysis = None
+
         handled, quick_bundle = _sm_execute_quick_route(text)
         if handled and quick_bundle is not None:
             return jsonify(quick_bundle), 200
@@ -2062,6 +2092,7 @@ def api_chat():
                     "mode_flags": context_packet.get("meta", {}).get("mode_flags", {}),
                     "governor": {"decision": gov_decision, "reasons": gov_reasons},
                     "ingress_route": ingress_route,
+                    "pretoken_analysis": context_packet.get("meta", {}).get("pretoken_analysis"),
                 }, policy=routing_policy)
 
                 nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
@@ -2106,6 +2137,18 @@ def api_chat():
                         artifacts.append({"name": key, "type": "file", "path": path, "display_ready": True, "download_ready": True, "source": source_label})
                 if isinstance(nres_dict.get("actions"), list):
                     actions = list(nres_dict.get("actions") or [])
+                try:
+                    action_ticket = None
+                    if isinstance(nres_dict.get('artifacts'), dict):
+                        action_ticket = (nres_dict.get('artifacts') or {}).get('action_ticket')
+                    if isinstance(action_ticket, dict) and _sm_module_approved('SarahMemoryIntegration', capability='runtime'):
+                        from SarahMemoryIntegration import execute_action_ticket as _execute_action_ticket  # type: ignore
+                        exec_result = _execute_action_ticket(action_ticket, confirm=bool(context_packet.get('meta', {}).get('user_consented') or payload.get('confirm') or payload.get('auto_confirm')) )
+                        meta_out['action_execution'] = exec_result
+                        actions.append({'type': 'action_execution', 'ticket_id': action_ticket.get('ticket_id'), 'result': exec_result})
+                        raw_reply = _sm_action_execution_reply(action_ticket, exec_result)
+                except Exception as e:
+                    app_logger.warning(f"Action ticket execution failed in api_chat: {e}", exc_info=True)
                 presentation_text = _sm_present_text(raw_reply, intent=resolved_intent, meta=meta_out)
                 bundle = _sm_make_outward_bundle(
                     presentation_text,
@@ -3043,6 +3086,168 @@ def run_automation_trigger():
 
 # Calendar + Chat history (for Web UI)
 CHAT_HISTORY_DB_PATH = os.path.join(_globals_dir("DATA_DIR", "data"), "context_history.db")
+
+
+def _clarification_frames_db_path() -> str:
+    return CHAT_HISTORY_DB_PATH
+
+def _ensure_clarification_frame_table() -> None:
+    con = None
+    try:
+        con = _connect_sqlite(_clarification_frames_db_path())
+        cur = con.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS clarification_frames_v800 (
+                frame_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                state TEXT,
+                frame_json TEXT NOT NULL,
+                created_ts REAL,
+                updated_ts REAL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_clarification_frames_v800_session ON clarification_frames_v800(session_id, updated_ts)")
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+def _save_clarification_frame(frame: dict, session_id: str) -> None:
+    if not session_id or not isinstance(frame, dict):
+        return
+    _ensure_clarification_frame_table()
+    con = None
+    try:
+        con = _connect_sqlite(_clarification_frames_db_path())
+        cur = con.cursor()
+        now = time.time()
+        frame_id = str(frame.get('frame_id') or frame.get('query_id') or secrets.token_urlsafe(12))
+        payload = dict(frame)
+        payload['frame_id'] = frame_id
+        payload.setdefault('state', 'awaiting_clarification')
+        cur.execute(
+            """
+            INSERT INTO clarification_frames_v800(frame_id,session_id,state,frame_json,created_ts,updated_ts)
+            VALUES(?,?,?,?,?,?)
+            ON CONFLICT(frame_id) DO UPDATE SET
+                session_id=excluded.session_id,
+                state=excluded.state,
+                frame_json=excluded.frame_json,
+                updated_ts=excluded.updated_ts
+            """,
+            (frame_id, session_id, str(payload.get('state') or 'awaiting_clarification'), json.dumps(payload, ensure_ascii=False), now, now),
+        )
+        con.commit()
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+def _load_pending_clarification_frame(session_id: str) -> dict | None:
+    if not session_id:
+        return None
+    _ensure_clarification_frame_table()
+    con = None
+    try:
+        con = _connect_sqlite(_clarification_frames_db_path())
+        cur = con.cursor()
+        cur.execute("SELECT frame_json FROM clarification_frames_v800 WHERE session_id=? AND state IN ('awaiting_clarification','clarified') ORDER BY updated_ts DESC LIMIT 1", (session_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row['frame_json']
+        data = json.loads(raw or '{}')
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+def _clear_clarification_frame(session_id: str) -> None:
+    if not session_id:
+        return
+    con = None
+    try:
+        con = _connect_sqlite(_clarification_frames_db_path())
+        cur = con.cursor()
+        cur.execute("DELETE FROM clarification_frames_v800 WHERE session_id=?", (session_id,))
+        con.commit()
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+def _format_clarification_prompt(question: str, options: list[str]) -> str:
+    q = str(question or 'I need one clarification before I continue.').strip()
+    opts = [str(x).strip() for x in (options or []) if str(x).strip()][:5]
+    if not opts:
+        return q
+    lines = [q, '']
+    for idx, opt in enumerate(opts, start=1):
+        lines.append(f"{idx}. {opt}")
+    return "\n".join(lines).strip()
+
+def _frame_to_resolved_text(frame: dict) -> str:
+    if not isinstance(frame, dict):
+        return ''
+    text = str(frame.get('raw_text') or frame.get('original_input') or frame.get('normalized_text') or '').strip()
+    ambiguities = frame.get('ambiguities') if isinstance(frame.get('ambiguities'), list) else []
+    for item in ambiguities:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get('raw') or '').strip()
+        resolved = str(item.get('resolved_value') or '').strip()
+        if raw and resolved:
+            try:
+                text = re.sub(r'(?<![A-Za-z0-9])' + re.escape(raw) + r'(?![A-Za-z0-9])', resolved, text, count=1)
+            except Exception:
+                text = text.replace(raw, resolved, 1)
+    return text or str(frame.get('normalized_text') or '')
+
+def _sm_action_execution_reply(ticket: dict, exec_result: dict) -> str:
+    action = str((ticket or {}).get('action') or 'action')
+    if not isinstance(exec_result, dict):
+        return 'The requested action did not complete.'
+    if bool(exec_result.get('needs_confirm')):
+        return 'I understood the requested action, but confirmation is required before I continue.'
+    if bool(exec_result.get('ok')):
+        result = exec_result.get('result') if isinstance(exec_result.get('result'), dict) else {}
+        if action in {'open_app', 'launch_app', 'document_open'}:
+            display_name = str(result.get('display_name') or result.get('app_name') or ((ticket or {}).get('args') or {}).get('app_name') or 'the application')
+            topic = str(result.get('topic') or '').strip()
+            if topic and action == 'document_open':
+                return f"Opened {display_name} and prepared the document workflow for {topic}."
+            return f"Opened {display_name}."
+        if action == 'paint_draw':
+            msg = str(result.get('message') or 'Paint drawing completed.').strip()
+            return msg if msg.endswith('.') else (msg + '.')
+        if action == 'compound_action':
+            return 'Completed the requested multi-step application workflow.'
+        return 'Completed the requested action.'
+    error = str(exec_result.get('error') or '')
+    if action in {'open_app', 'launch_app', 'document_open'}:
+        app_name = str((((ticket or {}).get('args') or {}).get('app_name')) or 'the requested application')
+        return f"I understood this as an application action, but {app_name} could not be launched: {error or 'launcher target not resolved'}."
+    if action == 'compound_action':
+        return f"I started the requested workflow, but a later step failed: {error or 'compound action did not complete'}."
+    return f"The requested action did not complete: {error or 'execution failed'}."
 
 
 # ---------------------------------------------------------------------------
