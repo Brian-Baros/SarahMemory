@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -386,9 +386,46 @@ def run_initial_checks():
             pass
 
         # =====================================================================
+        # B-LEVEL DRIVER READINESS SCAN
+        # =====================================================================
+        print_phase_banner(8, "B-LEVEL DRIVER READINESS SCAN")
+
+        try:
+            from SarahMemoryHi import get_b_level_driver_readiness_snapshot
+
+            readiness = get_b_level_driver_readiness_snapshot()
+            entries = readiness.get("entries", []) if isinstance(readiness, dict) else []
+
+            if entries:
+                for item in entries:
+                    try:
+                        print_status_line(item.get("name", "Unknown Hardware"), "✓", item.get("status", "DETECTED/NOT READY"))
+                    except Exception:
+                        pass
+
+                detected_count = int(readiness.get("detected_count", len(entries)) or len(entries))
+                ready_count = int(readiness.get("ready_count", 0) or 0)
+                not_ready_count = int(readiness.get("not_ready_count", max(0, detected_count - ready_count)) or max(0, detected_count - ready_count))
+                print_status_line(
+                    "Driver Readiness Summary",
+                    "✓",
+                    f"{detected_count} detected, {ready_count} ready, {not_ready_count} not ready",
+                )
+                logger.info(
+                    f"[v8.0][DRV] B-level readiness scan complete: detected={detected_count} ready={ready_count} not_ready={not_ready_count}"
+                )
+            else:
+                print_status_line("Driver Readiness", "⏭", "No detected hardware items reported")
+                logger.info("[v8.0][DRV] No detected hardware items reported by SarahMemoryHi")
+
+        except Exception as drv_err:
+            print_status_line("Driver Readiness", "⚠", "Scan failed (non-critical)")
+            logger.warning(f"[v8.0][DRV] B-level readiness scan failed: {drv_err}")
+
+        # =====================================================================
         # VOICE SETTINGS INITIALIZATION
         # =====================================================================
-        print_phase_banner(8, "VOICE & AUDIO INITIALIZATION")
+        print_phase_banner(9, "VOICE & AUDIO INITIALIZATION")
         
         try:
             settings_path = os.path.join(config["SETTINGS_DIR"], "settings.json")
@@ -422,7 +459,7 @@ def run_initial_checks():
         # =====================================================================
         # MEDIA SUBSYSTEM CHECKS (v8.0 NEW)
         # =====================================================================
-        print_phase_banner(9, "MEDIA SUBSYSTEM CHECKS")
+        print_phase_banner(10, "MEDIA SUBSYSTEM CHECKS")
         
         media_status = []
         
@@ -466,7 +503,7 @@ def run_initial_checks():
         # =====================================================================
         # DATABASE MIGRATIONS
         # =====================================================================
-        print_phase_banner(10, "DATABASE MIGRATIONS")
+        print_phase_banner(11, "DATABASE MIGRATIONS")
         
         try:
             from SarahMemoryMigrations import run_migrations

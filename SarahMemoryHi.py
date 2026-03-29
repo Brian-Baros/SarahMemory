@@ -8,7 +8,7 @@ Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
-'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
@@ -112,6 +112,7 @@ import logging
 import platform
 import psutil
 import subprocess
+import shutil
 import os
 import json
 import sqlite3
@@ -686,6 +687,457 @@ def get_system_health_score() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"[v8.0] Health score error: {e}")
         return {'overall_score': 0, 'status': 'error', 'message': str(e)}
+
+# =============================================================================
+# B-LEVEL DRIVER READINESS REPORTING - v8.0 New
+# =============================================================================
+def _run_probe_command(cmd: List[str], timeout: float = 8.0) -> Dict[str, Any]:
+    """Best-effort command runner for boot-safe hardware probing."""
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return {
+            'ok': proc.returncode == 0,
+            'returncode': proc.returncode,
+            'stdout': proc.stdout or '',
+            'stderr': proc.stderr or '',
+        }
+    except Exception as exc:
+        return {'ok': False, 'error': str(exc), 'stdout': '', 'stderr': ''}
+
+
+def _hardware_label(name: str) -> str:
+    try:
+        return ' '.join(str(name or '').replace('_', ' ').replace('-', ' ').split()).strip() or 'Unknown Hardware'
+    except Exception:
+        return 'Unknown Hardware'
+
+
+def _driver_root_path() -> Path:
+    """Resolve runtime driver root without making it boot-critical."""
+    try:
+        drv = getattr(config, 'DRIVERS_DIR', None)
+        if drv:
+            return Path(str(drv)).expanduser().resolve()
+    except Exception:
+        pass
+    try:
+        data_dir = getattr(config, 'DATA_DIR', None)
+        if data_dir:
+            return (Path(str(data_dir)).expanduser().resolve() / 'drivers').resolve()
+    except Exception:
+        pass
+    return (Path(os.getcwd()).resolve() / 'data' / 'drivers').resolve()
+
+
+def _scan_runtime_driver_packages(drivers_root: Optional[Union[str, Path]] = None) -> Dict[str, Dict[str, Any]]:
+    """Return runtime Level B driver packages present under ./data/drivers/com.softdev0.*."""
+    root = Path(drivers_root).expanduser().resolve() if drivers_root else _driver_root_path()
+    packages: Dict[str, Dict[str, Any]] = {}
+    try:
+        if not root.exists() or not root.is_dir():
+            return packages
+        for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+            if not entry.is_dir():
+                continue
+            driver_id = entry.name
+            if not driver_id.startswith('com.softdev0.'):
+                continue
+            manifest_path = entry / 'manifest.json'
+            driver_path = entry / 'driver.py'
+            if not manifest_path.exists() or not driver_path.exists():
+                continue
+            manifest: Dict[str, Any] = {}
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+                if not isinstance(manifest, dict):
+                    manifest = {}
+            except Exception:
+                manifest = {}
+            packages[driver_id] = {
+                'id': driver_id,
+                'path': str(entry),
+                'manifest': manifest,
+                'name': manifest.get('name') or driver_id,
+            }
+    except Exception as exc:
+        logger.debug(f"[v8.0] Driver package scan error: {exc}")
+    return packages
+
+
+def _driver_classes_from_packages(packages: Dict[str, Dict[str, Any]]) -> Dict[str, bool]:
+    ids = set(packages.keys())
+    return {
+        'motherboard': 'com.softdev0.motherboards' in ids,
+        'network': 'com.softdev0.network' in ids,
+        'storage': 'com.softdev0.storage' in ids,
+        'camera': 'com.softdev0.camera.uvc.usb' in ids,
+        'audio': ('com.softdev0.ac97audio' in ids) or ('com.softdev0.speaker.bluetooth' in ids),
+        'printer': ('com.softdev0.printer.generic.tcp' in ids) or ('com.softdev0.printer.escpos.usb' in ids),
+        'bluetooth': ('com.softdev0.gamepad.bluetooth' in ids) or ('com.softdev0.midi.bluetooth' in ids) or ('com.softdev0.speaker.bluetooth' in ids),
+        'serial_usb': any(did in ids for did in (
+            'com.softdev0.arduino.usb',
+            'com.softdev0.cnc.grbl.serial',
+            'com.softdev0.rfid.serial',
+            'com.softdev0.zigbee.coordinator.usb',
+            'com.softdev0.zwave.usb',
+        )),
+        'display': 'com.softdev0.vga.hdmi' in ids,
+        'npu': 'com.softdev0.localnpu' in ids,
+    }
+
+
+def _detect_motherboard_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = (
+                    "$bb=Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer,Product;"
+                    "$cs=Get-CimInstance Win32_ComputerSystem | Select-Object Manufacturer,Model;"
+                    "[pscustomobject]@{bb=$bb;cs=$cs}|ConvertTo-Json -Depth 4"
+                )
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=12.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        bb = data.get('bb') or {}
+                        manu = str(bb.get('Manufacturer') or '').strip()
+                        prod = str(bb.get('Product') or '').strip()
+                        name = ' '.join(x for x in [manu, prod] if x).strip()
+                        if not name:
+                            cs = data.get('cs') or {}
+                            name = ' '.join(x for x in [str(cs.get('Manufacturer') or '').strip(), str(cs.get('Model') or '').strip()] if x).strip()
+                        if name:
+                            items.append(_hardware_label(f"{name} Motherboard"))
+                    except Exception:
+                        pass
+        elif sysname == 'Linux':
+            sysfs = Path('/sys/devices/virtual/dmi/id')
+            vendor = None
+            board = None
+            try:
+                vendor = (sysfs / 'board_vendor').read_text(encoding='utf-8', errors='ignore').strip() or None
+            except Exception:
+                try:
+                    vendor = (sysfs / 'sys_vendor').read_text(encoding='utf-8', errors='ignore').strip() or None
+                except Exception:
+                    vendor = None
+            try:
+                board = (sysfs / 'board_name').read_text(encoding='utf-8', errors='ignore').strip() or None
+            except Exception:
+                try:
+                    board = (sysfs / 'product_name').read_text(encoding='utf-8', errors='ignore').strip() or None
+                except Exception:
+                    board = None
+            name = ' '.join(x for x in [vendor, board] if x).strip()
+            if name:
+                items.append(_hardware_label(f"{name} Motherboard"))
+        elif sysname == 'Darwin':
+            model = platform.machine()
+            items.append(_hardware_label(f"Apple {model} Logic Board"))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Motherboard detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_printer_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = "Get-CimInstance Win32_Printer | Select-Object Name,DriverName,PortName | ConvertTo-Json -Depth 4"
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=12.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        if isinstance(data, dict):
+                            data = [data]
+                        for row in data or []:
+                            if not isinstance(row, dict):
+                                continue
+                            name = str(row.get('Name') or '').strip()
+                            if name:
+                                items.append(_hardware_label(name))
+                    except Exception:
+                        pass
+        else:
+            lpstat = shutil.which('lpstat')
+            if lpstat:
+                result = _run_probe_command([lpstat, '-p'], timeout=8.0)
+                if result.get('ok'):
+                    for line in (result.get('stdout') or '').splitlines():
+                        line = line.strip()
+                        if not line.startswith('printer '):
+                            continue
+                        name = line.split()[1]
+                        if name:
+                            items.append(_hardware_label(name))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Printer detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_camera_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = (
+                    "Get-CimInstance Win32_PnPEntity | "
+                    "Where-Object { $_.Name -match 'camera|webcam|imaging|usb video' } | "
+                    "Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 3"
+                )
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=12.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        if isinstance(data, str):
+                            data = [data]
+                        for row in data or []:
+                            name = str(row or '').strip()
+                            if name:
+                                items.append(_hardware_label(name))
+                    except Exception:
+                        pass
+        elif sysname == 'Linux':
+            dev = Path('/dev')
+            if dev.exists():
+                for node in sorted(dev.glob('video*')):
+                    items.append(_hardware_label(f"UVC Camera {node.name}"))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Camera detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_audio_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = (
+                    "Get-CimInstance Win32_SoundDevice | Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 3"
+                )
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=12.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        if isinstance(data, str):
+                            data = [data]
+                        for row in data or []:
+                            name = str(row or '').strip()
+                            if name:
+                                items.append(_hardware_label(name))
+                    except Exception:
+                        pass
+        else:
+            # Keep Linux/macOS audio reporting conservative at boot.
+            if shutil.which('aplay'):
+                result = _run_probe_command(['aplay', '-l'], timeout=6.0)
+                if result.get('ok'):
+                    for line in (result.get('stdout') or '').splitlines():
+                        line = line.strip()
+                        if line.startswith('card '):
+                            items.append(_hardware_label(line))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Audio detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_network_items() -> List[str]:
+    items: List[str] = []
+    try:
+        for if_name, addrs in (psutil.net_if_addrs() or {}).items():
+            low = str(if_name).lower()
+            if low.startswith('lo') or 'loopback' in low:
+                continue
+            if not addrs:
+                continue
+            items.append(_hardware_label(if_name))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Network interface detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_storage_items() -> List[str]:
+    items: List[str] = []
+    try:
+        seen = set()
+        for part in psutil.disk_partitions(all=False) or []:
+            device = str(getattr(part, 'device', '') or '').strip()
+            mountpoint = str(getattr(part, 'mountpoint', '') or '').strip()
+            label = device or mountpoint
+            if not label or label in seen:
+                continue
+            seen.add(label)
+            items.append(_hardware_label(label))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Storage detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_bluetooth_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = (
+                    "Get-CimInstance Win32_PnPEntity | "
+                    "Where-Object { $_.Name -match 'Bluetooth' } | "
+                    "Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 3"
+                )
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=12.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        if isinstance(data, str):
+                            data = [data]
+                        for row in data or []:
+                            name = str(row or '').strip()
+                            if name:
+                                items.append(_hardware_label(name))
+                    except Exception:
+                        pass
+        elif sysname == 'Linux' and shutil.which('bluetoothctl'):
+            result = _run_probe_command(['bluetoothctl', 'list'], timeout=6.0)
+            if result.get('ok'):
+                for line in (result.get('stdout') or '').splitlines():
+                    line = line.strip()
+                    if line.startswith('Controller '):
+                        parts = line.split(' ', 2)
+                        if len(parts) >= 3:
+                            items.append(_hardware_label(parts[2]))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Bluetooth detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_display_items() -> List[str]:
+    items: List[str] = []
+    try:
+        gpu = get_gpu_info() or {}
+        if isinstance(gpu, dict):
+            name = str(gpu.get('Name') or gpu.get('Info') or '').strip()
+            if name:
+                items.append(_hardware_label(name))
+    except Exception as exc:
+        logger.debug(f"[v8.0] Display detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def _detect_npu_items() -> List[str]:
+    items: List[str] = []
+    try:
+        sysname = platform.system()
+        if sysname == 'Windows':
+            ps = shutil.which('powershell') or shutil.which('pwsh')
+            if ps:
+                script = (
+                    "Get-CimInstance Win32_PnPEntity | "
+                    "Where-Object { $_.Name -match 'NPU|Neural|AI Accelerator' } | "
+                    "Select-Object -ExpandProperty Name | ConvertTo-Json -Depth 3"
+                )
+                result = _run_probe_command([ps, '-NoProfile', '-Command', script], timeout=10.0)
+                if result.get('ok') and result.get('stdout', '').strip():
+                    try:
+                        data = json.loads(result['stdout'])
+                        if isinstance(data, str):
+                            data = [data]
+                        for row in data or []:
+                            name = str(row or '').strip()
+                            if name:
+                                items.append(_hardware_label(name))
+                    except Exception:
+                        pass
+    except Exception as exc:
+        logger.debug(f"[v8.0] NPU detection error: {exc}")
+    return list(dict.fromkeys(items))
+
+
+def get_b_level_driver_readiness_snapshot(drivers_root: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+    """
+    Boot-safe hardware readiness snapshot.
+    Returns detected hardware items and READY/NOT READY status based on generic
+    Level B driver families present under ./data/drivers/com.softdev0.*.
+    """
+    packages = _scan_runtime_driver_packages(drivers_root)
+    driver_classes = _driver_classes_from_packages(packages)
+
+    detectors = [
+        ('motherboard', _detect_motherboard_items),
+        ('display', _detect_display_items),
+        ('network', _detect_network_items),
+        ('storage', _detect_storage_items),
+        ('audio', _detect_audio_items),
+        ('camera', _detect_camera_items),
+        ('printer', _detect_printer_items),
+        ('bluetooth', _detect_bluetooth_items),
+        ('npu', _detect_npu_items),
+    ]
+
+    entries: List[Dict[str, Any]] = []
+    seen_names = set()
+    for device_class, detector in detectors:
+        try:
+            names = detector() or []
+        except Exception as exc:
+            logger.debug(f"[v8.0] Detector failure for {device_class}: {exc}")
+            names = []
+        for raw_name in names:
+            name = _hardware_label(raw_name)
+            key = name.lower()
+            if not name or key in seen_names:
+                continue
+            seen_names.add(key)
+            ready = bool(driver_classes.get(device_class, False))
+            entries.append({
+                'name': name,
+                'device_class': device_class,
+                'detected': True,
+                'ready': ready,
+                'status': f"DETECTED/{'READY' if ready else 'NOT READY'}",
+            })
+
+    ready_count = sum(1 for item in entries if item.get('ready'))
+    return {
+        'ok': True,
+        'drivers_root': str(Path(drivers_root).expanduser().resolve()) if drivers_root else str(_driver_root_path()),
+        'driver_packages': sorted(packages.keys()),
+        'driver_classes': driver_classes,
+        'entries': entries,
+        'detected_count': len(entries),
+        'ready_count': ready_count,
+        'not_ready_count': max(0, len(entries) - ready_count),
+        'timestamp': datetime.now().isoformat(),
+        'version': '8.0.0',
+    }
+
+
+def get_b_level_driver_readiness_report(drivers_root: Optional[Union[str, Path]] = None) -> List[str]:
+    """Return one industrialized boot line per detected hardware item."""
+    snap = get_b_level_driver_readiness_snapshot(drivers_root=drivers_root)
+    lines: List[str] = []
+    for item in snap.get('entries', []) or []:
+        try:
+            lines.append(f"{item['name']} - {item['status']}")
+        except Exception:
+            continue
+    return lines
+
+
+def boot_probe_b_level_driver_readiness(drivers_root: Optional[Union[str, Path]] = None) -> List[str]:
+    """Alias kept simple for boot callers."""
+    return get_b_level_driver_readiness_report(drivers_root=drivers_root)
+
 
 # =============================================================================
 # MAIN TEST HARNESS - v8.0 Enhanced

@@ -74,10 +74,8 @@ import sys
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.error import URLError
-from urllib.request import urlopen
 
 
 # -----------------------------------------------------------------------------
@@ -110,21 +108,9 @@ _SELF_DB_NAME = "cognitive_self.db"
 _MAX_CORE_FILE_SCAN = 1000
 _SELF_MODEL_CACHE: Dict[str, Any] = {"ts": 0.0, "model": None}
 _SELF_MODEL_CACHE_TTL = 10.0
-_CONNECTIVITY_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
-_CONNECTIVITY_CACHE_TTL = 20.0
-_REALTIME_HINTS = (
-    "real time", "realtime", "right now", "current", "currently", "latest", "live",
-    "today", "tonight", "tomorrow", "forecast", "weather", "stock", "price",
-    "breaking", "news", "status now", "online or not", "time", "date", "day",
-)
-_EXTERNAL_REALTIME_HINTS = (
-    "weather", "forecast", "news", "stock", "price", "traffic", "sports", "score",
-    "latest", "breaking", "current events", "exchange rate", "market",
-)
-_SELF_REALTIME_HINTS = (
-    "what time", "what date", "what day", "online", "offline", "connected", "network",
-    "are you online", "are you connected", "current mode", "runtime status", "system status",
-)
+_NEURON_AXIS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
+_NEURON_AXIS_CACHE_TTL = 15.0
+_NEURON_DB_NAME = "neuron_axis.db"
 
 _IDENTITY_CONTRACT = {
     "system_name": "SarahMemory AiOS",
@@ -207,25 +193,6 @@ _CAPABILITY_MODULES = {
     "system_lane": ["SarahMemoryDiagnostics", "SarahMemoryGlobals", "SarahMemoryIntegration"],
     "network_lane": ["SarahMemoryNetwork", "SarahMemoryResearch", "SarahMemoryAPI"],
     "presentation": ["SarahMemoryReply", "SarahMemoryVoice"],
-}
-
-_TRI_FORCE_CONTRACT = {
-    "name": "SarahMemory Cognitive Tri-Force",
-    "authority": "SarahMemoryCognitiveSelf",
-    "governor": "SarahMemoryCognitiveServices",
-    "philosophical_peer": "SarahMemoryCognitiveThinker",
-    "roles": {
-        "SarahMemoryCognitiveSelf": "canonical_identity_capability_and_realtime_authority",
-        "SarahMemoryCognitiveServices": "logical_risk_and_permission_governor",
-        "SarahMemoryCognitiveThinker": "meaning_ethics_compassion_and_possibility_governor",
-    },
-    "doctrine": [
-        "CognitiveSelf tells the platform what it is, what it contains, what it can do, and what limits are active.",
-        "CognitiveServices decides what may proceed under safety, sovereignty, and approval rules.",
-        "CognitiveThinker evaluates meaning, compassion, common-interest, and sandbox-worthy possibility.",
-        "No member of the tri-force may silently self-authorize high-impact runtime mutation.",
-        "The tri-force exists to keep SarahMemory alive, aware, governed, and aligned.",
-    ],
 }
 
 
@@ -423,188 +390,114 @@ def _safe_import_available(module_name: str) -> bool:
         return False
 
 
+
 # -----------------------------------------------------------------------------
-# Temporal / connectivity / real-time helpers
+# Neuron axis awareness helpers
 # -----------------------------------------------------------------------------
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _neuron_db_path() -> str:
+    return os.path.join(_datasets_dir(), _NEURON_DB_NAME)
 
 
-def _timezone_name() -> str:
+def _neuron_backup_dir() -> str:
+    return os.path.join(_datasets_dir(), "backups", "neuron_axis")
+
+
+def _decode_jsonish(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list, int, float, bool)):
+        return value
     try:
-        return str(datetime.now().astimezone().tzinfo or "local")
+        return json.loads(str(value))
     except Exception:
-        return "local"
+        return value
 
 
-def _connectivity_allowed_by_policy(context: Optional[Dict[str, Any]] = None) -> bool:
-    ctx = context or {}
-    if bool(ctx.get("local_only", _flag("LOCAL_ONLY_MODE", False))):
-        return False
-    if _public_web(ctx):
-        return bool(getattr(config, "COGNITIVE_ONLINE_ENABLED", False))
-    return bool(getattr(config, "COGNITIVE_ONLINE_ENABLED", False))
-
-
-def _probe_online_connectivity(force_refresh: bool = False) -> Dict[str, Any]:
+def _build_neuron_axis_awareness(*, force_refresh: bool = False) -> Dict[str, Any]:
     now = time.time()
-    cached = _CONNECTIVITY_CACHE.get("data")
-    if (not force_refresh) and cached and (now - float(_CONNECTIVITY_CACHE.get("ts") or 0.0) <= _CONNECTIVITY_CACHE_TTL):
+    cached = _NEURON_AXIS_CACHE.get("data")
+    if (not force_refresh) and cached and (now - float(_NEURON_AXIS_CACHE.get("ts") or 0.0) <= _NEURON_AXIS_CACHE_TTL):
         return dict(cached)
 
-    checks: List[Tuple[str, str, Any]] = [
-        ("socket_dns_cloudflare", "dns", ("1.1.1.1", 53)),
-        ("socket_dns_google", "dns", ("8.8.8.8", 53)),
-        ("https_example", "https", "https://example.com"),
-    ]
-    result = {
-        "online": False,
-        "method": "none",
-        "latency_ms": None,
-        "checked_ts": _now_iso(),
-        "details": [],
+    path = _neuron_db_path()
+    out: Dict[str, Any] = {
+        "path": path,
+        "exists": os.path.exists(path),
+        "size_bytes": int(os.path.getsize(path)) if os.path.exists(path) else 0,
+        "integrity_ok": False,
+        "integrity_message": "missing",
+        "schema_version": None,
+        "db_status": "missing",
+        "required_tables_present": False,
+        "table_names": [],
+        "route_count": 0,
+        "enabled_route_count": 0,
+        "active_route_count": 0,
+        "backup_count": 0,
+        "event_count": 0,
+        "healthy": False,
+        "bootstrap_ready": False,
+        "repair_history_hint": {},
     }
-
-    for label, kind, target in checks:
-        t0 = time.time()
-        try:
-            if kind == "dns":
-                host, port = target
-                conn = socket.create_connection((host, int(port)), timeout=0.6)
-                conn.close()
-            else:
-                with urlopen(str(target), timeout=1.2) as resp:
-                    getattr(resp, "status", 200)
-            latency_ms = round((time.time() - t0) * 1000.0, 2)
-            result.update({
-                "online": True,
-                "method": label,
-                "latency_ms": latency_ms,
-            })
-            result["details"].append({"check": label, "ok": True, "latency_ms": latency_ms})
-            break
-        except Exception as exc:
-            result["details"].append({"check": label, "ok": False, "error": _safe_text(exc, 120)})
-            continue
-
-    _CONNECTIVITY_CACHE["ts"] = now
-    _CONNECTIVITY_CACHE["data"] = dict(result)
-    return dict(result)
-
-
-def _build_temporal_awareness(context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
-    del context
-    local_now = datetime.now().astimezone()
-    utc_now = datetime.now(timezone.utc)
-    connectivity = _probe_online_connectivity(force_refresh=force_refresh)
-    return {
-        "local_iso": local_now.isoformat(),
-        "utc_iso": utc_now.isoformat(),
-        "local_date": local_now.date().isoformat(),
-        "local_time": local_now.strftime("%H:%M:%S"),
-        "local_weekday": local_now.strftime("%A"),
-        "timezone_name": _timezone_name(),
-        "epoch": time.time(),
-        "online_connectivity": bool(connectivity.get("online")),
-        "connectivity": connectivity,
-    }
-
-
-def _contains_hint(text: str, hints: Iterable[str]) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    return any(str(h).lower() in t for h in hints)
-
-
-def _build_realtime_resource_strategy(context: Optional[Dict[str, Any]] = None, request_text: str = "") -> Dict[str, Any]:
-    ctx = dict(context or {})
-    text = str(request_text or ctx.get("request_text") or ctx.get("text") or "")
-    lowered = text.lower()
-    temporal = _build_temporal_awareness(ctx, force_refresh=False)
-    online_allowed = _connectivity_allowed_by_policy(ctx)
-    connectivity_ok = bool(temporal.get("online_connectivity"))
-
-    realtime_requested = _contains_hint(lowered, _REALTIME_HINTS)
-    external_realtime = _contains_hint(lowered, _EXTERNAL_REALTIME_HINTS)
-    self_realtime = _contains_hint(lowered, _SELF_REALTIME_HINTS) or (not external_realtime and realtime_requested)
-
-    resources: List[Dict[str, Any]] = []
-    if self_realtime:
-        resources.append({
-            "resource": "local_clock_and_runtime",
-            "allowed": True,
-            "purpose": "Answer current time/date/runtime/connectivity questions directly from local state.",
-        })
-        resources.append({
-            "resource": "cognitive_self_model",
-            "allowed": True,
-            "purpose": "Answer what SarahMemory is, what state it is in, and what it can do right now.",
-        })
-
-    if external_realtime:
-        resources.append({
-            "resource": "approved_network_research",
-            "allowed": bool(online_allowed and connectivity_ok),
-            "purpose": "Fetch current external facts only when policy and connectivity allow it.",
-            "blocked_reason": None if (online_allowed and connectivity_ok) else "Realtime external data requires both policy approval and live connectivity.",
-        })
-        resources.append({
-            "resource": "local_cached_or_last_known_data",
-            "allowed": True,
-            "purpose": "Use cached/local knowledge when live external retrieval is blocked or unavailable.",
-        })
-
-    if not resources:
-        resources.append({
-            "resource": "deterministic_local_first",
-            "allowed": True,
-            "purpose": "No explicit realtime need detected; prefer local deterministic resources first.",
-        })
-
-    plan = []
-    if self_realtime:
-        plan.append("Use local clock, local date, runtime state, and connectivity awareness first.")
-    if external_realtime and online_allowed and connectivity_ok:
-        plan.append("Escalate to approved realtime network/research resources for current external facts.")
-    elif external_realtime:
-        plan.append("External realtime data is needed, but current policy/connectivity blocks live retrieval; fall back to local last-known/cached data and explain the limit.")
-    if not external_realtime and not self_realtime:
-        plan.append("Stay local-first and only escalate if another governed module determines realtime evidence is required.")
-
-    return {
-        "request_text": text,
-        "realtime_requested": bool(realtime_requested),
-        "self_realtime": bool(self_realtime),
-        "external_realtime": bool(external_realtime),
-        "policy_online_allowed": bool(online_allowed),
-        "online_connectivity": bool(connectivity_ok),
-        "resources": resources,
-        "plan": plan,
-        "governance_note": "CognitiveSelf may identify realtime need and available resources, but governance and routing still decide actual execution.",
-    }
-
-
-def get_temporal_awareness(*, force_refresh: bool = False, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return _build_temporal_awareness(context=context, force_refresh=force_refresh)
-
-
-def get_realtime_resource_strategy(request_text: str = "", context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return _build_realtime_resource_strategy(context=context, request_text=request_text)
-
-
-def explain_realtime_strategy(request_text: str = "", context: Optional[Dict[str, Any]] = None) -> str:
-    strat = _build_realtime_resource_strategy(context=context, request_text=request_text)
-    if strat.get("self_realtime"):
-        base = "The user is asking for realtime local/runtime data, so I should use my local clock, runtime state, and connectivity awareness first."
-    elif strat.get("external_realtime"):
-        if strat.get("policy_online_allowed") and strat.get("online_connectivity"):
-            base = "The user is asking for current external data, so I should escalate from local-first into approved live research/network resources."
+    con = None
+    try:
+        if not os.path.exists(path):
+            _NEURON_AXIS_CACHE["ts"] = now
+            _NEURON_AXIS_CACHE["data"] = dict(out)
+            return dict(out)
+        con = sqlite3.connect(path, timeout=2.0)
+        cur = con.cursor()
+        integrity = str(cur.execute("PRAGMA integrity_check").fetchone()[0])
+        out["integrity_ok"] = integrity.lower() == "ok"
+        out["integrity_message"] = integrity
+        tables = [str(r[0]) for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+        out["table_names"] = tables
+        required = {"neuron_events", "neuron_schema_meta", "neuron_route_registry", "neuron_route_versions", "neuron_route_activation", "neuron_route_audit"}
+        out["required_tables_present"] = required.issubset(set(tables))
+        if "neuron_schema_meta" in tables:
+            meta_rows = cur.execute("SELECT key, value_json FROM neuron_schema_meta").fetchall()
+            meta = {str(k): _decode_jsonish(v) for k, v in meta_rows}
+            schema_meta = meta.get("schema_version") or {}
+            out["schema_version"] = schema_meta.get("value") if isinstance(schema_meta, dict) else schema_meta
+            status_meta = meta.get("db_status") or {}
+            out["db_status"] = str(status_meta.get("value") if isinstance(status_meta, dict) else status_meta or out["db_status"])
+            out["repair_history_hint"] = {
+                "last_integrity_check": meta.get("last_integrity_check") or {},
+                "last_bootstrap": meta.get("last_bootstrap") or {},
+                "bootstrap_source": meta.get("bootstrap_source") or {},
+            }
+        if "neuron_route_registry" in tables:
+            out["route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry").fetchone()[0])
+            out["enabled_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry WHERE enabled = 1").fetchone()[0])
+        if "neuron_route_activation" in tables:
+            out["active_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_activation WHERE activation_state = 'active'").fetchone()[0])
+        if "neuron_route_backups" in tables:
+            out["backup_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_backups").fetchone()[0])
         else:
-            base = "The user is asking for current external data, but live retrieval is blocked by policy or connectivity, so I should explain the limit and use local last-known resources only."
-    else:
-        base = "No explicit realtime requirement is detected, so I should remain deterministic and local-first."
-    return base
+            try:
+                out["backup_count"] = len([n for n in os.listdir(_neuron_backup_dir()) if str(n).lower().endswith('.db')])
+            except Exception:
+                out["backup_count"] = 0
+        if "neuron_events" in tables:
+            out["event_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_events").fetchone()[0])
+        out["healthy"] = bool(out["integrity_ok"] and out["required_tables_present"] and out["route_count"] >= 1 and out["active_route_count"] >= 1)
+        out["bootstrap_ready"] = bool(out["required_tables_present"] and out["route_count"] >= 1)
+    except Exception as e:
+        out["integrity_message"] = str(e)
+        out["db_status"] = "error"
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    _NEURON_AXIS_CACHE["ts"] = now
+    _NEURON_AXIS_CACHE["data"] = dict(out)
+    return dict(out)
+
+
+def get_neuron_axis_awareness(*, force_refresh: bool = False) -> Dict[str, Any]:
+    return _build_neuron_axis_awareness(force_refresh=force_refresh)
 
 
 # -----------------------------------------------------------------------------
@@ -1123,8 +1016,6 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
     body_map = _build_body_map()
     capability_map = _build_capability_map(ctx)
     lifecycle = _build_lifecycle_state()
-    temporal_awareness = _build_temporal_awareness(ctx, force_refresh=force_refresh)
-    realtime_strategy = _build_realtime_resource_strategy(ctx, request_text=str(ctx.get("request_text") or ctx.get("text") or ""))
 
     model = {
         "ts": _now_iso(),
@@ -1150,14 +1041,13 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
             "data_dir": _data_dir(),
             "datasets_dir": _datasets_dir(),
             "node_name": runtime.get("node_name") or _node_name(),
-            "temporal_awareness": temporal_awareness,
+            "neuron_axis_awareness": _build_neuron_axis_awareness(force_refresh=force_refresh),
         },
         "selfhood": _build_selfhood_model(),
         "body_map": body_map,
         "capability_map": capability_map,
         "lifecycle": lifecycle,
-        "temporal_awareness": temporal_awareness,
-        "realtime_strategy": realtime_strategy,
+        "neuron_axis_awareness": _build_neuron_axis_awareness(force_refresh=force_refresh),
         "governance_statement": {
             "reply_is_only_outward_formatter": True,
             "raw_reasoning_is_internal": True,
@@ -1170,16 +1060,13 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
             "ready_for_queries": True,
             "aware_of_current_capabilities": True,
             "aware_of_current_limits": True,
-            "aware_of_realtime_resources": True,
-            "can_assess_realtime_need": True,
-            "idle_state_policy": "Maintain awareness, continuity, time/date state, connectivity state, and governed readiness without uncontrolled autonomous action.",
+            "idle_state_policy": "Maintain awareness, continuity, and readiness without uncontrolled autonomous action.",
         },
         "context": {
             "caller": _safe_text(ctx.get("caller"), 120),
             "user_present": bool(ctx.get("user_present", True)),
             "user_consented": bool(ctx.get("user_consented", False)),
             "proposed_action_present": bool(ctx.get("proposed_action")),
-            "request_text": _safe_text(ctx.get("request_text") or ctx.get("text"), 240),
         },
     }
 
@@ -1211,8 +1098,7 @@ def get_self_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     lifecycle = model.get("lifecycle") or {}
     capability = model.get("capability_map") or {}
     allowed = capability.get("allowed") or {}
-    temporal = model.get("temporal_awareness") or {}
-    realtime = model.get("realtime_strategy") or {}
+    neuron_axis = model.get("neuron_axis_awareness") or {}
     return {
         "name": identity.get("entity_name"),
         "platform": identity.get("platform_type"),
@@ -1224,12 +1110,9 @@ def get_self_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "device_mode": status.get("device_mode"),
         "safe_mode": status.get("safe_mode"),
         "local_only": status.get("local_only"),
-        "online_connectivity": temporal.get("online_connectivity"),
-        "local_date": temporal.get("local_date"),
-        "local_time": temporal.get("local_time"),
-        "timezone_name": temporal.get("timezone_name"),
-        "realtime_requested": realtime.get("realtime_requested"),
-        "policy_online_allowed": realtime.get("policy_online_allowed"),
+        "neuron_axis_healthy": neuron_axis.get("healthy"),
+        "neuron_axis_route_count": neuron_axis.get("route_count"),
+        "neuron_axis_active_route_count": neuron_axis.get("active_route_count"),
         "last_startup_reason": ((lifecycle.get("purpose_awareness") or {}).get("startup_reason")),
         "last_shutdown_reason": ((lifecycle.get("purpose_awareness") or {}).get("shutdown_reason")),
         "last_reboot_reason": ((lifecycle.get("purpose_awareness") or {}).get("reboot_reason")),
@@ -1243,98 +1126,7 @@ def describe_identity(context: Optional[Dict[str, Any]] = None) -> str:
         f"I am {summary.get('name')}, a governed AI Operating System platform. "
         f"Current mode: {summary.get('mode')} / run_mode={summary.get('run_mode')} / device_mode={summary.get('device_mode')}. "
         f"Alive state: {summary.get('alive_state')}. Continuity state: {summary.get('continuity_state')}. "
-        f"Local time/date: {summary.get('local_time')} on {summary.get('local_date')} ({summary.get('timezone_name')}). "
-        f"Online connectivity: {'online' if summary.get('online_connectivity') else 'offline'}. "
         f"My mission is to serve the user safely, intelligently, and under governance without becoming a runaway system."
-    )
-
-
-# -----------------------------------------------------------------------------
-# Tri-Force consumer / integration packets
-# -----------------------------------------------------------------------------
-def _consumer_context(context: Optional[Dict[str, Any]] = None, request_text: str = "") -> Dict[str, Any]:
-    ctx = dict(context or {})
-    if request_text and not ctx.get("request_text") and not ctx.get("text"):
-        ctx["request_text"] = str(request_text)
-    return ctx
-
-
-def get_governor_consumer_packet(request_text: str = "", context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
-    ctx = _consumer_context(context, request_text=request_text)
-    model = build_cognitive_self_model(ctx, force_refresh=force_refresh)
-    capability_map = model.get("capability_map") or {}
-    temporal = model.get("temporal_awareness") or {}
-    realtime = model.get("realtime_strategy") or {}
-    lifecycle = model.get("lifecycle") or {}
-    return {
-        "module": MODULE_NAME,
-        "role": "tri_force_self_to_governor",
-        "ts": model.get("ts"),
-        "identity": {
-            "name": ((model.get("identity") or {}).get("entity_name")),
-            "platform": ((model.get("identity") or {}).get("platform_type")),
-            "node_name": ((model.get("identity") or {}).get("node_name")),
-        },
-        "status": model.get("status") or {},
-        "allowed": capability_map.get("allowed") or {},
-        "blocked_reasons": capability_map.get("blocked_reasons") or [],
-        "temporal_awareness": temporal,
-        "realtime_strategy": realtime,
-        "continuity": {
-            "current_boot_id": lifecycle.get("current_boot_id"),
-            "unclean_recovery_detected": lifecycle.get("unclean_recovery_detected"),
-            "purpose_awareness": lifecycle.get("purpose_awareness") or {},
-        },
-        "tri_force_contract": dict(_TRI_FORCE_CONTRACT),
-    }
-
-
-def get_thinker_consumer_packet(request_text: str = "", context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
-    ctx = _consumer_context(context, request_text=request_text)
-    model = build_cognitive_self_model(ctx, force_refresh=force_refresh)
-    capability_map = model.get("capability_map") or {}
-    return {
-        "module": MODULE_NAME,
-        "role": "tri_force_self_to_thinker",
-        "ts": model.get("ts"),
-        "identity": model.get("identity") or {},
-        "mission": model.get("mission") or {},
-        "selfhood": model.get("selfhood") or {},
-        "status": model.get("status") or {},
-        "capability_summary": {
-            "allowed": capability_map.get("allowed") or {},
-            "blocked_reasons": capability_map.get("blocked_reasons") or [],
-            "lanes": capability_map.get("lanes") or {},
-        },
-        "lifecycle": model.get("lifecycle") or {},
-        "temporal_awareness": model.get("temporal_awareness") or {},
-        "realtime_strategy": model.get("realtime_strategy") or {},
-        "tri_force_contract": dict(_TRI_FORCE_CONTRACT),
-    }
-
-
-def get_tri_force_packet(request_text: str = "", context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
-    ctx = _consumer_context(context, request_text=request_text)
-    model = build_cognitive_self_model(ctx, force_refresh=force_refresh)
-    return {
-        "ts": model.get("ts"),
-        "contract": dict(_TRI_FORCE_CONTRACT),
-        "canonical_self": {
-            "summary": get_self_summary(ctx),
-            "governor_consumer_packet": get_governor_consumer_packet(request_text=request_text, context=ctx, force_refresh=False),
-            "thinker_consumer_packet": get_thinker_consumer_packet(request_text=request_text, context=ctx, force_refresh=False),
-        },
-    }
-
-
-def explain_tri_force(request_text: str = "", context: Optional[Dict[str, Any]] = None) -> str:
-    tri = get_tri_force_packet(request_text=request_text, context=context, force_refresh=False)
-    summary = ((tri.get("canonical_self") or {}).get("summary") or {})
-    return (
-        f"The SarahMemory Cognitive Tri-Force is active. CognitiveSelf is the canonical self-awareness authority, "
-        f"CognitiveServices is the logical governor, and CognitiveThinker is the ethical/meaning governor. "
-        f"Current run mode is {summary.get('run_mode')}, device mode is {summary.get('device_mode')}, "
-        f"and continuity state is {summary.get('continuity_state')}."
     )
 
 
@@ -1364,10 +1156,7 @@ def _run_self_test() -> bool:
         "mission": model.get("mission", {}).get("primary_mission"),
         "files_present": ((model.get("body_map") or {}).get("discovery") or {}).get("files_present"),
         "network_allowed": (((model.get("capability_map") or {}).get("allowed") or {}).get("network_lane")),
-        "online_connectivity": ((model.get("temporal_awareness") or {}).get("online_connectivity")),
-        "local_time": ((model.get("temporal_awareness") or {}).get("local_time")),
-        "local_date": ((model.get("temporal_awareness") or {}).get("local_date")),
-        "realtime_strategy": model.get("realtime_strategy"),
+        "neuron_axis_awareness": model.get("neuron_axis_awareness"),
         "continuity_state": ((model.get("status") or {}).get("continuity_state")),
     }, indent=2))
 
@@ -1390,6 +1179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-# ====================================================================
-# END OF SarahMemoryCognitiveSelf.py v8.0.0
-# ====================================================================

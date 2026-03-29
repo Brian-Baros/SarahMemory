@@ -8,7 +8,7 @@
  www.linkedin.com/in/brian-baros-29962a176
  https://www.facebook.com/bbaros
  brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
+ 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
  https://www.sarahmemory.com
  https://api.sarahmemory.com
  https://ai.sarahmemory.com

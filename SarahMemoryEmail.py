@@ -5,7 +5,15 @@ Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
 Date: 2026-03-11
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+===============================================================================
 PURPOSE:
 --------
 SarahMemoryEmail is a local-first, sealed communications lane for mailbox intake,
