@@ -855,7 +855,7 @@ I have now and currently developing a new system that:
 ### **4. New Core Files**
 - `SarahMemoryPreTokenAnalyzer.py`  
 - `SarahMemoryCognitiveSelf.py`  
-  - Turns Yin/Yang into a **TriForce** of governance : (Author Note) Yes I grew up as a gamer and yes that's a Legend of Zelda Referrence. 
+  - Turns Yin/Yang into a **TriForce** of governance : (Author Note) Yes I grew up as a gamer and yes that's a Legend of Zelda Referrence, but if it works it works right, well it works. 
 
 ---
 # **📜 License**
