@@ -118,8 +118,11 @@ A next‑generation AI Operating System capable of:
 ---
 # **📁 Project Structure**
 
-
-SarahMemory/ ├── /                     # Main AI files and tools ├── LICENSE               # Legal terms ├── README.md             # This file └── .gitignore            # Git exclusions
+SarahMemory/
+      ├── /                     # Main AI files and tools 
+      ├── LICENSE               # Legal terms 
+      ├── README.md             # This file 
+      └── .gitignore            # Git exclusions
 
 ---
 # **⚡ Quickstart (Beginner-Friendly)**
