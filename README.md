@@ -858,10 +858,6 @@ You are developing a new system that:
   - Turns Yin/Yang into a **TriForce** of governance  
 
 ---
-### **5. And yes — the meme**
-![SarahMemory Meme](documents/a27bbca2-ed66-4392-a43b-e17958cfe76f.jpg)
-
----
 # **📜 License**
 
 © 2025–2026 Brian Lee Baros.  
