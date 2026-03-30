@@ -410,7 +410,10 @@ IDENTITY_PHRASES: List[str] = [
     "your name", "who are you", "what's your name", "tell me your name",
     "identify yourself", "are you sarah", "which ai are you",
     "who am i talking to", "what are you", "what is your name",
-    "who made you", "who created you", "what do you do"
+    "who made you", "who created you", "who programmed you", "who developed you",
+    "what do you do", "what are you capable of", "what are your capabilities",
+    "what can you do", "what can you do right now", "what are you able to do",
+    "who is brian baros", "who is brian lee baros"
 ]
 
 # Question starters
@@ -1143,6 +1146,90 @@ def _detect_action_subject(text: str) -> Tuple[Optional[str], Optional[str]]:
     return action_label, subject_key
 
 
+
+
+_SURFACE_DRAW_SHAPES = ("circle", "square", "triangle", "rectangle", "oval", "line", "star")
+_SURFACE_APP_ALIASES = {
+    "word": "winword", "microsoft word": "winword", "ms word": "winword", "winword": "winword",
+    "excel": "excel", "microsoft excel": "excel", "ms excel": "excel",
+    "powerpoint": "powerpnt", "microsoft powerpoint": "powerpnt", "ms powerpoint": "powerpnt", "powerpnt": "powerpnt",
+    "paint": "mspaint", "microsoft paint": "mspaint", "mspaint": "mspaint",
+    "notepad": "notepad", "vscode": "code", "visual studio code": "code", "vs code": "code", "code": "code",
+    "dreamweaver": "dreamweaver",
+}
+
+
+def _canonical_surface_exec(app_name: Optional[str]) -> str:
+    app = str(app_name or '').strip().lower()
+    if not app:
+        return ''
+    app = app.replace('.exe', '').strip()
+    return _SURFACE_APP_ALIASES.get(app, app)
+
+
+def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict[str, Any]:
+    t = _normalize_text(text)
+    low = t.lower()
+    result: Dict[str, Any] = {}
+    requested_app = ''
+    for alias in sorted(_SURFACE_APP_ALIASES.keys(), key=len, reverse=True):
+        if re.search(r'(?<![a-z0-9])' + re.escape(alias) + r'(?![a-z0-9])', low):
+            requested_app = alias
+            break
+    if preferred_app and not requested_app:
+        requested_app = str(preferred_app)
+    canonical = _canonical_surface_exec(requested_app)
+    if canonical:
+        result['requested_app'] = requested_app or canonical
+        result['requested_app_exec'] = canonical
+
+    open_named = re.search(r'\bopen\b.*?\b(?:document|file|spreadsheet|workbook|project|page|website)\b\s*(?:named|called)\s+(.+?)(?:\s+(?:and\s+(?:write|create|make)|about|with)\b|$)', t, re.I)
+    if open_named:
+        result['task_kind'] = 'open_named_document'
+        result['document_name'] = open_named.group(1).strip('" .')
+        return result
+
+    title_m = re.search(r'\btitled\s+(.+?)(?:\s+and\s+(?:write|create|make)|\s+about|\s+with|$)', t, re.I)
+    if title_m:
+        result['title'] = title_m.group(1).strip('" .')
+    about_matches = re.findall(r'\b(?:about|on|regarding)\s+([^?.!,;]+)', t, re.I)
+    if about_matches:
+        result['topic'] = str(about_matches[-1]).strip(' ?.,')
+
+    if 'website' in low or 'webpage' in low or 'homepage' in low or 'about page' in low:
+        result['task_kind'] = 'website_scaffold'
+        pages = []
+        if 'homepage' in low or 'home page' in low:
+            pages.append('index')
+        if 'about page' in low:
+            pages.append('about')
+        result['pages'] = pages or ['index', 'about']
+        if not result.get('topic'):
+            using_app = re.search(r'\busing\s+([A-Za-z0-9+ ._-]+?)(?:\s+with\b|\s+and\b|\s+about\b|$)', t, re.I)
+            if using_app:
+                maybe = using_app.group(1).strip(' .')
+                if maybe and 'website' not in maybe.lower():
+                    result['authoring_app_hint'] = maybe
+        return result
+
+    if 'checkbook' in low or 'track my spending' in low or 'spreadsheet' in low or 'workbook' in low or ('excel' in low and any(k in low for k in ('create', 'make', 'build'))):
+        result['task_kind'] = 'spreadsheet_template'
+        result['template_kind'] = 'checkbook' if ('checkbook' in low or 'spending' in low) else 'table'
+        return result
+
+    if 'draw' in low:
+        result['task_kind'] = 'paint_draw'
+        shape_m = re.search(r'\b(' + '|'.join(_SURFACE_DRAW_SHAPES) + r')\b', low)
+        result['draw_subject'] = shape_m.group(1) if shape_m else 'drawing'
+        return result
+
+    if any(x in low for x in ('document', 'report', 'essay', 'letter', 'page', 'write me a', 'write a', 'create me a document', 'create a document')):
+        result['task_kind'] = 'write_document'
+        result['document_text'] = t
+        return result
+
+    return result
+
 def _extract_keywords(text: str, limit: int = 8) -> List[str]:
     """Extract compact routing keywords from text."""
     out: List[str] = []
@@ -1536,6 +1623,9 @@ def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
         "math_expr": cmd.math_expr,
         "semantic_summary": cmd.semantic_summary,
     }
+    surface_task = (cmd.extra or {}).get("surface_task") if isinstance(cmd.extra, dict) else None
+    if isinstance(surface_task, dict) and surface_task:
+        payload["surface_task"] = dict(surface_task)
 
     if cmd.math_expr:
         payload["task"] = "solve exact expression"
@@ -1868,6 +1958,11 @@ def parse_command(
         subject = subj
 
     output_type = _detect_output_type(t, label, action=action)
+    surface_task = extract_surface_task(t, preferred_app=app or subject)
+    if surface_task.get("requested_app") and not app:
+        app = str(surface_task.get("requested_app"))
+        if not subject:
+            subject = app
 
     # Semantic subject fallback from natural language/topic extraction
     if not math_expr:
@@ -1905,6 +2000,25 @@ def parse_command(
         math_expr=math_expr
     )
     query_type = _infer_query_type(t, label, output_type, math_expr, visual_query_type=visual_query_type)
+    if surface_task:
+        task_kind = str(surface_task.get("task_kind") or "").strip().lower()
+        intent_family = "ACTION"
+        likely_lane = "action"
+        if task_kind == "website_scaffold":
+            output_type = "website"
+            query_type = "website_scaffold"
+        elif task_kind == "spreadsheet_template":
+            output_type = "spreadsheet"
+            query_type = "spreadsheet_template"
+        elif task_kind == "paint_draw":
+            output_type = "image"
+            query_type = "paint_draw"
+        elif task_kind == "open_named_document":
+            output_type = output_type or "document"
+            query_type = "open_named_document"
+        else:
+            output_type = output_type or "document"
+            query_type = "document_write"
     keywords = _extract_keywords(t)
     attributes = _extract_attributes(t, subject=subject, action=action, output_type=output_type)
     if visual_query_type:
@@ -1933,6 +2047,8 @@ def parse_command(
     extra["output_type"] = output_type
     extra["action_expectation"] = action_expectation
     extra["module_hints"] = module_hints
+    if surface_task:
+        extra["surface_task"] = dict(surface_task)
     if visual_query_type:
         extra["vision"] = {
             "query_type": visual_query_type,

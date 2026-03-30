@@ -108,9 +108,6 @@ _SELF_DB_NAME = "cognitive_self.db"
 _MAX_CORE_FILE_SCAN = 1000
 _SELF_MODEL_CACHE: Dict[str, Any] = {"ts": 0.0, "model": None}
 _SELF_MODEL_CACHE_TTL = 10.0
-_NEURON_AXIS_CACHE: Dict[str, Any] = {"ts": 0.0, "data": None}
-_NEURON_AXIS_CACHE_TTL = 15.0
-_NEURON_DB_NAME = "neuron_axis.db"
 
 _IDENTITY_CONTRACT = {
     "system_name": "SarahMemory AiOS",
@@ -388,116 +385,6 @@ def _safe_import_available(module_name: str) -> bool:
         return importlib.util.find_spec(module_name) is not None
     except Exception:
         return False
-
-
-
-# -----------------------------------------------------------------------------
-# Neuron axis awareness helpers
-# -----------------------------------------------------------------------------
-def _neuron_db_path() -> str:
-    return os.path.join(_datasets_dir(), _NEURON_DB_NAME)
-
-
-def _neuron_backup_dir() -> str:
-    return os.path.join(_datasets_dir(), "backups", "neuron_axis")
-
-
-def _decode_jsonish(value: Any) -> Any:
-    if value is None:
-        return None
-    if isinstance(value, (dict, list, int, float, bool)):
-        return value
-    try:
-        return json.loads(str(value))
-    except Exception:
-        return value
-
-
-def _build_neuron_axis_awareness(*, force_refresh: bool = False) -> Dict[str, Any]:
-    now = time.time()
-    cached = _NEURON_AXIS_CACHE.get("data")
-    if (not force_refresh) and cached and (now - float(_NEURON_AXIS_CACHE.get("ts") or 0.0) <= _NEURON_AXIS_CACHE_TTL):
-        return dict(cached)
-
-    path = _neuron_db_path()
-    out: Dict[str, Any] = {
-        "path": path,
-        "exists": os.path.exists(path),
-        "size_bytes": int(os.path.getsize(path)) if os.path.exists(path) else 0,
-        "integrity_ok": False,
-        "integrity_message": "missing",
-        "schema_version": None,
-        "db_status": "missing",
-        "required_tables_present": False,
-        "table_names": [],
-        "route_count": 0,
-        "enabled_route_count": 0,
-        "active_route_count": 0,
-        "backup_count": 0,
-        "event_count": 0,
-        "healthy": False,
-        "bootstrap_ready": False,
-        "repair_history_hint": {},
-    }
-    con = None
-    try:
-        if not os.path.exists(path):
-            _NEURON_AXIS_CACHE["ts"] = now
-            _NEURON_AXIS_CACHE["data"] = dict(out)
-            return dict(out)
-        con = sqlite3.connect(path, timeout=2.0)
-        cur = con.cursor()
-        integrity = str(cur.execute("PRAGMA integrity_check").fetchone()[0])
-        out["integrity_ok"] = integrity.lower() == "ok"
-        out["integrity_message"] = integrity
-        tables = [str(r[0]) for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
-        out["table_names"] = tables
-        required = {"neuron_events", "neuron_schema_meta", "neuron_route_registry", "neuron_route_versions", "neuron_route_activation", "neuron_route_audit"}
-        out["required_tables_present"] = required.issubset(set(tables))
-        if "neuron_schema_meta" in tables:
-            meta_rows = cur.execute("SELECT key, value_json FROM neuron_schema_meta").fetchall()
-            meta = {str(k): _decode_jsonish(v) for k, v in meta_rows}
-            schema_meta = meta.get("schema_version") or {}
-            out["schema_version"] = schema_meta.get("value") if isinstance(schema_meta, dict) else schema_meta
-            status_meta = meta.get("db_status") or {}
-            out["db_status"] = str(status_meta.get("value") if isinstance(status_meta, dict) else status_meta or out["db_status"])
-            out["repair_history_hint"] = {
-                "last_integrity_check": meta.get("last_integrity_check") or {},
-                "last_bootstrap": meta.get("last_bootstrap") or {},
-                "bootstrap_source": meta.get("bootstrap_source") or {},
-            }
-        if "neuron_route_registry" in tables:
-            out["route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry").fetchone()[0])
-            out["enabled_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry WHERE enabled = 1").fetchone()[0])
-        if "neuron_route_activation" in tables:
-            out["active_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_activation WHERE activation_state = 'active'").fetchone()[0])
-        if "neuron_route_backups" in tables:
-            out["backup_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_backups").fetchone()[0])
-        else:
-            try:
-                out["backup_count"] = len([n for n in os.listdir(_neuron_backup_dir()) if str(n).lower().endswith('.db')])
-            except Exception:
-                out["backup_count"] = 0
-        if "neuron_events" in tables:
-            out["event_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_events").fetchone()[0])
-        out["healthy"] = bool(out["integrity_ok"] and out["required_tables_present"] and out["route_count"] >= 1 and out["active_route_count"] >= 1)
-        out["bootstrap_ready"] = bool(out["required_tables_present"] and out["route_count"] >= 1)
-    except Exception as e:
-        out["integrity_message"] = str(e)
-        out["db_status"] = "error"
-    finally:
-        try:
-            if con:
-                con.close()
-        except Exception:
-            pass
-    _NEURON_AXIS_CACHE["ts"] = now
-    _NEURON_AXIS_CACHE["data"] = dict(out)
-    return dict(out)
-
-
-def get_neuron_axis_awareness(*, force_refresh: bool = False) -> Dict[str, Any]:
-    return _build_neuron_axis_awareness(force_refresh=force_refresh)
 
 
 # -----------------------------------------------------------------------------
@@ -940,6 +827,7 @@ def _build_capability_map(context: Optional[Dict[str, Any]] = None) -> Dict[str,
         "allowed": allowed,
         "blocked_reasons": blocked_reasons,
         "models": model_snapshot,
+        "desktop_surface": _desktop_surface_status(),
         "system_flags": {
             "safe_mode": status.safe_mode,
             "local_only": status.local_only,
@@ -950,6 +838,53 @@ def _build_capability_map(context: Optional[Dict[str, Any]] = None) -> Dict[str,
         },
     }
 
+
+
+
+def _desktop_surface_status() -> Dict[str, Any]:
+    status: Dict[str, Any] = {
+        "pyautogui": False,
+        "pygetwindow": False,
+        "window_focus": False,
+        "keyboard_mouse_control": False,
+        "document_surfaces": {},
+        "editors": {},
+    }
+    try:
+        import pyautogui  # type: ignore
+        status["pyautogui"] = True
+        status["keyboard_mouse_control"] = True
+    except Exception:
+        pass
+    try:
+        import pygetwindow  # type: ignore
+        status["pygetwindow"] = True
+        status["window_focus"] = True
+    except Exception:
+        pass
+    try:
+        import SarahMemorySi as _Si  # type: ignore
+        for key, query in {
+            "word": "word",
+            "excel": "excel",
+            "powerpoint": "powerpoint",
+            "paint": "paint",
+            "notepad": "notepad",
+            "vscode": "vscode",
+            "dreamweaver": "dreamweaver",
+        }.items():
+            try:
+                found = bool(_Si.get_app_path(query)) if hasattr(_Si, 'get_app_path') else False
+            except Exception:
+                found = False
+            if key in {"word", "excel", "powerpoint", "paint"}:
+                status["document_surfaces"][key] = found
+            else:
+                status["editors"][key] = found
+    except Exception:
+        pass
+    status["surface_execution_ready"] = bool(status["keyboard_mouse_control"] and (any((status.get("document_surfaces") or {}).values()) or any((status.get("editors") or {}).values())))
+    return status
 
 def _build_lifecycle_state() -> Dict[str, Any]:
     runtime_state = _state_get("runtime_state", {})
@@ -1041,13 +976,11 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
             "data_dir": _data_dir(),
             "datasets_dir": _datasets_dir(),
             "node_name": runtime.get("node_name") or _node_name(),
-            "neuron_axis_awareness": _build_neuron_axis_awareness(force_refresh=force_refresh),
         },
         "selfhood": _build_selfhood_model(),
         "body_map": body_map,
         "capability_map": capability_map,
         "lifecycle": lifecycle,
-        "neuron_axis_awareness": _build_neuron_axis_awareness(force_refresh=force_refresh),
         "governance_statement": {
             "reply_is_only_outward_formatter": True,
             "raw_reasoning_is_internal": True,
@@ -1098,10 +1031,12 @@ def get_self_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     lifecycle = model.get("lifecycle") or {}
     capability = model.get("capability_map") or {}
     allowed = capability.get("allowed") or {}
-    neuron_axis = model.get("neuron_axis_awareness") or {}
+    desktop = capability.get("desktop_surface") if isinstance(capability.get("desktop_surface"), dict) else _desktop_surface_status()
     return {
         "name": identity.get("entity_name"),
         "platform": identity.get("platform_type"),
+        "creator": identity.get("creator"),
+        "organization": identity.get("organization"),
         "node_name": identity.get("node_name"),
         "alive_state": status.get("alive_state"),
         "continuity_state": status.get("continuity_state"),
@@ -1110,24 +1045,63 @@ def get_self_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "device_mode": status.get("device_mode"),
         "safe_mode": status.get("safe_mode"),
         "local_only": status.get("local_only"),
-        "neuron_axis_healthy": neuron_axis.get("healthy"),
-        "neuron_axis_route_count": neuron_axis.get("route_count"),
-        "neuron_axis_active_route_count": neuron_axis.get("active_route_count"),
         "last_startup_reason": ((lifecycle.get("purpose_awareness") or {}).get("startup_reason")),
         "last_shutdown_reason": ((lifecycle.get("purpose_awareness") or {}).get("shutdown_reason")),
         "last_reboot_reason": ((lifecycle.get("purpose_awareness") or {}).get("reboot_reason")),
         "allowed": allowed,
+        "desktop_surface": desktop,
     }
 
 
 def describe_identity(context: Optional[Dict[str, Any]] = None) -> str:
     summary = get_self_summary(context=context)
     return (
-        f"I am {summary.get('name')}, a governed AI Operating System platform. "
+        f"I am {summary.get('name')}, a governed AI Operating System platform created by {summary.get('creator')}. "
         f"Current mode: {summary.get('mode')} / run_mode={summary.get('run_mode')} / device_mode={summary.get('device_mode')}. "
         f"Alive state: {summary.get('alive_state')}. Continuity state: {summary.get('continuity_state')}. "
         f"My mission is to serve the user safely, intelligently, and under governance without becoming a runaway system."
     )
+
+
+def get_capability_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    model = get_latest_cognitive_self_model(context=context)
+    capability = model.get("capability_map") or {}
+    lanes = capability.get("lanes") or {}
+    allowed = capability.get("allowed") or {}
+    desktop = capability.get("desktop_surface") if isinstance(capability.get("desktop_surface"), dict) else _desktop_surface_status()
+    return {
+        "lanes_available": {k: bool((v or {}).get("available")) for k, v in lanes.items() if isinstance(v, dict)},
+        "allowed": allowed,
+        "desktop_surface": desktop,
+        "models": capability.get("models") or {},
+        "blocked_reasons": capability.get("blocked_reasons") or [],
+    }
+
+
+def describe_capabilities(context: Optional[Dict[str, Any]] = None) -> str:
+    caps = get_capability_summary(context=context)
+    lanes = [k.replace('_', ' ') for k, v in (caps.get('lanes_available') or {}).items() if v]
+    desktop = caps.get('desktop_surface') or {}
+    doc_surfaces = [k for k, v in (desktop.get('document_surfaces') or {}).items() if v]
+    editors = [k for k, v in (desktop.get('editors') or {}).items() if v]
+    parts = []
+    if lanes:
+        parts.append("Available governed lanes: " + ", ".join(lanes) + ".")
+    if desktop.get('keyboard_mouse_control'):
+        parts.append("I have desktop keyboard and mouse automation available on this runtime.")
+    if desktop.get('window_focus'):
+        parts.append("I can focus and operate supported application windows when governance allows it.")
+    if doc_surfaces or editors:
+        parts.append("Detected authoring surfaces include: " + ", ".join(doc_surfaces + editors) + ".")
+    if caps.get('blocked_reasons'):
+        parts.append("Current constraints: " + " ".join(str(x) for x in caps.get('blocked_reasons')[:3]))
+    if not parts:
+        parts.append("I can assist through governed answer, action, creative, system, and network capabilities depending on the current runtime.")
+    return " ".join(parts)
+
+
+def describe_identity_and_capabilities(context: Optional[Dict[str, Any]] = None) -> str:
+    return f"{describe_identity(context=context)} {describe_capabilities(context=context)}"
 
 
 # -----------------------------------------------------------------------------
@@ -1156,7 +1130,6 @@ def _run_self_test() -> bool:
         "mission": model.get("mission", {}).get("primary_mission"),
         "files_present": ((model.get("body_map") or {}).get("discovery") or {}).get("files_present"),
         "network_allowed": (((model.get("capability_map") or {}).get("allowed") or {}).get("network_lane")),
-        "neuron_axis_awareness": model.get("neuron_axis_awareness"),
         "continuity_state": ((model.get("status") or {}).get("continuity_state")),
     }, indent=2))
 

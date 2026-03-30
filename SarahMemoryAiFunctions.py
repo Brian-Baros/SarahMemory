@@ -2788,40 +2788,203 @@ def open_url_in_chrome(url: str) -> str:
     except Exception as e:
         return f"Failed to open URL: {e}"
 
-def draw_in_paint(subject: str = "dinosaur") -> str:
-    """Open Microsoft Paint and draw a simple outline using pyautogui (best effort)"""
+
+def _surface_pag():
     try:
-        import os
-        paint_path = r"C:\Windows\System32\mspaint.exe"
-        if os.path.exists(paint_path):
-            os.startfile(paint_path)  # nosec
-            import time
-            time.sleep(2.5)
-            try:
-                import pyautogui as pag
-                pag.FAILSAFE = False
-                # Maximize
-                pag.hotkey('alt', 'space')
-                time.sleep(0.2)
-                pag.press('x')
-                time.sleep(0.3)
-                w, h = pag.size()
-                cx, cy = int(w * 0.5), int(h * 0.6)
-                pag.moveTo(cx - 220, cy)
-                pag.mouseDown()
-                pag.moveRel(80, -60, 0.35)
-                pag.moveRel(70, 55, 0.35)
-                pag.moveRel(100, 40, 0.4)
-                pag.moveRel(-50, 60, 0.3)
-                pag.moveRel(-90, -10, 0.35)
-                pag.moveRel(-60, -40, 0.35)
-                pag.moveRel(20, 35, 0.2)
-                pag.moveRel(35, 10, 0.2)
-                pag.mouseUp()
-                return f"Drew a simple {subject} in Paint."
-            except Exception as e:
-                return f"Paint opened but drawing failed: {e}"
-        return "Paint not found on this system."
+        import pyautogui as pag  # type: ignore
+        pag.FAILSAFE = False
+        return pag
+    except Exception:
+        return None
+
+
+def _surface_sleep(seconds: float) -> None:
+    try:
+        time.sleep(max(0.0, float(seconds or 0.0)))
+    except Exception:
+        pass
+
+
+def _surface_focus_best_effort(app_name: str, timeout: float = 8.0) -> bool:
+    try:
+        import SarahMemorySi as _Si  # type: ignore
+        if hasattr(_Si, 'wait_for_application_window'):
+            _Si.wait_for_application_window(app_name, timeout=timeout)
+        if hasattr(_Si, 'focus_application'):
+            return bool(_Si.focus_application(app_name))
+    except Exception:
+        pass
+    return False
+
+
+def _surface_hotkey(*keys: str) -> bool:
+    pag = _surface_pag()
+    if not pag:
+        return False
+    try:
+        pag.hotkey(*[str(k) for k in keys if str(k).strip()])
+        return True
+    except Exception:
+        return False
+
+
+def _surface_press(key: str, presses: int = 1) -> bool:
+    pag = _surface_pag()
+    if not pag:
+        return False
+    try:
+        pag.press(str(key), presses=max(1, int(presses)))
+        return True
+    except Exception:
+        return False
+
+
+def _surface_type(text_value: str, interval: float = 0.01) -> Dict[str, Any]:
+    pag = _surface_pag()
+    if not pag:
+        return {"ok": False, "error": "pyautogui_unavailable"}
+    payload = str(text_value or '')
+    if not payload:
+        return {"ok": False, "error": "empty_text"}
+    try:
+        pag.typewrite(payload, interval=max(0.0, float(interval or 0.0)))
+        return {"ok": True, "typed_chars": len(payload)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _surface_new_document(app_name: str) -> bool:
+    _surface_focus_best_effort(app_name)
+    _surface_sleep(0.5)
+    return _surface_hotkey('ctrl', 'n')
+
+
+def _surface_open_named_document(app_name: str, document_name: str) -> Dict[str, Any]:
+    if not document_name:
+        return {"ok": False, "error": "missing_document_name"}
+    _surface_focus_best_effort(app_name)
+    _surface_sleep(0.5)
+    if not _surface_hotkey('ctrl', 'o'):
+        return {"ok": False, "error": "open_shortcut_failed"}
+    _surface_sleep(0.8)
+    typed = _surface_type(str(document_name).strip(), interval=0.01)
+    if not typed.get('ok'):
+        return typed
+    _surface_sleep(0.2)
+    _surface_press('enter')
+    return {"ok": True, "document_name": document_name}
+
+
+def _build_surface_document_text(surface_task: Dict[str, Any], user_text: str = '') -> str:
+    title = str(surface_task.get('title') or '').strip()
+    topic = str(surface_task.get('topic') or '').strip() or str(surface_task.get('document_name') or '').strip() or 'the requested topic'
+    directive = str(surface_task.get('document_text') or '').strip()
+    if not title:
+        title = topic.title() if topic else 'Document'
+    body_topic = topic or 'the requested topic'
+    lines = [title, '', 'Overview', f'This document is about {body_topic}.', '', 'Key Points', f'- Purpose: explain {body_topic}.', '- Context: drafted from the user request.', '- Notes: refine with more user-specific detail if requested.', '', 'Summary', f'{body_topic.title()} can be expanded with more facts, examples, images, or formatting if the user asks for a richer document.']
+    return "\n".join(lines)
+
+
+def _build_spreadsheet_template(surface_task: Dict[str, Any]) -> str:
+    template_kind = str(surface_task.get('template_kind') or 'table').strip().lower()
+    if template_kind == 'checkbook':
+        rows = [
+            ['Date', 'Description', 'Category', 'Amount Out', 'Amount In', 'Balance', 'Notes'],
+            ['', 'Starting Balance', '', '', '', '', ''],
+            ['', '', '', '', '', '', ''],
+            ['', '', '', '', '', '', ''],
+        ]
+    else:
+        rows = [['Column A', 'Column B', 'Column C', 'Column D'], ['', '', '', ''], ['', '', '', '']]
+    return "\n".join("\t".join(row) for row in rows)
+
+
+def _build_website_scaffold(surface_task: Dict[str, Any]) -> str:
+    topic = str(surface_task.get('topic') or 'donuts').strip() or 'donuts'
+    title = str(surface_task.get('title') or f'{topic.title()} Site').strip() or f'{topic.title()} Site'
+    pages = surface_task.get('pages') if isinstance(surface_task.get('pages'), list) else ['index', 'about']
+    pages = [str(p).strip().lower() for p in pages if str(p).strip()] or ['index', 'about']
+    nav = " ".join([f'<a href="{("index" if p in {"index", "home", "homepage"} else p)}.html">{("Home" if p in {"index", "home", "homepage"} else p.title())}</a>' for p in pages])
+    def page_template(page: str) -> str:
+        slug = 'index' if page in {'index','home','homepage'} else page
+        heading = 'Welcome' if slug == 'index' else page.title()
+        paragraph = f'This page is part of a starter website about {topic}.' if slug != 'about' else f'About this website: it was created as a starter site about {topic}.'
+        return f"<!-- {slug}.html -->\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>{title} - {heading}</title>\n</head>\n<body>\n  <header>\n    <h1>{title}</h1>\n    <nav>{nav}</nav>\n  </header>\n  <main>\n    <h2>{heading}</h2>\n    <p>{paragraph}</p>\n  </main>\n</body>\n</html>\n"
+    return "\n\n".join(page_template(p) for p in pages)
+
+
+def _draw_shape_on_paint(subject: str = 'circle') -> Dict[str, Any]:
+    pag = _surface_pag()
+    if not pag:
+        return {"ok": False, "error": "pyautogui_unavailable"}
+    try:
+        _surface_focus_best_effort('mspaint')
+        _surface_sleep(0.8)
+        w, h = pag.size()
+        cx, cy = int(w * 0.5), int(h * 0.58)
+        subj = str(subject or 'circle').strip().lower()
+        if subj in {'circle', 'oval'}:
+            _draw_circle_in_paint(pag, cx, cy, radius=110, duration=1.4)
+        elif subj in {'square', 'rectangle'}:
+            pag.moveTo(cx - 120, cy - 80); pag.mouseDown(); pag.moveRel(220, 0, 0.35); pag.moveRel(0, 170, 0.35); pag.moveRel(-220, 0, 0.35); pag.moveRel(0, -170, 0.35); pag.mouseUp()
+        elif subj == 'triangle':
+            pag.moveTo(cx, cy - 120); pag.mouseDown(); pag.moveRel(120, 220, 0.4); pag.moveRel(-240, 0, 0.4); pag.moveRel(120, -220, 0.4); pag.mouseUp()
+        elif subj == 'line':
+            pag.moveTo(cx - 160, cy); pag.dragRel(320, 0, 0.5, button='left')
+        else:
+            _draw_circle_in_paint(pag, cx, cy, radius=110, duration=1.4)
+        return {"ok": True, "shape": subj}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "shape": str(subject or '')}
+
+
+def execute_surface_task(app_name: str, surface_task: Dict[str, Any], user_text: str = '') -> Dict[str, Any]:
+    task = dict(surface_task or {})
+    app = str(app_name or task.get('requested_app_exec') or task.get('requested_app') or '').strip().lower()
+    task_kind = str(task.get('task_kind') or '').strip().lower()
+    if not app:
+        return {"ok": False, "error": "missing_app_name", "task_kind": task_kind}
+    _surface_focus_best_effort(app)
+    _surface_sleep(0.6)
+    if task_kind == 'paint_draw':
+        return _draw_shape_on_paint(str(task.get('draw_subject') or 'circle'))
+    if task_kind == 'open_named_document':
+        return _surface_open_named_document(app, str(task.get('document_name') or task.get('title') or '').strip())
+    if task_kind in {'write_document', 'create_document', 'document_write', 'type_text'}:
+        _surface_new_document(app)
+        _surface_sleep(1.1)
+        text_value = str(task.get('document_text') or '').strip() or _build_surface_document_text(task, user_text=user_text)
+        typed = _surface_type(text_value, interval=0.01)
+        typed.setdefault('task_kind', task_kind)
+        return typed
+    if task_kind == 'spreadsheet_template':
+        _surface_new_document(app)
+        _surface_sleep(1.0)
+        typed = _surface_type(_build_spreadsheet_template(task), interval=0.01)
+        typed.setdefault('task_kind', task_kind)
+        return typed
+    if task_kind == 'website_scaffold':
+        _surface_new_document(app)
+        _surface_sleep(0.9)
+        typed = _surface_type(_build_website_scaffold(task), interval=0.008)
+        typed.setdefault('task_kind', task_kind)
+        return typed
+    if task.get('document_text'):
+        return _surface_type(str(task.get('document_text')), interval=0.01)
+    return {"ok": True, "skipped": True, "reason": "no_surface_task", "app": app}
+
+
+def draw_in_paint(subject: str = "dinosaur") -> str:
+    """Open Microsoft Paint and draw a simple best-effort shape or figure."""
+    try:
+        launched = open_local_application('paint', wait_after_launch=2.5)
+        if not launched.get('ok'):
+            return f"Paint not found on this system: {launched.get('error') or 'launch_failed'}"
+        res = execute_surface_task('mspaint', {'task_kind': 'paint_draw', 'draw_subject': subject}, user_text=f'draw {subject}')
+        if res.get('ok'):
+            return f"Drew a simple {subject} in Paint."
+        return f"Paint opened but drawing failed: {res.get('error') or res}"
     except Exception as e:
         return f"Could not draw in Paint: {e}"
 
@@ -2908,7 +3071,7 @@ def plan_and_act(user_text: str, max_steps: int = 4) -> dict:
 _LEGACY_EXPORTS = [
     'smart_reply', 'create_chunks', 'detect_command_intent', 'normalize_text',
     'open_url_in_chrome', 'draw_in_paint', 'rerank', 'list_tools', 'exec_tool',
-    'plan_and_act'
+    'plan_and_act', 'execute_surface_task', 'open_local_application'
 ]
 
 # Extend __all__ if it exists

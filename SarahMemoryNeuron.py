@@ -113,12 +113,6 @@ try:
 except Exception:
     _Cog = None
 
-# Canonical self-awareness authority (optional, never hard-fail)
-try:
-    import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-except Exception:
-    _CogSelf = None
-
 # Tier-0.5: Advanced command understanding
 try:
     import SarahMemoryAdvCU as _AdvCU  # type: ignore
@@ -182,187 +176,14 @@ if not logger.hasHandlers():
 logger.propagate = False
 
 
-
 # -----------------------------------------------------------------------------
 # Paths / DB (best-effort, non-fatal)
 # -----------------------------------------------------------------------------
-_NEURON_DB_SCHEMA_VERSION = 2
-_NEURON_DB_BOOTSTRAP_SOURCE = "SarahMemoryNeuron.py"
-_NEURON_DB_BACKUP_KEEP = 5
-_NEURON_DB_REQUIRED_TABLES = {
-    "neuron_events",
-    "neuron_schema_meta",
-    "neuron_route_registry",
-    "neuron_route_matchers",
-    "neuron_route_requirements",
-    "neuron_route_steps",
-    "neuron_route_templates",
-    "neuron_route_tests",
-    "neuron_route_versions",
-    "neuron_route_activation",
-    "neuron_route_audit",
-    "neuron_route_backups",
-}
-_NEURON_BOOTSTRAP_ROUTE_SEEDS = [
-    {
-        "route_id": "chat.general",
-        "title": "General chat fallback",
-        "domain": "chat",
-        "primary_lane": "answer",
-        "priority": 10,
-        "enabled": 1,
-        "mutable_via_chat": 0,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "general", "notes": "Default general chat fallback route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "chat.general"}, "confidence_boost": 0.10, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": False, "requires_governance": True},
-        "steps": [{"step_order": 10, "step_kind": "deterministic_first", "step_payload": {"tiers": ["tier0", "tier1", "tier2", "tier3"]}, "failure_policy": "continue", "rollback_hint": "fallback_to_safe_reply"}],
-        "templates": [{"template_kind": "summary", "template_text": "General fallback answer route.", "template_json": {}}],
-        "tests": [{"input_text": "hello", "expected_lane": "answer", "expected_route_id": "chat.general", "expected_entities_json": {}, "expected_reply_contains": ""}],
-    },
-    {
-        "route_id": "research.weather.current",
-        "title": "Current weather research",
-        "domain": "research",
-        "primary_lane": "answer",
-        "priority": 40,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "research", "notes": "Governed current weather retrieval route."},
-        "matchers": [{"matcher_type": "route_prefix", "pattern": {"route_prefix": "research.weather"}, "confidence_boost": 0.35, "stop_on_match": 1}],
-        "requirements": {"requires_online": True, "requires_confirmation": False, "requires_governance": True},
-        "steps": [{"step_order": 10, "step_kind": "research", "step_payload": {"provider": "SarahMemoryResearch", "mode": "evidence_backed"}, "failure_policy": "fallback_local", "rollback_hint": "use_last_known_or_local_reply"}],
-        "templates": [{"template_kind": "summary", "template_text": "Weather and forecast research lane.", "template_json": {}}],
-        "tests": [{"input_text": "what is the temperature right now in Nacogdoches, Texas", "expected_lane": "answer", "expected_route_id": "research.weather.current", "expected_entities_json": {"topic": "weather"}, "expected_reply_contains": ""}],
-    },
-    {
-        "route_id": "documents.office.write",
-        "title": "Office document generation",
-        "domain": "documents",
-        "primary_lane": "action",
-        "priority": 55,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "action", "notes": "Governed office/document generation route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "documents.office.write"}, "confidence_boost": 0.30, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": True, "requires_governance": True},
-        "steps": [
-            {"step_order": 10, "step_kind": "discover_runtime", "step_payload": {"software_terms": ["microsoft word", "word", "winword", "libreoffice writer"]}, "failure_policy": "plan_only", "rollback_hint": "request_runtime_confirmation"},
-            {"step_order": 20, "step_kind": "generate_content", "step_payload": {"lane": "writing"}, "failure_policy": "plan_only", "rollback_hint": "ask_user_for_constraints"},
-        ],
-        "templates": [{"template_kind": "summary", "template_text": "Office document generation route.", "template_json": {}}],
-        "tests": [{"input_text": "open Word and write a report about industrial safety", "expected_lane": "action", "expected_route_id": "documents.office.write", "expected_entities_json": {"target_app": "word"}, "expected_reply_contains": "document automation"}],
-    },
-    {
-        "route_id": "system.application.control",
-        "title": "Application control",
-        "domain": "system",
-        "primary_lane": "action",
-        "priority": 60,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "action", "notes": "Governed application control route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "system.application.control"}, "confidence_boost": 0.30, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": False, "requires_governance": True},
-        "steps": [
-            {"step_order": 10, "step_kind": "resolve_application_runtime", "step_payload": {"software_terms": []}, "failure_policy": "plan_only", "rollback_hint": "discover_runtime_again"},
-            {"step_order": 20, "step_kind": "application_state_action", "step_payload": {"states": ["open", "close", "focus"]}, "failure_policy": "plan_only", "rollback_hint": "report_execution_limit"},
-        ],
-        "templates": [{"template_kind": "summary", "template_text": "Application control route.", "template_json": {}}],
-        "tests": [{"input_text": "open paint", "expected_lane": "action", "expected_route_id": "system.application.control", "expected_entities_json": {"target_app": "paint"}, "expected_reply_contains": "application"}],
-    },
-    {
-        "route_id": "email.mail.automation",
-        "title": "Email and spam automation",
-        "domain": "email",
-        "primary_lane": "action",
-        "priority": 58,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "action", "notes": "Governed email automation route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "email.mail.automation"}, "confidence_boost": 0.30, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": True, "requires_governance": True},
-        "steps": [
-            {"step_order": 10, "step_kind": "mail_discovery", "step_payload": {"folders": ["spam", "inbox"]}, "failure_policy": "plan_only", "rollback_hint": "report_mail_unavailable"},
-            {"step_order": 20, "step_kind": "scheduler_optional", "step_payload": {"supported_patterns": ["daily", "weekly", "monthly"]}, "failure_policy": "continue", "rollback_hint": "scheduler_optional_only"},
-        ],
-        "templates": [{"template_kind": "summary", "template_text": "Email and spam automation route.", "template_json": {}}],
-        "tests": [{"input_text": "empty spam trash daily", "expected_lane": "action", "expected_route_id": "email.mail.automation", "expected_entities_json": {"target_folder": "spam"}, "expected_reply_contains": "communications"}],
-    },
-    {
-        "route_id": "drivers.device.control",
-        "title": "Device and driver control",
-        "domain": "drivers",
-        "primary_lane": "action",
-        "priority": 65,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "action", "notes": "Governed device/driver control route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "drivers.device.control"}, "confidence_boost": 0.30, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": True, "requires_governance": True},
-        "steps": [
-            {"step_order": 10, "step_kind": "driver_discovery", "step_payload": {"source": "appdrivers"}, "failure_policy": "plan_only", "rollback_hint": "discover_driver_again"},
-            {"step_order": 20, "step_kind": "driver_action", "step_payload": {"mode": "governed"}, "failure_policy": "plan_only", "rollback_hint": "report_driver_limit"},
-        ],
-        "templates": [{"template_kind": "summary", "template_text": "Driver and device control route.", "template_json": {}}],
-        "tests": [{"input_text": "turn my keyboard rgb blue", "expected_lane": "action", "expected_route_id": "drivers.device.control", "expected_entities_json": {"device_type": "keyboard"}, "expected_reply_contains": "driver control"}],
-    },
-    {
-        "route_id": "avatar.create.activate",
-        "title": "Avatar creation and activation",
-        "domain": "avatar",
-        "primary_lane": "creative",
-        "priority": 52,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "creative", "notes": "Governed avatar activation route."},
-        "matchers": [{"matcher_type": "route_id", "pattern": {"route_id": "avatar.create.activate"}, "confidence_boost": 0.25, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": True, "requires_governance": True},
-        "steps": [{"step_order": 10, "step_kind": "discover_avatar_runtime", "step_payload": {"software_terms": ["unreal engine", "unreal", "blender"]}, "failure_policy": "plan_only", "rollback_hint": "report_avatar_runtime_missing"}],
-        "templates": [{"template_kind": "summary", "template_text": "Avatar creation and activation route.", "template_json": {}}],
-        "tests": [{"input_text": "activate a 3D avatar", "expected_lane": "creative", "expected_route_id": "avatar.create.activate", "expected_entities_json": {}, "expected_reply_contains": "avatar"}],
-    },
-    {
-        "route_id": "reminder.schedule.task",
-        "title": "Reminder and scheduler route",
-        "domain": "reminder",
-        "primary_lane": "action",
-        "priority": 50,
-        "enabled": 1,
-        "mutable_via_chat": 1,
-        "source": "bootstrap",
-        "config": {"owner": "SarahMemoryNeuron", "intent_hint": "time", "notes": "Reminder and scheduler route."},
-        "matchers": [{"matcher_type": "route_prefix", "pattern": {"route_prefix": "reminder."}, "confidence_boost": 0.20, "stop_on_match": 1}],
-        "requirements": {"requires_online": False, "requires_confirmation": True, "requires_governance": True},
-        "steps": [{"step_order": 10, "step_kind": "parse_schedule", "step_payload": {"patterns": ["daily", "weekly", "monthly", "one_shot"]}, "failure_policy": "plan_only", "rollback_hint": "ask_user_for_time"}],
-        "templates": [{"template_kind": "summary", "template_text": "Reminder and scheduler route.", "template_json": {}}],
-        "tests": [{"input_text": "remind me tomorrow at 5", "expected_lane": "action", "expected_route_id": "reminder.schedule.task", "expected_entities_json": {}, "expected_reply_contains": "reminder"}],
-    },
-]
-
-
-def _module_dir() -> str:
-    try:
-        return os.path.abspath(os.path.dirname(__file__))
-    except Exception:
-        return os.getcwd()
-
-
 def _base_dir() -> str:
     try:
-        candidate = str(getattr(config, "BASE_DIR", "")).strip()
+        return str(getattr(config, "BASE_DIR", os.getcwd()))
     except Exception:
-        candidate = ""
-    if candidate:
-        return candidate
-    md = _module_dir()
-    return md if md else os.getcwd()
+        return os.getcwd()
 
 def _data_dir() -> str:
     try:
@@ -379,632 +200,49 @@ def _datasets_dir() -> str:
 def _neuron_db_path() -> str:
     return os.path.join(_datasets_dir(), "neuron_axis.db")
 
-def _neuron_db_backup_dir() -> str:
-    return os.path.join(_datasets_dir(), "backups", "neuron_axis")
-
 def _ensure_dirs() -> None:
     try:
         os.makedirs(_datasets_dir(), exist_ok=True)
-        os.makedirs(_neuron_db_backup_dir(), exist_ok=True)
     except Exception:
         pass
-
-
-def _apply_db_pragmas(con: sqlite3.Connection) -> None:
-    try:
-        con.execute("PRAGMA journal_mode=WAL;")
-        con.execute("PRAGMA synchronous=NORMAL;")
-        con.execute("PRAGMA busy_timeout=5000;")
-        con.execute("PRAGMA foreign_keys=ON;")
-    except Exception:
-        pass
-
 
 def _connect_db() -> Optional[sqlite3.Connection]:
     try:
         _ensure_dirs()
-        con = sqlite3.connect(_neuron_db_path(), check_same_thread=False, timeout=5.0)
-        _apply_db_pragmas(con)
+        con = sqlite3.connect(_neuron_db_path(), check_same_thread=False, timeout=3.0)
         return con
     except Exception:
         return None
 
 _DB: Optional[sqlite3.Connection] = None
 
-
-def _close_db() -> None:
+def _init_db() -> None:
     global _DB
-    try:
-        if _DB is not None:
-            try:
-                _DB.close()
-            except Exception:
-                pass
-    finally:
-        _DB = None
-
-
-def _utc_now_iso() -> str:
-    try:
-        from datetime import datetime, timezone
-        return datetime.now(timezone.utc).isoformat()
-    except Exception:
-        return str(time.time())
-
-
-def _db_file_exists() -> bool:
-    try:
-        return os.path.exists(_neuron_db_path()) and os.path.getsize(_neuron_db_path()) > 0
-    except Exception:
-        return False
-
-
-def _db_table_names(path: Optional[str] = None) -> List[str]:
-    db_path = str(path or _neuron_db_path())
-    if not os.path.exists(db_path):
-        return []
-    con = None
-    try:
-        con = sqlite3.connect(db_path, timeout=2.0)
-        cur = con.cursor()
-        return [str(r[0]) for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    except Exception:
-        return []
-    finally:
-        try:
-            if con:
-                con.close()
-        except Exception:
-            pass
-
-
-def _db_integrity_status(path: Optional[str] = None) -> Dict[str, Any]:
-    db_path = str(path or _neuron_db_path())
-    if not os.path.exists(db_path):
-        return {"ok": False, "status": "missing", "message": "database_missing", "path": db_path}
-    con = None
-    try:
-        con = sqlite3.connect(db_path, timeout=2.0)
-        cur = con.cursor()
-        result = str(cur.execute("PRAGMA integrity_check").fetchone()[0])
-        return {"ok": result.lower() == "ok", "status": "ok" if result.lower() == "ok" else "corrupt", "message": result, "path": db_path}
-    except Exception as e:
-        return {"ok": False, "status": "error", "message": str(e), "path": db_path}
-    finally:
-        try:
-            if con:
-                con.close()
-        except Exception:
-            pass
-
-
-def _schema_meta_set(con: sqlite3.Connection, key: str, value: Any) -> None:
-    cur = con.cursor()
-    cur.execute(
-        "INSERT OR REPLACE INTO neuron_schema_meta (key, value_json, updated_ts) VALUES (?, ?, ?)",
-        (str(key), json.dumps(value, ensure_ascii=False), _utc_now_iso()),
-    )
-
-
-def _schema_meta_get(con: sqlite3.Connection, key: str, default: Any = None) -> Any:
-    try:
-        row = con.cursor().execute("SELECT value_json FROM neuron_schema_meta WHERE key = ?", (str(key),)).fetchone()
-        if not row:
-            return default
-        return json.loads(row[0])
-    except Exception:
-        return default
-
-
-def _record_route_audit(con: sqlite3.Connection, route_id: str, action: str, old_version: Any, new_version: Any, actor: str, source: str, decision: Any) -> None:
-    try:
-        con.cursor().execute(
-            "INSERT INTO neuron_route_audit (route_id, action, old_version, new_version, actor, source, decision_json, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(route_id or ""), str(action or ""), old_version, new_version, str(actor or "system"), str(source or "internal"), json.dumps(decision or {}, ensure_ascii=False), _utc_now_iso()),
-        )
-    except Exception:
-        pass
-
-
-def _ensure_schema(con: sqlite3.Connection) -> None:
-    cur = con.cursor()
-    cur.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS neuron_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts REAL,
-            kind TEXT,
-            intent TEXT,
-            confidence REAL,
-            source TEXT,
-            payload TEXT
-        );
-        CREATE TABLE IF NOT EXISTS neuron_schema_meta (
-            key TEXT PRIMARY KEY,
-            value_json TEXT,
-            updated_ts TEXT
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_registry (
-            route_id TEXT PRIMARY KEY,
-            title TEXT,
-            domain TEXT,
-            primary_lane TEXT,
-            priority INTEGER DEFAULT 50,
-            enabled INTEGER DEFAULT 1,
-            mutable_via_chat INTEGER DEFAULT 0,
-            source TEXT,
-            created_ts TEXT,
-            updated_ts TEXT
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_matchers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            matcher_type TEXT NOT NULL,
-            pattern_json TEXT,
-            confidence_boost REAL DEFAULT 0.0,
-            stop_on_match INTEGER DEFAULT 1,
-            created_ts TEXT,
-            updated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_requirements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            requirement_key TEXT NOT NULL,
-            requirement_value_json TEXT,
-            created_ts TEXT,
-            updated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_steps (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            step_order INTEGER DEFAULT 10,
-            step_kind TEXT NOT NULL,
-            step_payload_json TEXT,
-            failure_policy TEXT,
-            rollback_hint TEXT,
-            created_ts TEXT,
-            updated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            template_kind TEXT NOT NULL,
-            template_text TEXT,
-            template_json TEXT,
-            created_ts TEXT,
-            updated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_tests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            input_text TEXT,
-            expected_lane TEXT,
-            expected_route_id TEXT,
-            expected_entities_json TEXT,
-            expected_reply_contains TEXT,
-            created_ts TEXT,
-            updated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_versions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT NOT NULL,
-            version_num INTEGER NOT NULL,
-            config_json TEXT,
-            change_reason TEXT,
-            changed_by TEXT,
-            changed_ts TEXT,
-            approved INTEGER DEFAULT 1,
-            UNIQUE(route_id, version_num),
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_activation (
-            route_id TEXT PRIMARY KEY,
-            active_version_id INTEGER,
-            activation_state TEXT,
-            activated_ts TEXT,
-            FOREIGN KEY(route_id) REFERENCES neuron_route_registry(route_id) ON DELETE CASCADE,
-            FOREIGN KEY(active_version_id) REFERENCES neuron_route_versions(id)
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            route_id TEXT,
-            action TEXT,
-            old_version TEXT,
-            new_version TEXT,
-            actor TEXT,
-            source TEXT,
-            decision_json TEXT,
-            ts TEXT
-        );
-        CREATE TABLE IF NOT EXISTS neuron_route_backups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            backup_id TEXT,
-            file_path TEXT,
-            reason TEXT,
-            size_bytes INTEGER,
-            status TEXT,
-            created_ts TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_neuron_events_ts ON neuron_events(ts);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_registry_domain ON neuron_route_registry(domain);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_matchers_route ON neuron_route_matchers(route_id);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_requirements_route ON neuron_route_requirements(route_id);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_steps_route ON neuron_route_steps(route_id, step_order);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_templates_route ON neuron_route_templates(route_id);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_tests_route ON neuron_route_tests(route_id);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_versions_route ON neuron_route_versions(route_id, version_num);
-        CREATE INDEX IF NOT EXISTS idx_neuron_route_audit_route ON neuron_route_audit(route_id, ts);
-        """
-    )
-    _schema_meta_set(con, "schema_version", {"value": _NEURON_DB_SCHEMA_VERSION})
-    _schema_meta_set(con, "bootstrap_source", {"value": _NEURON_DB_BOOTSTRAP_SOURCE})
-    _schema_meta_set(con, "last_integrity_check", {"ts": _utc_now_iso()})
-    con.commit()
-
-
-def _seed_default_routes(con: sqlite3.Connection) -> None:
-    cur = con.cursor()
-    for seed in list(_NEURON_BOOTSTRAP_ROUTE_SEEDS or []):
-        route_id = str(seed.get("route_id") or "").strip()
-        if not route_id:
-            continue
-        now_iso = _utc_now_iso()
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO neuron_route_registry
-            (route_id, title, domain, primary_lane, priority, enabled, mutable_via_chat, source, created_ts, updated_ts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                route_id,
-                str(seed.get("title") or route_id),
-                str(seed.get("domain") or "general"),
-                str(seed.get("primary_lane") or "answer"),
-                int(seed.get("priority") or 50),
-                int(seed.get("enabled", 1)),
-                int(seed.get("mutable_via_chat", 0)),
-                str(seed.get("source") or "bootstrap"),
-                now_iso,
-                now_iso,
-            ),
-        )
-        cur.execute(
-            "UPDATE neuron_route_registry SET title = ?, domain = ?, primary_lane = ?, priority = ?, mutable_via_chat = ?, updated_ts = ? WHERE route_id = ?",
-            (
-                str(seed.get("title") or route_id),
-                str(seed.get("domain") or "general"),
-                str(seed.get("primary_lane") or "answer"),
-                int(seed.get("priority") or 50),
-                int(seed.get("mutable_via_chat", 0)),
-                now_iso,
-                route_id,
-            ),
-        )
-        row = cur.execute("SELECT id FROM neuron_route_versions WHERE route_id = ? AND version_num = 1", (route_id,)).fetchone()
-        version_id = None
-        if row:
-            version_id = int(row[0])
-        else:
-            cur.execute(
-                "INSERT INTO neuron_route_versions (route_id, version_num, config_json, change_reason, changed_by, changed_ts, approved) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    route_id,
-                    1,
-                    json.dumps(seed.get("config") or {}, ensure_ascii=False),
-                    "bootstrap_seed",
-                    "SarahMemoryNeuron",
-                    now_iso,
-                    1,
-                ),
-            )
-            version_id = int(cur.lastrowid or 0)
-            _record_route_audit(con, route_id, "seed_version", None, 1, "SarahMemoryNeuron", "bootstrap", {"reason": "bootstrap_seed"})
-        cur.execute(
-            "INSERT OR REPLACE INTO neuron_route_activation (route_id, active_version_id, activation_state, activated_ts) VALUES (?, ?, ?, ?)",
-            (route_id, version_id, "active" if int(seed.get("enabled", 1)) else "disabled", now_iso),
-        )
-        if not cur.execute("SELECT 1 FROM neuron_route_matchers WHERE route_id = ? LIMIT 1", (route_id,)).fetchone():
-            for matcher in list(seed.get("matchers") or []):
-                cur.execute(
-                    "INSERT INTO neuron_route_matchers (route_id, matcher_type, pattern_json, confidence_boost, stop_on_match, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        route_id,
-                        str(matcher.get("matcher_type") or "route_id"),
-                        json.dumps(matcher.get("pattern") or {}, ensure_ascii=False),
-                        float(matcher.get("confidence_boost") or 0.0),
-                        int(matcher.get("stop_on_match", 1)),
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-        if not cur.execute("SELECT 1 FROM neuron_route_requirements WHERE route_id = ? LIMIT 1", (route_id,)).fetchone():
-            for req_key, req_val in dict(seed.get("requirements") or {}).items():
-                cur.execute(
-                    "INSERT INTO neuron_route_requirements (route_id, requirement_key, requirement_value_json, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?)",
-                    (route_id, str(req_key), json.dumps(req_val, ensure_ascii=False), now_iso, now_iso),
-                )
-        if not cur.execute("SELECT 1 FROM neuron_route_steps WHERE route_id = ? LIMIT 1", (route_id,)).fetchone():
-            for step in list(seed.get("steps") or []):
-                cur.execute(
-                    "INSERT INTO neuron_route_steps (route_id, step_order, step_kind, step_payload_json, failure_policy, rollback_hint, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        route_id,
-                        int(step.get("step_order") or 10),
-                        str(step.get("step_kind") or "noop"),
-                        json.dumps(step.get("step_payload") or {}, ensure_ascii=False),
-                        str(step.get("failure_policy") or "continue"),
-                        str(step.get("rollback_hint") or ""),
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-        if not cur.execute("SELECT 1 FROM neuron_route_templates WHERE route_id = ? LIMIT 1", (route_id,)).fetchone():
-            for tpl in list(seed.get("templates") or []):
-                cur.execute(
-                    "INSERT INTO neuron_route_templates (route_id, template_kind, template_text, template_json, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        route_id,
-                        str(tpl.get("template_kind") or "summary"),
-                        str(tpl.get("template_text") or ""),
-                        json.dumps(tpl.get("template_json") or {}, ensure_ascii=False),
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-        if not cur.execute("SELECT 1 FROM neuron_route_tests WHERE route_id = ? LIMIT 1", (route_id,)).fetchone():
-            for test in list(seed.get("tests") or []):
-                cur.execute(
-                    "INSERT INTO neuron_route_tests (route_id, input_text, expected_lane, expected_route_id, expected_entities_json, expected_reply_contains, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        route_id,
-                        str(test.get("input_text") or ""),
-                        str(test.get("expected_lane") or ""),
-                        str(test.get("expected_route_id") or route_id),
-                        json.dumps(test.get("expected_entities_json") or {}, ensure_ascii=False),
-                        str(test.get("expected_reply_contains") or ""),
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-    _schema_meta_set(con, "bootstrap_routes_seeded", {"count": len(_NEURON_BOOTSTRAP_ROUTE_SEEDS), "ts": _utc_now_iso()})
-    con.commit()
-
-
-def _validate_neuron_db(con: sqlite3.Connection) -> Tuple[bool, List[str]]:
-    problems: List[str] = []
-    try:
-        cur = con.cursor()
-        tables = {str(r[0]) for r in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        missing = sorted(list(_NEURON_DB_REQUIRED_TABLES - tables))
-        if missing:
-            problems.append("missing_tables:" + ",".join(missing))
-        schema_meta = _schema_meta_get(con, "schema_version", {})
-        schema_version = schema_meta.get("value") if isinstance(schema_meta, dict) else schema_meta
-        if schema_version != _NEURON_DB_SCHEMA_VERSION:
-            problems.append(f"schema_version:{schema_version}")
-        route_count = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry").fetchone()[0]) if "neuron_route_registry" in tables else 0
-        if route_count <= 0:
-            problems.append("route_registry_empty")
-        active_count = int(cur.execute("SELECT COUNT(*) FROM neuron_route_activation WHERE activation_state = 'active'").fetchone()[0]) if "neuron_route_activation" in tables else 0
-        if active_count <= 0:
-            problems.append("no_active_routes")
-    except Exception as e:
-        problems.append("validation_error:" + str(e))
-    return (len(problems) == 0, problems)
-
-
-def _route_registry_summary(con: Optional[sqlite3.Connection] = None) -> Dict[str, Any]:
-    own = False
-    if con is None:
-        con = _connect_db()
-        own = True
-    out = {"db_path": _neuron_db_path(), "schema_version": None, "tables_ok": False, "route_count": 0, "enabled_route_count": 0, "active_route_count": 0, "backup_count": 0, "db_status": "unknown"}
-    try:
-        if con is None:
-            return out
-        tables = set(_db_table_names(_neuron_db_path()))
-        out["tables_ok"] = _NEURON_DB_REQUIRED_TABLES.issubset(tables)
-        schema_meta = _schema_meta_get(con, "schema_version", {})
-        if isinstance(schema_meta, dict):
-            out["schema_version"] = schema_meta.get("value")
-        status_meta = _schema_meta_get(con, "db_status", {})
-        if isinstance(status_meta, dict) and status_meta.get("value"):
-            out["db_status"] = str(status_meta.get("value"))
-        elif out["tables_ok"]:
-            out["db_status"] = "healthy"
-        cur = con.cursor()
-        if "neuron_route_registry" in tables:
-            out["route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry").fetchone()[0])
-            out["enabled_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_registry WHERE enabled = 1").fetchone()[0])
-        if "neuron_route_activation" in tables:
-            out["active_route_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_activation WHERE activation_state = 'active'").fetchone()[0])
-        if "neuron_route_backups" in tables:
-            out["backup_count"] = int(cur.execute("SELECT COUNT(*) FROM neuron_route_backups").fetchone()[0])
-        out["integrity"] = _db_integrity_status(_neuron_db_path())
-    except Exception as e:
-        out["error"] = str(e)
-    finally:
-        if own:
-            try:
-                if con:
-                    con.close()
-            except Exception:
-                pass
-    return out
-
-
-def neuron_route_registry_summary(force_refresh: bool = False) -> Dict[str, Any]:
-    del force_refresh
-    _init_db()
-    return _route_registry_summary(_DB)
-
-
-def _backup_db_file(reason: str, con: Optional[sqlite3.Connection] = None) -> Optional[str]:
-    src = _neuron_db_path()
-    if not os.path.exists(src):
-        return None
-    _ensure_dirs()
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    backup_id = f"neuron_backup_{stamp}"
-    dst = os.path.join(_neuron_db_backup_dir(), f"{backup_id}.db")
-    try:
-        shutil.copy2(src, dst)
-        size_bytes = int(os.path.getsize(dst)) if os.path.exists(dst) else 0
-        target_con = con or _DB
-        if target_con is not None:
-            try:
-                target_con.cursor().execute(
-                    "INSERT INTO neuron_route_backups (backup_id, file_path, reason, size_bytes, status, created_ts) VALUES (?, ?, ?, ?, ?, ?)",
-                    (backup_id, dst, str(reason or "manual"), size_bytes, "ok", _utc_now_iso()),
-                )
-                target_con.commit()
-            except Exception:
-                pass
-        _prune_backup_files()
-        return dst
-    except Exception:
-        return None
-
-
-def _prune_backup_files() -> None:
-    try:
-        files = sorted([os.path.join(_neuron_db_backup_dir(), n) for n in os.listdir(_neuron_db_backup_dir()) if str(n).lower().endswith('.db')], key=lambda p: os.path.getmtime(p), reverse=True)
-        for stale in files[_NEURON_DB_BACKUP_KEEP:]:
-            try:
-                os.remove(stale)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
-def _restore_latest_backup() -> Optional[str]:
-    try:
-        files = sorted([os.path.join(_neuron_db_backup_dir(), n) for n in os.listdir(_neuron_db_backup_dir()) if str(n).lower().endswith('.db')], key=lambda p: os.path.getmtime(p), reverse=True)
-    except Exception:
-        files = []
-    target = _neuron_db_path()
-    for candidate in files:
-        status = _db_integrity_status(candidate)
-        if not status.get("ok"):
-            continue
-        try:
-            shutil.copy2(candidate, target)
-            return candidate
-        except Exception:
-            continue
-    return None
-
-
-def _quarantine_current_db(reason: str) -> Optional[str]:
-    target = _neuron_db_path()
-    if not os.path.exists(target):
-        return None
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    qpath = os.path.join(_datasets_dir(), f"neuron_axis.{reason}.{stamp}.quarantine.db")
-    try:
-        shutil.move(target, qpath)
-        return qpath
-    except Exception:
-        try:
-            shutil.copy2(target, qpath)
-            os.remove(target)
-            return qpath
-        except Exception:
-            return None
-
-
-def _create_fresh_db(reason: str) -> bool:
-    con = None
-    try:
-        _ensure_dirs()
-        con = sqlite3.connect(_neuron_db_path(), check_same_thread=False, timeout=5.0)
-        _apply_db_pragmas(con)
-        _ensure_schema(con)
-        _seed_default_routes(con)
-        _schema_meta_set(con, "db_status", {"value": "healthy", "reason": str(reason or "fresh_create"), "ts": _utc_now_iso()})
-        _schema_meta_set(con, "last_bootstrap", {"reason": str(reason or "fresh_create"), "ts": _utc_now_iso(), "source": _NEURON_DB_BOOTSTRAP_SOURCE})
-        con.commit()
-        _backup_db_file(f"fresh_{reason}", con=con)
-        return True
-    except Exception as e:
-        logger.warning("[NeuronDB] Fresh DB creation failed: %s", e)
-        return False
-    finally:
-        try:
-            if con:
-                con.close()
-        except Exception:
-            pass
-
-
-def _repair_or_bootstrap_db(reason: str) -> Dict[str, Any]:
-    info = {"reason": str(reason or "repair"), "action": "none", "quarantine_path": None, "restored_backup": None, "created_fresh": False}
-    _close_db()
-    if _db_file_exists():
-        info["quarantine_path"] = _quarantine_current_db("repair")
-    restored = _restore_latest_backup()
-    if restored:
-        status = _db_integrity_status(_neuron_db_path())
-        if status.get("ok"):
-            info["action"] = "restore_backup"
-            info["restored_backup"] = restored
-            return info
-    created = _create_fresh_db(reason)
-    info["action"] = "create_fresh" if created else "failed"
-    info["created_fresh"] = bool(created)
-    return info
-
-
-def _init_db(force_repair: bool = False) -> None:
-    global _DB
-    if _DB is not None and not force_repair:
+    if _DB is not None:
         return
-    _close_db()
-    _ensure_dirs()
-
-    integrity = _db_integrity_status(_neuron_db_path())
-    if force_repair or integrity.get("status") in {"corrupt", "error"}:
-        repair_info = _repair_or_bootstrap_db("forced_repair" if force_repair else str(integrity.get("message") or "integrity_failure"))
-        logger.warning("[NeuronDB] Recovery path used: %s", repair_info)
-    elif not _db_file_exists():
-        created = _create_fresh_db("missing_db_bootstrap")
-        if not created:
-            return
-
     _DB = _connect_db()
     if _DB is None:
         return
-
     try:
-        _ensure_schema(_DB)
-        _seed_default_routes(_DB)
-        ok, problems = _validate_neuron_db(_DB)
-        if not ok:
-            logger.warning("[NeuronDB] Validation problems detected: %s", problems)
-            repair_info = _repair_or_bootstrap_db("validation_failed")
-            logger.warning("[NeuronDB] Validation recovery path used: %s", repair_info)
-            _DB = _connect_db()
-            if _DB is None:
-                return
-            _ensure_schema(_DB)
-            _seed_default_routes(_DB)
-            ok, problems = _validate_neuron_db(_DB)
-            if not ok:
-                logger.error("[NeuronDB] Validation still failing after recovery: %s", problems)
-        _schema_meta_set(_DB, "db_status", {"value": "healthy" if ok else "degraded", "ts": _utc_now_iso(), "problems": problems if not ok else []})
-        _schema_meta_set(_DB, "last_integrity_check", {"ts": _utc_now_iso(), "result": "ok" if ok else "failed", "problems": problems if not ok else []})
+        cur = _DB.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS neuron_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL,
+                kind TEXT,
+                intent TEXT,
+                confidence REAL,
+                source TEXT,
+                payload TEXT
+            )
+            """
+        )
         _DB.commit()
-        if _route_registry_summary(_DB).get("backup_count", 0) <= 0:
-            _backup_db_file("startup_validated", con=_DB)
-    except Exception as e:
-        logger.warning("[NeuronDB] Init failed: %s", e)
-        _close_db()
+    except Exception:
+        pass
+
+
 # -----------------------------------------------------------------------------
 # Safety envelope
 # -----------------------------------------------------------------------------
@@ -3019,7 +2257,17 @@ def _discover_runtime_capabilities(route: Dict[str, Any], user_text: str) -> Dic
         software_terms = [engine_pref] if engine_pref else ['unreal engine','unreal','blender']
     elif route_id == 'documents.office.write':
         capability_type = 'office_document'
-        software_terms = ['microsoft word','word','winword','libreoffice writer']
+        target = str(entities.get('target_app') or entities.get('requested_app') or '').strip().lower()
+        if target in {'excel', 'spreadsheet'}:
+            software_terms = ['microsoft excel','excel']
+        elif target in {'notepad'}:
+            software_terms = ['notepad']
+        elif target in {'vscode', 'code', 'visual studio code', 'vs code'}:
+            software_terms = ['visual studio code','vscode','code']
+        elif target in {'dreamweaver'}:
+            software_terms = ['dreamweaver','adobe dreamweaver']
+        else:
+            software_terms = ['microsoft word','word','winword','libreoffice writer']
     elif route_id == 'system.application.control':
         capability_type = 'application_control'
         target = str(entities.get('target_app') or '').strip().lower()
@@ -3070,7 +2318,7 @@ def _make_execution_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_
             plan['steps'].append('Create recurring reminder/scheduler entry for ongoing cleanup.')
             plan['endpoint_calls'].append({'method': 'POST', 'path': '/api/comm/reminders/save', 'payload': {'title': 'Empty spam trash', 'body': 'Governed recurring spam-trash cleanup task requested from chat ingress.', 'status': 'active', 'source': 'neuron_ingress', 'extra': {'pattern': sched.get('pattern'), 'time_hint': sched.get('time_hint')}}})
     elif route_id == 'documents.office.write':
-        plan['steps'] = ['Discover a word-processing runtime from indexed/system software data.', 'Generate requested document content through the writing lane.', 'Open the document in the discovered software under user authority.']
+        plan['steps'] = ['Discover the requested authoring runtime from indexed/system software data.', 'Launch and focus the requested surface.', 'Prepare the surface (new document/workbook/page or open existing file).', 'Execute the requested content task.', 'Verify the surface action completed or retain a governed retry plan.']
         if discovery.get('si_hits') or discovery.get('software_db') or discovery.get('system_index', {}).get('registry'):
             plan['requires_confirmation'] = False
         else:
@@ -3082,7 +2330,7 @@ def _make_execution_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_
     elif route_id == 'system.application.control':
         target_app = str(entities.get('target_app') or 'requested application')
         requested_state = str(entities.get('requested_state') or 'open')
-        plan['steps'] = [f'Resolve the runtime path for {target_app} from indexed software sources.', f'Perform governed application state action: {requested_state}.']
+        plan['steps'] = [f'Resolve the runtime path for {target_app} from indexed software sources.', f'Launch and focus the application surface for {target_app}.', 'If a post-launch task exists, prepare the surface, act, and verify completion.', f'Perform governed application state action: {requested_state}.']
         if discovery.get('si_hits') or discovery.get('software_db') or discovery.get('system_index', {}).get('registry'):
             plan['requires_confirmation'] = False
         else:
@@ -3138,6 +2386,65 @@ def _generic_keyboard_rgb_set(color_value: str) -> Dict[str, Any]:
     except Exception as e:
         return {'ok': False, 'error': str(e), 'color': str(color_value or '')}
 
+
+
+def _canonical_app_name(app_name: str) -> str:
+    app = str(app_name or '').strip().lower()
+    aliases = {
+        'microsoft word': 'winword', 'ms word': 'winword', 'word': 'winword', 'winword': 'winword',
+        'microsoft paint': 'mspaint', 'paint': 'mspaint', 'mspaint': 'mspaint',
+        'microsoft excel': 'excel', 'ms excel': 'excel', 'excel': 'excel',
+        'microsoft powerpoint': 'powerpnt', 'ms powerpoint': 'powerpnt', 'powerpoint': 'powerpnt', 'powerpnt': 'powerpnt',
+        'calculator': 'calc', 'calc': 'calc', 'outlook': 'outlook', 'notepad': 'notepad',
+        'visual studio code': 'code', 'vs code': 'code', 'vscode': 'code', 'code': 'code',
+        'dreamweaver': 'dreamweaver',
+    }
+    return aliases.get(app, app)
+
+
+def _derive_surface_task(canonical_app: str, entities: Dict[str, Any], user_text: str) -> Dict[str, Any]:
+    task = dict(entities.get('surface_task') or {}) if isinstance(entities.get('surface_task'), dict) else {}
+    if not task:
+        try:
+            fn = getattr(_AdvCU, 'extract_surface_task', None) if _AdvCU else None
+            if callable(fn):
+                data = fn(user_text, preferred_app=canonical_app)
+                if isinstance(data, dict):
+                    task.update(data)
+        except Exception:
+            pass
+    follow = str(entities.get('followup_action') or '').strip().lower()
+    if follow and not task.get('task_kind'):
+        task['task_kind'] = follow
+    for key in ('topic','title','document_text','draw_subject','document_name','pages','template_kind'):
+        if entities.get(key) and not task.get(key):
+            task[key] = entities.get(key)
+    if not task.get('requested_app_exec'):
+        task['requested_app_exec'] = canonical_app
+    if not task.get('requested_app'):
+        task['requested_app'] = canonical_app
+    if canonical_app == 'winword' and not task.get('task_kind'):
+        task['task_kind'] = 'write_document'
+    return task
+
+
+def _execute_followup_after_app_open(canonical_app: str, entities: Dict[str, Any], user_text: str) -> Dict[str, Any]:
+    task = _derive_surface_task(canonical_app, entities, user_text)
+    if not task or not task.get('task_kind'):
+        return {'ok': True, 'skipped': True, 'reason': 'no_followup'}
+    try:
+        import SarahMemoryAiFunctions as _AF  # type: ignore
+        fn = getattr(_AF, 'execute_surface_task', None)
+        if callable(fn):
+            result = fn(canonical_app, task, user_text=user_text)
+            if isinstance(result, dict):
+                result.setdefault('task_kind', task.get('task_kind'))
+                return result
+            return {'ok': bool(result), 'task_kind': task.get('task_kind'), 'result': result}
+    except Exception as e:
+        return {'ok': False, 'error': str(e), 'task_kind': task.get('task_kind')}
+    return {'ok': False, 'error': 'surface_executor_unavailable', 'task_kind': task.get('task_kind')}
+
 def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     meta = meta or {}
     route_id = str(route.get('route_id') or '')
@@ -3148,13 +2455,29 @@ def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user
         return result
     try:
         if route_id == 'system.application.control':
-            target_app = str(entities.get('target_app') or '').strip()
+            target_app = str(entities.get('target_app_exec') or entities.get('target_app') or '').strip()
             requested_state = str(entities.get('requested_state') or 'open').strip().lower()
             if target_app:
                 import SarahMemorySi as _Si  # type: ignore
-                cmd = f"{requested_state} {target_app}"
+                canonical = _canonical_app_name(target_app)
+                cmd = f"{requested_state} {canonical}"
                 ok = bool(_Si.manage_application_request(cmd)) if hasattr(_Si, 'manage_application_request') else False
-                return {'attempted': True, 'executed': ok, 'mode': 'direct_internal_dispatch', 'details': {'ok': ok, 'command': cmd, 'target_app': target_app, 'requested_state': requested_state}}
+                followup = {'ok': False, 'skipped': True, 'reason': 'not_applicable'}
+                if ok and requested_state == 'open':
+                    followup = _execute_followup_after_app_open(canonical, entities, user_text)
+                executed = bool(ok and (followup.get('ok') or followup.get('skipped')))
+                return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': {'ok': ok, 'command': cmd, 'target_app': canonical, 'requested_state': requested_state, 'followup': followup}}
+        if route_id == 'documents.office.write':
+            target_app = str(entities.get('target_app_exec') or entities.get('target_app') or 'winword').strip()
+            canonical = _canonical_app_name(target_app) or 'winword'
+            import SarahMemorySi as _Si  # type: ignore
+            cmd = f"open {canonical}"
+            ok = bool(_Si.manage_application_request(cmd)) if hasattr(_Si, 'manage_application_request') else False
+            followup = {'ok': False, 'skipped': True, 'reason': 'document_launch_failed'}
+            if ok:
+                followup = _execute_followup_after_app_open(canonical, entities, user_text)
+            executed = bool(ok and (followup.get('ok') or followup.get('skipped')))
+            return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': {'ok': ok, 'command': cmd, 'target_app': canonical, 'followup': followup, 'topic': entities.get('topic')}}
         if route_id == 'email.mail.automation':
             import appcomm as _AppComm  # type: ignore
             folder = str(entities.get('target_folder') or 'spam')
@@ -3273,12 +2596,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}, "ingress": ingress_route}
     trace["policy"] = {"allowed_tiers": allowed_tiers, "approved_modules": approved_modules}
     trace["core_governance"] = _core_governance_trace()
-    trace["neuron_axis"] = _route_registry_summary(_DB)
-    if _CogSelf and hasattr(_CogSelf, "get_self_summary"):
-        try:
-            trace["cognitive_self"] = _CogSelf.get_self_summary(context=inp.meta)  # type: ignore[attr-defined]
-        except Exception as e:
-            trace["cognitive_self_error"] = str(e)
 
     # Tier-0: Fast deterministic math (bypass heavy routing/QA gates)
     if allowed_tiers.get('tier0', True):
@@ -3758,19 +3075,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     return res
 
 
-def neuron_axis_health() -> Dict[str, Any]:
-    _init_db()
-    return _route_registry_summary(_DB)
-
-
-def neuron_axis_repair(reason: str = "manual_repair") -> Dict[str, Any]:
-    repair_info = _repair_or_bootstrap_db(reason)
-    _init_db(force_repair=False)
-    out = _route_registry_summary(_DB)
-    out["repair"] = repair_info
-    return out
-
-
 # -----------------------------------------------------------------------------
 # Background neuron service (heartbeat-style)
 # -----------------------------------------------------------------------------
@@ -3828,13 +3132,11 @@ def stop_neuron_background() -> bool:
     return True
 
 def neuron_status() -> Dict[str, Any]:
-    _init_db()
     return {
         "running": bool(_NEURON_THREAD and _NEURON_THREAD.is_alive()),
         "queue": int(getattr(_NEURON_Q, "qsize", lambda: 0)()),
         "profile": _device_profile(),
         "db": _neuron_db_path(),
-        "db_summary": _route_registry_summary(_DB),
     }
 
 # -----------------------------------------------------------------------------

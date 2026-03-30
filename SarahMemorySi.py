@@ -169,6 +169,69 @@ active_launched_apps = []
 _app_cache = {}  # In-memory cache for fast lookups
 
 # =============================================================================
+# APP ALIAS NORMALIZATION / COMPOUND COMMAND SPLITTING
+# =============================================================================
+_APP_ALIASES = {
+    'word': 'winword',
+    'microsoft word': 'winword',
+    'ms word': 'winword',
+    'winword': 'winword',
+    'excel': 'excel',
+    'microsoft excel': 'excel',
+    'ms excel': 'excel',
+    'powerpoint': 'powerpnt',
+    'microsoft powerpoint': 'powerpnt',
+    'ms powerpoint': 'powerpnt',
+    'powerpnt': 'powerpnt',
+    'paint': 'mspaint',
+    'microsoft paint': 'mspaint',
+    'mspaint': 'mspaint',
+    'notepad': 'notepad',
+    'visual studio code': 'code',
+    'vs code': 'code',
+    'vscode': 'code',
+    'code': 'code',
+    'dreamweaver': 'dreamweaver',
+    'calculator': 'calc',
+    'calc': 'calc',
+    'outlook': 'outlook',
+}
+
+_COMPOUND_BREAKERS = (' and then ', ' then ', ' and ', ',', ';')
+
+def _normalize_app_alias(app_name: str) -> str:
+    app_name = str(app_name or '').strip().lower()
+    if not app_name:
+        return ''
+    app_name = app_name.replace('.exe', '').strip()
+    return _APP_ALIASES.get(app_name, app_name)
+
+
+def _split_primary_app_request(full_command: str) -> tuple[str, str, str]:
+    raw = str(full_command or '').strip()
+    if not raw:
+        return '', '', ''
+    parts = raw.split(None, 1)
+    if len(parts) < 2:
+        return (parts[0].lower() if parts else ''), '', ''
+    action = parts[0].strip().lower()
+    remainder = parts[1].strip()
+    low = remainder.lower()
+    aliases = sorted(_APP_ALIASES.keys(), key=len, reverse=True)
+    for alias in aliases:
+        if low == alias or low.startswith(alias + ' '):
+            trailing = remainder[len(alias):].strip()
+            return action, alias, trailing.strip(' ,.;')
+    for sep in _COMPOUND_BREAKERS:
+        idx = low.find(sep)
+        if idx > 0:
+            primary = remainder[:idx].strip(' ,.;')
+            trailing = remainder[idx + len(sep):].strip(' ,.;')
+            return action, primary, trailing
+    return action, remainder, ''
+
+
+# =============================================================================
 # DATABASE CONNECTION - Backward Compatible
 # =============================================================================
 def connect_software_db() -> sqlite3.Connection:
@@ -424,7 +487,7 @@ def get_app_path(app_name: str) -> Optional[str]:
     Returns:
         Application path or None
     """
-    app_name_lower = app_name.lower()
+    app_name_lower = _normalize_app_alias(app_name) or str(app_name or '').lower()
 
     # Check memory cache first
     if app_name_lower in _app_cache:
@@ -602,16 +665,79 @@ def maximize_application(app_name: str) -> bool:
         logger.error(f"[v8.0] Maximize error: {e}")
         return False
 
+
+def _window_title_candidates(app_name: str) -> List[str]:
+    base = _normalize_app_alias(app_name) or str(app_name or '').strip().lower()
+    mapping = {
+        'winword': ['word', 'microsoft word', 'document'],
+        'excel': ['excel', 'microsoft excel', 'workbook'],
+        'powerpnt': ['powerpoint', 'power point', 'presentation'],
+        'mspaint': ['paint', 'microsoft paint'],
+        'notepad': ['notepad'],
+        'code': ['visual studio code', 'vscode', 'code'],
+        'dreamweaver': ['dreamweaver'],
+    }
+    vals = mapping.get(base, [base])
+    if app_name and str(app_name).lower() not in vals:
+        vals = [str(app_name).lower()] + vals
+    return vals
+
+
+def wait_for_application_window(app_name: str, timeout: float = 10.0, poll_s: float = 0.35) -> bool:
+    if not gw:
+        return False
+    end = time.time() + max(0.5, float(timeout or 0.0))
+    titles = _window_title_candidates(app_name)
+    while time.time() < end:
+        try:
+            all_titles = gw.getAllTitles()
+            low_titles = [str(t or '').lower() for t in all_titles]
+            if any(any(cand in title for cand in titles) for title in low_titles):
+                return True
+        except Exception:
+            pass
+        time.sleep(max(0.05, float(poll_s or 0.0)))
+    return False
+
+
 def focus_application(app_name: str) -> bool:
-    """Focus application window."""
+    """Focus application window with alias-aware title matching."""
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(app_name)
-        if windows and len(windows) > 0:
-            windows[0].activate()
+        title_candidates = _window_title_candidates(app_name)
+        windows = []
+        try:
+            for raw_title in gw.getAllTitles():
+                title = str(raw_title or '').strip()
+                low = title.lower()
+                if any(c in low for c in title_candidates):
+                    try:
+                        wins = gw.getWindowsWithTitle(title)
+                        if wins:
+                            windows.extend(wins)
+                    except Exception:
+                        continue
+        except Exception:
+            windows = []
+        if not windows:
+            for candidate in title_candidates:
+                try:
+                    wins = gw.getWindowsWithTitle(candidate)
+                    if wins:
+                        windows.extend(wins)
+                except Exception:
+                    continue
+        if windows:
+            try:
+                windows[0].activate()
+            except Exception:
+                try:
+                    windows[0].restore(); windows[0].activate()
+                except Exception:
+                    pass
             logger.info(f"[v8.0] Focused: {app_name}")
             log_software_event("Focus Window", f"Focused: {app_name}", app_name)
             return True
@@ -626,7 +752,7 @@ def focus_application(app_name: str) -> bool:
 def manage_application_request(full_command: str) -> bool:
     """
     Handle application management commands.
-    v8.0: Enhanced with better command parsing.
+    v8.0: Enhanced with compound-command aware parsing.
 
     Args:
         full_command: Command string (e.g., "open notepad")
@@ -635,24 +761,28 @@ def manage_application_request(full_command: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        parts = full_command.strip().lower().split()
-        if len(parts) < 2:
+        action, primary_app, trailing = _split_primary_app_request(full_command)
+        if not action or not primary_app:
             return False
 
-        action = parts[0]
-        app_name = " ".join(parts[1:])
+        app_name = _normalize_app_alias(primary_app) or primary_app
 
         # Launch/Open/Start
         if action in ["open", "launch", "start"]:
             app_path = get_app_path(app_name)
 
             if app_path:
-                return launch_application(app_path)
+                ok = launch_application(app_path)
             else:
-                # Windows fallback strategies
-                if os.name == 'nt':
-                    return _windows_fallback_launch(app_name)
-                return False
+                ok = _windows_fallback_launch(app_name) if os.name == 'nt' else False
+
+            if ok and trailing:
+                try:
+                    wait_for_application_window(app_name, timeout=10.0, poll_s=0.35)
+                    focus_application(app_name)
+                except Exception:
+                    pass
+            return bool(ok)
 
         # Close/Terminate/Kill
         elif action in ["close", "terminate", "kill", "exit", "quit"]:
@@ -694,6 +824,15 @@ def _windows_fallback_launch(app_name: str) -> bool:
             'wordpad': 'write.exe',
             'paint': 'mspaint.exe',
             'mspaint': 'mspaint.exe',
+            'word': 'winword.exe',
+            'winword': 'winword.exe',
+            'excel': 'excel.exe',
+            'powerpoint': 'powerpnt.exe',
+            'powerpnt': 'powerpnt.exe',
+            'outlook': 'outlook.exe',
+            'code': 'code.exe',
+            'vscode': 'code.exe',
+            'dreamweaver': 'dreamweaver.exe',
             'calculator': 'calc.exe',
             'calc': 'calc.exe',
             'cmd': 'cmd.exe',

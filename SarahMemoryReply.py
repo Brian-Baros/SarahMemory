@@ -121,6 +121,15 @@ IDENTITY_RE = re.compile(r"\b(what\s+is\s+your\s+name|who\s+are\s+you|who\s+(mad
 BAD_UI_TRAIL_RE = re.compile(r"(?:\s*,?\s*\[\s*\]\s*)+$")
 BAD_DIG_DEEPER_RE = re.compile(r"\n?\s*[•*-]?\s*Should\s+I\s+dig\s+deeper\s+on\s+that\?\s*(?:\[\s*\])?\s*$", re.I)
 
+CAPABILITY_RE = re.compile(r"\b(what\s+are\s+you\s+capable\s+of|what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|current\s+capabilities|what\s+are\s+you\s+able\s+to\s+do)\b", re.I)
+
+
+def _sm_is_capability_query(text: str) -> bool:
+    try:
+        return bool(CAPABILITY_RE.search(text or ""))
+    except Exception:
+        return False
+
 
 def _sm_prune_followup_context() -> None:
     try:
@@ -1399,20 +1408,29 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     # ---------------------------------------------------------------------
     # FAST PATHS
     # ---------------------------------------------------------------------
-    # (1) Identity / greeting
+    # (1) Identity / self-awareness fast path
     norm = re.sub(r"[^\w\s]", "", (text_in or "").lower()).strip()
-    if norm in ("who are you", "what is your name"):
-        ans = get_identity_response(text_in)  # canonical identity line
+    if norm in ("who are you", "what is your name") or _sm_is_capability_query(text_in):
+        try:
+            import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+            if _sm_is_capability_query(text_in) and hasattr(_CogSelf, 'describe_identity_and_capabilities'):
+                ans = str(_CogSelf.describe_identity_and_capabilities())
+            elif _sm_is_capability_query(text_in) and hasattr(_CogSelf, 'describe_capabilities'):
+                ans = str(_CogSelf.describe_capabilities())
+            elif hasattr(_CogSelf, 'describe_identity'):
+                ans = str(_CogSelf.describe_identity())
+            else:
+                ans = get_identity_response(text_in)
+        except Exception:
+            ans = get_identity_response(text_in)
         meta["intent"] = "identity"
-        out = _finalize_text(ans, meta)       # still run through personality
+        out = _finalize_text(ans, meta)
         bundle = ReplyBundle(out, meta=meta).to_dict()
         try:
-            store_response_history(bundle)    # optional if DB present
+            store_response_history(bundle)
         except Exception:
             pass
-        # optional: voice/avatar trigger if your GUI hooks are available
         _trigger_av_voice_safe(self, out)
-        # Store in QA cache (local + cloud) before returning
         try:
             if user_text and bundle.get("response"):
                 store_answer(user_text, bundle["response"])
