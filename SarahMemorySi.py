@@ -125,6 +125,7 @@ import logging
 import psutil
 import time
 import threading
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -168,68 +169,267 @@ DATABASE_PATH = os.path.join(getattr(config, 'DATASETS_DIR', 'data'), "software.
 active_launched_apps = []
 _app_cache = {}  # In-memory cache for fast lookups
 
+
 # =============================================================================
-# APP ALIAS NORMALIZATION / COMPOUND COMMAND SPLITTING
+# NORMALIZATION / STATE HELPERS - v8.0 SMGET integration
 # =============================================================================
 _APP_ALIASES = {
-    'word': 'winword',
-    'microsoft word': 'winword',
-    'ms word': 'winword',
-    'winword': 'winword',
-    'excel': 'excel',
-    'microsoft excel': 'excel',
-    'ms excel': 'excel',
-    'powerpoint': 'powerpnt',
-    'microsoft powerpoint': 'powerpnt',
-    'ms powerpoint': 'powerpnt',
-    'powerpnt': 'powerpnt',
-    'paint': 'mspaint',
-    'microsoft paint': 'mspaint',
-    'mspaint': 'mspaint',
-    'notepad': 'notepad',
-    'visual studio code': 'code',
-    'vs code': 'code',
-    'vscode': 'code',
-    'code': 'code',
-    'dreamweaver': 'dreamweaver',
-    'calculator': 'calc',
-    'calc': 'calc',
-    'outlook': 'outlook',
+    "microsoft word": "winword",
+    "ms word": "winword",
+    "word": "winword",
+    "winword": "winword",
+    "microsoft excel": "excel",
+    "ms excel": "excel",
+    "excel": "excel",
+    "microsoft powerpoint": "powerpnt",
+    "ms powerpoint": "powerpnt",
+    "powerpoint": "powerpnt",
+    "powerpnt": "powerpnt",
+    "microsoft paint": "mspaint",
+    "paint": "mspaint",
+    "mspaint": "mspaint",
+    "calculator": "calc",
+    "calc": "calc",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "msedge": "msedge",
+    "google chrome": "chrome",
+    "chrome": "chrome",
+    "firefox": "firefox",
+    "brave": "brave",
+    "opera": "opera",
+    "notepad": "notepad",
+    "outlook": "outlook",
+    "visual studio code": "code",
+    "vs code": "code",
+    "vscode": "code",
+    "code": "code",
+    "file explorer": "explorer",
+    "explorer": "explorer",
 }
 
-_COMPOUND_BREAKERS = (' and then ', ' then ', ' and ', ',', ';')
-
 def _normalize_app_alias(app_name: str) -> str:
-    app_name = str(app_name or '').strip().lower()
-    if not app_name:
-        return ''
-    app_name = app_name.replace('.exe', '').strip()
-    return _APP_ALIASES.get(app_name, app_name)
+    app = str(app_name or '').strip().lower().replace('.exe', '')
+    return _APP_ALIASES.get(app, app)
 
+def _candidate_app_names(app_name: str) -> List[str]:
+    raw = str(app_name or '').strip().lower()
+    canonical = _normalize_app_alias(raw)
+    out = []
+    for item in (raw, canonical, f"{canonical}.exe" if canonical else "", f"{raw}.exe" if raw else ""):
+        item = str(item or '').strip()
+        if item and item not in out:
+            out.append(item)
+    return out
 
-def _split_primary_app_request(full_command: str) -> tuple[str, str, str]:
-    raw = str(full_command or '').strip()
-    if not raw:
-        return '', '', ''
-    parts = raw.split(None, 1)
-    if len(parts) < 2:
-        return (parts[0].lower() if parts else ''), '', ''
-    action = parts[0].strip().lower()
-    remainder = parts[1].strip()
-    low = remainder.lower()
-    aliases = sorted(_APP_ALIASES.keys(), key=len, reverse=True)
-    for alias in aliases:
-        if low == alias or low.startswith(alias + ' '):
-            trailing = remainder[len(alias):].strip()
-            return action, alias, trailing.strip(' ,.;')
-    for sep in _COMPOUND_BREAKERS:
-        idx = low.find(sep)
-        if idx > 0:
-            primary = remainder[:idx].strip(' ,.;')
-            trailing = remainder[idx + len(sep):].strip(' ,.;')
-            return action, primary, trailing
-    return action, remainder, ''
+def _find_running_processes(app_name: str) -> List[Dict[str, Any]]:
+    matches: List[Dict[str, Any]] = []
+    try:
+        for proc in psutil.process_iter(attrs=['pid', 'name', 'exe', 'cmdline', 'status']):
+            try:
+                name = str(proc.info.get('name') or '')
+                exe = str(proc.info.get('exe') or '')
+                cmdline = " ".join(proc.info.get('cmdline') or [])
+                haystack = " | ".join([name, exe, cmdline]).lower()
+                if any(c in haystack for c in _candidate_app_names(app_name)):
+                    matches.append({
+                        'pid': int(proc.info.get('pid') or 0),
+                        'name': name,
+                        'exe': exe,
+                        'status': proc.info.get('status'),
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return matches
 
+def wait_for_application_window(app_name: str, timeout: float = 10.0, poll_s: float = 0.35) -> bool:
+    """
+    Wait until an application window (or at least a running process) is observable.
+    This stays fail-soft on headless/Linux environments where pygetwindow is unavailable.
+    """
+    deadline = time.time() + max(0.2, float(timeout or 0.0))
+    canonical = _normalize_app_alias(app_name)
+    while time.time() < deadline:
+        try:
+            if gw:
+                windows = gw.getWindowsWithTitle(canonical) or gw.getWindowsWithTitle(str(app_name or ''))
+                if windows:
+                    return True
+            if _find_running_processes(canonical):
+                return True
+        except Exception:
+            pass
+        time.sleep(max(0.05, float(poll_s or 0.0)))
+    return False
+
+def smart_app_search(app_name: str) -> Dict[str, Any]:
+    """
+    Best-effort resolver that checks cache/DB/registry/PATH/common aliases.
+    Returns a structured resolver packet for governance/executor callers.
+    """
+    canonical = _normalize_app_alias(app_name)
+    resolved = get_app_path(canonical)
+    source = 'unknown'
+    if resolved:
+        if canonical in _app_cache:
+            source = 'memory_cache'
+        else:
+            source = 'database_or_discovery'
+    if not resolved:
+        try:
+            which_hit = shutil.which(canonical) or shutil.which(f"{canonical}.exe")
+        except Exception:
+            which_hit = None
+        if which_hit:
+            resolved = which_hit
+            source = 'system_path'
+            try:
+                cache_app_path(canonical, resolved)
+            except Exception:
+                pass
+    if not resolved and os.name == 'nt':
+        fallback_map = {
+            'winword': 'WINWORD.EXE',
+            'excel': 'EXCEL.EXE',
+            'powerpnt': 'POWERPNT.EXE',
+            'outlook': 'OUTLOOK.EXE',
+            'mspaint': 'mspaint.exe',
+            'calc': 'calc.exe',
+            'notepad': 'notepad.exe',
+            'msedge': 'msedge.exe',
+            'explorer': 'explorer.exe',
+            'chrome': 'chrome.exe',
+            'firefox': 'firefox.exe',
+            'brave': 'brave.exe',
+            'opera': 'opera.exe',
+            'code': 'Code.exe',
+        }
+        fallback_exe = fallback_map.get(canonical)
+        if fallback_exe:
+            resolved = fallback_exe
+            source = 'windows_fallback'
+    return {
+        'app_name': str(app_name or ''),
+        'canonical_name': canonical,
+        'resolved_path': resolved,
+        'found': bool(resolved),
+        'source': source,
+    }
+
+def get_application_info(app_name: str) -> Dict[str, Any]:
+    """
+    Structured application state lookup used by Neuron/OperatorCore verification.
+    """
+    canonical = _normalize_app_alias(app_name)
+    search = smart_app_search(canonical)
+    running = _find_running_processes(canonical)
+    window_titles: List[str] = []
+    focused = False
+    minimized = False
+    maximized = False
+    try:
+        if gw:
+            windows = gw.getWindowsWithTitle(canonical) or gw.getWindowsWithTitle(str(app_name or ''))
+            for win in windows or []:
+                try:
+                    title = str(getattr(win, 'title', '') or '')
+                    if title:
+                        window_titles.append(title)
+                    if bool(getattr(win, 'isActive', False)):
+                        focused = True
+                    if bool(getattr(win, 'isMinimized', False)):
+                        minimized = True
+                    if bool(getattr(win, 'isMaximized', False)):
+                        maximized = True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return {
+        'app_name': str(app_name or ''),
+        'canonical_name': canonical,
+        'path': search.get('resolved_path'),
+        'found': bool(search.get('found')),
+        'source': search.get('source'),
+        'running': bool(running),
+        'is_running': bool(running),
+        'pid_count': len(running),
+        'pids': [int(x.get('pid') or 0) for x in running if int(x.get('pid') or 0) > 0],
+        'processes': running,
+        'window_titles': window_titles,
+        'window_found': bool(window_titles),
+        'focused': focused,
+        'is_focused': focused,
+        'minimized': minimized,
+        'maximized': maximized,
+    }
+
+def verify_application_state(app_name: str, expected_state: str = 'running') -> bool:
+    info = get_application_info(app_name)
+    state = str(expected_state or 'running').strip().lower()
+    if state in {'running', 'open', 'launched'}:
+        return bool(info.get('running'))
+    if state in {'focused', 'active'}:
+        return bool(info.get('focused'))
+    if state == 'minimized':
+        return bool(info.get('minimized'))
+    if state == 'maximized':
+        return bool(info.get('maximized'))
+    if state in {'closed', 'not_running'}:
+        return not bool(info.get('running'))
+    return bool(info.get('running'))
+
+def cleanup_orphaned_processes() -> Dict[str, Any]:
+    """
+    Clean the tracked process list by removing finished subprocess handles.
+    """
+    removed = 0
+    kept = []
+    try:
+        for proc in list(active_launched_apps):
+            try:
+                if proc.poll() is None:
+                    kept.append(proc)
+                else:
+                    removed += 1
+            except Exception:
+                removed += 1
+        active_launched_apps[:] = kept
+    except Exception:
+        pass
+    return {'ok': True, 'removed': removed, 'active_tracked': len(active_launched_apps)}
+
+def batch_application_control(requests: List[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """
+    Apply a bounded batch of software-control operations. Supports either plain
+    command strings or dicts with {action, app_name}.
+    """
+    results: List[Dict[str, Any]] = []
+    ok = True
+    for item in list(requests or []):
+        try:
+            if isinstance(item, dict):
+                action = str(item.get('action') or '').strip().lower()
+                app_name = str(item.get('app_name') or item.get('target') or '').strip()
+                command = f"{action} {app_name}".strip()
+            else:
+                command = str(item or '').strip()
+            if not command:
+                results.append({'ok': False, 'command': '', 'reason': 'empty_command'})
+                ok = False
+                continue
+            handled = bool(manage_application_request(command))
+            results.append({'ok': handled, 'command': command})
+            if not handled:
+                ok = False
+        except Exception as e:
+            results.append({'ok': False, 'command': str(item or ''), 'reason': str(e)})
+            ok = False
+    return {'ok': ok, 'results': results}
 
 # =============================================================================
 # DATABASE CONNECTION - Backward Compatible
@@ -487,7 +687,7 @@ def get_app_path(app_name: str) -> Optional[str]:
     Returns:
         Application path or None
     """
-    app_name_lower = _normalize_app_alias(app_name) or str(app_name or '').lower()
+    app_name_lower = app_name.lower()
 
     # Check memory cache first
     if app_name_lower in _app_cache:
@@ -517,6 +717,16 @@ def get_app_path(app_name: str) -> Optional[str]:
             cache_app_path(app_name, path_from_registry)
             return path_from_registry
 
+    # PATH/common alias fallback
+    try:
+        canonical = _normalize_app_alias(app_name)
+        which_hit = shutil.which(canonical) or shutil.which(f"{canonical}.exe")
+        if which_hit:
+            cache_app_path(app_name, which_hit)
+            return which_hit
+    except Exception:
+        pass
+
     # Not found
     logger.warning(f"[v8.0] Software not found: {app_name}")
     return None
@@ -536,16 +746,19 @@ def launch_application(path: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        proc = subprocess.Popen(path)
+        launch_target = str(path or '').strip()
+        if not launch_target:
+            return False
+        proc = subprocess.Popen([launch_target])
         active_launched_apps.append(proc)
 
         logger.info(f"[v8.0] Launched: {path} (PID: {proc.pid})")
-        log_software_event("Launch Application", f"Launched: {path}", os.path.basename(path))
+        log_software_event("Launch Application", f"Launched: {path}", os.path.basename(str(path)))
         return True
 
     except Exception as e:
         logger.error(f"[v8.0] Launch error: {e}")
-        log_software_event("Launch Application Error", f"Failed: {path} | {e}", os.path.basename(path))
+        log_software_event("Launch Application Error", f"Failed: {path} | {e}", os.path.basename(str(path)))
         return False
 
 # =============================================================================
@@ -636,7 +849,7 @@ def minimize_application(app_name: str) -> bool:
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(app_name)
+        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
             windows[0].minimize()
             logger.info(f"[v8.0] Minimized: {app_name}")
@@ -654,7 +867,7 @@ def maximize_application(app_name: str) -> bool:
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(app_name)
+        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
             windows[0].maximize()
             logger.info(f"[v8.0] Maximized: {app_name}")
@@ -665,79 +878,16 @@ def maximize_application(app_name: str) -> bool:
         logger.error(f"[v8.0] Maximize error: {e}")
         return False
 
-
-def _window_title_candidates(app_name: str) -> List[str]:
-    base = _normalize_app_alias(app_name) or str(app_name or '').strip().lower()
-    mapping = {
-        'winword': ['word', 'microsoft word', 'document'],
-        'excel': ['excel', 'microsoft excel', 'workbook'],
-        'powerpnt': ['powerpoint', 'power point', 'presentation'],
-        'mspaint': ['paint', 'microsoft paint'],
-        'notepad': ['notepad'],
-        'code': ['visual studio code', 'vscode', 'code'],
-        'dreamweaver': ['dreamweaver'],
-    }
-    vals = mapping.get(base, [base])
-    if app_name and str(app_name).lower() not in vals:
-        vals = [str(app_name).lower()] + vals
-    return vals
-
-
-def wait_for_application_window(app_name: str, timeout: float = 10.0, poll_s: float = 0.35) -> bool:
-    if not gw:
-        return False
-    end = time.time() + max(0.5, float(timeout or 0.0))
-    titles = _window_title_candidates(app_name)
-    while time.time() < end:
-        try:
-            all_titles = gw.getAllTitles()
-            low_titles = [str(t or '').lower() for t in all_titles]
-            if any(any(cand in title for cand in titles) for title in low_titles):
-                return True
-        except Exception:
-            pass
-        time.sleep(max(0.05, float(poll_s or 0.0)))
-    return False
-
-
 def focus_application(app_name: str) -> bool:
-    """Focus application window with alias-aware title matching."""
+    """Focus application window."""
     if not gw:
         logger.warning("[v8.0] pygetwindow not available")
         return False
 
     try:
-        title_candidates = _window_title_candidates(app_name)
-        windows = []
-        try:
-            for raw_title in gw.getAllTitles():
-                title = str(raw_title or '').strip()
-                low = title.lower()
-                if any(c in low for c in title_candidates):
-                    try:
-                        wins = gw.getWindowsWithTitle(title)
-                        if wins:
-                            windows.extend(wins)
-                    except Exception:
-                        continue
-        except Exception:
-            windows = []
-        if not windows:
-            for candidate in title_candidates:
-                try:
-                    wins = gw.getWindowsWithTitle(candidate)
-                    if wins:
-                        windows.extend(wins)
-                except Exception:
-                    continue
-        if windows:
-            try:
-                windows[0].activate()
-            except Exception:
-                try:
-                    windows[0].restore(); windows[0].activate()
-                except Exception:
-                    pass
+        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
+        if windows and len(windows) > 0:
+            windows[0].activate()
             logger.info(f"[v8.0] Focused: {app_name}")
             log_software_event("Focus Window", f"Focused: {app_name}", app_name)
             return True
@@ -752,7 +902,7 @@ def focus_application(app_name: str) -> bool:
 def manage_application_request(full_command: str) -> bool:
     """
     Handle application management commands.
-    v8.0: Enhanced with compound-command aware parsing.
+    v8.0: Enhanced with better command parsing.
 
     Args:
         full_command: Command string (e.g., "open notepad")
@@ -761,28 +911,24 @@ def manage_application_request(full_command: str) -> bool:
         True if successful, False otherwise
     """
     try:
-        action, primary_app, trailing = _split_primary_app_request(full_command)
-        if not action or not primary_app:
+        parts = full_command.strip().lower().split()
+        if len(parts) < 2:
             return False
 
-        app_name = _normalize_app_alias(primary_app) or primary_app
+        action = parts[0]
+        app_name = " ".join(parts[1:])
 
         # Launch/Open/Start
         if action in ["open", "launch", "start"]:
             app_path = get_app_path(app_name)
 
             if app_path:
-                ok = launch_application(app_path)
+                return launch_application(app_path)
             else:
-                ok = _windows_fallback_launch(app_name) if os.name == 'nt' else False
-
-            if ok and trailing:
-                try:
-                    wait_for_application_window(app_name, timeout=10.0, poll_s=0.35)
-                    focus_application(app_name)
-                except Exception:
-                    pass
-            return bool(ok)
+                # Windows fallback strategies
+                if os.name == 'nt':
+                    return _windows_fallback_launch(app_name)
+                return False
 
         # Close/Terminate/Kill
         elif action in ["close", "terminate", "kill", "exit", "quit"]:
@@ -824,19 +970,21 @@ def _windows_fallback_launch(app_name: str) -> bool:
             'wordpad': 'write.exe',
             'paint': 'mspaint.exe',
             'mspaint': 'mspaint.exe',
-            'word': 'winword.exe',
-            'winword': 'winword.exe',
-            'excel': 'excel.exe',
-            'powerpoint': 'powerpnt.exe',
-            'powerpnt': 'powerpnt.exe',
-            'outlook': 'outlook.exe',
-            'code': 'code.exe',
-            'vscode': 'code.exe',
-            'dreamweaver': 'dreamweaver.exe',
             'calculator': 'calc.exe',
             'calc': 'calc.exe',
             'cmd': 'cmd.exe',
-            'powershell': 'powershell.exe'
+            'powershell': 'powershell.exe',
+            'msedge': 'msedge.exe',
+            'edge': 'msedge.exe',
+            'chrome': 'chrome.exe',
+            'firefox': 'firefox.exe',
+            'brave': 'brave.exe',
+            'opera': 'opera.exe',
+            'explorer': 'explorer.exe',
+            'winword': 'WINWORD.EXE',
+            'excel': 'EXCEL.EXE',
+            'powerpnt': 'POWERPNT.EXE',
+            'outlook': 'OUTLOOK.EXE'
         }
 
         exe = common_apps.get(base, app_name if app_name.endswith('.exe') else f"{app_name}.exe")
@@ -978,6 +1126,60 @@ def execute_play_command(action: str, target: str, original_query: str) -> str:
         logger.error(f"[v8.0] Play command error: {e}")
         return f"Error executing play command: {e}"
 
+
+
+def type_text_to_active_window(text: str, interval: float = 0.01, press_enter: bool = False) -> bool:
+    """Type text into the currently focused window using pyautogui when available."""
+    if not pyautogui:
+        return False
+    try:
+        pyautogui.FAILSAFE = False
+        pyautogui.write(str(text or ''), interval=max(0.0, float(interval or 0.0)))
+        if press_enter:
+            pyautogui.press('enter')
+        return True
+    except Exception as e:
+        logger.error(f"[v8.0] type_text_to_active_window error: {e}")
+        return False
+
+
+def press_hotkey(*keys: str) -> bool:
+    if not pyautogui:
+        return False
+    try:
+        combo = [str(k).strip().lower() for k in keys if str(k).strip()]
+        if not combo:
+            return False
+        pyautogui.FAILSAFE = False
+        pyautogui.hotkey(*combo)
+        return True
+    except Exception as e:
+        logger.error(f"[v8.0] press_hotkey error: {e}")
+        return False
+
+
+def browser_search(app_name: str, query: str, timeout: float = 10.0) -> bool:
+    canonical = _normalize_app_alias(app_name) or app_name
+    try:
+        if not manage_application_request(f"open {canonical}"):
+            return False
+        wait_for_application_window(canonical, timeout=timeout, poll_s=0.35)
+        focus_application(canonical)
+        time.sleep(0.8)
+        if not press_hotkey('ctrl', 'l'):
+            return False
+        time.sleep(0.2)
+        if not type_text_to_active_window(query, interval=0.01, press_enter=True):
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"[v8.0] browser_search error: {e}")
+        return False
+
+
+def browser_open_url(app_name: str, url: str, timeout: float = 10.0) -> bool:
+    return browser_search(app_name, url, timeout=timeout)
+
 # =============================================================================
 # EVENT LOGGING - Backward Compatible
 # =============================================================================
@@ -1029,6 +1231,8 @@ def get_software_metrics() -> Dict[str, Any]:
         conn = connect_software_db()
         cursor = conn.cursor()
 
+        cleanup_orphaned_processes()
+
         # Get total apps cached
         cursor.execute("SELECT COUNT(*) FROM software_apps")
         total_apps = cursor.fetchone()[0]
@@ -1061,6 +1265,67 @@ def get_software_metrics() -> Dict[str, Any]:
         logger.error(f"[v8.0] Metrics error: {e}")
         return {"error": str(e)}
 
+
+# =============================================================================
+# SMGET ADAPTER HELPERS - v8.0 Integration
+# =============================================================================
+def execute_software_action(action_type: str, target: str, execution_mode: str = 'apply', metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Bounded software-control adapter for governed callers. Preserves existing
+    public APIs while providing a structured result surface for SMGET.
+    """
+    action = str(action_type or '').strip().lower()
+    target_name = str(target or '').strip()
+    mode = str(execution_mode or 'apply').strip().lower()
+    metadata = dict(metadata or {})
+    surface_action_map = {
+        'open_app': 'open',
+        'close_app': 'close',
+        'maximize_window': 'maximize',
+        'minimize_window': 'minimize',
+        'focus_window': 'focus',
+    }
+    surface_action = surface_action_map.get(action, metadata.get('surface_action') or action)
+    command = f"{surface_action} {target_name}".strip()
+    if mode != 'apply':
+        return {
+            'ok': True,
+            'executed': False,
+            'simulated': True,
+            'action_type': action,
+            'surface_action': surface_action,
+            'target': target_name,
+            'command': command,
+            'reason': 'non_apply_mode',
+        }
+    ok = bool(manage_application_request(command))
+    info = get_application_info(target_name)
+    return {
+        'ok': ok,
+        'executed': ok,
+        'action_type': action,
+        'surface_action': surface_action,
+        'target': target_name,
+        'command': command,
+        'application_info': info,
+        'reason': 'software_action_executed' if ok else 'software_action_failed',
+    }
+
+
+def register_operator_executor() -> bool:
+    """
+    Best-effort handshake with OperatorCore. No failure here may break Si.
+    OperatorCore already has a software executor; this simply advertises Si availability.
+    """
+    try:
+        import SarahMemoryOperatorCore as _Op  # type: ignore
+        snapshot = getattr(_Op, 'executor_registry_snapshot', None)
+        if callable(snapshot):
+            return isinstance(snapshot(), dict)
+    except Exception:
+        return False
+    return False
+
 # =============================================================================
 # MAIN TEST - v8.0 Enhanced
 # =============================================================================
@@ -1083,6 +1348,11 @@ if __name__ == '__main__':
     print(json.dumps(get_software_metrics(), indent=2))
 
     print("\n" + "=" * 80)
+
+try:
+    register_operator_executor()
+except Exception:
+    pass
 
 logger.info("[v8.0] SarahMemorySi module loaded successfully")
 
