@@ -1,7 +1,7 @@
 """
  --==The SarahMemory Project==--
  File: /api/server/appsys.py
- ULTIMATE merged Flask server for SarahMemory (v8.0.0)
+ System endpoints module for SarahMemory (v8.0.0)
  Part of the SarahMemory Companion AI-bot Platform
  Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
  www.linkedin.com/in/brian-baros-29962a176
@@ -30,21 +30,21 @@ from __future__ import annotations
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "api_bridge"
-# CATEGORY = "storefront_operations"
+# CATEGORY = "system_local_operations"
 # USER_FACING = False
 # UI_EXPOSURE = "backend_only"
 # DEPLOYMENT_TARGET = "api_server"
-# API_DOMAIN = "store"
+# API_DOMAIN = "system"
 # HARDWARE_DOMAIN = ""
 # INTERNAL_ONLY = False
-# CAPABILITY_NAME = "store_api"
-# FAMILY = "commerce"
+# CAPABILITY_NAME = "system_api"
+# FAMILY = "system_ops"
 # GOVERNANCE_LEVEL = "restricted"
 # AUTONOMOUS_SAFE = False
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# NOTES = "Storefront and Power Store API bridge under /api/store/* for auth, products, payments/integrations, generated product concepts, and server-side secret handling."
+# NOTES = "System/local-operations API bridge for files, local OS utilities, guarded ingestion, browser reader-mode helpers, and cloud-safe local-only controls."
 # --- SARAHMETA END ---
 import base64
 import hashlib

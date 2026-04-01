@@ -318,6 +318,8 @@ def init_app(app, connect_sqlite, meta_db_path, api_key_auth_ok=None, sign_ok=No
         # Don't hard-fail mount; endpoints will raise explicit errors on use.
         pass
 
+    if "appstore_v800" in getattr(app, "blueprints", {}):
+        return True
     app.register_blueprint(bp2)
     return True
 

@@ -728,6 +728,8 @@ def apply(app):
     def drivers_validate(driver_id: str):
         if driver_id not in _discover_driver_ids():
             return _err("Unknown driver_id", 404)
+        if not _verify_auth():
+            return _err("Unauthorized", 401)
 
         body = request.get_json(force=True, silent=True) or {}
         cfg = body.get("config") or _load_config(driver_id)
@@ -751,6 +753,8 @@ def apply(app):
     def drivers_discover(driver_id: str):
         payload = {}
         if request.method == "POST":
+            if not _verify_auth():
+                return _err("Unauthorized", 401)
             payload = request.get_json(force=True, silent=True) or {}
         return _driver_discover(driver_id, payload=payload)
 
@@ -810,6 +814,8 @@ def apply(app):
     def drivers_action(driver_id: str, action_id: str):
         if driver_id not in _discover_driver_ids():
             return _err("Unknown driver_id", 404)
+        if not _verify_auth():
+            return _err("Unauthorized", 401)
 
         body = request.get_json(force=True, silent=True) or {}
         payload = body.get("payload", body)

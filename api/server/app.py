@@ -23,7 +23,7 @@
 # - Safe fallbacks against missing core modules
 
 from __future__ import annotations
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib
 from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
@@ -145,79 +145,10 @@ def _is_identity_question(text: str) -> bool:
         "version", "what version", "version number",
         "who made you", "who created you", "creator",
         "who designed you", "designer", "engineer",
-        "who engineered you", "who built you", "who programmed you", "who developed you",
-        "programmed by", "developed by",
-        "brian lee baros", "brian baros", "softdev0",
+        "who engineered you", "who built you",
+        "brian lee baros", "softdev0",
     ]
     return any(k in t for k in keys)
-
-
-def _is_capability_question(text: str) -> bool:
-    t = (text or '').strip().lower()
-    if not t:
-        return False
-    keys = [
-        'what are you capable of', 'what are your capabilities', 'what can you do',
-        'what can you do right now', 'what are you able to do', 'what abilities do you have',
-        'capabilities right now', 'current capabilities', 'what can you operate',
-        'what can you control', 'what do you have access to',
-    ]
-    return any(k in t for k in keys)
-
-
-def _sm_cognitive_self_identity_payload(context_packet: dict | None = None) -> dict:
-    ident = _identity_payload()
-    try:
-        if _sm_module_approved('SarahMemoryCognitiveSelf', capability='self_identity_authority'):
-            import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-            summary = _CogSelf.get_self_summary(context=context_packet) if hasattr(_CogSelf, 'get_self_summary') else {}
-            if isinstance(summary, dict):
-                ident = {
-                    'name': str(summary.get('name') or ident.get('name')),
-                    'platform': str(summary.get('platform') or ident.get('platform')),
-                    'version': ident.get('version'),
-                    'creator': str(summary.get('creator') or ident.get('creator')),
-                    'organization': str(summary.get('organization') or ident.get('organization')),
-                    'build': ident.get('build'),
-                    'node_name': summary.get('node_name'),
-                    'run_mode': summary.get('run_mode'),
-                    'device_mode': summary.get('device_mode'),
-                    'alive_state': summary.get('alive_state'),
-                    'continuity_state': summary.get('continuity_state'),
-                    'safe_mode': summary.get('safe_mode'),
-                    'local_only': summary.get('local_only'),
-                }
-    except Exception:
-        pass
-    return ident
-
-
-def _sm_cognitive_self_reply(text: str, context_packet: dict | None = None) -> tuple[str, dict]:
-    ident = _sm_cognitive_self_identity_payload(context_packet)
-    low = (text or '').strip().lower()
-    try:
-        if _sm_module_approved('SarahMemoryCognitiveSelf', capability='self_identity_authority'):
-            import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-            if _is_capability_question(low) and hasattr(_CogSelf, 'describe_identity_and_capabilities'):
-                return str(_CogSelf.describe_identity_and_capabilities(context=context_packet) or '').strip(), ident
-            if _is_capability_question(low) and hasattr(_CogSelf, 'describe_capabilities'):
-                return str(_CogSelf.describe_capabilities(context=context_packet) or '').strip(), ident
-            identity_line = str(_CogSelf.describe_identity(context=context_packet) or '').strip() if hasattr(_CogSelf, 'describe_identity') else ''
-            if 'version' in low:
-                return f"{identity_line} Server version: {ident['version']}.", ident
-            if any(k in low for k in ('who made you', 'who created you', 'creator', 'who built you', 'who designed you', 'designer', 'engineer', 'who engineered you', 'who programmed you', 'who developed you', 'programmed by', 'developed by')):
-                return f"I was created and engineered by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}.", ident
-            if 'mission' in low:
-                return f"My mission is to help you as {ident['platform']} — fast, accurate, user-controlled, and governed.", ident
-            if 'brian lee baros' in low or 'brian baros' in low:
-                return f"{ident['creator']} is the creator, owner, and lead engineer of the {ident['platform']} project.", ident
-            if identity_line:
-                return identity_line, ident
-    except Exception:
-        pass
-    if _is_capability_question(low):
-        return (f"I am {ident['name']} — your {ident['platform']} companion. Right now I can help through governed answer, action, creative, system, and network assistance depending on the current runtime, permissions, and available modules.", ident)
-    return f"I'm {ident['name']} — your {ident['platform']} companion.", ident
 
 # Prefer server/static as templates if the SPA build exists
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1616,11 +1547,11 @@ def _sm_match_quick_system_route(text: str) -> dict | None:
     if not t:
         return None
     t = t.replace("capslock", "caps lock").replace("numlock", "num lock").replace("scrolllock", "scroll lock")
-    if any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is todays date", "what day is it", "what time is it", "current time", "date and time")):
+    if any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is todays date", "what is today date", "what's today's date", "what day is it", "what time is it", "current time", "date and time")):
         kind = "datetime"
         if "time" in t and "date" not in t and "today" not in t and "day" not in t:
             kind = "time"
-        elif any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what day is it")):
+        elif any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is today date", "what's today's date", "what day is it")):
             kind = "date"
         return {"route_id": "system.datetime.current", "kind": kind}
     if any(k in t for k in ("caps lock", "num lock", "scroll lock")) and any(k in t for k in ("turn", "put", "set", "enable", "disable", "switch")):
@@ -1780,10 +1711,11 @@ def _sm_ingress_catalog() -> list[dict]:
         {"route_id": "research.weather.forecast", "domain": "research", "action": "weather_forecast", "target_module": "SarahMemoryResearch", "transport_target": "internal_research_lane", "keywords": ["forecast", "tomorrow", "next", "day", "days", "weather", "temperature"], "examples": ["what is the weather like tomorrow in nacogdoches texas", "give me the next 3 day forecast in lufkin texas", "forecast this weekend in houston"]},
         {"route_id": "drivers.device.control", "domain": "drivers", "action": "device_control", "target_module": "appdrivers", "transport_target": "/api/drivers", "keywords": ["driver", "device", "mouse", "keyboard", "webcam", "camera", "microphone", "led", "razer", "usb", "bluetooth"], "examples": ["turn my webcam on", "turn my mouse led color to red", "connect to my razer mouse"]},
         {"route_id": "avatar.create.activate", "domain": "avatar", "action": "create_activate_avatar", "target_module": "UnifiedAvatarController", "transport_target": "internal_avatar_lane", "keywords": ["avatar", "3d", "unreal", "blender", "mouth", "eyes", "panel", "character"], "examples": ["make me a red 3d ball with eyes and moving mouth in unreal engine and place it into the avatar panel", "change the system avatar", "load this as my avatar"]},
-        {"route_id": "documents.office.write", "domain": "documents", "action": "write_document", "target_module": "appsys", "transport_target": "/api/system", "keywords": ["word", "document", "write", "docx", "report", "essay", "open office"], "examples": ["write me a word document on penguins in the arctic", "open word and create a report", "make a document about safety procedures"]},
+        {"route_id": "creative.general.generate", "domain": "creative", "action": "generate_creative", "target_module": "SarahMemoryCanvasStudio", "transport_target": "internal_creative_lane", "keywords": ["create image", "generate image", "make image", "draw picture", "create music", "generate song", "create video", "art", "render"], "examples": ["create an image of a cat on a skateboard", "make me a song about texas", "generate a short video intro"]},
+        {"route_id": "documents.office.write", "domain": "documents", "action": "write_document", "target_module": "SarahMemorySi", "transport_target": "internal_software_lane", "keywords": ["word", "document", "write", "docx", "report", "essay", "open office", "excel", "spreadsheet", "notepad", "website", "dreamweaver", "edge", "browser"], "examples": ["write me a word document on penguins in the arctic", "open word and create a report", "make a document about safety procedures", "open edge and search for tigers", "open excel and create a checkbook page"]},
         {"route_id": "email.mail.automation", "domain": "email", "action": "mail_automation", "target_module": "appcomm", "transport_target": "/api/comm", "keywords": ["email", "gmail", "outlook", "spam", "unsubscribe", "trash", "mailbox", "inbox"], "examples": ["open my emails and unsubscribe to all known spam messages then empty my spam trash daily", "check my inbox", "delete spam mail"]},
         {"route_id": "reminder.schedule.task", "domain": "reminder", "action": "schedule_task", "target_module": "appcomm", "transport_target": "/api/comm", "keywords": ["remind", "schedule", "daily", "every day", "weekly", "monthly", "calendar", "task"], "examples": ["remind me tomorrow at 5 pm", "empty my spam trash daily", "schedule a recurring cleanup"]},
-        {"route_id": "system.application.control", "domain": "system", "action": "application_control", "target_module": "appsys", "transport_target": "/api/system", "keywords": ["open", "close", "launch", "start", "stop", "app", "program", "application", "window"], "examples": ["open notepad", "launch unreal engine", "close the browser"]},
+        {"route_id": "system.application.control", "domain": "system", "action": "application_control", "target_module": "SarahMemorySi", "transport_target": "internal_software_lane", "keywords": ["open", "close", "launch", "start", "stop", "app", "program", "application", "window"], "examples": ["open notepad", "launch unreal engine", "close the browser"]},
         {"route_id": "research.general.web", "domain": "research", "action": "web_research", "target_module": "SarahMemoryResearch", "transport_target": "internal_research_lane", "keywords": ["research", "look up", "find", "search", "internet", "web"], "examples": ["research this topic online", "look this up for me", "find current information on this"]},
         {"route_id": "chat.general", "domain": "chat", "action": "general_reply", "target_module": "SarahMemoryReply", "transport_target": "/api/chat", "keywords": ["chat", "question", "talk", "explain", "help"], "examples": ["hello", "how are you", "explain this to me"]},
     ]
@@ -1797,22 +1729,6 @@ def _sm_ingress_normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
-
-
-def _sm_extract_compound_surface_entities(text: str) -> dict:
-    norm = _sm_ingress_normalize_text(text)
-    entities: dict[str, object] = {}
-    try:
-        if _sm_module_approved('SarahMemoryAdvCU', capability='classification'):
-            import SarahMemoryAdvCU as _AdvCU  # type: ignore
-            fn = getattr(_AdvCU, 'extract_surface_task', None)
-            if callable(fn):
-                surface = fn(norm)
-                if isinstance(surface, dict) and surface:
-                    return surface
-    except Exception:
-        pass
-    return entities
 
 def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
     norm = _sm_ingress_normalize_text(text)
@@ -1828,7 +1744,41 @@ def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
             entities["days"] = int(m_days.group(1))
         elif "forecast" in norm and "days" not in entities:
             entities["days"] = 1 if "tomorrow" in norm else 3
-    if route_id == "system.application.control":
+
+    surface_task = {}
+    try:
+        if _sm_module_approved("SarahMemoryPreTokenAnalyzer", capability="classification"):
+            import SarahMemoryPreTokenAnalyzer as _PTA  # type: ignore
+            analysis = _PTA.analyze_text(text, context_packet={"source": "api_chat", "mode": "LOCAL"}) if hasattr(_PTA, 'analyze_text') else {}
+            if isinstance(analysis, dict) and isinstance(analysis.get('surface_task'), dict):
+                surface_task = dict(analysis.get('surface_task') or {})
+            elif hasattr(_PTA, 'extract_surface_task'):
+                data = _PTA.extract_surface_task(text)
+                if isinstance(data, dict):
+                    surface_task = dict(data)
+    except Exception:
+        surface_task = {}
+
+    if surface_task:
+        entities['surface_task'] = surface_task
+        app_exec = str(surface_task.get('requested_app_exec') or surface_task.get('requested_app') or '').strip()
+        if app_exec:
+            entities['target_app_exec'] = app_exec
+            entities['target_app'] = app_exec
+        if route_id in {"system.application.control", "documents.office.write"}:
+            entities['requested_state'] = 'open'
+        task_kind = str(surface_task.get('task_kind') or '').strip().lower()
+        if task_kind:
+            entities['followup_action'] = task_kind
+        for key in ('topic', 'title', 'document_text', 'draw_subject', 'document_name', 'pages', 'template_kind', 'search_query', 'target_url', 'headers'):
+            if surface_task.get(key) not in (None, '', [], {}):
+                entities[key] = surface_task.get(key)
+        if task_kind == 'document_write':
+            entities.setdefault('software_hint', 'microsoft_word')
+        if task_kind in {'browser_search', 'browser_open_url'}:
+            entities.setdefault('software_hint', 'browser')
+
+    if route_id == "system.application.control" and 'target_app' not in entities:
         app_match = re.search(r"\b(?:open|launch|start|close|stop|quit|exit)\s+(.+)$", norm)
         if app_match:
             entities["target_app"] = app_match.group(1).strip(" ?.,")
@@ -1836,6 +1786,7 @@ def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
             entities["requested_state"] = "open"
         elif any(k in norm for k in ("close ", "stop ", "quit ", "exit ")):
             entities["requested_state"] = "close"
+
     if route_id == "drivers.device.control":
         for device in ("webcam", "camera", "mouse", "keyboard", "microphone"):
             if device in norm:
@@ -1852,12 +1803,14 @@ def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
             entities["requested_state"] = "on"
         elif any(k in norm for k in ("turn off", "disable", "stop")):
             entities["requested_state"] = "off"
-    if route_id == "documents.office.write":
-        topic_match = re.search(r"\bon\s+(.+)$", norm)
+
+    if route_id == "documents.office.write" and 'surface_task' not in entities:
+        topic_match = re.search(r"\b(?:about|on)\s+(.+)$", norm)
         if topic_match:
             entities["topic"] = topic_match.group(1).strip(" ?.")
         if "word" in norm:
             entities["software_hint"] = "microsoft_word"
+
     if route_id == "email.mail.automation":
         if "daily" in norm or "every day" in norm:
             entities["schedule"] = "daily"
@@ -1867,6 +1820,7 @@ def _sm_ingress_extract_entities(text: str, route_id: str) -> dict:
             entities["schedule"] = "monthly"
         entities["unsubscribe"] = "unsubscribe" in norm
         entities["target_folder"] = "spam" if "spam" in norm else "inbox"
+
     if route_id == "avatar.create.activate":
         if "unreal" in norm:
             entities["engine_preference"] = "unreal"
@@ -1947,12 +1901,22 @@ def _sm_build_virtual_ingress_route(text: str, payload: dict | None = None, cont
     best = best or dict(cards[-1])
     route_id = str(best.get("route_id") or "chat.general")
     entities = _sm_ingress_extract_entities(original, route_id)
-    if entities.get('task_kind') in {'write_document', 'open_named_document', 'spreadsheet_template', 'website_scaffold'}:
+    surface_task = dict(entities.get('surface_task') or {}) if isinstance(entities.get('surface_task'), dict) else {}
+    task_kind = str(surface_task.get('task_kind') or '').strip().lower()
+    if task_kind in {'document_write', 'open_named_document', 'spreadsheet_template', 'website_scaffold'}:
         route_id = 'documents.office.write'
-        best = next((dict(c) for c in cards if str(c.get('route_id') or '') == route_id), best)
-    elif entities.get('task_kind') == 'paint_draw':
+        best['domain'] = 'documents'
+        best['action'] = 'write_document'
+        best['target_module'] = 'SarahMemorySi'
+        best['transport_target'] = 'internal_software_lane'
+    elif task_kind in {'browser_search', 'browser_open_url'}:
         route_id = 'system.application.control'
-        best = next((dict(c) for c in cards if str(c.get('route_id') or '') == route_id), best)
+        best['domain'] = 'system'
+        best['action'] = 'application_control'
+        best['target_module'] = 'SarahMemorySi'
+        best['transport_target'] = 'internal_software_lane'
+    elif route_id == 'creative.general.generate':
+        best['domain'] = 'creative'
     intent_hint = str(best.get("domain") or "chat")
     if route_id.startswith("research.weather"):
         intent_hint = "research"
@@ -1960,16 +1924,226 @@ def _sm_build_virtual_ingress_route(text: str, payload: dict | None = None, cont
         intent_hint = "creative"
     elif route_id.startswith("reminder."):
         intent_hint = "time"
+    elif route_id == "creative.general.generate":
+        intent_hint = "creative"
     elif route_id.startswith(("drivers.", "system.", "documents.", "email.")):
         intent_hint = "action"
-    return {"ok": True, "route_id": route_id, "domain": str(best.get("domain") or "chat"), "action": str(best.get("action") or "general_reply"), "target_module": str(best.get("target_module") or "SarahMemoryReply"), "transport_target": str(best.get("transport_target") or "/api/chat"), "intent_hint": intent_hint, "confidence": round(max(0.0, min(0.99, best_score if best_score >= 0 else 0.15)), 4), "entities": entities, "normalized_text": normalized, "source": "semantic_ingress_router", "needs_discovery": bool(route_id in {"avatar.create.activate", "documents.office.write", "drivers.device.control"}), "route_trace": scored_cards[:12]}
+    needs_discovery = bool(route_id in {"avatar.create.activate", "documents.office.write", "drivers.device.control", "system.application.control", "creative.general.generate"})
+    return {"ok": True, "route_id": route_id, "domain": str(best.get("domain") or "chat"), "action": str(best.get("action") or "general_reply"), "target_module": str(best.get("target_module") or "SarahMemoryReply"), "transport_target": str(best.get("transport_target") or "/api/chat"), "intent_hint": intent_hint, "confidence": round(max(0.0, min(0.99, best_score if best_score >= 0 else 0.15)), 4), "entities": entities, "normalized_text": normalized, "source": "semantic_ingress_router", "needs_discovery": needs_discovery, "route_trace": scored_cards[:12]}
 
 
 def _sm_proposed_action_from_ingress(ingress_route: dict) -> dict:
     route_id = str((ingress_route or {}).get("route_id") or "")
     domain = str((ingress_route or {}).get("domain") or "chat")
     entities = dict((ingress_route or {}).get("entities") or {})
-    return {"intent": domain.upper(), "route_id": route_id, "subsystems": [str((ingress_route or {}).get("target_module") or "")], "target_files": [], "dry_run": False, "touches_network": bool(domain in {"research", "email", "network", "store"}), "touches_privacy": bool(domain in {"email", "drivers", "system"}), "touches_filesystem": bool(domain in {"documents", "avatar", "system", "media"}), "sends_data": bool(domain in {"email", "network", "store"}), "entities": entities}
+
+    requested_state = str(entities.get("requested_state") or "").strip().lower()
+    target = str(
+        entities.get("target_app_exec")
+        or entities.get("target_app")
+        or entities.get("software_hint")
+        or entities.get("document_name")
+        or entities.get("device_type")
+        or entities.get("target_url")
+        or ""
+    ).strip()
+
+    action = str(entities.get("action") or "").strip().lower()
+    action_type = ""
+    if route_id in {"system.application.control", "documents.office.write"}:
+        if requested_state in {"close", "quit", "exit", "stop"}:
+            action, action_type = "close", "close_app"
+        elif requested_state in {"focus", "bring"}:
+            action, action_type = "focus", "focus_window"
+        elif requested_state == "maximize":
+            action, action_type = "maximize", "maximize_window"
+        elif requested_state == "minimize":
+            action, action_type = "minimize", "minimize_window"
+        else:
+            action, action_type = "open", "open_app"
+    elif route_id == "drivers.device.control":
+        action = action or requested_state or "control"
+        action_type = "device_control"
+    elif route_id == "email.mail.automation":
+        action = action or "mail_automation"
+        action_type = "mail_automation"
+    elif route_id == "reminder.schedule.task":
+        action = action or "schedule_task"
+        action_type = "schedule_task"
+    elif route_id == "creative.general.generate":
+        action = action or "create"
+        action_type = "create_artifact"
+
+    return {
+        "intent": domain.upper(),
+        "route_id": route_id,
+        "action": action,
+        "action_type": action_type,
+        "target": target,
+        "subsystems": [str((ingress_route or {}).get("target_module") or "")],
+        "target_files": [],
+        "dry_run": False,
+        "touches_network": bool(domain in {"research", "email", "network", "store"}),
+        "touches_privacy": bool(domain in {"email", "drivers", "system"}),
+        "touches_filesystem": bool(domain in {"documents", "avatar", "system", "media"}),
+        "sends_data": bool(domain in {"email", "network", "store"}),
+        "entities": entities,
+    }
+
+
+def _sm_operatorcore_should_handle(ingress_route: dict | None) -> bool:
+    route_id = str((ingress_route or {}).get("route_id") or "")
+    return route_id in {"system.application.control", "documents.office.write"}
+
+
+def _sm_operatorcore_execution_mode(payload: dict | None, *, local_only: bool, safe_mode: bool, require_user: bool) -> str:
+    payload = payload or {}
+    requested = str(payload.get("execution_mode") or payload.get("operator_mode") or payload.get("smget_mode") or "").strip().lower()
+    if requested in {"apply", "simulate", "draft"}:
+        return requested
+    if safe_mode or require_user:
+        return "simulate"
+    try:
+        if _is_cloud_request():
+            return "simulate"
+    except Exception:
+        pass
+    return "apply" if bool(local_only) else "simulate"
+
+
+def _sm_operatorcore_bundle_from_result(
+    operator_packet: dict,
+    *,
+    ingress_route: dict,
+    context_packet: dict,
+    gov_decision: str,
+    gov_reasons: list,
+    local_only: bool,
+    developersmode: bool,
+) -> dict:
+    contract = dict(operator_packet.get("contract") or {})
+    result = dict(operator_packet.get("result") or {})
+    ok = bool(operator_packet.get("ok"))
+    raw_reply = str(result.get("summary") or "").strip()
+    if not raw_reply:
+        raw_reply = "Governed execution completed." if ok else "Governed execution could not complete the request."
+
+    meta = {
+        "source": "operator_core",
+        "engine": "SMGET",
+        "intent": str((ingress_route or {}).get("domain") or "action"),
+        "local_only": bool(local_only),
+        "version": PROJECT_VERSION,
+        "session_id": context_packet.get("session_id"),
+        "governor": {"decision": gov_decision, "reasons": gov_reasons} if developersmode else {"decision": gov_decision},
+        "route_id": str((ingress_route or {}).get("route_id") or ""),
+        "operator_contract_id": contract.get("contract_id"),
+        "operator_audit_id": result.get("audit_id"),
+        "operator_state": result.get("state"),
+        "operator_mode": result.get("execution_mode") or contract.get("execution_mode"),
+        "operator_executor": result.get("executor_name") or contract.get("executor_name"),
+    }
+    if developersmode:
+        meta["smget"] = {
+            "contract": contract,
+            "result": result,
+        }
+
+    actions = [{
+        "type": "smget_operator_result",
+        "route_id": str((ingress_route or {}).get("route_id") or ""),
+        "contract_id": contract.get("contract_id"),
+        "audit_id": result.get("audit_id"),
+        "state": result.get("state"),
+        "execution_mode": result.get("execution_mode") or contract.get("execution_mode"),
+        "success": ok,
+    }]
+    errors = [str(x) for x in (result.get("errors") or [])]
+    warnings = [str(x) for x in (result.get("warnings") or [])]
+    if warnings:
+        actions.append({"type": "smget_operator_warnings", "warnings": warnings[:10]})
+
+    bundle = _sm_make_outward_bundle(
+        _sm_present_text(raw_reply, intent=str((ingress_route or {}).get("domain") or "action"), meta=meta),
+        meta=meta,
+        actions=actions,
+        errors=errors,
+        raw_answer=raw_reply,
+    )
+    bundle["ok"] = ok
+    return bundle
+
+
+def _sm_try_operatorcore_request(
+    text: str,
+    *,
+    payload: dict,
+    context_packet: dict,
+    ingress_route: dict,
+    local_only: bool,
+    safe_mode: bool,
+    gov_decision: str,
+    gov_reasons: list,
+    gov_require_user: bool,
+    developersmode: bool,
+) -> dict | None:
+    if not _sm_operatorcore_should_handle(ingress_route):
+        return None
+
+    try:
+        from SarahMemoryOperatorCore import process_action_request as _smget_process_action_request  # type: ignore
+    except Exception as e:
+        app_logger.warning(f"OperatorCore not available for ingress execution: {e}")
+        return None
+
+    execution_mode = _sm_operatorcore_execution_mode(
+        payload,
+        local_only=local_only,
+        safe_mode=safe_mode,
+        require_user=gov_require_user,
+    )
+
+    proposed_action = dict((context_packet.get("meta") or {}).get("proposed_action") or {})
+    proposed_action.setdefault("route_id", str((ingress_route or {}).get("route_id") or ""))
+    proposed_action.setdefault("action", str(proposed_action.get("action") or "open"))
+    proposed_action.setdefault("action_type", str(proposed_action.get("action_type") or "open_app"))
+    proposed_action.setdefault("target", str(proposed_action.get("target") or proposed_action.get("entities", {}).get("target_app") or "").strip())
+
+    op_meta = {
+        "session_id": context_packet.get("session_id"),
+        "source": "api_chat",
+        "surface": str(context_packet.get("ui") or payload.get("ui") or "webui"),
+        "source_surface": str(context_packet.get("ui") or payload.get("ui") or "webui"),
+        "execution_mode": execution_mode,
+        "user_consented": bool((context_packet.get("meta") or {}).get("user_consented")),
+        "ingress_route": ingress_route,
+        "context_packet": context_packet,
+    }
+
+    try:
+        operator_packet = _smget_process_action_request(
+            text,
+            origin="api_chat",
+            meta=op_meta,
+            proposed_action=proposed_action,
+            execution_mode=execution_mode,
+        )
+    except Exception as e:
+        app_logger.error(f"OperatorCore execution failed: {e}", exc_info=True)
+        return None
+
+    if not isinstance(operator_packet, dict):
+        return None
+
+    return _sm_operatorcore_bundle_from_result(
+        operator_packet,
+        ingress_route=ingress_route,
+        context_packet=context_packet,
+        gov_decision=gov_decision,
+        gov_reasons=gov_reasons,
+        local_only=local_only,
+        developersmode=developersmode,
+    )
 
 
 @app.route("/api/chat", methods=["POST"])
@@ -2047,11 +2221,25 @@ def api_chat():
         if handled and quick_bundle is not None:
             return jsonify(quick_bundle), 200
 
-        if _is_identity_question(text) or _is_capability_question(text):
-            raw_reply, ident = _sm_cognitive_self_reply(text, context_packet)
+        if _is_identity_question(text):
+            ident = _identity_payload()
+            low = text.strip().lower()
+            if "version" in low:
+                raw_reply = f"My name is {ident['name']} — your {ident['platform']} companion. Server version: {ident['version']}."
+            elif any(k in low for k in (
+                "who made you", "who created you", "creator", "who built you",
+                "who designed you", "designer", "engineer", "who engineered you",
+            )):
+                raw_reply = f"I was created by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}."
+            elif "mission" in low:
+                raw_reply = f"My mission is to help you as {ident['platform']} — fast, accurate, and user-controlled."
+            elif "brian lee baros" in low:
+                raw_reply = f"{ident['creator']} is the creator and lead engineer of the {ident['platform']} project."
+            else:
+                raw_reply = f"I'm {ident['name']} — your {ident['platform']} companion."
             bundle = _sm_make_outward_bundle(
-                _sm_present_text(raw_reply, intent="identity" if _is_identity_question(text) else "capabilities"),
-                meta={"source": "cognitive_self", "engine": "SarahMemoryCognitiveSelf", "intent": "identity" if _is_identity_question(text) else "capabilities", "version": ident.get("version")},
+                _sm_present_text(raw_reply, intent="identity"),
+                meta={"source": "identity_guard", "engine": "identity_guard", "intent": "identity", "version": ident["version"]},
             )
             bundle["identity"] = ident
             return jsonify(bundle), 200
@@ -2119,6 +2307,21 @@ def api_chat():
                 },
             )
             return jsonify(bundle), 200
+
+        op_bundle = _sm_try_operatorcore_request(
+            text,
+            payload=payload,
+            context_packet=context_packet,
+            ingress_route=ingress_route,
+            local_only=local_only,
+            safe_mode=safe_mode,
+            gov_decision=gov_decision,
+            gov_reasons=gov_reasons,
+            gov_require_user=gov_require_user,
+            developersmode=developersmode,
+        )
+        if isinstance(op_bundle, dict):
+            return jsonify(op_bundle), 200
 
         try:
             if _sm_module_approved("SarahMemoryNeuron", capability="router"):
@@ -4526,16 +4729,14 @@ except Exception as _e:
 
 # --- V8 CANVAS STUDIO SUITE ./api/server/appmedia.py mount ---
 try:
-    import appmedia
-    app.register_blueprint(
-        appmedia.init_appmedia(
-            connect_sqlite=_connect_sqlite,
-            meta_db_path=META_DB,
-            api_key_auth_ok=lambda: True,  # replace with your existing key validator
-            sign_ok=_sign_ok,
-        )
-    )
-    app_logger.info("appmedia blueprint mounted at /api/media/*")
+    _ensure_api_import_paths()
+    try:
+        from . import appmedia as _appmedia  # type: ignore
+    except Exception:
+        import appmedia as _appmedia  # type: ignore
+
+    _appmedia.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    app_logger.info("appmedia mounted: /api/media/*")
 except Exception as e:
     app_logger.warning(f"appmedia not mounted: {e}")
 
@@ -4601,6 +4802,54 @@ try:
 except Exception as _e:
     try:
         app_logger.error(f"appstore init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
+
+# --- v8 appcomm endpoints (communications domain) ---
+try:
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appcomm as _appcomm  # type: ignore
+    except Exception:
+        import appcomm as _appcomm  # type: ignore
+
+    _appcomm.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appcomm mounted: /api/comm/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appcomm init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
+
+# --- v8 appdrivers endpoints (governed hardware / driver domain) ---
+try:
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appdrivers as _appdrivers  # type: ignore
+    except Exception:
+        import appdrivers as _appdrivers  # type: ignore
+
+    _appdrivers.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appdrivers mounted: /api/drivers/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appdrivers init failed: {_e}", exc_info=True)
     except Exception:
         pass
 # ============================================================================

@@ -958,6 +958,8 @@ def init_app(app, connect_sqlite, meta_db_path, api_key_auth_ok=None, sign_ok=No
         _ensure_tables()
     except Exception as exc:
         logger.warning("appcomm init failed to ensure tables: %s", exc)
+    if "appcomm_v800" in getattr(app, "blueprints", {}):
+        return True
     app.register_blueprint(bp)
     return True
 
