@@ -10,7 +10,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | March 29, 2026 |
+| **Last Update** | April 01, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -860,6 +860,19 @@ I have now and currently developing a new system that:
   - Then I Realized there a piece missing and this is how SarahMemoryCognitiveCompass.py was created.
   -   : (Author Note) Yes I grew up as a gamer and yes that's a Legend of Zelda Referrence, but if it works it works right, well it works. 
 ![SarahMemory Meme](documents/a_digital_illustration_inspired_by_the_legend_of_z.png)
+---
+## **📅 March 30th-31st, 2026 — Introducing SMGET (SarahMemory Governed Execution Technology)**
+= To keep a system safe and still be able to allow an AI to execute on top of a current existing OS layer like Windows or Linux, SMGET allows for safe execution though heavy goverance, and safety protocols,
+SMGET in combination with the Cognitive file system, allow no hallucinations, stronger reasoning, and safer outputs, preventing the AI to accidently drift, malform, or delete files without User Auth. 
+Five New Files added to Core System are as follow:
+- `SarahMemoryAssuranceGate.py`
+- `SarahMemoryOperatorCore.py`
+- `SarahMemorySafetyPolicies.py`
+- `SarahMemorySecurityGoverner.py`
+- `SarahMemoryTrustRegistry.py`
+
+![SarahMemory SMGET](documents/SMGET.png)
+
 ---
 # **📜 License**
 
