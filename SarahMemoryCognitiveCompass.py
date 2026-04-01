@@ -91,6 +91,11 @@ except Exception:
     _CogServices = None
 
 try:
+    import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+except Exception:
+    _OperatorCore = None
+
+try:
     import SarahMemoryCognitiveThinker as _CogThinker  # type: ignore
 except Exception:
     _CogThinker = None
@@ -784,7 +789,111 @@ def _desired_outcome(request_text: str, pretoken_shape: Dict[str, Any], lane: st
     return "task_completed"
 
 
-def _progress_from_state(previous: Dict[str, Any], plan_state: Optional[Dict[str, Any]] = None) -> TaskProgress:
+def _smget_packet_from_inputs(
+    governor: Optional[Dict[str, Any]] = None,
+    plan_state: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    proposed_action: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    candidates: List[Any] = []
+    if isinstance(governor, dict):
+        candidates.extend([governor.get("smget"), (governor.get("meta") if isinstance(governor.get("meta"), dict) else {}).get("smget")])
+    if isinstance(plan_state, dict):
+        candidates.extend([plan_state.get("smget"), (plan_state.get("governance") if isinstance(plan_state.get("governance"), dict) else {}).get("smget")])
+    if isinstance(context, dict):
+        candidates.extend([context.get("smget"), (context.get("governance") if isinstance(context.get("governance"), dict) else {}).get("smget")])
+    if isinstance(proposed_action, dict):
+        candidates.extend([proposed_action.get("smget"), (proposed_action.get("governance") if isinstance(proposed_action.get("governance"), dict) else {}).get("smget")])
+    for cand in candidates:
+        if isinstance(cand, dict) and cand:
+            return dict(cand)
+    return {}
+
+
+def _smget_contract(smget: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(smget, dict):
+        return {}
+    contract = smget.get("action_contract") if isinstance(smget.get("action_contract"), dict) else {}
+    return dict(contract) if contract else {}
+
+
+def _operator_execution_state(smget: Optional[Dict[str, Any]] = None, plan_state: Optional[Dict[str, Any]] = None) -> str:
+    state = dict(plan_state or {})
+    contract = _smget_contract(smget)
+    for value in (
+        state.get("operator_state"),
+        state.get("execution_state"),
+        state.get("current_state"),
+        state.get("smget_state"),
+        contract.get("current_state"),
+        contract.get("execution_state"),
+    ):
+        if value:
+            return str(value).strip().upper()
+    return ""
+
+
+def _operator_summary_text(smget: Optional[Dict[str, Any]] = None, plan_state: Optional[Dict[str, Any]] = None) -> str:
+    state = dict(plan_state or {})
+    packet = dict(smget or {})
+    contract = _smget_contract(packet)
+    execution_result = state.get("execution_result") if isinstance(state.get("execution_result"), dict) else {}
+    if not execution_result:
+        execution_result = packet.get("execution_result") if isinstance(packet.get("execution_result"), dict) else {}
+    verification_result = state.get("verification_result") if isinstance(state.get("verification_result"), dict) else {}
+    if not verification_result:
+        verification_result = packet.get("verification_result") if isinstance(packet.get("verification_result"), dict) else {}
+
+    for source in (state, execution_result, verification_result, packet, contract):
+        if not isinstance(source, dict):
+            continue
+        for key in ("candidate_text", "generated_text", "reply", "result", "summary", "execution_summary", "result_summary", "message", "details"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _smget_status_override(contract: Dict[str, Any], plan_state: Optional[Dict[str, Any]] = None, smget: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    state_name = _operator_execution_state(smget=smget, plan_state=plan_state)
+    if not state_name:
+        return {}
+
+    if state_name in {"CLASSIFIED", "AUTHORIZED", "PLANNED"}:
+        return {
+            "status": STATUS_WAITING_ON_SIDEKICK,
+            "next_required_step": DIRECTIVE_EXECUTE_SUBSTEP,
+            "reason": "SMGET has prepared an ActionContract and is waiting for bounded execution to continue.",
+        }
+    if state_name in {"DISPATCHED", "EXECUTING"}:
+        return {
+            "status": STATUS_WAITING_ON_SIDEKICK,
+            "next_required_step": DIRECTIVE_VERIFY_SUBSTEP,
+            "reason": "SMGET execution is in progress; Reply must remain held until verification completes.",
+        }
+    if state_name in {"FAILED", "ROLLED_BACK"}:
+        return {
+            "status": STATUS_SAFE_ABORT,
+            "next_required_step": DIRECTIVE_ABORT,
+            "reason": "SMGET reported a failed or rolled-back execution path; do not present success.",
+        }
+    if state_name == "REPORTED":
+        return {
+            "status": STATUS_COMPARE_PENDING,
+            "next_required_step": DIRECTIVE_HOLD_REPLY,
+            "reason": "SMGET has packaged a result, but Compass still requires final verification and Compare release before success is presented.",
+        }
+    return {}
+
+
+def _progress_from_state(
+    previous: Dict[str, Any],
+    plan_state: Optional[Dict[str, Any]] = None,
+    *,
+    governor: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    proposed_action: Optional[Dict[str, Any]] = None,
+) -> TaskProgress:
     progress = TaskProgress()
     prev_prog = previous.get("task_progress") if isinstance(previous.get("task_progress"), dict) else {}
     state = dict(plan_state or {})
@@ -792,7 +901,7 @@ def _progress_from_state(previous: Dict[str, Any], plan_state: Optional[Dict[str
     for field_name in progress.__dataclass_fields__.keys():
         setattr(progress, field_name, bool(prev_prog.get(field_name, False) or state.get(field_name, False)))
 
-    # Heuristic shorthands
+    # Heuristic shorthands from local plan/executor state
     if state.get("surface_open") is True or state.get("app_opened") is True or state.get("launched") is True:
         progress.surface_open = True
     if state.get("surface_focused") is True or state.get("focused") is True or state.get("window_focused") is True:
@@ -806,6 +915,36 @@ def _progress_from_state(previous: Dict[str, Any], plan_state: Optional[Dict[str
     if state.get("result_verified") is True or state.get("verified") is True:
         progress.result_verified = True
     if state.get("compare_passed") is True:
+        progress.compare_passed = True
+
+    # SMGET / OperatorCore lifecycle inference
+    smget = _smget_packet_from_inputs(governor=governor, plan_state=state, context=context, proposed_action=proposed_action)
+    contract = _smget_contract(smget)
+    operator_state = _operator_execution_state(smget=smget, plan_state=state)
+    execution_result = state.get("execution_result") if isinstance(state.get("execution_result"), dict) else {}
+    if not execution_result:
+        execution_result = smget.get("execution_result") if isinstance(smget.get("execution_result"), dict) else {}
+    verification_result = state.get("verification_result") if isinstance(state.get("verification_result"), dict) else {}
+    if not verification_result:
+        verification_result = smget.get("verification_result") if isinstance(smget.get("verification_result"), dict) else {}
+
+    if contract:
+        progress.working_context_ready = True
+    if operator_state in {"CLASSIFIED", "AUTHORIZED", "PLANNED"}:
+        progress.working_context_ready = True
+    if operator_state in {"DISPATCHED", "EXECUTING"}:
+        progress.content_generated = True
+    if operator_state in {"VERIFIED", "SUCCEEDED", "FAILED", "ROLLED_BACK", "REPORTED"} or bool(execution_result):
+        progress.content_generated = True
+        progress.content_applied = True
+    if operator_state in {"VERIFIED", "SUCCEEDED", "REPORTED"} or bool(verification_result) or bool(state.get("smget_verified")):
+        progress.result_verified = True
+
+    compare_meta = state.get("compare") if isinstance(state.get("compare"), dict) else {}
+    if not compare_meta and isinstance(smget.get("compare"), dict):
+        compare_meta = dict(smget.get("compare") or {})
+    compare_status = str(compare_meta.get("status") or "").strip().upper()
+    if compare_status in {"PASS", "OK", "HIT"} or bool(compare_meta.get("ok")):
         progress.compare_passed = True
 
     return progress
@@ -871,10 +1010,25 @@ def build_task_contract(
 def _next_missing_step(contract: Dict[str, Any], progress: TaskProgress) -> Tuple[str, str]:
     lane = str(contract.get("primary_lane") or "action")
     desired = str(contract.get("desired_outcome") or "")
+    target_surface = str(contract.get("target_surface") or "").strip().lower()
 
     if lane == "answer":
         if not progress.content_generated:
             return STATUS_PROCEDURAL_GAP, DIRECTIVE_EXECUTE_SUBSTEP
+        if not progress.result_verified:
+            return STATUS_COMPARE_PENDING, DIRECTIVE_VERIFY_FINAL
+        if not progress.compare_passed:
+            return STATUS_COMPARE_PENDING, DIRECTIVE_HOLD_REPLY
+        return STATUS_COMPLETE_VERIFIED, DIRECTIVE_ALLOW_REPLY
+
+    # Generic non-surface workflows (drivers, network, bounded system actions, SMGET contracts)
+    if lane in {"system", "network"} or (lane == "action" and not target_surface):
+        if not progress.working_context_ready:
+            return STATUS_PROCEDURAL_GAP, DIRECTIVE_EXECUTE_SUBSTEP
+        if not progress.content_generated:
+            return STATUS_WAITING_ON_SIDEKICK, DIRECTIVE_EXECUTE_SUBSTEP
+        if not progress.content_applied:
+            return STATUS_UNVERIFIED_COMPLETION, DIRECTIVE_VERIFY_SUBSTEP
         if not progress.result_verified:
             return STATUS_COMPARE_PENDING, DIRECTIVE_VERIFY_FINAL
         if not progress.compare_passed:
@@ -947,20 +1101,30 @@ def _escape_hatch_from_guard(lg: LoopGuardState, context: Optional[Dict[str, Any
     return {"triggered": False, "mode": None, "reason": None}
 
 
-def _compare_gate(request_text: str, contract: Dict[str, Any], progress: TaskProgress, plan_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def _compare_gate(
+    request_text: str,
+    contract: Dict[str, Any],
+    progress: TaskProgress,
+    plan_state: Optional[Dict[str, Any]] = None,
+    *,
+    governor: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    proposed_action: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     if progress.compare_passed:
         return {"status": "PASS", "ok": True}
     if not progress.result_verified:
         return {"status": "PENDING", "ok": False}
-    state = dict(plan_state or {})
-    candidate_text = str(state.get("candidate_text") or state.get("generated_text") or state.get("reply") or state.get("result") or "").strip()
+
+    smget = _smget_packet_from_inputs(governor=governor, plan_state=plan_state, context=context, proposed_action=proposed_action)
+    candidate_text = _operator_summary_text(smget=smget, plan_state=plan_state)
     if not candidate_text:
         return {"status": "PENDING", "ok": False, "reason": "no_candidate_text"}
     intent = str(contract.get("primary_lane") or "general")
     compare = _compare_accepts(request_text, candidate_text, intent=intent)
     status = str(compare.get("status") or "").upper()
     ok = status in {"HIT", "PASS", "OK"} or bool(compare.get("ok"))
-    return {"status": status or "ERROR", "ok": ok, "compare": compare}
+    return {"status": status or "ERROR", "ok": ok, "compare": compare, "candidate_text": _safe_text(candidate_text, 600)}
 
 
 def compass_guard(
@@ -993,7 +1157,7 @@ def compass_guard(
     governor = _query_governor(request_text, context=ctx, proposed_action=proposed_action)
     thinker = _query_thinker(request_text, context=ctx, proposed_action=proposed_action) if ctx.get("consult_thinker", True) else {}
 
-    progress = _progress_from_state(previous, plan_state)
+    progress = _progress_from_state(previous, plan_state, governor=governor, context=ctx, proposed_action=proposed_action)
 
     # Clarification gate from PreTokenAnalyzer always wins before continuation.
     pretoken = contract.get("pretoken") if isinstance(contract.get("pretoken"), dict) else {}
@@ -1058,7 +1222,15 @@ def compass_guard(
         _log_event("governor_hold", goal_id, reason, "WARNING", {"decision": g_decision})
         return out
 
+    smget = _smget_packet_from_inputs(governor=governor, plan_state=plan_state, context=ctx, proposed_action=proposed_action)
+    smget_contract = _smget_contract(smget)
     status, next_required_step = _next_missing_step(contract, progress)
+
+    smget_override = _smget_status_override(contract, plan_state=plan_state, smget=smget)
+    if smget_override:
+        status = str(smget_override.get("status") or status)
+        next_required_step = str(smget_override.get("next_required_step") or next_required_step)
+
     need_map = {
         DIRECTIVE_FOCUS_SURFACE: "focus_window",
         DIRECTIVE_PREPARE_SURFACE: "prepare_surface",
@@ -1078,6 +1250,9 @@ def compass_guard(
 
     selected_family = selected.get("selected_family")
     selected_module = selected.get("selected_module")
+    if smget_contract:
+        selected_family = selected_family or "governed_execution"
+        selected_module = selected_module or str(smget_contract.get("executor_name") or "SarahMemoryOperatorCore")
     loop_guard = _update_loop_guard(previous, selected_family, selected_module, status, next_required_step)
     escape = _escape_hatch_from_guard(loop_guard, context=ctx)
 
@@ -1085,7 +1260,7 @@ def compass_guard(
         status = STATUS_ESCAPE_HATCH if escape.get("mode") != ESCAPE_STOP_RED_ZONE else STATUS_RED_ZONE
         next_required_step = DIRECTIVE_ABORT
 
-    compare_gate = _compare_gate(request_text, contract, progress, plan_state)
+    compare_gate = _compare_gate(request_text, contract, progress, plan_state, governor=governor, context=ctx, proposed_action=proposed_action)
     if compare_gate.get("ok"):
         progress.compare_passed = True
         status = STATUS_COMPLETE_VERIFIED
@@ -1115,9 +1290,13 @@ def compass_guard(
         reason = "Reply is held because the requested outcome has not been verified yet."
     if escape.get("triggered"):
         reason = f"Escape hatch triggered: {escape.get('mode')} ({escape.get('reason')})."
+    if smget_override and smget_override.get("reason") and not escape.get("triggered"):
+        reason = str(smget_override.get("reason") or reason)
 
     reply_allowed = status == STATUS_COMPLETE_VERIFIED and next_required_step == DIRECTIVE_ALLOW_REPLY
-    continue_allowed = not escape.get("triggered") and status not in {STATUS_SAFE_ABORT, STATUS_RED_ZONE} or bool(status in {STATUS_PROCEDURAL_GAP, STATUS_MINOR_DRIFT, STATUS_COMPARE_PENDING})
+    continue_allowed = ((not escape.get("triggered")) and status not in {STATUS_SAFE_ABORT, STATUS_RED_ZONE}) or bool(status in {STATUS_PROCEDURAL_GAP, STATUS_MINOR_DRIFT, STATUS_COMPARE_PENDING, STATUS_WAITING_ON_SIDEKICK})
+    if escape.get("triggered"):
+        continue_allowed = False
     if status == STATUS_RED_ZONE and not reply_allowed:
         continue_allowed = False
 
@@ -1148,6 +1327,13 @@ def compass_guard(
             "self_summary": ((self_model.get("identity") or {}) if isinstance(self_model, dict) else {}),
             "pretoken": pretoken,
             "compare_gate": compare_gate,
+            "smget": {
+                "enabled": bool(smget),
+                "contract_id": smget_contract.get("contract_id"),
+                "executor_name": smget_contract.get("executor_name"),
+                "execution_mode": smget_contract.get("execution_mode"),
+                "current_state": _operator_execution_state(smget=smget, plan_state=plan_state),
+            },
         },
     )
 

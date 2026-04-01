@@ -121,15 +121,6 @@ IDENTITY_RE = re.compile(r"\b(what\s+is\s+your\s+name|who\s+are\s+you|who\s+(mad
 BAD_UI_TRAIL_RE = re.compile(r"(?:\s*,?\s*\[\s*\]\s*)+$")
 BAD_DIG_DEEPER_RE = re.compile(r"\n?\s*[•*-]?\s*Should\s+I\s+dig\s+deeper\s+on\s+that\?\s*(?:\[\s*\])?\s*$", re.I)
 
-CAPABILITY_RE = re.compile(r"\b(what\s+are\s+you\s+capable\s+of|what\s+can\s+you\s+do|what\s+are\s+your\s+capabilities|current\s+capabilities|what\s+are\s+you\s+able\s+to\s+do)\b", re.I)
-
-
-def _sm_is_capability_query(text: str) -> bool:
-    try:
-        return bool(CAPABILITY_RE.search(text or ""))
-    except Exception:
-        return False
-
 
 def _sm_prune_followup_context() -> None:
     try:
@@ -344,12 +335,21 @@ def _stamp_bundle(bundle: dict) -> dict:
             if vision_txt:
                 response_text = vision_txt
 
+        reply_gate = meta.get("reply_gate") if isinstance(meta.get("reply_gate"), dict) else {}
+        reply_allowed = bool(reply_gate.get("reply_allowed", True))
         if response_text:
             _sm_attach_avatar_speech(meta, response_text)
-            meta.setdefault(
-                "followup_hint",
-                "If you want more detail, reply: \"yes\" or ask a specific angle (history, examples, pros/cons).",
-            )
+            if reply_allowed:
+                meta.setdefault(
+                    "followup_hint",
+                    "If you want more detail, reply: \"yes\" or ask a specific angle (history, examples, pros/cons).",
+                )
+            else:
+                meta.setdefault(
+                    "followup_hint",
+                    "This result is not finalized yet. SarahMemory is holding outward success until verification is complete.",
+                )
+                meta.setdefault("completion_verified", False)
 
         meta["source"] = source
         meta["intent"] = intent
@@ -389,7 +389,7 @@ def _stamp_bundle(bundle: dict) -> dict:
             })
 
         bundle["meta"] = meta
-        if response_text:
+        if response_text and bool((meta.get("reply_gate") if isinstance(meta.get("reply_gate"), dict) else {}).get("reply_allowed", True)):
             _sm_store_followup_context(meta, str(prompt_text or meta.get("followup_original_text") or meta.get("followup_of") or ""), response_text)
     except Exception:
         pass
@@ -453,10 +453,31 @@ def _try_neuron_reply(text_in: str, meta: Dict[str, Any]) -> Optional[Dict[str, 
         except Exception:
             pass
 
+        gate = _sm_reply_gate_from_neuron(text_in, res_dict, meta)
+        if gate.get("active"):
+            compass_packet = gate.get("packet") if isinstance(gate.get("packet"), dict) else {}
+            meta["compass"] = compass_packet
+            meta["reply_gate"] = {
+                "active": True,
+                "origin": gate.get("origin"),
+                "reply_allowed": bool(compass_packet.get("reply_allowed", False)),
+                "continue_allowed": bool(compass_packet.get("continue_allowed", False)),
+                "status": str(compass_packet.get("status") or ""),
+                "next_required_step": str(compass_packet.get("next_required_step") or ""),
+                "reason": str(compass_packet.get("reason") or ""),
+            }
+            if not bool(compass_packet.get("reply_allowed", False)):
+                reply_txt = _sm_reply_text_for_compass_hold(text_in, res_dict, compass_packet)
+                meta["presentation_state"] = "hold"
+            else:
+                meta["presentation_state"] = "final"
+
         if not reply_txt:
             reply_txt = _sm_render_vision_reply(meta, {"trace": trace, "artifacts": artifacts_raw}) or ""
         if not reply_txt:
             return None
+
+        reply_txt = _sm_humanize_ticket_reply(reply_txt, str(res_dict.get("source") or ""), artifacts_raw)
 
         artifacts = []
         try:
@@ -491,6 +512,8 @@ def _try_neuron_reply(text_in: str, meta: Dict[str, Any]) -> Optional[Dict[str, 
             meta=meta,
             artifacts=artifacts,
             actions=actions,
+            raw_answer=str(reply_txt),
+            trace_internal=trace if isinstance(trace, dict) else {},
         )
     except Exception as e:
         try:
@@ -694,8 +717,18 @@ def _sm_make_outward_bundle(
     artifacts: Optional[List[Dict[str, Any]]] = None,
     actions: Optional[List[Dict[str, Any]]] = None,
     errors: Optional[List[str]] = None,
+    raw_answer: Optional[str] = None,
+    canonical_answer: Optional[str] = None,
+    trace_internal: Optional[Dict[str, Any]] = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
     meta = dict(meta or {})
+    if raw_answer is not None:
+        meta["raw_answer"] = raw_answer
+    if canonical_answer is not None:
+        meta["canonical_answer"] = canonical_answer
+    if trace_internal is not None:
+        meta["trace_internal"] = trace_internal
     text = _sm_sanitize_user_text(presentation_text or "", user_text=meta.get("_prompt_text"))
     bundle = ReplyBundle(text, image_url=image_url, links=list(links or []), meta=meta).to_dict()
     bundle["artifacts"] = list(artifacts or [])
@@ -910,6 +943,203 @@ def _sm_render_vision_reply(meta: Optional[Dict[str, Any]], bundle: Optional[Dic
         return "From the current view, I can see: " + ", ".join([str(x) for x in observations[:8]]) + "."
     return ""
 
+
+
+
+def _sm_is_operational_neuron_result(source: str, artifacts: Any, trace: Any) -> bool:
+    src = str(source or "").strip().lower()
+    if src in {"action_ticket", "creative_ticket", "ingress_router", "governance"}:
+        return True
+    try:
+        primary_lane = str((trace or {}).get("primary_lane") or "").strip().lower()
+        if primary_lane in {"action", "creative", "system", "network"}:
+            return True
+    except Exception:
+        pass
+    try:
+        if isinstance(artifacts, dict):
+            for key in ("action_ticket", "job_ticket", "route_ticket", "execution_plan", "execution_result", "smget"):
+                if key in artifacts:
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _sm_humanize_ticket_reply(reply_txt: str, source: str, artifacts: Any) -> str:
+    raw = str(reply_txt or "").strip()
+    src = str(source or "").strip().lower()
+    artifacts = artifacts if isinstance(artifacts, dict) else {}
+
+    if raw.startswith("ACTION_TICKET::") or src == "action_ticket":
+        ticket = artifacts.get("action_ticket") if isinstance(artifacts.get("action_ticket"), dict) else {}
+        action_name = str(ticket.get("action") or "requested action").replace("_", " ").strip()
+        return f"The action request has been staged for governed execution: {action_name}."
+
+    if raw.startswith("CREATIVE_JOB_TICKET::") or src == "creative_ticket":
+        ticket = artifacts.get("job_ticket") if isinstance(artifacts.get("job_ticket"), dict) else {}
+        kind = str(ticket.get("kind") or "creative").replace("_", " ").strip()
+        return f"The {kind} job has been prepared and is awaiting completion and verification."
+
+    if src == "ingress_router" and raw:
+        if "direct internal execution completed" in raw.lower():
+            return "The request was handed into the governed execution path, but final completion is still awaiting verification."
+
+    return raw
+
+
+def _sm_build_compass_plan_state_from_neuron(res_dict: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    trace = res_dict.get("trace") if isinstance(res_dict.get("trace"), dict) else {}
+    artifacts = res_dict.get("artifacts") if isinstance(res_dict.get("artifacts"), dict) else {}
+    source = str(res_dict.get("source") or "").strip().lower()
+    reply_txt = str(res_dict.get("reply") or "").strip()
+
+    plan_state: Dict[str, Any] = {}
+    proposed_action: Dict[str, Any] = {}
+
+    if isinstance(trace.get("compass"), dict):
+        plan_state["compass"] = dict(trace.get("compass") or {})
+
+    if isinstance(trace.get("governance"), dict):
+        gov = dict(trace.get("governance") or {})
+        plan_state["governance"] = gov
+        if isinstance(gov.get("smget"), dict):
+            plan_state["smget"] = dict(gov.get("smget") or {})
+            proposed_action["smget"] = dict(gov.get("smget") or {})
+
+    if isinstance(artifacts.get("smget"), dict):
+        plan_state["smget"] = dict(artifacts.get("smget") or {})
+        proposed_action["smget"] = dict(artifacts.get("smget") or {})
+
+    if source == "action_ticket":
+        ticket = artifacts.get("action_ticket") if isinstance(artifacts.get("action_ticket"), dict) else {}
+        plan_state.update({
+            "task_ticketed": True,
+            "working_context_ready": False,
+            "content_generated": False,
+            "content_applied": False,
+            "result_verified": False,
+            "compare_passed": False,
+        })
+        if ticket:
+            proposed_action.update(ticket)
+    elif source == "creative_ticket":
+        ticket = artifacts.get("job_ticket") if isinstance(artifacts.get("job_ticket"), dict) else {}
+        plan_state.update({
+            "task_ticketed": True,
+            "working_context_ready": True,
+            "content_generated": True,
+            "content_applied": False,
+            "result_verified": False,
+            "compare_passed": False,
+        })
+        if ticket:
+            proposed_action.update(ticket)
+    elif source == "ingress_router":
+        route_ticket = artifacts.get("route_ticket") if isinstance(artifacts.get("route_ticket"), dict) else {}
+        execution_result = artifacts.get("execution_result") if isinstance(artifacts.get("execution_result"), dict) else {}
+        execution_plan = artifacts.get("execution_plan") if isinstance(artifacts.get("execution_plan"), dict) else {}
+        if route_ticket:
+            proposed_action.update(route_ticket)
+        if execution_plan:
+            proposed_action.setdefault("execution_plan", execution_plan)
+        if execution_result:
+            plan_state["execution_result"] = execution_result
+            details = execution_result.get("details") if isinstance(execution_result.get("details"), dict) else {}
+            if isinstance(details.get("compass"), dict):
+                plan_state["compass"] = dict(details.get("compass") or {})
+            for key, value in details.items():
+                if key not in plan_state and isinstance(value, (bool, str, int, float, dict, list)):
+                    plan_state[key] = value
+            if execution_result.get("executed") is True:
+                plan_state.setdefault("content_applied", True)
+                plan_state.setdefault("working_context_ready", True)
+            elif execution_result.get("attempted") is True:
+                plan_state.setdefault("working_context_ready", True)
+        if reply_txt:
+            plan_state.setdefault("reply", reply_txt)
+    else:
+        if reply_txt:
+            plan_state.setdefault("candidate_text", reply_txt)
+
+    return plan_state, proposed_action
+
+
+def _sm_reply_gate_from_neuron(user_text: str, res_dict: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    trace = res_dict.get("trace") if isinstance(res_dict.get("trace"), dict) else {}
+    artifacts = res_dict.get("artifacts") if isinstance(res_dict.get("artifacts"), dict) else {}
+    source = str(res_dict.get("source") or "").strip().lower()
+
+    direct_compass = trace.get("compass") if isinstance(trace.get("compass"), dict) else {}
+    if direct_compass:
+        return {"active": True, "packet": dict(direct_compass), "origin": "trace"}
+
+    if not _sm_is_operational_neuron_result(source, artifacts, trace):
+        return {"active": False, "packet": {}, "origin": None}
+
+    try:
+        from SarahMemoryCognitiveCompass import get_compass_packet  # type: ignore
+    except Exception:
+        return {"active": False, "packet": {}, "origin": None}
+
+    caller_context = dict(meta or {})
+    caller_context.setdefault("intent", res_dict.get("intent"))
+    caller_context.setdefault("primary_lane", trace.get("primary_lane") or res_dict.get("intent") or source)
+    caller_context.setdefault("source", source or "neuron")
+    caller_context.setdefault("consult_thinker", False)
+    if isinstance(trace.get("governance"), dict):
+        caller_context["governance"] = dict(trace.get("governance") or {})
+
+    plan_state, proposed_action = _sm_build_compass_plan_state_from_neuron(res_dict)
+    try:
+        packet = get_compass_packet(
+            user_text,
+            caller_context=caller_context,
+            plan_state=plan_state,
+            proposed_action=proposed_action,
+            force_refresh=False,
+        )
+        if isinstance(packet, dict) and packet:
+            return {"active": True, "packet": packet, "origin": "computed"}
+    except Exception as e:
+        try:
+            logger.debug("[reply] compass gate failed: %s", e)
+        except Exception:
+            pass
+    return {"active": False, "packet": {}, "origin": None}
+
+
+def _sm_reply_text_for_compass_hold(user_text: str, res_dict: Dict[str, Any], compass_packet: Dict[str, Any]) -> str:
+    packet = dict(compass_packet or {})
+    status = str(packet.get("status") or "").strip().upper()
+    next_step = str(packet.get("next_required_step") or "").strip().upper()
+    reason = str(packet.get("reason") or "").strip()
+    source = str(res_dict.get("source") or "").strip().lower()
+    artifacts = res_dict.get("artifacts") if isinstance(res_dict.get("artifacts"), dict) else {}
+
+    if status in {"SAFE_ABORT", "RED_ZONE"}:
+        return reason or "The request was stopped by governance before a safe verified result was available."
+
+    if source == "action_ticket":
+        ticket = artifacts.get("action_ticket") if isinstance(artifacts.get("action_ticket"), dict) else {}
+        action_name = str(ticket.get("action") or "requested action").replace("_", " ").strip()
+        base = f"The action request has been staged for governed execution: {action_name}."
+    elif source == "creative_ticket":
+        ticket = artifacts.get("job_ticket") if isinstance(artifacts.get("job_ticket"), dict) else {}
+        kind = str(ticket.get("kind") or "creative").replace("_", " ").strip()
+        base = f"The {kind} job has been prepared, but it is not verified as complete yet."
+    elif source == "ingress_router":
+        base = "The request has been handed into the governed execution path, but final completion is not verified yet."
+    else:
+        base = "The request is still in progress and has not reached a verified completion state yet."
+
+    if status == "COMPARE_PENDING":
+        return reason or (base + " Reply is being held until verification and Compare release succeed.")
+    if status == "WAITING_ON_SIDEKICK":
+        return reason or (base + " The execution path is still waiting on the responsible module or executor.")
+    if status in {"PROCEDURAL_GAP", "UNVERIFIED_COMPLETION", "MINOR_DRIFT", "NO_PROGRESS", "LOOP_RISK", "ESCAPE_HATCH_TRIGGERED"}:
+        return reason or (base + " The next required step is " + (next_step.replace("_", " ").lower() if next_step else "pending") + ".")
+    return reason or base
 
 def _maybe_image_subject(text: str) -> Optional[str]:
     t = (text or "").strip().lower()
@@ -1408,29 +1638,20 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     # ---------------------------------------------------------------------
     # FAST PATHS
     # ---------------------------------------------------------------------
-    # (1) Identity / self-awareness fast path
+    # (1) Identity / greeting
     norm = re.sub(r"[^\w\s]", "", (text_in or "").lower()).strip()
-    if norm in ("who are you", "what is your name") or _sm_is_capability_query(text_in):
-        try:
-            import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-            if _sm_is_capability_query(text_in) and hasattr(_CogSelf, 'describe_identity_and_capabilities'):
-                ans = str(_CogSelf.describe_identity_and_capabilities())
-            elif _sm_is_capability_query(text_in) and hasattr(_CogSelf, 'describe_capabilities'):
-                ans = str(_CogSelf.describe_capabilities())
-            elif hasattr(_CogSelf, 'describe_identity'):
-                ans = str(_CogSelf.describe_identity())
-            else:
-                ans = get_identity_response(text_in)
-        except Exception:
-            ans = get_identity_response(text_in)
+    if norm in ("who are you", "what is your name"):
+        ans = get_identity_response(text_in)  # canonical identity line
         meta["intent"] = "identity"
-        out = _finalize_text(ans, meta)
+        out = _finalize_text(ans, meta)       # still run through personality
         bundle = ReplyBundle(out, meta=meta).to_dict()
         try:
-            store_response_history(bundle)
+            store_response_history(bundle)    # optional if DB present
         except Exception:
             pass
+        # optional: voice/avatar trigger if your GUI hooks are available
         _trigger_av_voice_safe(self, out)
+        # Store in QA cache (local + cloud) before returning
         try:
             if user_text and bundle.get("response"):
                 store_answer(user_text, bundle["response"])
@@ -1506,8 +1727,22 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     try:
         nb = _try_neuron_reply(text_in, meta)
         if nb and nb.get("response"):
-            out = _finalize_text(nb["response"], meta)
+            nb_meta = nb.get("meta") if isinstance(nb.get("meta"), dict) else {}
+            reply_gate = nb_meta.get("reply_gate") if isinstance(nb_meta.get("reply_gate"), dict) else {}
+            if bool(reply_gate.get("active")) and not bool(reply_gate.get("reply_allowed", True)):
+                out = _sm_clean_reply_text(_sm_sanitize_user_text(nb.get("response") or "", user_text=nb_meta.get("_prompt_text") or original_text))
+            else:
+                out = _finalize_text(nb.get("response") or "", nb_meta)
             nb["response"] = out
+            nb["presentation_reply"] = out
+            nb["reply"] = out
+            nb["content"] = out
+            try:
+                latency_ms = int((time.time() - started) * 1000)
+                nb_meta["latency_ms"] = latency_ms
+                nb["meta"] = nb_meta
+            except Exception:
+                pass
             _store_history_safe(nb)
             _trigger_av_voice_safe(self, out)
             try:

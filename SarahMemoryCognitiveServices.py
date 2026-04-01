@@ -89,6 +89,21 @@ try:
 except Exception:
     _CogSelf = None
 
+try:
+    import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+except Exception:
+    _OperatorCore = None
+
+try:
+    import SarahMemorySecurityGovernor as _SecurityGovernor  # type: ignore
+except Exception:
+    _SecurityGovernor = None
+
+try:
+    import SarahMemoryAssuranceGate as _AssuranceGate  # type: ignore
+except Exception:
+    _AssuranceGate = None
+
 # -----------------------------------------------------------------------------
 # Logger
 # -----------------------------------------------------------------------------
@@ -597,6 +612,259 @@ def _self_summary_from_packet(pkt: Dict[str, Any]) -> Dict[str, Any]:
         "continuity_state": status.get("continuity_state"),
         "realtime_requested": realtime.get("realtime_requested"),
     }
+
+
+# -----------------------------------------------------------------------------
+# SMGET preview / hard-gate bridge
+# -----------------------------------------------------------------------------
+_SMGET_INTENTS = {
+    "PATCH_OR_UPDATE",
+    "FILESYSTEM_WRITE",
+    "NETWORK_ACCESS",
+    "PRIVACY_SENSITIVE",
+    "EXECUTE_COMMAND",
+    "CREATIVE_REQUEST",
+}
+
+
+def _intent_uses_smget(intent: str, proposed_action: Optional[Dict[str, Any]] = None) -> bool:
+    label = str(intent or "").strip().upper()
+    if label in _SMGET_INTENTS:
+        return True
+    pa = proposed_action or {}
+    if isinstance(pa, dict) and any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files", "subsystems")):
+        return True
+    return False
+
+
+def _normalize_execution_mode(intent: str, proposed_action: Optional[Dict[str, Any]] = None, *, user_consented: bool = False) -> str:
+    pa = proposed_action or {}
+    raw = str(pa.get("execution_mode") or pa.get("mode") or "").strip().lower()
+    if raw in ("simulate", "draft", "apply", "rollback"):
+        return raw
+    if pa.get("dry_run") is True:
+        return "simulate"
+    if str(intent or "").upper() in {"DIAGNOSTICS", "SYSTEM_INFO"}:
+        return "simulate"
+    if pa.get("apply") is True and user_consented:
+        return "apply"
+    return "draft"
+
+
+def _build_smget_contract_preview(
+    request_text: str,
+    *,
+    caller: str,
+    caller_context: Optional[Dict[str, Any]],
+    proposed_action: Optional[Dict[str, Any]],
+    user_consented: bool,
+    governance: Dict[str, Any],
+) -> Dict[str, Any]:
+    if _OperatorCore is None:
+        return {}
+    try:
+        fn = getattr(_OperatorCore, "build_action_contract", None)
+        if not callable(fn):
+            return {}
+
+        meta = dict(caller_context or {})
+        mode_flags = meta.get("mode_flags") if isinstance(meta.get("mode_flags"), dict) else {}
+        execution_mode = _normalize_execution_mode(str(governance.get("intent") or ""), proposed_action, user_consented=user_consented)
+        meta.setdefault("mode_flags", mode_flags)
+        meta["governance_decision"] = str(governance.get("decision") or "")
+        meta["governance_risk_score"] = int(governance.get("risk_score") or 0)
+        meta["governance_risk_factors"] = list(governance.get("risk_factors") or [])
+        meta["governor_role"] = MODULE_NAME
+        meta["smget_preview_only"] = True
+        meta["user_consented"] = bool(user_consented)
+        contract = fn(
+            request_text,
+            origin=caller or MODULE_NAME,
+            meta=meta,
+            proposed_action=proposed_action or {},
+            execution_mode=execution_mode,
+        )
+        if hasattr(contract, "to_dict") and callable(getattr(contract, "to_dict")):
+            data = contract.to_dict()
+        elif isinstance(contract, dict):
+            data = contract
+        else:
+            data = {}
+        if isinstance(data, dict):
+            data.setdefault("execution_mode", execution_mode)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.debug("SMGET contract preview build failed: %s", e)
+        return {}
+
+
+def _smget_security_review(action_contract: Dict[str, Any], governance: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(action_contract, dict) or not action_contract:
+        return {}
+    if _SecurityGovernor is None:
+        return {
+            "decision": "ALLOW",
+            "allow": True,
+            "reasons": ["SecurityGovernor unavailable; SMGET preview remains governance-only."],
+        }
+    for fn_name in ("evaluate_action", "govern_action", "review_action_contract"):
+        try:
+            fn = getattr(_SecurityGovernor, fn_name, None)
+            if callable(fn):
+                out = fn(action_contract, governance)
+                if isinstance(out, dict):
+                    return out
+        except Exception as e:
+            logger.debug("Security review bridge failed via %s: %s", fn_name, e)
+    return {}
+
+
+def _smget_assurance_review(action_contract: Dict[str, Any], governance: Dict[str, Any], security: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(action_contract, dict) or not action_contract:
+        return {}
+    if _AssuranceGate is None:
+        return {
+            "decision": "ALLOW",
+            "allow": True,
+            "confidence": 1.0,
+            "assurance_score": 1.0,
+            "reasons": ["AssuranceGate unavailable; SMGET preview remains governance/security-only."],
+        }
+    for fn_name in ("evaluate_action_assurance", "review_action_assurance", "assure_action"):
+        try:
+            fn = getattr(_AssuranceGate, fn_name, None)
+            if callable(fn):
+                out = fn(action_contract, governance, security)
+                if isinstance(out, dict):
+                    return out
+        except Exception as e:
+            logger.debug("Assurance review bridge failed via %s: %s", fn_name, e)
+    return {}
+
+
+def _apply_smget_review_to_decision(dec: Dict[str, Any], smget: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(smget, dict) or not smget:
+        return dec
+
+    dec["smget"] = smget
+    dec.setdefault("reasons", [])
+    dec.setdefault("risk_factors", [])
+    if not isinstance(dec.get("trace"), dict):
+        dec["trace"] = {}
+    dec["trace"]["smget"] = {
+        "enabled": True,
+        "contract_id": (smget.get("action_contract") or {}).get("contract_id"),
+        "executor_name": (smget.get("action_contract") or {}).get("executor_name"),
+        "execution_mode": (smget.get("action_contract") or {}).get("execution_mode"),
+        "security_decision": (smget.get("security") or {}).get("decision"),
+        "assurance_decision": (smget.get("assurance") or {}).get("decision"),
+    }
+
+    security = smget.get("security") if isinstance(smget.get("security"), dict) else {}
+    assurance = smget.get("assurance") if isinstance(smget.get("assurance"), dict) else {}
+
+    sec_decision = str(security.get("decision") or "").strip().lower()
+    sec_allow = bool(security.get("allow", sec_decision == "allow"))
+
+    assurance_decision = str(assurance.get("decision") or "").strip().lower()
+    assurance_allow = bool(assurance.get("allow", assurance_decision == "allow"))
+
+    if not sec_allow:
+        if sec_decision in {"require_user"}:
+            dec["decision"] = "REQUIRE_USER"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = True
+        elif sec_decision in {"simulate_only", "allow_with_constraints"}:
+            dec["decision"] = "DEFER"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = bool(security.get("require_user", dec.get("require_user")))
+        else:
+            dec["decision"] = "DENY"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = bool(security.get("require_user", False))
+
+        for reason in security.get("reasons") or []:
+            if reason not in dec["reasons"]:
+                dec["reasons"].append(reason)
+        for factor in security.get("risk_factors") or []:
+            if factor not in dec["risk_factors"]:
+                dec["risk_factors"].append(factor)
+        dec["recommended_next"] = security.get("recommended_next") or dec.get("recommended_next")
+        return dec
+
+    if not assurance_allow:
+        if assurance_decision == "require_user":
+            dec["decision"] = "REQUIRE_USER"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = True
+        elif assurance_decision == "simulate_only":
+            dec["decision"] = "DEFER"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = bool(assurance.get("require_user", dec.get("require_user")))
+        else:
+            dec["decision"] = "DEFER"
+            dec["allow"] = False
+            dec["execution_allowed"] = False
+            dec["require_user"] = bool(assurance.get("require_user", dec.get("require_user", True)))
+
+        for reason in assurance.get("reasons") or []:
+            if reason not in dec["reasons"]:
+                dec["reasons"].append(reason)
+        for factor in assurance.get("risk_factors") or []:
+            if factor not in dec["risk_factors"]:
+                dec["risk_factors"].append(factor)
+        dec["recommended_next"] = assurance.get("recommended_next") or "Strengthen confidence / verification / rollback plan, then resubmit through SMGET."
+        return dec
+
+    dec["execution_allowed"] = bool(dec.get("allow"))
+    if dec.get("decision") == "ALLOW":
+        dec["recommended_next"] = "Route approved ActionContract into SarahMemoryOperatorCore through Neuron/app ingress for bounded execution."
+    return dec
+
+
+def _maybe_attach_smget_preview(
+    dec: Dict[str, Any],
+    *,
+    request_text: str,
+    caller: str,
+    caller_context: Optional[Dict[str, Any]],
+    user_consented: bool,
+    proposed_action: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not isinstance(dec, dict):
+        return dec
+    if not _intent_uses_smget(str(dec.get("intent") or ""), proposed_action):
+        return dec
+    if str(dec.get("decision") or "").upper() == "DENY":
+        return dec
+
+    contract = _build_smget_contract_preview(
+        request_text,
+        caller=caller,
+        caller_context=caller_context,
+        proposed_action=proposed_action,
+        user_consented=user_consented,
+        governance=dec,
+    )
+    if not contract:
+        return dec
+
+    security = _smget_security_review(contract, dec)
+    assurance = _smget_assurance_review(contract, dec, security)
+
+    smget = {
+        "enabled": True,
+        "preview_only": True,
+        "action_contract": contract,
+        "security": security,
+        "assurance": assurance,
+    }
+    return _apply_smget_review_to_decision(dec, smget)
 
 
 # -----------------------------------------------------------------------------
@@ -1837,8 +2105,10 @@ def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         proposed_action=pa,
     )
 
-    # Optional: include a minimal echo for debugging (do not leak secrets)
-    return {"ok": True, "governance": dec, "lane_family": dec.get("lane_family"), "primary_lane": dec.get("primary_lane"), "version": "8.0.0"}
+    response = {"ok": True, "governance": dec, "lane_family": dec.get("lane_family"), "primary_lane": dec.get("primary_lane"), "version": "8.0.0"}
+    if isinstance(dec.get("smget"), dict):
+        response["smget"] = dec.get("smget")
+    return response
 
 
 # -----------------------------------------------------------------------------
