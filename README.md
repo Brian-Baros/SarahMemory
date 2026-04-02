@@ -877,7 +877,7 @@ Five New Files added to Core System are as follow:
 # **📜 License**
 
 © 2025–2026 Brian Lee Baros.  
-Use permitted for personal, educational, and internal non‑commercial purposes. - This repository is not to be used to train Ai systems, models, etc.
+Use is permitted for personal, educational, and internal non‑commercial purposes. - This repository is not to be used to train Ai systems, models, frameworks, datacenters, etc., without a monetary paid licensed and contract agreement from the author Brian Lee Baros
 
 ---
 # **📬 Contact**
