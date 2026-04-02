@@ -10,7 +10,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | April 01, 2026 |
+| **Last Update** | April 02, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -95,7 +95,7 @@ A next‑generation AI Operating System capable of:
 ### **DESIGN CONCEPT**
 - The FrontEnd is just for visualization interaction
 - Users should be able to use thier own custom frontend and UI
-- SarahMemory Mainly focus on backend operations, universal and cross-platform operations,
+- SarahMemory mainly focus on backend operations, universal and cross-platform operations,
 - SarahMemory is more of the Foundation, Kernal, Framework, Engine, behind future AiOS systems.
 
 ---
