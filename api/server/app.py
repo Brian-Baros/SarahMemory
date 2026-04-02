@@ -1997,6 +1997,15 @@ def _sm_operatorcore_should_handle(ingress_route: dict | None) -> bool:
 
 
 def _sm_operatorcore_execution_mode(payload: dict | None, *, local_only: bool, safe_mode: bool, require_user: bool) -> str:
+    """
+    Choose the live SMGET execution mode for /api/chat ingress.
+
+    Key rule:
+    - SAFE / confirmation-required / cloud requests must not perform real local actuation.
+    - Local desktop requests should default to APPLY even when the UI mode is ANY.
+
+    LOCAL_ONLY_MODE governs network scope, not whether local desktop application control is allowed.
+    """
     payload = payload or {}
     requested = str(payload.get("execution_mode") or payload.get("operator_mode") or payload.get("smget_mode") or "").strip().lower()
     if requested in {"apply", "simulate", "draft"}:
@@ -2008,7 +2017,7 @@ def _sm_operatorcore_execution_mode(payload: dict | None, *, local_only: bool, s
             return "simulate"
     except Exception:
         pass
-    return "apply" if bool(local_only) else "simulate"
+    return "apply"
 
 
 def _sm_operatorcore_bundle_from_result(
