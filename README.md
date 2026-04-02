@@ -15,6 +15,7 @@
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
 | **Development Environment** | Windows 10, VS Code, AMD FX‑8350, Ryzen 3, Nvidia 3060, Radeon Vega, Galaxy S20+, iPhone 14 |
+| **Important Notice** | This Project files are updated quite often, it is highly recommended to checkback often, for new files and fixes to core files. Just because something might now fully work today doesn't mean it won't fully work tomorrow because this project is live, active and ongoing development. |
 
 ---
 # **🚀 Vision: Decentralized Intelligence, Owned by the User**
