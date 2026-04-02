@@ -567,6 +567,9 @@ class SoftwareControlExecutor(BaseExecutor):
 
     def summarize_result(self, contract: ActionContract, result: ActionResult) -> str:
         info = dict(result.verification_result.get('info') or {}) if isinstance(result.verification_result, dict) else {}
+        simulated = bool((result.execution_result or {}).get('simulated'))
+        if result.success and (simulated or str(result.execution_mode or '').strip().lower() != MODE_APPLY):
+            return f"SMGET staged application action '{contract.action_type}' for target '{contract.target}' in {result.execution_mode} mode. No real application launch was performed."
         if result.success:
             if contract.action_type == 'open_app':
                 return f"Verified application open for target '{contract.target}'."
@@ -877,6 +880,16 @@ class SarahMemoryOperatorCore:
         primary_lane = _infer_primary_lane(intent_label, output_type)
         action_type = str(proposed_action.get('action_type') or _infer_action_type(intent_label, parsed_command, user_goal) or 'general_action').strip().lower()
         target, target_ref = _infer_target(parsed_command, proposed_action, user_goal)
+        if action_type in {'open_app', 'close_app', 'maximize_window', 'minimize_window', 'focus_window'} and _Si is not None:
+            try:
+                norm_fn = getattr(_Si, '_normalize_app_alias', None)
+                if callable(norm_fn):
+                    normalized_target = str(norm_fn(target) or target).strip()
+                    if normalized_target:
+                        target = normalized_target
+                        target_ref = normalized_target
+            except Exception:
+                pass
         capability_name, executor_name, permissions = _infer_capability_and_executor(action_type, primary_lane, target, mode)
         risk_level = _infer_risk_level(action_type, primary_lane, mode)
 

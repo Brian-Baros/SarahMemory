@@ -38,22 +38,187 @@ PROJECT_VERSION = "8.0.0-draft"
 MODULE_NAME = "SarahMemoryPreTokenAnalyzer"
 
 
-try:
-    import SarahMemoryAdvCU as _PTA_ADVCU  # type: ignore
-except Exception:
-    _PTA_ADVCU = None
+SURFACE_APP_ALIASES = {
+    "word": "winword",
+    "microsoft word": "winword",
+    "ms word": "winword",
+    "winword": "winword",
+    "excel": "excel",
+    "microsoft excel": "excel",
+    "ms excel": "excel",
+    "powerpoint": "powerpnt",
+    "microsoft powerpoint": "powerpnt",
+    "ms powerpoint": "powerpnt",
+    "powerpnt": "powerpnt",
+    "paint": "mspaint",
+    "microsoft paint": "mspaint",
+    "mspaint": "mspaint",
+    "notepad": "notepad",
+    "visual studio code": "code",
+    "vs code": "code",
+    "vscode": "code",
+    "code": "code",
+    "dreamweaver": "dreamweaver",
+    "edge": "msedge",
+    "microsoft edge": "msedge",
+    "msedge": "msedge",
+    "chrome": "chrome",
+    "google chrome": "chrome",
+    "firefox": "firefox",
+    "brave": "brave",
+    "opera": "opera",
+}
+
+_SURFACE_VERBS = {"open", "create", "write", "make", "draw", "search", "find", "look", "launch", "start"}
+_VALID_SURFACE_APPS = set(SURFACE_APP_ALIASES.values())
+
+
+def _canonical_surface_app(name: str) -> str:
+    raw = _normalize_text(_coerce_text(name)).lower().replace('.exe', '').strip()
+    return SURFACE_APP_ALIASES.get(raw, raw)
 
 
 def _extract_surface_task_contract(text: str, preferred_app: Optional[str] = None) -> Dict[str, Any]:
-    try:
-        fn = getattr(_PTA_ADVCU, 'extract_surface_task', None)
-        if callable(fn):
-            data = fn(text, preferred_app=preferred_app)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {}
+    return extract_surface_task(text=text, preferred_app=preferred_app)
+
+
+def _surface_topic_from_text(raw: str) -> str:
+    patterns = [
+        r"\b(?:about|on|for)\s+(.+)$",
+        r"\bsummary\s+(?:about|of|on)?\s*(.+)$",
+        r"\bsearch\s+(?:for\s+)?(.+)$",
+        r"\bdraw\s+(?:me\s+)?(?:a|an)?\s*(?:picture|image)?\s*(?:of\s+)?(.+)$",
+    ]
+    for pat in patterns:
+        m = re.search(pat, raw, re.I)
+        if m:
+            val = _normalize_text(m.group(1).strip(' ?.,;:'))
+            if val:
+                return val
+    return ""
+
+
+def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict[str, Any]:
+    """Deterministic surface-task extraction for desktop/browser workflows."""
+    raw = _normalize_text(_coerce_text(text))
+    if not raw:
+        return {}
+    lowered = raw.lower()
+
+    preferred = _canonical_surface_app(preferred_app or "") if preferred_app else ""
+    if preferred in _SURFACE_VERBS or preferred not in _VALID_SURFACE_APPS:
+        preferred = ""
+
+    alias_candidates = sorted(SURFACE_APP_ALIASES.keys(), key=len, reverse=True)
+
+    def _find_requested_app() -> str:
+        if preferred:
+            return preferred
+        for alias in alias_candidates:
+            if re.search(rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])", lowered):
+                return _canonical_surface_app(alias)
+        return ""
+
+    requested_app = _find_requested_app()
+    task: Dict[str, Any] = {}
+    if requested_app:
+        task["requested_app"] = requested_app
+        task["requested_app_exec"] = requested_app
+
+    browser_apps = {"msedge", "chrome", "firefox", "brave", "opera"}
+    editor_apps = {"notepad", "code", "dreamweaver"}
+    doc_apps = {"winword", *editor_apps}
+
+    if requested_app in browser_apps:
+        m = re.search(r"\bsearch\s+(?:for\s+)?(.+)$", raw, re.I)
+        if m:
+            query = _normalize_text(m.group(1).strip(' ?.,;:'))
+            if query:
+                task.update({"task_kind": "browser_search", "search_query": query, "topic": query})
+                return task
+        m = re.search(r"\b(?:go to|navigate to|open)\s+(https?://\S+|[a-z0-9.-]+\.[a-z]{2,}(?:/\S*)?)", lowered)
+        if m:
+            url = str(m.group(1) or "").strip()
+            if url and not url.startswith('http'):
+                url = 'https://' + url
+            if url:
+                task.update({"task_kind": "browser_open_url", "target_url": url, "topic": url})
+                return task
+
+    if requested_app in doc_apps:
+        m = re.search(r"\bopen\s+(?:the\s+)?document\s+named\s+(.+)$", raw, re.I)
+        if m:
+            name = _normalize_text(m.group(1).strip(' .,'))
+            if name:
+                task.update({"task_kind": "open_named_document", "document_name": name, "title": name})
+                return task
+
+    if requested_app == 'excel' or 'spreadsheet' in lowered or 'checkbook' in lowered:
+        if 'checkbook' in lowered or 'track my spending' in lowered or 'spending' in lowered:
+            task.update({
+                "task_kind": "spreadsheet_template",
+                "template_kind": "checkbook",
+                "title": "Checkbook Register",
+                "headers": ["Date", "Description", "Category", "Debit", "Credit", "Balance"],
+                "topic": "track spending",
+            })
+            if not requested_app:
+                task["requested_app"] = 'excel'
+                task["requested_app_exec"] = 'excel'
+            return task
+
+    if (requested_app in editor_apps or requested_app == 'winword' or 'website' in lowered or 'homepage' in lowered or 'about page' in lowered):
+        if 'website' in lowered or 'homepage' in lowered or 'about page' in lowered:
+            topic_match = re.search(r"\bmake\s+it\s+about\s+(.+)$", raw, re.I) or re.search(r"\babout\s+(.+)$", raw, re.I)
+            topic = _normalize_text(topic_match.group(1).strip(' .,')) if topic_match else 'website topic'
+            pages = ['index.html']
+            if 'homepage' in lowered:
+                pages = ['index.html']
+            if 'about page' in lowered:
+                pages = ['index.html', 'about.html']
+            task.update({"task_kind": "website_scaffold", "topic": topic, "pages": pages, "title": topic.title()})
+            if not requested_app:
+                task["requested_app"] = 'notepad'
+                task["requested_app_exec"] = 'notepad'
+            return task
+
+    if requested_app == 'mspaint' or ('paint' in lowered and 'draw' in lowered):
+        shape_match = re.search(r"\bdraw\s+(?:me\s+)?(?:a|an)?\s*(circle|square|rectangle|triangle|line|oval|star)\b", lowered)
+        if shape_match:
+            subject = shape_match.group(1)
+            task.update({"task_kind": "paint_draw", "draw_subject": subject, "shape": subject, "topic": subject})
+            if not requested_app:
+                task["requested_app"] = 'mspaint'
+                task["requested_app_exec"] = 'mspaint'
+            return task
+        m = re.search(r"\bdraw\s+(?:me\s+)?(?:a|an)?\s*(?:picture|image)?\s*(?:of\s+)?(.+)$", raw, re.I)
+        if m:
+            subject = _normalize_text(m.group(1).strip(' .,'))
+            if subject:
+                task.update({"task_kind": "paint_draw", "draw_subject": subject, "topic": subject})
+                if not requested_app:
+                    task["requested_app"] = 'mspaint'
+                    task["requested_app_exec"] = 'mspaint'
+                return task
+
+    if requested_app in doc_apps or any(k in lowered for k in ('document', 'report', 'summary', 'essay', 'letter')):
+        topic = _surface_topic_from_text(raw)
+        title = ''
+        title_m = re.search(r"\btitled\s+(.+?)(?:\s+and\s+write|$)", raw, re.I)
+        if title_m:
+            title = _normalize_text(title_m.group(1).strip(' .,'))
+        if requested_app or topic or 'write' in lowered or 'summary' in lowered or 'report' in lowered or 'document' in lowered:
+            task.update({
+                "task_kind": "document_write",
+                "topic": topic or 'the requested topic',
+                "title": title or ((topic or 'Document').title()),
+            })
+            if not requested_app:
+                task["requested_app"] = 'winword'
+                task["requested_app_exec"] = 'winword'
+            return task
+
+    return task
 
 # ---------------------------------------------------------------------------
 # Thresholds / weights
@@ -285,6 +450,14 @@ def analyze_text(raw_text: str, context_packet: Optional[Dict[str, Any]] = None)
             likely_domain = "CRT"
             query_type = "paint_draw"
             output_type = "image"
+        elif task_kind == "browser_search":
+            likely_domain = "RSH"
+            query_type = "browser_search"
+            output_type = "action_result"
+        elif task_kind == "browser_open_url":
+            likely_domain = "RSH"
+            query_type = "browser_open_url"
+            output_type = "action_result"
         elif task_kind == "open_named_document":
             likely_domain = "DOC"
             query_type = "open_named_document"

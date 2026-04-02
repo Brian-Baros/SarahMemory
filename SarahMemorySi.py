@@ -125,6 +125,7 @@ import logging
 import psutil
 import time
 import threading
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -208,6 +209,7 @@ _APP_ALIASES = {
 
 def _normalize_app_alias(app_name: str) -> str:
     app = str(app_name or '').strip().lower().replace('.exe', '')
+    app = " ".join(app.replace('_', ' ').replace('-', ' ').split())
     return _APP_ALIASES.get(app, app)
 
 def _candidate_app_names(app_name: str) -> List[str]:
@@ -635,7 +637,7 @@ def get_app_path(app_name: str) -> Optional[str]:
     Returns:
         Application path or None
     """
-    app_name_lower = app_name.lower()
+    app_name_lower = _normalize_app_alias(app_name)
 
     # Check memory cache first
     if app_name_lower in _app_cache:
@@ -944,7 +946,7 @@ def _windows_fallback_launch(app_name: str) -> bool:
             'outlook': 'OUTLOOK.EXE'
         }
 
-        exe = common_apps.get(base, app_name if app_name.endswith('.exe') else f"{app_name}.exe")
+        exe = common_apps.get(base, app_name if app_name.endswith('.exe') else f"{base}.exe")
 
         # Try direct Popen
         try:
@@ -958,23 +960,25 @@ def _windows_fallback_launch(app_name: str) -> bool:
         except Exception:
             pass
 
-        # Try 'start' command
+        # Try os.startfile
         try:
-            subprocess.Popen(['cmd', '/c', 'start', '', exe], shell=True)
+            startfile = getattr(os, 'startfile', None)
+            if callable(startfile):
+                startfile(exe)  # type: ignore[misc]
+                if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
+                    logger.info(f"[v8.0] startfile launched and verified: {exe}")
+                    return True
+                logger.warning(f"[v8.0] startfile launched but readiness verification failed: {exe}")
+        except Exception:
+            pass
+
+        # Try shell start command
+        try:
+            subprocess.Popen(f'start "" "{exe}"', shell=True)
             if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
                 logger.info(f"[v8.0] Shell start launched and verified: {exe}")
                 return True
             logger.warning(f"[v8.0] Shell start launched but readiness verification failed: {exe}")
-        except Exception:
-            pass
-
-        # Try os.startfile
-        try:
-            os.startfile(exe)  # type: ignore[attr-defined]
-            if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
-                logger.info(f"[v8.0] startfile launched and verified: {exe}")
-                return True
-            logger.warning(f"[v8.0] startfile launched but readiness verification failed: {exe}")
         except Exception:
             pass
 
