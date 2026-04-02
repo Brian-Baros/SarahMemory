@@ -497,21 +497,17 @@ class SoftwareControlExecutor(BaseExecutor):
         surface_action = str(contract.metadata.get("surface_action") or "open").strip().lower()
         command = f"{surface_action} {contract.target}".strip()
         try:
+            fn_structured = getattr(_Si, 'execute_software_action', None)
+            if callable(fn_structured):
+                out = fn_structured(contract.action_type, contract.target, contract.execution_mode, metadata={**dict(contract.metadata or {}), 'surface_action': surface_action})
+                if isinstance(out, dict):
+                    out.setdefault('command', command)
+                    return out
             fn = getattr(_Si, "manage_application_request", None)
             ok = bool(fn(command)) if callable(fn) else False
-            return {
-                "ok": ok,
-                "executed": ok,
-                "command": command,
-                "reason": "software_control_executed" if ok else "software_control_failed",
-            }
+            return {"ok": ok, "executed": ok, "command": command, "reason": "software_control_executed" if ok else "software_control_failed"}
         except Exception as exc:
-            return {
-                "ok": False,
-                "executed": False,
-                "command": command,
-                "reason": str(exc),
-            }
+            return {"ok": False, "executed": False, "command": command, "reason": str(exc)}
 
     def verify(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
         if _Si is None:
@@ -521,21 +517,38 @@ class SoftwareControlExecutor(BaseExecutor):
             return True, {"ok": True, "verification": "simulated_only"}
 
         target = str(contract.target or "").strip()
+        info: Dict[str, Any] = {}
         try:
-            fn = getattr(_Si, "get_application_info", None)
+            fn = getattr(_Si, 'get_application_info', None)
             if callable(fn):
-                info = fn(target)
-                if isinstance(info, dict):
-                    running = bool(info.get("running") or info.get("is_running") or info.get("found"))
-                    return running, {"ok": running, "info": info}
+                data = fn(target)
+                if isinstance(data, dict):
+                    info = data
         except Exception:
-            pass
+            info = {}
 
-        # Conservative fallback when richer verification helpers are unavailable.
-        return bool(execution_result.get("ok")), {
-            "ok": bool(execution_result.get("ok")),
-            "verification": "fallback_execution_status",
-        }
+        running = bool(info.get('running') or info.get('is_running'))
+        focused = bool(info.get('focused') or info.get('is_focused'))
+        minimized = bool(info.get('minimized'))
+        maximized = bool(info.get('maximized'))
+
+        if contract.action_type == 'open_app':
+            ok = bool(running)
+            return ok, {'ok': ok, 'verification': 'application_running_check', 'reason': 'application_not_running_after_launch' if not ok else 'application_running_verified', 'info': info}
+        if contract.action_type == 'close_app':
+            ok = not bool(running)
+            return ok, {'ok': ok, 'verification': 'application_closed_check', 'reason': 'application_still_running_after_close' if not ok else 'application_closed_verified', 'info': info}
+        if contract.action_type == 'focus_window':
+            ok = bool(focused)
+            return ok, {'ok': ok, 'verification': 'window_focus_check', 'reason': 'window_not_focused' if not ok else 'window_focus_verified', 'info': info}
+        if contract.action_type == 'minimize_window':
+            ok = bool(minimized)
+            return ok, {'ok': ok, 'verification': 'window_minimize_check', 'reason': 'window_not_minimized' if not ok else 'window_minimized_verified', 'info': info}
+        if contract.action_type == 'maximize_window':
+            ok = bool(maximized)
+            return ok, {'ok': ok, 'verification': 'window_maximize_check', 'reason': 'window_not_maximized' if not ok else 'window_maximized_verified', 'info': info}
+
+        return bool(execution_result.get('ok')), {'ok': bool(execution_result.get('ok')), 'verification': 'fallback_execution_status', 'info': info}
 
     def rollback(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Dict[str, Any]:
         if _Si is None:
@@ -553,11 +566,25 @@ class SoftwareControlExecutor(BaseExecutor):
             return {"ok": False, "rolled_back": False, "reason": str(exc)}
 
     def summarize_result(self, contract: ActionContract, result: ActionResult) -> str:
+        info = dict(result.verification_result.get('info') or {}) if isinstance(result.verification_result, dict) else {}
         if result.success:
-            return f"Application action '{contract.action_type}' completed for target '{contract.target}'."
+            if contract.action_type == 'open_app':
+                return f"Verified application open for target '{contract.target}'."
+            if contract.action_type == 'close_app':
+                return f"Verified application close for target '{contract.target}'."
+            if contract.action_type == 'focus_window':
+                return f"Verified window focus for target '{contract.target}'."
+            if contract.action_type == 'minimize_window':
+                return f"Verified window minimize for target '{contract.target}'."
+            if contract.action_type == 'maximize_window':
+                return f"Verified window maximize for target '{contract.target}'."
+            return f"Verified application action '{contract.action_type}' for target '{contract.target}'."
         if result.rollback_result.get("rolled_back"):
-            return f"Application action '{contract.action_type}' failed and rollback was attempted for '{contract.target}'."
-        return f"Application action '{contract.action_type}' failed for target '{contract.target}'."
+            return f"Application action '{contract.action_type}' failed verification and rollback was attempted for '{contract.target}'."
+        reason = str((result.verification_result or {}).get('reason') or (result.execution_result or {}).get('reason') or 'verification_failed')
+        if contract.action_type == 'open_app' and not bool(info.get('running') or info.get('is_running')):
+            return f"Launch was requested for '{contract.target}', but SMGET could not verify that the application actually opened ({reason})."
+        return f"Application action '{contract.action_type}' failed for target '{contract.target}' ({reason})."
 
 
 _EXECUTOR_LOCK = threading.RLock()
@@ -702,9 +729,11 @@ def _infer_action_type(intent_label: str, parsed_command: Optional[Dict[str, Any
     return t or "general_action"
 
 
-def _infer_target(parsed_command: Optional[Dict[str, Any]], user_goal: str) -> Tuple[str, str]:
+def _infer_target(parsed_command: Optional[Dict[str, Any]], proposed_action: Optional[Dict[str, Any]], user_goal: str) -> Tuple[str, str]:
     cmd = parsed_command or {}
-    subject = str(cmd.get("subject") or cmd.get("app_name") or cmd.get("target") or "").strip()
+    pa = proposed_action or {}
+    entities = dict(pa.get('entities') or {}) if isinstance(pa.get('entities'), dict) else {}
+    subject = str(pa.get('target') or entities.get('target_app_exec') or entities.get('target_app') or cmd.get("subject") or cmd.get("app_name") or cmd.get("target") or "").strip()
     if subject:
         return subject, subject
     text = str(user_goal or "").strip()
@@ -846,8 +875,8 @@ class SarahMemoryOperatorCore:
 
         surface_action = str(parsed_command.get("action") or proposed_action.get("action") or surface_action).strip().lower() or "open"
         primary_lane = _infer_primary_lane(intent_label, output_type)
-        action_type = _infer_action_type(intent_label, parsed_command, user_goal)
-        target, target_ref = _infer_target(parsed_command, user_goal)
+        action_type = str(proposed_action.get('action_type') or _infer_action_type(intent_label, parsed_command, user_goal) or 'general_action').strip().lower()
+        target, target_ref = _infer_target(parsed_command, proposed_action, user_goal)
         capability_name, executor_name, permissions = _infer_capability_and_executor(action_type, primary_lane, target, mode)
         risk_level = _infer_risk_level(action_type, primary_lane, mode)
 

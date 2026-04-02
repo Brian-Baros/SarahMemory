@@ -125,7 +125,6 @@ import logging
 import psutil
 import time
 import threading
-import shutil
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -168,7 +167,6 @@ if not logger.hasHandlers():
 DATABASE_PATH = os.path.join(getattr(config, 'DATASETS_DIR', 'data'), "software.db")
 active_launched_apps = []
 _app_cache = {}  # In-memory cache for fast lookups
-
 
 # =============================================================================
 # NORMALIZATION / STATE HELPERS - v8.0 SMGET integration
@@ -256,7 +254,9 @@ def wait_for_application_window(app_name: str, timeout: float = 10.0, poll_s: fl
     while time.time() < deadline:
         try:
             if gw:
-                windows = gw.getWindowsWithTitle(canonical) or gw.getWindowsWithTitle(str(app_name or ''))
+                windows = []
+                for token in _candidate_app_names(canonical):
+                    windows.extend(gw.getWindowsWithTitle(token) or [])
                 if windows:
                     return True
             if _find_running_processes(canonical):
@@ -267,10 +267,6 @@ def wait_for_application_window(app_name: str, timeout: float = 10.0, poll_s: fl
     return False
 
 def smart_app_search(app_name: str) -> Dict[str, Any]:
-    """
-    Best-effort resolver that checks cache/DB/registry/PATH/common aliases.
-    Returns a structured resolver packet for governance/executor callers.
-    """
     canonical = _normalize_app_alias(app_name)
     resolved = get_app_path(canonical)
     source = 'unknown'
@@ -321,9 +317,6 @@ def smart_app_search(app_name: str) -> Dict[str, Any]:
     }
 
 def get_application_info(app_name: str) -> Dict[str, Any]:
-    """
-    Structured application state lookup used by Neuron/OperatorCore verification.
-    """
     canonical = _normalize_app_alias(app_name)
     search = smart_app_search(canonical)
     running = _find_running_processes(canonical)
@@ -333,7 +326,9 @@ def get_application_info(app_name: str) -> Dict[str, Any]:
     maximized = False
     try:
         if gw:
-            windows = gw.getWindowsWithTitle(canonical) or gw.getWindowsWithTitle(str(app_name or ''))
+            windows = []
+            for token in _candidate_app_names(canonical):
+                windows.extend(gw.getWindowsWithTitle(token) or [])
             for win in windows or []:
                 try:
                     title = str(getattr(win, 'title', '') or '')
@@ -383,53 +378,6 @@ def verify_application_state(app_name: str, expected_state: str = 'running') -> 
         return not bool(info.get('running'))
     return bool(info.get('running'))
 
-def cleanup_orphaned_processes() -> Dict[str, Any]:
-    """
-    Clean the tracked process list by removing finished subprocess handles.
-    """
-    removed = 0
-    kept = []
-    try:
-        for proc in list(active_launched_apps):
-            try:
-                if proc.poll() is None:
-                    kept.append(proc)
-                else:
-                    removed += 1
-            except Exception:
-                removed += 1
-        active_launched_apps[:] = kept
-    except Exception:
-        pass
-    return {'ok': True, 'removed': removed, 'active_tracked': len(active_launched_apps)}
-
-def batch_application_control(requests: List[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
-    """
-    Apply a bounded batch of software-control operations. Supports either plain
-    command strings or dicts with {action, app_name}.
-    """
-    results: List[Dict[str, Any]] = []
-    ok = True
-    for item in list(requests or []):
-        try:
-            if isinstance(item, dict):
-                action = str(item.get('action') or '').strip().lower()
-                app_name = str(item.get('app_name') or item.get('target') or '').strip()
-                command = f"{action} {app_name}".strip()
-            else:
-                command = str(item or '').strip()
-            if not command:
-                results.append({'ok': False, 'command': '', 'reason': 'empty_command'})
-                ok = False
-                continue
-            handled = bool(manage_application_request(command))
-            results.append({'ok': handled, 'command': command})
-            if not handled:
-                ok = False
-        except Exception as e:
-            results.append({'ok': False, 'command': str(item or ''), 'reason': str(e)})
-            ok = False
-    return {'ok': ok, 'results': results}
 
 # =============================================================================
 # DATABASE CONNECTION - Backward Compatible
@@ -717,16 +665,6 @@ def get_app_path(app_name: str) -> Optional[str]:
             cache_app_path(app_name, path_from_registry)
             return path_from_registry
 
-    # PATH/common alias fallback
-    try:
-        canonical = _normalize_app_alias(app_name)
-        which_hit = shutil.which(canonical) or shutil.which(f"{canonical}.exe")
-        if which_hit:
-            cache_app_path(app_name, which_hit)
-            return which_hit
-    except Exception:
-        pass
-
     # Not found
     logger.warning(f"[v8.0] Software not found: {app_name}")
     return None
@@ -734,31 +672,49 @@ def get_app_path(app_name: str) -> Optional[str]:
 # =============================================================================
 # APPLICATION LAUNCH - Backward Compatible
 # =============================================================================
+def _launch_target_to_app_name(path: str) -> str:
+    target = str(path or '').strip()
+    if not target:
+        return ''
+    base = os.path.basename(target).strip()
+    if not base:
+        base = target
+    return _normalize_app_alias(base)
+
+
 def launch_application(path: str) -> bool:
     """
     Launch application by path.
-    v8.0: Enhanced with process tracking.
+    v8.0: Enhanced with process tracking and readiness verification.
 
     Args:
         path: Application executable path
 
     Returns:
-        True if successful, False otherwise
+        True if successful and the launched application becomes observable.
     """
     try:
         launch_target = str(path or '').strip()
         if not launch_target:
             return False
+
         proc = subprocess.Popen([launch_target])
         active_launched_apps.append(proc)
 
-        logger.info(f"[v8.0] Launched: {path} (PID: {proc.pid})")
-        log_software_event("Launch Application", f"Launched: {path}", os.path.basename(str(path)))
+        app_name = _launch_target_to_app_name(launch_target)
+        ready = wait_for_application_window(app_name or launch_target, timeout=10.0, poll_s=0.35)
+        if not ready:
+            logger.warning(f"[v8.0] Launch request started but readiness verification failed: {path} (PID: {proc.pid})")
+            log_software_event("Launch Application Verification Failed", f"Launch started but readiness not confirmed: {path}", os.path.basename(launch_target))
+            return False
+
+        logger.info(f"[v8.0] Launched and verified: {path} (PID: {proc.pid})")
+        log_software_event("Launch Application", f"Launched and verified: {path}", os.path.basename(launch_target))
         return True
 
     except Exception as e:
         logger.error(f"[v8.0] Launch error: {e}")
-        log_software_event("Launch Application Error", f"Failed: {path} | {e}", os.path.basename(str(path)))
+        log_software_event("Launch Application Error", f"Failed: {path} | {e}", os.path.basename(str(path or '')))
         return False
 
 # =============================================================================
@@ -849,7 +805,7 @@ def minimize_application(app_name: str) -> bool:
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
+        windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
             windows[0].minimize()
             logger.info(f"[v8.0] Minimized: {app_name}")
@@ -867,7 +823,7 @@ def maximize_application(app_name: str) -> bool:
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
+        windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
             windows[0].maximize()
             logger.info(f"[v8.0] Maximized: {app_name}")
@@ -885,7 +841,7 @@ def focus_application(app_name: str) -> bool:
         return False
 
     try:
-        windows = gw.getWindowsWithTitle(_normalize_app_alias(app_name)) or gw.getWindowsWithTitle(app_name)
+        windows = gw.getWindowsWithTitle(app_name)
         if windows and len(windows) > 0:
             windows[0].activate()
             logger.info(f"[v8.0] Focused: {app_name}")
@@ -902,7 +858,7 @@ def focus_application(app_name: str) -> bool:
 def manage_application_request(full_command: str) -> bool:
     """
     Handle application management commands.
-    v8.0: Enhanced with better command parsing.
+    v8.0: Enhanced with better command parsing and normalized aliases.
 
     Args:
         full_command: Command string (e.g., "open notepad")
@@ -916,7 +872,8 @@ def manage_application_request(full_command: str) -> bool:
             return False
 
         action = parts[0]
-        app_name = " ".join(parts[1:])
+        raw_app_name = " ".join(parts[1:]).strip()
+        app_name = _normalize_app_alias(raw_app_name) if raw_app_name else raw_app_name
 
         # Launch/Open/Start
         if action in ["open", "launch", "start"]:
@@ -927,26 +884,26 @@ def manage_application_request(full_command: str) -> bool:
             else:
                 # Windows fallback strategies
                 if os.name == 'nt':
-                    return _windows_fallback_launch(app_name)
+                    return _windows_fallback_launch(app_name or raw_app_name)
                 return False
 
         # Close/Terminate/Kill
         elif action in ["close", "terminate", "kill", "exit", "quit"]:
-            if "all" in app_name:
+            if "all" in raw_app_name:
                 return _terminate_all_apps()
-            return terminate_application(app_name)
+            return terminate_application(app_name or raw_app_name)
 
         # Maximize
         elif action == "maximize":
-            return maximize_application(app_name)
+            return maximize_application(app_name or raw_app_name)
 
         # Minimize
         elif action == "minimize":
-            return minimize_application(app_name)
+            return minimize_application(app_name or raw_app_name)
 
         # Focus
         elif action in ["focus", "bring"]:
-            return focus_application(app_name)
+            return focus_application(app_name or raw_app_name)
 
         else:
             logger.warning(f"[v8.0] Unknown action: {action}")
@@ -960,9 +917,9 @@ def manage_application_request(full_command: str) -> bool:
 # WINDOWS FALLBACK LAUNCH - v8.0 New
 # =============================================================================
 def _windows_fallback_launch(app_name: str) -> bool:
-    """Windows-specific fallback launch strategies."""
+    """Windows-specific fallback launch strategies with readiness verification."""
     try:
-        base = app_name.replace('.exe', '').strip()
+        base = _normalize_app_alias(app_name.replace('.exe', '').strip())
 
         # Common Windows utilities
         common_apps = {
@@ -993,25 +950,31 @@ def _windows_fallback_launch(app_name: str) -> bool:
         try:
             proc = subprocess.Popen([exe])
             active_launched_apps.append(proc)
-            logger.info(f"[v8.0] Fallback launched: {exe}")
-            cache_app_path(base, exe)
-            return True
+            if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
+                logger.info(f"[v8.0] Fallback launched and verified: {exe}")
+                cache_app_path(base, exe)
+                return True
+            logger.warning(f"[v8.0] Fallback launch started but readiness verification failed: {exe}")
         except Exception:
             pass
 
         # Try 'start' command
         try:
             subprocess.Popen(['cmd', '/c', 'start', '', exe], shell=True)
-            logger.info(f"[v8.0] Shell start launched: {exe}")
-            return True
+            if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
+                logger.info(f"[v8.0] Shell start launched and verified: {exe}")
+                return True
+            logger.warning(f"[v8.0] Shell start launched but readiness verification failed: {exe}")
         except Exception:
             pass
 
         # Try os.startfile
         try:
             os.startfile(exe)  # type: ignore[attr-defined]
-            logger.info(f"[v8.0] startfile launched: {exe}")
-            return True
+            if wait_for_application_window(base or exe, timeout=10.0, poll_s=0.35):
+                logger.info(f"[v8.0] startfile launched and verified: {exe}")
+                return True
+            logger.warning(f"[v8.0] startfile launched but readiness verification failed: {exe}")
         except Exception:
             pass
 
@@ -1231,8 +1194,6 @@ def get_software_metrics() -> Dict[str, Any]:
         conn = connect_software_db()
         cursor = conn.cursor()
 
-        cleanup_orphaned_processes()
-
         # Get total apps cached
         cursor.execute("SELECT COUNT(*) FROM software_apps")
         total_apps = cursor.fetchone()[0]
@@ -1265,17 +1226,55 @@ def get_software_metrics() -> Dict[str, Any]:
         logger.error(f"[v8.0] Metrics error: {e}")
         return {"error": str(e)}
 
-
 # =============================================================================
 # SMGET ADAPTER HELPERS - v8.0 Integration
 # =============================================================================
+def cleanup_orphaned_processes() -> Dict[str, Any]:
+    removed = 0
+    kept = []
+    try:
+        for proc in list(active_launched_apps):
+            try:
+                if proc.poll() is None:
+                    kept.append(proc)
+                else:
+                    removed += 1
+            except Exception:
+                removed += 1
+        active_launched_apps[:] = kept
+    except Exception:
+        pass
+    return {'ok': True, 'removed': removed, 'active_tracked': len(active_launched_apps)}
+
+
+def batch_application_control(requests: List[Union[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    results: List[Dict[str, Any]] = []
+    ok = True
+    for item in list(requests or []):
+        try:
+            if isinstance(item, dict):
+                action = str(item.get('action') or '').strip().lower()
+                app_name = str(item.get('app_name') or item.get('target') or '').strip()
+                command = f"{action} {app_name}".strip()
+            else:
+                command = str(item or '').strip()
+            if not command:
+                results.append({'ok': False, 'command': '', 'reason': 'empty_command'})
+                ok = False
+                continue
+            handled = bool(manage_application_request(command))
+            results.append({'ok': handled, 'command': command})
+            if not handled:
+                ok = False
+        except Exception as e:
+            results.append({'ok': False, 'command': str(item or ''), 'reason': str(e)})
+            ok = False
+    return {'ok': ok, 'results': results}
+
+
 def execute_software_action(action_type: str, target: str, execution_mode: str = 'apply', metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """
-    Bounded software-control adapter for governed callers. Preserves existing
-    public APIs while providing a structured result surface for SMGET.
-    """
     action = str(action_type or '').strip().lower()
-    target_name = str(target or '').strip()
+    target_name = _normalize_app_alias(str(target or '').strip())
     mode = str(execution_mode or 'apply').strip().lower()
     metadata = dict(metadata or {})
     surface_action_map = {
@@ -1285,38 +1284,29 @@ def execute_software_action(action_type: str, target: str, execution_mode: str =
         'minimize_window': 'minimize',
         'focus_window': 'focus',
     }
-    surface_action = surface_action_map.get(action, metadata.get('surface_action') or action)
+    surface_action = str(surface_action_map.get(action, metadata.get('surface_action') or action) or action).strip().lower()
     command = f"{surface_action} {target_name}".strip()
     if mode != 'apply':
-        return {
-            'ok': True,
-            'executed': False,
-            'simulated': True,
-            'action_type': action,
-            'surface_action': surface_action,
-            'target': target_name,
-            'command': command,
-            'reason': 'non_apply_mode',
-        }
+        return {'ok': True, 'executed': False, 'simulated': True, 'action_type': action, 'surface_action': surface_action, 'target': target_name, 'command': command, 'reason': 'non_apply_mode'}
+
     ok = bool(manage_application_request(command))
     info = get_application_info(target_name)
-    return {
-        'ok': ok,
-        'executed': ok,
-        'action_type': action,
-        'surface_action': surface_action,
-        'target': target_name,
-        'command': command,
-        'application_info': info,
-        'reason': 'software_action_executed' if ok else 'software_action_failed',
-    }
+    if action == 'open_app':
+        verified = bool(info.get('running') or info.get('is_running'))
+    elif action == 'close_app':
+        verified = not bool(info.get('running') or info.get('is_running'))
+    elif action == 'maximize_window':
+        verified = bool(info.get('maximized'))
+    elif action == 'minimize_window':
+        verified = bool(info.get('minimized'))
+    elif action == 'focus_window':
+        verified = bool(info.get('focused') or info.get('is_focused'))
+    else:
+        verified = bool(ok)
+    return {'ok': bool(ok and verified), 'executed': bool(ok), 'verified': bool(verified), 'action_type': action, 'surface_action': surface_action, 'target': target_name, 'command': command, 'application_info': info, 'reason': 'software_action_verified' if ok and verified else ('software_action_unverified' if ok else 'software_action_failed')}
 
 
 def register_operator_executor() -> bool:
-    """
-    Best-effort handshake with OperatorCore. No failure here may break Si.
-    OperatorCore already has a software executor; this simply advertises Si availability.
-    """
     try:
         import SarahMemoryOperatorCore as _Op  # type: ignore
         snapshot = getattr(_Op, 'executor_registry_snapshot', None)
@@ -1348,11 +1338,6 @@ if __name__ == '__main__':
     print(json.dumps(get_software_metrics(), indent=2))
 
     print("\n" + "=" * 80)
-
-try:
-    register_operator_executor()
-except Exception:
-    pass
 
 logger.info("[v8.0] SarahMemorySi module loaded successfully")
 

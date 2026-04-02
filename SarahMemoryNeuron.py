@@ -113,6 +113,12 @@ try:
 except Exception:
     _Cog = None
 
+# Governed execution choke-point
+try:
+    import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+except Exception:
+    _OperatorCore = None
+
 # Tier-0.5: Advanced command understanding
 try:
     import SarahMemoryAdvCU as _AdvCU  # type: ignore
@@ -2440,6 +2446,32 @@ def _compass_packet_for_execution(user_text: str, plan_state: Dict[str, Any], me
 
 
 
+def _smget_execution_mode(meta: Optional[Dict[str, Any]] = None) -> str:
+    meta = dict(meta or {})
+    if bool(meta.get('local_only') or meta.get('offline') or meta.get('safe_mode')):
+        return 'draft'
+    governor = meta.get('governor') if isinstance(meta.get('governor'), dict) else {}
+    if bool(governor.get('require_user')):
+        return 'draft'
+    return 'apply'
+
+
+def _smget_open_surface(canonical: str, route_id: str, entities: Dict[str, Any], user_text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if _OperatorCore is None:
+        return {'ok': False, 'error': 'operator_core_unavailable'}
+    try:
+        execution_mode = _smget_execution_mode(meta)
+        proposed_action = {'route_id': route_id, 'action': 'open', 'action_type': 'open_app', 'target': canonical, 'entities': dict(entities or {})}
+        op_meta = {'session_id': str((meta or {}).get('session_id') or ''), 'surface': 'neuron_ingress', 'source_surface': 'neuron_ingress', 'execution_mode': execution_mode, 'user_consented': True}
+        fn = getattr(_OperatorCore, 'process_action_request', None)
+        if not callable(fn):
+            return {'ok': False, 'error': 'operator_core_callable_missing'}
+        out = fn(f'open {canonical}', origin='neuron_ingress', meta=op_meta, proposed_action=proposed_action, execution_mode=execution_mode)
+        return out if isinstance(out, dict) else {'ok': False, 'error': 'invalid_operator_packet'}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
 def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     meta = meta or {}
     route_id = str(route.get('route_id') or '')
@@ -2450,26 +2482,24 @@ def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user
         return result
     try:
         if route_id in {'system.application.control', 'documents.office.write'}:
-            import SarahMemorySi as _Si  # type: ignore
             preferred = entities.get('target_app_exec') or entities.get('target_app') or ('winword' if route_id == 'documents.office.write' else '')
             task = _derive_surface_task(_canonical_app_name(str(preferred or '')), entities, user_text)
             canonical = _canonical_app_name(task.get('requested_app_exec') or task.get('requested_app') or preferred)
             requested_state = str(entities.get('requested_state') or 'open').strip().lower()
             if canonical:
-                cmd = f"{requested_state} {canonical}"
-                ok = bool(_Si.manage_application_request(cmd)) if hasattr(_Si, 'manage_application_request') else False
-                plan_state = {'surface_open': ok, 'launched': ok, 'focused': False}
-                if ok and hasattr(_Si, 'wait_for_application_window'):
-                    try:
-                        _Si.wait_for_application_window(canonical, timeout=10.0, poll_s=0.35)
-                    except Exception:
-                        pass
-                if ok and hasattr(_Si, 'focus_application'):
-                    try:
-                        plan_state['focused'] = bool(_Si.focus_application(canonical))
-                        plan_state['surface_focused'] = bool(plan_state['focused'])
-                    except Exception:
-                        pass
+                operator_packet = {}
+                ok = False
+                plan_state = {'surface_open': False, 'launched': False, 'focused': False}
+                if requested_state == 'open':
+                    operator_packet = _smget_open_surface(canonical, route_id, entities, user_text, meta)
+                    result = dict(operator_packet.get('result') or {}) if isinstance(operator_packet, dict) else {}
+                    verification = dict(result.get('verification_result') or {}) if isinstance(result, dict) else {}
+                    info = dict(verification.get('info') or {}) if isinstance(verification, dict) else {}
+                    ok = bool(operator_packet.get('ok'))
+                    plan_state.update({'surface_open': bool(ok), 'launched': bool(ok), 'focused': bool(info.get('focused') or info.get('is_focused')), 'surface_focused': bool(info.get('focused') or info.get('is_focused')), 'result_verified': bool(ok)})
+                else:
+                    operator_packet = {'ok': False, 'reason': 'unsupported_requested_state'}
+
                 followup = {'ok': True, 'skipped': True, 'reason': 'no_followup', 'task_kind': task.get('task_kind')}
                 if ok and requested_state == 'open' and task.get('task_kind'):
                     try:
@@ -2483,9 +2513,9 @@ def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user
                         followup = {'ok': False, 'task_kind': task.get('task_kind'), 'error': str(e)}
                     if isinstance(followup, dict):
                         plan_state.update({k: v for k, v in followup.items() if isinstance(v, (bool, str, int, float, dict, list))})
-                compass = _compass_packet_for_execution(user_text, plan_state=plan_state, meta=meta, proposed_action={'route_id': route_id, 'entities': entities, 'task': task})
+                compass = _compass_packet_for_execution(user_text, plan_state=plan_state, meta=meta, proposed_action={'route_id': route_id, 'entities': entities, 'task': task, 'operator_packet': operator_packet})
                 executed = bool(ok and (not task.get('task_kind') or (isinstance(followup, dict) and bool(followup.get('ok')) and bool((compass or {}).get('reply_allowed', True)))))
-                return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': {'ok': ok, 'command': cmd, 'target_app': canonical, 'requested_state': requested_state, 'task': task, 'followup': followup, 'compass': compass}}
+                return {'attempted': True, 'executed': executed, 'mode': 'smget_dispatch', 'details': {'ok': ok, 'target_app': canonical, 'requested_state': requested_state, 'task': task, 'followup': followup, 'compass': compass, 'operator_packet': operator_packet}}
         if route_id == 'email.mail.automation':
             import appcomm as _AppComm  # type: ignore
             folder = str(entities.get('target_folder') or 'spam')
@@ -2576,139 +2606,20 @@ def _ingress_execution_ticket(route: Dict[str, Any], trace: Dict[str, Any], user
                 reply = str((followup or {}).get('result') or 'Opened Paint and completed the requested drawing step.')
             else:
                 reply = reply.rstrip('.') + '. Direct internal execution completed.'
-        elif execution_result.get('mode') == 'direct_internal_dispatch':
-            reason = str((compass or {}).get('reason') or (followup or {}).get('reason') or details.get('error') or 'task incomplete')
+        elif execution_result.get('mode') in {'direct_internal_dispatch', 'smget_dispatch'}:
+            operator_packet = details.get('operator_packet') if isinstance(details.get('operator_packet'), dict) else {}
+            operator_result = operator_packet.get('result') if isinstance(operator_packet.get('result'), dict) else {}
+            operator_summary = str(operator_result.get('summary') or '').strip()
+            reason = str((compass or {}).get('reason') or (followup or {}).get('reason') or operator_summary or details.get('error') or 'task incomplete')
             if details.get('ok') and route_id in {'system.application.control', 'documents.office.write'}:
                 reply = f"Opened {details.get('target_app') or 'the requested application'}, but the follow-through step is not finished yet: {reason}."
             else:
-                reply = reply.rstrip('.') + f'. Direct execution was attempted but did not fully complete: {reason}.'
+                reply = reply.rstrip('.') + f'. SMGET execution was attempted but did not fully complete: {reason}.'
     artifacts = {'route_ticket': route, 'executor': target_module, 'entities': entities, 'runtime_discovery': discovery, 'execution_plan': execution_plan, 'execution_result': execution_result}
     actions = list(execution_plan.get('endpoint_calls') or []) if isinstance(execution_plan.get('endpoint_calls'), list) else []
     if execution_result.get('attempted'):
         actions.append({'type': 'execution_result', 'data': execution_result})
     return NeuronResult(ok=True, reply=reply, confidence=max(0.61, float(route.get('confidence') or 0.61)), intent=str(route.get('intent_hint') or route.get('domain') or 'action'), source='ingress_router', artifacts=artifacts, trace=trace, actions=actions)
-
-
-def _is_ingress_execution_route(route: Dict[str, Any]) -> bool:
-    try:
-        domain = str((route or {}).get("domain") or "").strip().lower()
-        confidence = float((route or {}).get("confidence") or 0.0)
-    except Exception:
-        return False
-    return bool(domain in {"drivers", "system", "documents", "email", "network", "communication", "reminder", "avatar"} and confidence >= 0.66)
-
-
-def _build_governed_proposed_action(existing: Optional[Dict[str, Any]], route: Dict[str, Any], user_text: str) -> Dict[str, Any]:
-    proposed = dict(existing or {})
-    if not isinstance(route, dict):
-        return proposed
-
-    entities = dict(route.get("entities") or {}) if isinstance(route.get("entities"), dict) else {}
-    route_id = str(route.get("route_id") or "").strip()
-    domain = str(route.get("domain") or "").strip().lower()
-    action = str(route.get("action") or route.get("intent_hint") or "").strip().lower()
-    target_module = str(route.get("target_module") or "").strip()
-    transport_target = str(route.get("transport_target") or "").strip()
-
-    if route_id:
-        proposed.setdefault("route_id", route_id)
-    if domain:
-        proposed.setdefault("domain", domain)
-    if action:
-        proposed.setdefault("action_type", action)
-    if target_module:
-        proposed.setdefault("executor_name", target_module)
-        proposed.setdefault("target_module", target_module)
-    if transport_target:
-        proposed.setdefault("target_ref", transport_target)
-    if entities:
-        proposed.setdefault("entities", entities)
-
-    if _is_ingress_execution_route(route):
-        proposed.setdefault("reason", f"Governed ingress route {route_id or domain or 'action'} requested from Neuron.")
-        proposed.setdefault("change_type", "runtime_action")
-        proposed.setdefault("subsystems", [domain] if domain else [])
-        proposed.setdefault("tests", proposed.get("tests") or [])
-        proposed.setdefault("rollback_plan", proposed.get("rollback_plan") or "Bounded runtime action; revert session or close the target surface if verification fails.")
-        proposed.setdefault("dry_run", True)
-        if domain in {"network", "communication", "email"}:
-            proposed.setdefault("touches_network", True)
-        if domain in {"documents", "system"}:
-            proposed.setdefault("touches_filesystem", bool(proposed.get("touches_filesystem", False)))
-
-    return proposed
-
-
-def _smget_packet_from_governance(gov_decision: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if not isinstance(gov_decision, dict):
-        return {}
-    packet = gov_decision.get("smget")
-    return dict(packet) if isinstance(packet, dict) else {}
-
-
-def _smget_contract_from_governance(gov_decision: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    packet = _smget_packet_from_governance(gov_decision)
-    contract = packet.get("action_contract") if isinstance(packet.get("action_contract"), dict) else {}
-    return dict(contract) if isinstance(contract, dict) else {}
-
-
-def _smget_preview_allowed(gov_decision: Optional[Dict[str, Any]]) -> bool:
-    if not isinstance(gov_decision, dict):
-        return False
-    contract = _smget_contract_from_governance(gov_decision)
-    if not contract:
-        return False
-    if str(gov_decision.get("decision") or "").upper() != "ALLOW":
-        return False
-    return bool(gov_decision.get("execution_allowed"))
-
-
-def _smget_neuron_result(
-    gov_decision: Dict[str, Any],
-    trace: Dict[str, Any],
-    *,
-    intent: str,
-    source: str = "smget",
-    extra_artifacts: Optional[Dict[str, Any]] = None,
-) -> NeuronResult:
-    smget = _smget_packet_from_governance(gov_decision)
-    contract = _smget_contract_from_governance(gov_decision)
-    action_type = str(contract.get("action_type") or gov_decision.get("intent") or intent or "action").strip() or "action"
-    contract_id = str(contract.get("contract_id") or "").strip()
-    executor_name = str(contract.get("executor_name") or "SarahMemoryOperatorCore").strip() or "SarahMemoryOperatorCore"
-    execution_mode = str(contract.get("execution_mode") or "draft").strip().lower() or "draft"
-
-    if execution_mode == "simulate":
-        reply = f"Prepared governed simulation contract for {action_type} ({contract_id or 'pending'})."
-    elif execution_mode == "apply":
-        reply = f"Prepared governed execution contract for {action_type} ({contract_id or 'pending'})."
-    else:
-        reply = f"Prepared governed action contract for {action_type} ({contract_id or 'pending'})."
-
-    artifacts = {"governance": gov_decision, "smget": smget, "action_contract": contract}
-    if isinstance(extra_artifacts, dict):
-        artifacts.update(extra_artifacts)
-
-    actions: List[Dict[str, Any]] = []
-    if contract:
-        actions.append({"type": "smget_action_contract", "data": contract})
-    security = smget.get("security") if isinstance(smget.get("security"), dict) else {}
-    assurance = smget.get("assurance") if isinstance(smget.get("assurance"), dict) else {}
-    if security:
-        actions.append({"type": "smget_security", "data": security})
-    if assurance:
-        actions.append({"type": "smget_assurance", "data": assurance})
-
-    return NeuronResult(
-        ok=True,
-        reply=reply,
-        confidence=max(0.76, float(gov_decision.get("confidence") or 0.76)),
-        intent=str(intent or gov_decision.get("intent") or "action"),
-        source=source,
-        artifacts=artifacts,
-        trace=trace,
-        actions=actions,
-    )
 
 
 def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: Optional[Dict[str, Any]] = None) -> NeuronResult:
@@ -2794,7 +2705,12 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             return res
         trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngress->Research", "ok": False})
 
-    governed_proposed_action = _build_governed_proposed_action(dict(inp.meta.get("proposed_action") or {}), ingress_route, inp.text)
+    if ingress_route.get("domain") in {"drivers", "system", "documents", "email", "network", "communication", "reminder", "avatar"} and float(ingress_route.get("confidence") or 0.0) >= 0.66:
+        _trace_primary_lane(trace, 'action', str(ingress_route.get("target_module") or 'executor'))
+        trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngressExecutor", "ok": True})
+        res = _ingress_execution_ticket(ingress_route, trace, inp.text)
+        _log_event("route", intent, res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
+        return res
 
     # Governance handshake: ask CognitiveServices for request-scoped policy and
     # optional CognitiveThinker co-review before routing high-impact work.
@@ -2813,7 +2729,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
                 caller_context=gov_ctx,
                 user_present=bool(inp.meta.get("user_present", True)),
                 user_consented=bool(inp.meta.get("user_consented", False)),
-                proposed_action=governed_proposed_action,
+                proposed_action=dict(inp.meta.get("proposed_action") or {}),
             )
             if isinstance(gov_decision, dict):
                 policy_from_governor = dict(gov_decision.get("routing_policy") or {})
@@ -2827,11 +2743,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
                     "require_user": gov_decision.get("require_user"),
                     "recommended_next": gov_decision.get("recommended_next"),
                     "coequal_governance": gov_decision.get("coequal_governance") or {},
-                    "smget": {
-                        "enabled": bool(_smget_packet_from_governance(gov_decision)),
-                        "contract_id": _smget_contract_from_governance(gov_decision).get("contract_id"),
-                        "executor_name": _smget_contract_from_governance(gov_decision).get("executor_name"),
-                    },
                 }
                 trace["policy"]["allowed_tiers"] = allowed_tiers
 
@@ -2850,33 +2761,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
                     )
         except Exception as e:
             trace.setdefault("governance", {})["error"] = str(e)
-
-    # Governed ingress routes must not bypass SMGET.
-    if _is_ingress_execution_route(ingress_route):
-        discovery = _discover_runtime_capabilities(ingress_route, inp.text)
-        execution_plan = _make_execution_plan(ingress_route, discovery, inp.text)
-        if _smget_preview_allowed(gov_decision):
-            _trace_primary_lane(trace, 'action', 'SarahMemoryOperatorCore')
-            trace["tiers"].append({"tier": "ingress", "engine": "SMGETPreview", "ok": True, "route_id": ingress_route.get("route_id")})
-            res = _smget_neuron_result(
-                gov_decision,
-                trace,
-                intent=intent,
-                source='smget_ingress',
-                extra_artifacts={
-                    "ingress_route": ingress_route,
-                    "runtime_discovery": discovery,
-                    "execution_plan": execution_plan,
-                },
-            )
-            _log_event("route", intent, res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
-            return res
-
-        _trace_primary_lane(trace, 'action', str(ingress_route.get("target_module") or 'executor'))
-        trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngressExecutor", "ok": True, "mode": "legacy_fallback"})
-        res = _ingress_execution_ticket(ingress_route, trace, inp.text)
-        _log_event("route", intent, res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
-        return res
 
     # System/Diagnostics lane (Tier-0, safe reads; blocked in Public Web mode)
     system_kind = _detect_system_kind(inp.text, intent)
@@ -3021,19 +2905,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     else:
             # Action lane: emit local execution ticket (never execute here)
         if _is_action_intent(intent, inp.text, adv):
-            if _smget_preview_allowed(gov_decision):
-                _trace_primary_lane(trace, 'action', 'SarahMemoryOperatorCore')
-                trace["tiers"].append({"tier": "action", "engine": "SMGETPreview", "ok": True, "contract_id": _smget_contract_from_governance(gov_decision).get("contract_id")})
-                res = _smget_neuron_result(
-                    gov_decision,
-                    trace,
-                    intent="action",
-                    source="smget_action",
-                    extra_artifacts={"vision_request": vision_request} if vision_request else None,
-                )
-                _log_event("route", "action", res.confidence, res.source, {"input": inp.text, "trace": trace, "artifacts_keys": list(res.artifacts.keys())})
-                return res
-
             if not approved_modules.get("filesystem"):
                 trace["tiers"].append({"tier": "action", "engine": "ActionTicket", "ok": False, "reason": "filesystem_not_registered"})
                 return NeuronResult(

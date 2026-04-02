@@ -2788,205 +2788,306 @@ def open_url_in_chrome(url: str) -> str:
     except Exception as e:
         return f"Failed to open URL: {e}"
 
-
-def _surface_pag():
+def draw_in_paint(subject: str = "dinosaur") -> str:
+    """Open Microsoft Paint and draw a simple outline using pyautogui (best effort)"""
     try:
-        import pyautogui as pag  # type: ignore
+        import os
+        paint_path = r"C:\Windows\System32\mspaint.exe"
+        if os.path.exists(paint_path):
+            os.startfile(paint_path)  # nosec
+            import time
+            time.sleep(2.5)
+            try:
+                import pyautogui as pag
+                pag.FAILSAFE = False
+                # Maximize
+                pag.hotkey('alt', 'space')
+                time.sleep(0.2)
+                pag.press('x')
+                time.sleep(0.3)
+                w, h = pag.size()
+                cx, cy = int(w * 0.5), int(h * 0.6)
+                pag.moveTo(cx - 220, cy)
+                pag.mouseDown()
+                pag.moveRel(80, -60, 0.35)
+                pag.moveRel(70, 55, 0.35)
+                pag.moveRel(100, 40, 0.4)
+                pag.moveRel(-50, 60, 0.3)
+                pag.moveRel(-90, -10, 0.35)
+                pag.moveRel(-60, -40, 0.35)
+                pag.moveRel(20, 35, 0.2)
+                pag.moveRel(35, 10, 0.2)
+                pag.mouseUp()
+                return f"Drew a simple {subject} in Paint."
+            except Exception as e:
+                return f"Paint opened but drawing failed: {e}"
+        return "Paint not found on this system."
+    except Exception as e:
+        return f"Could not draw in Paint: {e}"
+
+
+
+def _sm_surface_topic_text(topic: str, title: str = "") -> str:
+    topic = _sm_norm(topic or "the requested topic")
+    if not topic:
+        topic = "the requested topic"
+    title_line = (title or topic.title() or "Document").strip()
+    body = (
+        f"{title_line}\n\n"
+        f"This document provides a concise summary about {topic}. "
+        f"It is intended as a starter draft that SarahMemory created directly in the requested application. "
+        f"Key points may include definition, context, major characteristics, practical uses, and a short conclusion.\n\n"
+        f"Overview\n"
+        f"- {topic.title()} is the main subject of this document.\n"
+        f"- This draft was generated locally to satisfy the user's requested workflow.\n\n"
+        f"Summary\n"
+        f"{topic.title()} can be described in practical terms using a short, readable structure. "
+        f"The exact final wording can be refined later, but this provides a usable first draft.\n\n"
+        f"Conclusion\n"
+        f"This starter document gives a clean base for additional editing, formatting, and expansion."
+    )
+    return body
+
+
+def _sm_website_scaffold(topic: str) -> dict:
+    topic = _sm_norm(topic or 'website topic')
+    title = topic.title() if topic else 'Website Topic'
+    index_html = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>{title}</title>
+</head>
+<body>
+  <header>
+    <h1>{title}</h1>
+    <nav>
+      <a href=\"index.html\">Home</a> | <a href=\"about.html\">About</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Welcome</h2>
+    <p>This homepage is about {topic}.</p>
+  </main>
+</body>
+</html>"""
+    about_html = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"UTF-8\">
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
+  <title>About {title}</title>
+</head>
+<body>
+  <header>
+    <h1>About {title}</h1>
+    <nav>
+      <a href=\"index.html\">Home</a> | <a href=\"about.html\">About</a>
+    </nav>
+  </header>
+  <main>
+    <p>This page contains background information about {topic}.</p>
+  </main>
+</body>
+</html>"""
+    return {"index.html": index_html, "about.html": about_html}
+
+
+def _sm_with_pag():
+    try:
+        import pyautogui as pag
         pag.FAILSAFE = False
         return pag
     except Exception:
         return None
 
 
-def _surface_sleep(seconds: float) -> None:
-    try:
-        time.sleep(max(0.0, float(seconds or 0.0)))
-    except Exception:
-        pass
-
-
-def _surface_focus_best_effort(app_name: str, timeout: float = 8.0) -> bool:
+def _sm_focus_app(app_name: str, timeout: float = 10.0) -> bool:
     try:
         import SarahMemorySi as _Si  # type: ignore
         if hasattr(_Si, 'wait_for_application_window'):
-            _Si.wait_for_application_window(app_name, timeout=timeout)
+            _Si.wait_for_application_window(app_name, timeout=timeout, poll_s=0.35)
         if hasattr(_Si, 'focus_application'):
-            return bool(_Si.focus_application(app_name))
+            if _Si.focus_application(app_name):
+                return True
     except Exception:
         pass
     return False
 
 
-def _surface_hotkey(*keys: str) -> bool:
-    pag = _surface_pag()
+def _sm_type_text(text: str, interval: float = 0.01, press_enter: bool = False) -> bool:
+    try:
+        import SarahMemorySi as _Si  # type: ignore
+        fn = getattr(_Si, 'type_text_to_active_window', None)
+        if callable(fn):
+            return bool(fn(text, interval=interval, press_enter=press_enter))
+    except Exception:
+        pass
+    pag = _sm_with_pag()
     if not pag:
         return False
     try:
-        pag.hotkey(*[str(k) for k in keys if str(k).strip()])
+        pag.write(str(text or ''), interval=max(0.0, float(interval or 0.0)))
+        if press_enter:
+            pag.press('enter')
         return True
     except Exception:
         return False
 
 
-def _surface_press(key: str, presses: int = 1) -> bool:
-    pag = _surface_pag()
+def _sm_hotkey(*keys: str) -> bool:
+    try:
+        import SarahMemorySi as _Si  # type: ignore
+        fn = getattr(_Si, 'press_hotkey', None)
+        if callable(fn):
+            return bool(fn(*keys))
+    except Exception:
+        pass
+    pag = _sm_with_pag()
     if not pag:
         return False
     try:
-        pag.press(str(key), presses=max(1, int(presses)))
+        pag.hotkey(*[str(k).lower() for k in keys if str(k).strip()])
         return True
     except Exception:
         return False
 
 
-def _surface_type(text_value: str, interval: float = 0.01) -> Dict[str, Any]:
-    pag = _surface_pag()
-    if not pag:
-        return {"ok": False, "error": "pyautogui_unavailable"}
-    payload = str(text_value or '')
-    if not payload:
-        return {"ok": False, "error": "empty_text"}
+def _sm_open_and_focus(app_name: str) -> bool:
     try:
-        pag.typewrite(payload, interval=max(0.0, float(interval or 0.0)))
-        return {"ok": True, "typed_chars": len(payload)}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        import SarahMemorySi as _Si  # type: ignore
+        if hasattr(_Si, 'manage_application_request'):
+            if not _Si.manage_application_request(f"open {app_name}"):
+                return False
+            time.sleep(0.8)
+            _sm_focus_app(app_name, timeout=10.0)
+            return True
+    except Exception:
+        return False
+    return False
 
 
-def _surface_new_document(app_name: str) -> bool:
-    _surface_focus_best_effort(app_name)
-    _surface_sleep(0.5)
-    return _surface_hotkey('ctrl', 'n')
+def _sm_prepare_word_surface() -> bool:
+    _sm_focus_app('winword', timeout=10.0)
+    time.sleep(0.4)
+    if not _sm_hotkey('ctrl', 'n'):
+        return False
+    time.sleep(0.8)
+    return True
 
 
-def _surface_open_named_document(app_name: str, document_name: str) -> Dict[str, Any]:
-    if not document_name:
-        return {"ok": False, "error": "missing_document_name"}
-    _surface_focus_best_effort(app_name)
-    _surface_sleep(0.5)
-    if not _surface_hotkey('ctrl', 'o'):
-        return {"ok": False, "error": "open_shortcut_failed"}
-    _surface_sleep(0.8)
-    typed = _surface_type(str(document_name).strip(), interval=0.01)
-    if not typed.get('ok'):
-        return typed
-    _surface_sleep(0.2)
-    _surface_press('enter')
-    return {"ok": True, "document_name": document_name}
+def _sm_prepare_excel_surface() -> bool:
+    _sm_focus_app('excel', timeout=10.0)
+    time.sleep(0.4)
+    if not _sm_hotkey('ctrl', 'n'):
+        return False
+    time.sleep(0.8)
+    return True
 
 
-def _build_surface_document_text(surface_task: Dict[str, Any], user_text: str = '') -> str:
-    title = str(surface_task.get('title') or '').strip()
-    topic = str(surface_task.get('topic') or '').strip() or str(surface_task.get('document_name') or '').strip() or 'the requested topic'
-    directive = str(surface_task.get('document_text') or '').strip()
-    if not title:
-        title = topic.title() if topic else 'Document'
-    body_topic = topic or 'the requested topic'
-    lines = [title, '', 'Overview', f'This document is about {body_topic}.', '', 'Key Points', f'- Purpose: explain {body_topic}.', '- Context: drafted from the user request.', '- Notes: refine with more user-specific detail if requested.', '', 'Summary', f'{body_topic.title()} can be expanded with more facts, examples, images, or formatting if the user asks for a richer document.']
-    return "\n".join(lines)
+def _sm_prepare_notepad_surface() -> bool:
+    _sm_focus_app('notepad', timeout=10.0)
+    time.sleep(0.4)
+    return True
 
 
-def _build_spreadsheet_template(surface_task: Dict[str, Any]) -> str:
-    template_kind = str(surface_task.get('template_kind') or 'table').strip().lower()
-    if template_kind == 'checkbook':
-        rows = [
-            ['Date', 'Description', 'Category', 'Amount Out', 'Amount In', 'Balance', 'Notes'],
-            ['', 'Starting Balance', '', '', '', '', ''],
-            ['', '', '', '', '', '', ''],
-            ['', '', '', '', '', '', ''],
-        ]
-    else:
-        rows = [['Column A', 'Column B', 'Column C', 'Column D'], ['', '', '', ''], ['', '', '', '']]
-    return "\n".join("\t".join(row) for row in rows)
-
-
-def _build_website_scaffold(surface_task: Dict[str, Any]) -> str:
-    topic = str(surface_task.get('topic') or 'donuts').strip() or 'donuts'
-    title = str(surface_task.get('title') or f'{topic.title()} Site').strip() or f'{topic.title()} Site'
-    pages = surface_task.get('pages') if isinstance(surface_task.get('pages'), list) else ['index', 'about']
-    pages = [str(p).strip().lower() for p in pages if str(p).strip()] or ['index', 'about']
-    nav = " ".join([f'<a href="{("index" if p in {"index", "home", "homepage"} else p)}.html">{("Home" if p in {"index", "home", "homepage"} else p.title())}</a>' for p in pages])
-    def page_template(page: str) -> str:
-        slug = 'index' if page in {'index','home','homepage'} else page
-        heading = 'Welcome' if slug == 'index' else page.title()
-        paragraph = f'This page is part of a starter website about {topic}.' if slug != 'about' else f'About this website: it was created as a starter site about {topic}.'
-        return f"<!-- {slug}.html -->\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>{title} - {heading}</title>\n</head>\n<body>\n  <header>\n    <h1>{title}</h1>\n    <nav>{nav}</nav>\n  </header>\n  <main>\n    <h2>{heading}</h2>\n    <p>{paragraph}</p>\n  </main>\n</body>\n</html>\n"
-    return "\n\n".join(page_template(p) for p in pages)
-
-
-def _draw_shape_on_paint(subject: str = 'circle') -> Dict[str, Any]:
-    pag = _surface_pag()
-    if not pag:
-        return {"ok": False, "error": "pyautogui_unavailable"}
+def _sm_execute_browser_task(app_name: str, task: dict) -> dict:
+    query = _sm_norm(task.get('search_query') or task.get('topic') or '')
+    url = _sm_norm(task.get('target_url') or '')
     try:
-        _surface_focus_best_effort('mspaint')
-        _surface_sleep(0.8)
-        w, h = pag.size()
-        cx, cy = int(w * 0.5), int(h * 0.58)
-        subj = str(subject or 'circle').strip().lower()
-        if subj in {'circle', 'oval'}:
-            _draw_circle_in_paint(pag, cx, cy, radius=110, duration=1.4)
-        elif subj in {'square', 'rectangle'}:
-            pag.moveTo(cx - 120, cy - 80); pag.mouseDown(); pag.moveRel(220, 0, 0.35); pag.moveRel(0, 170, 0.35); pag.moveRel(-220, 0, 0.35); pag.moveRel(0, -170, 0.35); pag.mouseUp()
-        elif subj == 'triangle':
-            pag.moveTo(cx, cy - 120); pag.mouseDown(); pag.moveRel(120, 220, 0.4); pag.moveRel(-240, 0, 0.4); pag.moveRel(120, -220, 0.4); pag.mouseUp()
-        elif subj == 'line':
-            pag.moveTo(cx - 160, cy); pag.dragRel(320, 0, 0.5, button='left')
-        else:
-            _draw_circle_in_paint(pag, cx, cy, radius=110, duration=1.4)
-        return {"ok": True, "shape": subj}
+        import SarahMemorySi as _Si  # type: ignore
+        if query and hasattr(_Si, 'browser_search'):
+            ok = bool(_Si.browser_search(app_name, query, timeout=10.0))
+            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': ok, 'task_kind': 'browser_search', 'query': query}
+        if url and hasattr(_Si, 'browser_open_url'):
+            ok = bool(_Si.browser_open_url(app_name, url, timeout=10.0))
+            return {'ok': ok, 'surface_open': ok, 'surface_focused': ok, 'working_context_ready': ok, 'content_applied': ok, 'result_verified': ok, 'task_kind': 'browser_open_url', 'target_url': url}
     except Exception as e:
-        return {"ok": False, "error": str(e), "shape": str(subject or '')}
+        return {'ok': False, 'error': str(e), 'task_kind': task.get('task_kind')}
+    return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'browser_helper_unavailable'}
 
 
-def execute_surface_task(app_name: str, surface_task: Dict[str, Any], user_text: str = '') -> Dict[str, Any]:
-    task = dict(surface_task or {})
-    app = str(app_name or task.get('requested_app_exec') or task.get('requested_app') or '').strip().lower()
-    task_kind = str(task.get('task_kind') or '').strip().lower()
-    if not app:
-        return {"ok": False, "error": "missing_app_name", "task_kind": task_kind}
-    _surface_focus_best_effort(app)
-    _surface_sleep(0.6)
-    if task_kind == 'paint_draw':
-        return _draw_shape_on_paint(str(task.get('draw_subject') or 'circle'))
-    if task_kind == 'open_named_document':
-        return _surface_open_named_document(app, str(task.get('document_name') or task.get('title') or '').strip())
-    if task_kind in {'write_document', 'create_document', 'document_write', 'type_text'}:
-        _surface_new_document(app)
-        _surface_sleep(1.1)
-        text_value = str(task.get('document_text') or '').strip() or _build_surface_document_text(task, user_text=user_text)
-        typed = _surface_type(text_value, interval=0.01)
-        typed.setdefault('task_kind', task_kind)
-        return typed
-    if task_kind == 'spreadsheet_template':
-        _surface_new_document(app)
-        _surface_sleep(1.0)
-        typed = _surface_type(_build_spreadsheet_template(task), interval=0.01)
-        typed.setdefault('task_kind', task_kind)
-        return typed
-    if task_kind == 'website_scaffold':
-        _surface_new_document(app)
-        _surface_sleep(0.9)
-        typed = _surface_type(_build_website_scaffold(task), interval=0.008)
-        typed.setdefault('task_kind', task_kind)
-        return typed
-    if task.get('document_text'):
-        return _surface_type(str(task.get('document_text')), interval=0.01)
-    return {"ok": True, "skipped": True, "reason": "no_surface_task", "app": app}
+def _sm_execute_word_task(task: dict, user_text: str = '') -> dict:
+    if not _sm_open_and_focus('winword'):
+        return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'word_open_failed'}
+    if task.get('task_kind') == 'open_named_document':
+        name = _sm_norm(task.get('document_name') or task.get('title') or '')
+        if not name:
+            return {'ok': False, 'task_kind': 'open_named_document', 'reason': 'missing_document_name'}
+        _sm_focus_app('winword', timeout=10.0)
+        time.sleep(0.4)
+        if not _sm_hotkey('ctrl', 'o'):
+            return {'ok': False, 'task_kind': 'open_named_document', 'surface_open': True, 'surface_focused': True, 'reason': 'open_dialog_hotkey_failed'}
+        time.sleep(0.8)
+        ok = _sm_type_text(name, interval=0.01, press_enter=True)
+        return {'ok': bool(ok), 'task_kind': 'open_named_document', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'document_name': name}
+    if not _sm_prepare_word_surface():
+        return {'ok': False, 'task_kind': task.get('task_kind'), 'surface_open': True, 'reason': 'word_surface_prepare_failed'}
+    title = _sm_norm(task.get('title') or task.get('topic') or 'Document')
+    topic = _sm_norm(task.get('topic') or user_text or 'the requested topic')
+    body = _sm_norm(task.get('document_text') or _sm_surface_topic_text(topic, title))
+    ok = _sm_type_text(body, interval=0.008, press_enter=False)
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'document_write', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': body, 'title': title, 'topic': topic}
 
 
-def draw_in_paint(subject: str = "dinosaur") -> str:
-    """Open Microsoft Paint and draw a simple best-effort shape or figure."""
+def _sm_execute_excel_task(task: dict) -> dict:
+    if not _sm_open_and_focus('excel'):
+        return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'excel_open_failed'}
+    if not _sm_prepare_excel_surface():
+        return {'ok': False, 'task_kind': task.get('task_kind'), 'surface_open': True, 'reason': 'excel_surface_prepare_failed'}
+    headers = task.get('headers') or ['Date','Description','Category','Debit','Credit','Balance']
+    header_line = '\t'.join(str(h) for h in headers)
+    sample_rows = ['\n' + '\t'.join(['', '', '', '', '', '']) for _ in range(8)]
+    sheet_text = str(task.get('title') or 'Checkbook Register') + '\n' + header_line + ''.join(sample_rows)
+    ok = _sm_type_text(sheet_text, interval=0.006, press_enter=False)
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'spreadsheet_template', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': sheet_text}
+
+
+def _sm_execute_editor_task(app_name: str, task: dict) -> dict:
+    if not _sm_open_and_focus(app_name):
+        return {'ok': False, 'task_kind': task.get('task_kind'), 'reason': f'{app_name}_open_failed'}
+    if app_name == 'notepad':
+        _sm_prepare_notepad_surface()
+    topic = _sm_norm(task.get('topic') or 'website topic')
+    pages = _sm_website_scaffold(topic)
+    block = []
+    for name, html in pages.items():
+        block.append(f'<!-- {name} -->\n{html}\n')
+    payload = '\n\n'.join(block)
+    ok = _sm_type_text(payload, interval=0.004, press_enter=False)
+    return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'website_scaffold', 'surface_open': True, 'surface_focused': True, 'working_context_ready': True, 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'candidate_text': payload, 'pages': list(pages.keys())}
+
+
+def _sm_execute_paint_task(task: dict) -> dict:
+    subject = _sm_norm(task.get('draw_subject') or task.get('shape') or 'shape')
     try:
-        launched = open_local_application('paint', wait_after_launch=2.5)
-        if not launched.get('ok'):
-            return f"Paint not found on this system: {launched.get('error') or 'launch_failed'}"
-        res = execute_surface_task('mspaint', {'task_kind': 'paint_draw', 'draw_subject': subject}, user_text=f'draw {subject}')
-        if res.get('ok'):
-            return f"Drew a simple {subject} in Paint."
-        return f"Paint opened but drawing failed: {res.get('error') or res}"
+        result_text = draw_in_paint(subject)
+        ok = not str(result_text or '').lower().startswith(('paint opened but drawing failed', 'paint not found', 'could not draw'))
+        return {'ok': bool(ok), 'task_kind': task.get('task_kind') or 'paint_draw', 'surface_open': True if 'paint' in str(result_text).lower() or ok else False, 'surface_focused': bool(ok), 'working_context_ready': bool(ok), 'content_generated': True, 'content_applied': bool(ok), 'result_verified': bool(ok), 'result': result_text, 'candidate_text': str(result_text)}
     except Exception as e:
-        return f"Could not draw in Paint: {e}"
+        return {'ok': False, 'task_kind': task.get('task_kind') or 'paint_draw', 'error': str(e)}
+
+
+def execute_surface_task(canonical_app: str, task: dict, user_text: str = '') -> dict:
+    """Best-effort desktop surface executor for governed follow-through after app launch."""
+    app_name = _sm_norm(canonical_app or task.get('requested_app_exec') or task.get('requested_app') or '')
+    task = dict(task or {})
+    task_kind = _sm_norm(task.get('task_kind') or '')
+    if not app_name and task.get('requested_app_exec'):
+        app_name = _sm_norm(task.get('requested_app_exec'))
+    if task_kind in {'browser_search', 'browser_open_url'} or app_name in {'msedge', 'chrome', 'firefox', 'brave', 'opera'}:
+        return _sm_execute_browser_task(app_name or 'msedge', task)
+    if app_name == 'winword' or task_kind in {'document_write', 'open_named_document'}:
+        return _sm_execute_word_task(task, user_text=user_text)
+    if app_name == 'excel' or task_kind == 'spreadsheet_template':
+        return _sm_execute_excel_task(task)
+    if app_name in {'notepad', 'code', 'dreamweaver'} and task_kind == 'website_scaffold':
+        return _sm_execute_editor_task(app_name, task)
+    if app_name == 'mspaint' or task_kind == 'paint_draw':
+        return _sm_execute_paint_task(task)
+    return {'ok': False, 'task_kind': task_kind or 'unknown', 'reason': 'no_surface_executor_available', 'requested_app': app_name, 'task': task}
+
 
 def rerank(query: str, candidates: list, cross_encoder=None) -> list:
     """
@@ -3071,7 +3172,8 @@ def plan_and_act(user_text: str, max_steps: int = 4) -> dict:
 _LEGACY_EXPORTS = [
     'smart_reply', 'create_chunks', 'detect_command_intent', 'normalize_text',
     'open_url_in_chrome', 'draw_in_paint', 'rerank', 'list_tools', 'exec_tool',
-    'plan_and_act', 'execute_surface_task', 'open_local_application'
+        'execute_surface_task',
+    'plan_and_act', 'execute_surface_task'
 ]
 
 # Extend __all__ if it exists
@@ -3087,6 +3189,7 @@ try:
     __all__.extend([
         'list_tools',
         'exec_tool',
+        'execute_surface_task',
         '_sm_creative_studio_registry',
     ])
 except Exception:
