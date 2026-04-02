@@ -927,7 +927,7 @@ Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_i
 
 ---
 
-![SarahMemory Meme](documents/a27bbca2-ed66-4392-a43b-e17958cfe76f.jpg)
+
 
 
 
