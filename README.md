@@ -92,6 +92,12 @@ A next‑generation AI Operating System capable of:
 - LAN mesh + offload  
 - Modular architecture  
 
+### **DESIGN CONCEPT**
+- The FrontEnd is just for visualization interaction
+- Users should be able to use thier own custom frontend and UI
+- SarahMemory Mainly focus on backend operations, universal and cross-platform operations,
+- SarahMemory is more of the Foundation, Kernal, Framework, Engine, behind future AiOS systems.
+
 ---
 # **🖥️ UI Previews**
 
