@@ -10,7 +10,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | April 02, 2026 |
+| **Last Update** | April 08, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -880,6 +880,25 @@ Five New Files added to Core System are as follow:
 - `SarahMemoryTrustRegistry.py`
 
 ![SarahMemory SMGET](documents/SMGET.png)
+---
+## **📅 April 1st-8th, 2026 — Bootup and Runtime Optimization Update **
+Today, 5 core SarahMemory AiOS files were updated to improve startup speed, reduce blocking behavior during boot, and stabilize the runtime path on legacy hardware.
+### Files Modified
+- `SarahMemoryMain.py`
+- `SarahMemoryInitialization.py`
+- `SarahMemoryIntegration.py`
+- `SarahMemoryOptimization.py`
+- `SarahMemoryHi.py`
+
+### Improvements Added
+- Reduced boot-path overhead by tightening the startup flow between `Main`, `Initialization`, and `Integration`
+- Improved telemetry behavior so system monitoring no longer adds unnecessary startup delay
+- Reduced API and runtime waiting overhead during early boot
+- Improved startup stability by correcting blocking and inconsistent initialization paths
+- Fixed the major Phase 7 bottleneck by moving local dataset embedding off the critical boot path so the system can continue to Phase 8 much faster
+- Preserved backward compatibility while making the boot sequence more responsive on older non-NPU hardware
+### Result
+SarahMemory AiOS now reaches the integration/menu stage faster, with less blocking during startup, better runtime coordination, and improved boot reliability on legacy systems.
 
 ---
 # **📜 License**
