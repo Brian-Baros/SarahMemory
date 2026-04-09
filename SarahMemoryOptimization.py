@@ -153,6 +153,46 @@ _adaptive_thresholds = {
 _performance_history = []
 _max_history_size = 100
 
+# =============================================================================
+# RUNTIME PROFILE HELPERS - v8.0 Hotfix
+# =============================================================================
+_RUNTIME_PHASE = {"phase": "boot", "since": time.time(), "reason": "module_import"}
+_RESOURCE_CACHE = {"ts": 0.0, "data": None}
+_RESOURCE_CACHE_TTL_SECONDS = float(getattr(config, "OPT_RESOURCE_CACHE_TTL_SECONDS", 1.5) or 1.5)
+
+def set_runtime_phase(phase: str, reason: str = "") -> Dict[str, Any]:
+    try:
+        _RUNTIME_PHASE["phase"] = str(phase or "interactive").strip().lower() or "interactive"
+        _RUNTIME_PHASE["since"] = time.time()
+        _RUNTIME_PHASE["reason"] = str(reason or "")
+    except Exception:
+        pass
+    return dict(_RUNTIME_PHASE)
+
+def get_runtime_phase() -> Dict[str, Any]:
+    return dict(_RUNTIME_PHASE)
+
+def get_startup_profile(force_refresh: bool = False) -> Dict[str, Any]:
+    logical = psutil.cpu_count(logical=True) or 1
+    vm = psutil.virtual_memory()
+    total_gb = float(vm.total) / (1024 ** 3)
+    tier = "conservative"
+    if logical >= 8 and total_gb >= 16.0:
+        tier = "balanced"
+    return {
+        "tier": tier,
+        "defer_remote_sync": True,
+        "defer_vector_warmup": True,
+        "api_wait_seconds": 4.0 if tier == "conservative" else 5.0,
+        "api_poll_interval": 0.25 if tier == "conservative" else 0.20,
+    }
+
+def mark_task_completion(task_name: str) -> None:
+    return None
+
+def stop_optimization_monitor() -> None:
+    return None
+
 
 # =============================================================================
 # SARAH MEMORY PARTITIONING (Cognitive-Role Partitions) - v8.0.0
@@ -503,58 +543,46 @@ def log_optimization_event(event: str, details: str) -> None:
 # =============================================================================
 # RESOURCE MONITORING - v8.0 Enhanced
 # =============================================================================
-def monitor_system_resources() -> Dict[str, Union[float, str]]:
+def monitor_system_resources(force_refresh: bool = False) -> Dict[str, Union[float, str]]:
     """
-    Monitor comprehensive system resource usage.
-    v8.0: Enhanced with network monitoring and error handling.
-
-    Returns:
-        Dictionary containing resource usage metrics
+    Monitor comprehensive system resource usage with short-lived caching so
+    optimization does not add a 1-second stall on every call.
     """
     try:
-        # CPU usage
-        cpu_usage = psutil.cpu_percent(interval=1)
+        now = time.time()
+        cached = _RESOURCE_CACHE.get("data")
+        if (not force_refresh) and isinstance(cached, dict) and (now - float(_RESOURCE_CACHE.get("ts") or 0.0)) <= _RESOURCE_CACHE_TTL_SECONDS:
+            return dict(cached)
 
-        # Memory usage
+        cpu_usage = psutil.cpu_percent(interval=0.0)
         memory = psutil.virtual_memory()
-        memory_usage = memory.percent
-
-        # Disk usage
         disk = psutil.disk_usage(os.path.abspath(os.sep))
-        disk_usage = disk.percent
-
-        # Network usage
         net_io = psutil.net_io_counters()
-        network_usage_mb = round((net_io.bytes_sent + net_io.bytes_recv) / (1024 * 1024), 2)
-
-        # Process count
         process_count = len(psutil.pids())
 
-        # Build resource usage dict
         resource_usage = {
             "cpu": round(cpu_usage, 2),
-            "memory": round(memory_usage, 2),
-            "disk": round(disk_usage, 2),
-            "network_mb": network_usage_mb,
+            "memory": round(memory.percent, 2),
+            "disk": round(disk.percent, 2),
+            "network_mb": round((net_io.bytes_sent + net_io.bytes_recv) / (1024 * 1024), 2),
             "process_count": process_count,
             "timestamp": datetime.now().isoformat(),
-            "version": "8.0.0"
+            "version": "8.0.0",
         }
 
-        # Add to performance history
+        _RESOURCE_CACHE["ts"] = now
+        _RESOURCE_CACHE["data"] = dict(resource_usage)
+
         _performance_history.append(resource_usage.copy())
         if len(_performance_history) > _max_history_size:
             _performance_history.pop(0)
 
-        logger.debug(f"[v8.0] Resources: CPU={cpu_usage}% MEM={memory_usage}% DISK={disk_usage}%")
-        log_optimization_event("Monitor Resources", f"CPU: {cpu_usage}%, MEM: {memory_usage}%, DISK: {disk_usage}%")
-
+        logger.debug(f"[v8.0] Resources: CPU={cpu_usage}% MEM={memory.percent}% DISK={disk.percent}%")
         return resource_usage
 
     except Exception as e:
         error_msg = f"Error monitoring resources: {e}"
         logger.error(f"[v8.0] {error_msg}")
-        log_optimization_event("Monitor Resources Error", error_msg)
         return {"error": str(e), "version": "8.0.0"}
 
 # =============================================================================

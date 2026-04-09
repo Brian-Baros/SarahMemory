@@ -57,8 +57,10 @@ import sys
 import json
 import platform
 import shutil
+import threading
 from datetime import datetime
 from SarahMemoryGlobals import run_async
+import SarahMemoryGlobals as SarahMemoryGlobals
 
 # =============================================================================
 # LOGGER SETUP - v8.0 Enhanced
@@ -74,6 +76,10 @@ if not logger.hasHandlers():
 # GLOBAL STATE
 # =============================================================================
 shutdown_requested = False
+
+# Startup background task control
+_STARTUP_BACKGROUND_THREADS = {}
+_STARTUP_BACKGROUND_LOCK = threading.Lock()
 
 # =============================================================================
 # v8.0 ENHANCED NETWORK HUB STATUS CHECK
@@ -144,6 +150,63 @@ def print_status_line(task, status="✓", details=""):
             print(f"  {status} {task}")
     except Exception:
         print(f"  {task}")
+
+
+
+def _cfg_bool(name, default=False):
+    """Read a boolean flag from globals or environment without making boot fragile."""
+    try:
+        value = getattr(SarahMemoryGlobals, name, default)
+    except Exception:
+        value = default
+    env_name = f"SARAH_{name}"
+    try:
+        env_val = os.getenv(env_name, None)
+        if env_val is not None and str(env_val).strip() != "":
+            value = env_val
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
+
+
+def _should_defer_dataset_embedding() -> bool:
+    """Fast-boot default: defer dataset embedding unless explicitly forced on."""
+    return not _cfg_bool("BOOT_EAGER_DATASET_EMBEDDING", False)
+
+
+def _background_thread_alive(task_name: str) -> bool:
+    try:
+        thread = _STARTUP_BACKGROUND_THREADS.get(str(task_name or "").strip().lower())
+        return bool(thread is not None and thread.is_alive())
+    except Exception:
+        return False
+
+
+def _start_background_dataset_embedding() -> bool:
+    """Run dataset embedding in one daemon thread so boot can continue to Phase 8 immediately."""
+    task_key = "dataset_embedding"
+    with _STARTUP_BACKGROUND_LOCK:
+        if _background_thread_alive(task_key):
+            return False
+
+        def _worker():
+            started = time.perf_counter()
+            try:
+                logger.info("[v8.0][EMBED] Deferred boot dataset embedding started in background.")
+                embed_local_datasets_on_boot()
+                logger.info("[v8.0][EMBED] Deferred boot dataset embedding completed in %.2f seconds.", time.perf_counter() - started)
+            except Exception as e:
+                logger.warning(f"[v8.0][EMBED] Deferred boot dataset embedding failed: {e}")
+            finally:
+                with _STARTUP_BACKGROUND_LOCK:
+                    _STARTUP_BACKGROUND_THREADS.pop(task_key, None)
+
+        thread = threading.Thread(target=_worker, name="SM_BootDatasetEmbedding", daemon=True)
+        _STARTUP_BACKGROUND_THREADS[task_key] = thread
+        thread.start()
+        return True
 
 
 # =============================================================================
@@ -366,26 +429,35 @@ def run_initial_checks():
             logger.warning(f"[v8.0][DIAG] Diagnostics module import failed: {imerr}")
 
         # =====================================================================
-        # LOCAL DATASET EMBEDDING (Skip in SAFE_MODE)
+        # LOCAL DATASET EMBEDDING (Skip in SAFE_MODE / defer by default)
         # =====================================================================
         print_phase_banner(7, "LOCAL DATASET EMBEDDING")
-        
+
         try:
             if not SAFE_MODE:
                 try:
-                    embed_local_datasets_on_boot()
-                    print_status_line("Dataset Embedding", "✓", "Local datasets embedded")
+                    if _should_defer_dataset_embedding():
+                        started = _start_background_dataset_embedding()
+                        if started:
+                            print_status_line("Dataset Embedding", "⏭", "Deferred to background for fast-boot optimization")
+                            logger.info("[v8.0][EMBED] Local dataset embedding deferred to background for fast boot")
+                        else:
+                            print_status_line("Dataset Embedding", "⏭", "Background embedding already running")
+                    else:
+                        embed_started = time.perf_counter()
+                        embed_local_datasets_on_boot()
+                        print_status_line("Dataset Embedding", "✓", f"Local datasets embedded in {time.perf_counter() - embed_started:.2f}s")
                 except Exception as emb_err:
                     print_status_line("Dataset Embedding", "⚠", "Embedding failed (non-critical)")
                     logger.warning(f"[v8.0][EMBED] Local dataset embedding failed: {emb_err}")
             else:
                 print_status_line("Dataset Embedding", "⏭", "Skipped (SAFE_MODE enabled)")
                 logger.info("[v8.0][EMBED] SAFE_MODE enabled; skipping local dataset embedding.")
-        
+
         except Exception:
             pass
 
-        # =====================================================================
+# =====================================================================
         # B-LEVEL DRIVER READINESS SCAN
         # =====================================================================
         print_phase_banner(8, "B-LEVEL DRIVER READINESS SCAN")
