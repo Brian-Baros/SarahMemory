@@ -3,7 +3,7 @@
 File: SarahMemoryLLM.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-03-01
+Date: 2025-04-09
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -492,40 +492,77 @@ def pip_install_if_needed(package_name: str):
     except Exception as e:
         logger.error("Pip install failed for %s: %s", package_name, e)
 
-def download_hf_model(repo: str, local_dir: str, use_sentence_transformer: bool = False):
+def download_hf_model(
+    repo: str,
+    local_dir: str,
+    use_sentence_transformer: bool = False,
+    progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    category: Optional[str] = None,
+):
     repo = resolve_model_repo(repo)
 
     def inner():
+        snapshot = get_model_install_snapshot(repo)
+        estimated_size_gb = snapshot.get("estimated_size_gb")
+        stop_event = threading.Event()
+        watcher = None
+
         if model_files_valid(local_dir):
             print(f"[✔] {repo} already present.")
+            _emit_progress(progress_callback, event="complete", repo=repo, category=category, progress=1.0, installed=True, local_dir=local_dir, snapshot=snapshot)
             return True
 
         print(f"[→] Downloading {repo} → {local_dir}")
+        _emit_progress(progress_callback, event="start", repo=repo, category=category, progress=0.0, installed=False, local_dir=local_dir, snapshot=snapshot)
 
         if not _policy_check_before_download(repo, local_dir):
+            _emit_progress(progress_callback, event="error", repo=repo, category=category, message="Policy blocked or declined this download.", local_dir=local_dir)
             return False
 
         os.makedirs(local_dir, exist_ok=True)
 
-        if use_sentence_transformer:
-            if SentenceTransformer is None:
-                raise RuntimeError("sentence-transformers not installed.")
-            SentenceTransformer(repo, cache_folder=local_dir)
-        else:
-            if snapshot_download is not None:
-                snapshot_download(repo, local_dir=local_dir, ignore_patterns=["*.md", "*.txt"])
+        try:
+            watcher = threading.Thread(
+                target=_watch_download_progress,
+                args=(local_dir, estimated_size_gb, stop_event, progress_callback),
+                daemon=True,
+            )
+            watcher.start()
+        except Exception:
+            watcher = None
+
+        try:
+            if use_sentence_transformer:
+                if SentenceTransformer is None:
+                    raise RuntimeError("sentence-transformers not installed.")
+                SentenceTransformer(repo, cache_folder=local_dir)
             else:
-                if AutoTokenizer is None or AutoModel is None:
-                    raise RuntimeError("transformers not installed.")
-                AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
-                AutoModel.from_pretrained(repo, cache_dir=local_dir)
+                if snapshot_download is not None:
+                    snapshot_download(repo, local_dir=local_dir, ignore_patterns=["*.md", "*.txt"])
+                else:
+                    if AutoTokenizer is None or AutoModel is None:
+                        raise RuntimeError("transformers not installed.")
+                    AutoTokenizer.from_pretrained(repo, cache_dir=local_dir)
+                    AutoModel.from_pretrained(repo, cache_dir=local_dir)
 
-        if not model_files_valid(local_dir):
-            raise RuntimeError(f"Download completed but validation failed: {repo}")
+            if not model_files_valid(local_dir):
+                raise RuntimeError(f"Download completed but validation failed: {repo}")
 
-        write_model_manifest(local_dir)
-        print(f"[✔] Completed {repo}")
-        return True
+            write_model_manifest(local_dir)
+            stop_event.set()
+            if watcher is not None:
+                watcher.join(timeout=1.0)
+            final_snapshot = get_model_install_snapshot(repo)
+            _emit_progress(progress_callback, event="progress", repo=repo, category=category, progress=1.0, downloaded_bytes=None, total_bytes=None, indeterminate=False)
+            _emit_progress(progress_callback, event="complete", repo=repo, category=category, progress=1.0, installed=True, local_dir=local_dir, snapshot=final_snapshot)
+            print(f"[✔] Completed {repo}")
+            return True
+        except Exception as exc:
+            stop_event.set()
+            if watcher is not None:
+                watcher.join(timeout=1.0)
+            _emit_progress(progress_callback, event="error", repo=repo, category=category, message=str(exc), local_dir=local_dir)
+            raise
 
     return retry(inner)
 
@@ -1068,9 +1105,6 @@ class SarahMemoryHydraModelManager:
 
         if not _policy_check_before_download(repo, target_dir):
             logger.info("[Hydra] policy blocked %s", repo)
-            return False
-        if not pol.get("ok"):
-            logger.info("[Hydra] policy blocked %s: %s", repo, pol.get("reason"))
             return False
 
         # Use HF resumable download; keep portable (no symlinks)

@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-04-09:1940
+Date: 2025-04-09
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -3752,6 +3752,163 @@ def _sm_create_scrollable_frame(parent):
     return canvas, inner_frame
 
 
+def _sm_get_tab_ui_meta():
+    """Friendly tab labels/descriptions for the Settings GUI."""
+    return {
+        "Core": {
+            "title": "Core Runtime Controls",
+            "description": "Main platform behavior, runtime mode, safety posture, and baseline system identity.",
+        },
+        "APIs": {
+            "title": "API Providers",
+            "description": "Turn external providers on or off, choose routing behavior, and control timeouts and API cost posture.",
+        },
+        "Models": {
+            "title": "Model Routing Settings",
+            "description": "Advanced model flags and model-governance settings. Use the Model Manager tab for simple model selection.",
+        },
+        "Research": {
+            "title": "Research & Learning",
+            "description": "Control local, web, and API research behavior, learning passes, and data-ingestion pathways.",
+        },
+        "Vision": {
+            "title": "Vision & Detection",
+            "description": "Visual learning, object detection, camera-side helper features, and related detection options.",
+        },
+        "Voice": {
+            "title": "Voice & Audio",
+            "description": "Speech input, TTS output, microphone timing, speaking behavior, and audio feedback controls.",
+        },
+        "Agent": {
+            "title": "Agent & Autonomy",
+            "description": "Advanced agent behavior, autonomy gating, and AI-side execution controls.",
+        },
+        "Network": {
+            "title": "Network & Sync",
+            "description": "SarahNet, remote sync, ports, peers, FTP, hub settings, and online/offline related connectivity options.",
+        },
+        "GUI": {
+            "title": "GUI & Display",
+            "description": "Desktop and WebUI behavior, visual panels, avatar display, browser surfaces, and interface presentation options.",
+        },
+        "Performance": {
+            "title": "Performance & Limits",
+            "description": "Thresholds, buffers, caches, timers, queue sizes, and runtime performance envelopes.",
+        },
+        "Updates": {
+            "title": "Updates & Backup Schedules",
+            "description": "Updater cadence, backup schedules, self-aware/evolution timing, and maintenance windows.",
+        },
+        "Paths": {
+            "title": "Paths & Directories",
+            "description": "Resolved filesystem locations used by SarahMemory. Review carefully before editing.",
+        },
+        "General": {
+            "title": "General Settings",
+            "description": "Additional settings that do not fall cleanly into another major runtime category.",
+        },
+    }
+
+
+def _sm_pretty_setting_name(key_name: str) -> str:
+    """Convert a CONSTANT_LIKE_NAME into a friendly UI label."""
+    try:
+        raw = str(key_name or "").strip().replace("__", "_")
+        if not raw:
+            return "Setting"
+        parts = [p for p in raw.split("_") if p]
+        pretty_parts = []
+        acronyms = {"AI", "API", "GUI", "TTS", "STT", "CPU", "GPU", "RAM", "FTP", "HTTP", "HTTPS", "UI", "DB", "URL", "TTL", "CSV", "JSON", "SQL", "SSD", "YOLO", "RF", "DETR", "LLM", "CAD", "PLC", "CNC", "LAN", "WAN", "UDP", "TCP", "VRAM"}
+        for part in parts:
+            upper = part.upper()
+            if upper in acronyms:
+                pretty_parts.append(upper)
+            elif part.lower() in ("mb", "gb", "ms", "sec"):
+                pretty_parts.append(part.upper())
+            else:
+                pretty_parts.append(part.capitalize())
+        return " ".join(pretty_parts)
+    except Exception:
+        return str(key_name or "Setting")
+
+
+def _sm_get_setting_help_text(key_name: str, category: str = "", value=None) -> str:
+    """Return a short operator-facing help description for a setting."""
+    key = str(key_name or "").strip().upper()
+    desc_map = {
+        "SAFE_MODE": "Master safety gate. When enabled, heavy or risky runtime behavior is constrained.",
+        "LOCAL_ONLY_MODE": "Keep reasoning and operations local-first and avoid external network/provider use where possible.",
+        "RUN_MODE": "Declares whether the platform is running locally, in cloud mode, or in a test environment.",
+        "DEVICE_PROFILE": "Sets the coarse device performance profile used by several runtime selectors.",
+        "UI_MODE": "Chooses which user interface surface is active: classic, legacy web, or custom web UI.",
+        "ROUTE_MODE": "Select how research and answer routing should prefer Local, Web, API, or Any.",
+        "API_TIMEOUT": "Maximum wait time for provider-backed requests before the runtime treats the call as stalled.",
+        "AI_AGENT_ENABLED": "Main switch for the advanced agent behavior layer.",
+        "WEB_RESEARCH_ENABLED": "Allow web research sources to be used during answer or discovery workflows.",
+        "API_RESEARCH_ENABLED": "Allow external AI/API providers to be consulted during research workflows.",
+        "LOCAL_DATA_ENABLED": "Allow the local datasets and memory stores to participate in answers and recall.",
+        "VOICE_FEEDBACK_ENABLED": "Allow SarahMemory to speak responses back to the user.",
+        "AVATAR_IS_SPEAKING": "Helps prevent mic echo and self-hearing while TTS is actively speaking.",
+        "REMOTE_SYNC_ENABLED": "Allow remote node or hub synchronization services to run when available.",
+        "SARAHNET_ENABLED": "Enable the SarahNet mesh communication layer.",
+        "ENABLE_MINI_BROWSER": "Allow the integrated lightweight browser/panel behavior where supported.",
+        "DEBUG_MODE": "Enable verbose diagnostics and deeper developer-side logging.",
+        "UPDATER_SCHEDULE": "Friendly schedule used by the core updater policy.",
+        "BACKUP_SCHEDULE": "Friendly schedule used for backup workflows.",
+        "EVOLUTION_SCHEDULE": "Friendly schedule for experimental evolution/self-improvement cycles.",
+        "SELFAWARE_SCHEDULE": "Friendly schedule for self-aware monitoring and internal periodic checks.",
+    }
+    if key in desc_map:
+        return desc_map[key]
+
+    lowered = key.lower()
+    if key.startswith("ENABLE_"):
+        return f"Turn {_sm_pretty_setting_name(key_name).replace('Enable ', '')} on or off."
+    if key.endswith("_DIR"):
+        return "Filesystem directory path used by this part of the platform. Change carefully."
+    if key.endswith("_PATH") or key.endswith("_FILE"):
+        return "Filesystem path used by this part of the platform. Change carefully."
+    if key.endswith("_SCHEDULE"):
+        return "Human-readable schedule selector used by the corresponding runtime policy."
+    if any(word in lowered for word in ("timeout", "interval", "minutes", "seconds", "delay", "ttl")):
+        return "Timing or interval control that affects how often this runtime behavior occurs."
+    if any(word in lowered for word in ("threshold", "limit", "max", "budget", "size", "count")):
+        return "Limit or threshold used to bound runtime workload, resource usage, or decision gates."
+    if any(word in lowered for word in ("host", "port", "peer", "domain", "api", "sync", "network", "mesh")):
+        return "Network or provider connectivity setting used by the runtime when online features are enabled."
+    if any(word in lowered for word in ("voice", "tts", "mic", "audio", "speech")):
+        return "Voice/audio behavior control used by speech input or spoken output."
+    if any(word in lowered for word in ("avatar", "theme", "browser", "window", "gui", "display")):
+        return "Interface or display-facing setting that changes how the UI behaves or renders."
+    if isinstance(value, bool):
+        return "Simple on/off runtime control."
+    if isinstance(value, (int, float)):
+        return "Numeric runtime parameter."
+    if isinstance(value, str):
+        return "Text-based runtime setting."
+    if isinstance(value, (list, dict)):
+        return "Structured configuration data. Edit with care."
+    return f"{category or 'General'} runtime setting."
+
+
+def _sm_is_essential_setting(key_name: str, category: str = "") -> bool:
+    """Return True for settings most users are likely to change first."""
+    key = str(key_name or "").strip().upper()
+    essentials = {
+        "DEBUG_MODE", "SAFE_MODE", "LOCAL_ONLY_MODE", "RUN_MODE", "DEVICE_PROFILE", "UI_MODE",
+        "ROUTE_MODE", "WEB_RESEARCH_ENABLED", "API_RESEARCH_ENABLED", "LOCAL_DATA_ENABLED",
+        "OPEN_AI_API", "GEMINI_API", "LOCAL_LLM_API", "LOCAL_API", "MESH_API", "API_TIMEOUT",
+        "VOICE_FEEDBACK_ENABLED", "AVATAR_IS_SPEAKING", "TTS_ASYNC", "TTS_BLOCKING",
+        "AI_AGENT_ENABLED", "SARAHNET_ENABLED", "REMOTE_SYNC_ENABLED", "ENABLE_MINI_BROWSER",
+        "UPDATER_SCHEDULE", "BACKUP_SCHEDULE", "EVOLUTION_SCHEDULE", "SELFAWARE_SCHEDULE",
+    }
+    if key in essentials:
+        return True
+    if category == "Paths":
+        return False
+    return False
+
+
 def launch_settings_gui():
     """
     Launch the SarahMemory Settings + Model Manager GUI.
@@ -3888,105 +4045,6 @@ def launch_settings_gui():
     model_log_scroll.grid(row=0, column=1, sticky="ns")
     model_log.configure(yscrollcommand=model_log_scroll.set)
 
-    # ------------------------------------------------------------------
-    # Generic categorized tabs
-    # ------------------------------------------------------------------
-    module_globals = globals()
-    categorized_items = {}
-    for key, value in sorted(module_globals.items()):
-        if _sm_is_config_key(key, value):
-            category = _sm_group_for_key(key)
-            categorized_items.setdefault(category, []).append((key, value))
-
-    tab_order = [
-        "Core", "APIs", "Models", "Research", "Vision", "Voice",
-        "Agent", "Network", "GUI", "Performance", "Updates", "Paths", "General"
-    ]
-    sorted_categories = [cat for cat in tab_order if cat in categorized_items]
-    for cat in sorted(categorized_items.keys()):
-        if cat not in sorted_categories:
-            sorted_categories.append(cat)
-
-    all_widgets = {}
-    enum_settings = {
-        "ROUTE_MODE": ["Any", "Local", "Web", "API"],
-        "RUN_MODE": ["local", "cloud", "test"],
-        "DEVICE_PROFILE": ["UltraLite", "Standard", "Performance"],
-        "UI_MODE": ["classic", "web", "custom"],
-        "API_COST_TIER": ["low", "balanced", "max"],
-        "UPDATER_SCHEDULE": ["never", "always", "daily", "weekly", "monthly", "quarterly", "yearly"],
-        "FTP_BACKUP_SCHEDULE": ["never", "daily", "weekly", "monthly", "90days", "180days"],
-        "UPDATE_POLICY": ["never", "daily", "weekly", "monthly", "quarterly", "yearly"],
-        "BACKUP_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
-        "EVOLUTION_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
-        "SELFAWARE_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
-    }
-
-    for category in sorted_categories:
-        items = categorized_items[category]
-        tab_frame = ttk.Frame(notebook)
-        notebook.add(tab_frame, text=f" {category} ({len(items)}) ")
-        canvas, scroll_frame = _sm_create_scrollable_frame(tab_frame)
-        scroll_frame.grid_columnconfigure(0, weight=0, minsize=280)
-        scroll_frame.grid_columnconfigure(1, weight=1)
-        scroll_frame.grid_columnconfigure(2, weight=0)
-
-        ttk.Label(scroll_frame, text="Setting Name", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        ttk.Label(scroll_frame, text="Value", font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="w", padx=8, pady=4)
-        ttk.Label(scroll_frame, text="Type", font=("Segoe UI", 10, "bold")).grid(row=0, column=2, sticky="w", padx=8, pady=4)
-        ttk.Separator(scroll_frame, orient="horizontal").grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
-
-        row_index = 2
-        for key, value in items:
-            ttk.Label(scroll_frame, text=key, font=("Consolas", 9)).grid(row=row_index, column=0, sticky="w", padx=8, pady=3)
-
-            if isinstance(value, bool):
-                var = tk.BooleanVar(value=value)
-                widget = ttk.Checkbutton(scroll_frame, variable=var)
-                widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
-                all_widgets[key] = ("bool", var)
-                type_text = "bool"
-            elif isinstance(value, int):
-                var = tk.IntVar(value=value)
-                widget = ttk.Spinbox(scroll_frame, from_=-999999999, to=999999999, textvariable=var, width=16)
-                widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
-                all_widgets[key] = ("int", var)
-                type_text = "int"
-            elif isinstance(value, float):
-                var = tk.DoubleVar(value=value)
-                widget = ttk.Entry(scroll_frame, textvariable=var, width=20)
-                widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
-                all_widgets[key] = ("float", var)
-                type_text = "float"
-            elif isinstance(value, str):
-                var = tk.StringVar(value=value)
-                if key in enum_settings:
-                    widget = ttk.Combobox(scroll_frame, values=enum_settings[key], textvariable=var, state="readonly", width=28)
-                else:
-                    widget = ttk.Entry(scroll_frame, textvariable=var, width=58)
-                widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
-                all_widgets[key] = ("str", var)
-                type_text = "str"
-            elif isinstance(value, (list, dict)):
-                import json as _json
-                text_widget = tk.Text(scroll_frame, height=4, width=58, wrap="word", font=("Consolas", 9))
-                try:
-                    text_widget.insert("1.0", _json.dumps(value, indent=2))
-                except Exception:
-                    text_widget.insert("1.0", str(value))
-                text_widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
-                all_widgets[key] = ("json", text_widget)
-                type_text = "list" if isinstance(value, list) else "dict"
-            else:
-                var = tk.StringVar(value=str(value))
-                widget = ttk.Entry(scroll_frame, textvariable=var, state="readonly", width=58)
-                widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
-                all_widgets[key] = ("readonly", var)
-                type_text = type(value).__name__
-
-            ttk.Label(scroll_frame, text=type_text, font=("Consolas", 8), foreground="gray").grid(row=row_index, column=2, sticky="w", padx=8, pady=3)
-            row_index += 1
-
     def append_model_log(message):
         text = str(message or "").strip()
         if not text:
@@ -4015,7 +4073,7 @@ def launch_settings_gui():
             tier_rating = hs.get("tier_rating")
             used = 0.0
             try:
-                import SarahMemoryLLM as _SMLLM
+                import SarahMemoryLLM as _SMLLM  # type: ignore
                 used = float(_SMLLM.get_models_storage_usage_gb(globals().get("MODELS_DIR")))
             except Exception:
                 pass
@@ -4042,7 +4100,12 @@ def launch_settings_gui():
         if not row:
             return
         selected_repo = get_selected_repo_for_category(category_key)
-        snapshot = _sm_get_model_manager_snapshot(category_key, selected_repo) if selected_repo else {"installed": False, "local_size_gb": 0.0, "estimated_size_gb": None, "meta_summary": "n/a"}
+        snapshot = _sm_get_model_manager_snapshot(category_key, selected_repo) if selected_repo else {
+            "installed": False,
+            "local_size_gb": 0.0,
+            "estimated_size_gb": None,
+            "meta_summary": "n/a",
+        }
 
         if selected_repo:
             if snapshot.get("installed"):
@@ -4054,6 +4117,16 @@ def launch_settings_gui():
                 else:
                     row["installed_var"].set(f"Not installed (est. {float(est):.2f} GB)")
             row["meta_var"].set(snapshot.get("meta_summary") or "n/a")
+            if str(row["choice_var"].get() or "").strip() == MODEL_MANAGER_CUSTOM_OPTION:
+                try:
+                    row["custom_entry"].configure(state="normal")
+                except Exception:
+                    pass
+            else:
+                try:
+                    row["custom_entry"].configure(state="normal")
+                except Exception:
+                    pass
         else:
             row["installed_var"].set("No repo selected")
             row["meta_var"].set("n/a")
@@ -4096,7 +4169,7 @@ def launch_settings_gui():
                 selections.append((category_key, selected_repo))
 
         if not selections:
-            messagebox.showwarning("Model Download", "No valid model selection was found to download.")
+            messagebox.showwarning("Model Download", "No valid model selections were found.")
             return
 
         model_download_state["running"] = True
@@ -4114,7 +4187,7 @@ def launch_settings_gui():
 
         def worker():
             try:
-                import SarahMemoryLLM as _SMLLM
+                import SarahMemoryLLM as _SMLLM  # type: ignore
             except Exception as exc:
                 queue_progress_event({"event": "error", "message": f"SarahMemoryLLM import failed: {exc}"})
                 return
@@ -4271,15 +4344,317 @@ def launch_settings_gui():
         finally:
             root.after(200, pump_download_events)
 
-    ttk.Button(summary_button_frame, text="Refresh Status", width=14, command=refresh_all_model_rows).pack(side="left", padx=(0, 4))
-    ttk.Button(summary_button_frame, text="Apply Recommended", width=16, command=apply_recommended_stack).pack(side="left", padx=(0, 4))
+    ttk.Button(summary_button_frame, text="Refresh Status", width=14, command=lambda: refresh_all_model_rows()).pack(side="left", padx=(0, 4))
+    ttk.Button(summary_button_frame, text="Apply Recommended", width=16, command=lambda: apply_recommended_stack()).pack(side="left", padx=(0, 4))
     ttk.Button(summary_button_frame, text="Download All Selected", width=18, command=lambda: start_model_download(single_category=None)).pack(side="left")
 
-    # ------------------------------------------------------------------
-    # Footer / shared actions
-    # ------------------------------------------------------------------
     footer_frame = ttk.Frame(root)
     footer_frame.pack(fill="x", padx=10, pady=10)
+
+    # ------------------------------------------------------------------
+    # Generic categorized tabs (clean, uniform, user-friendly)
+    # ------------------------------------------------------------------
+    module_globals = globals()
+    categorized_items = {}
+    for key, value in sorted(module_globals.items()):
+        if _sm_is_config_key(key, value):
+            category = _sm_group_for_key(key)
+            categorized_items.setdefault(category, []).append((key, value))
+
+    tab_order = [
+        "Core", "APIs", "Models", "Research", "Vision", "Voice",
+        "Agent", "Network", "GUI", "Performance", "Updates", "Paths", "General"
+    ]
+    sorted_categories = [cat for cat in tab_order if cat in categorized_items]
+    for cat in sorted(categorized_items.keys()):
+        if cat not in sorted_categories:
+            sorted_categories.append(cat)
+
+    all_widgets = {}
+    setting_initial_values = {}
+    for category_items in categorized_items.values():
+        for key, value in category_items:
+            setting_initial_values[key] = value
+
+    tab_meta = _sm_get_tab_ui_meta()
+    default_settings_map = dict(_sm_get_default_settings() or {})
+    for key, value in setting_initial_values.items():
+        default_settings_map.setdefault(key, value)
+
+    enum_settings = {
+        "ROUTE_MODE": ["Any", "Local", "Web", "API"],
+        "RUN_MODE": ["local", "cloud", "test"],
+        "DEVICE_PROFILE": ["UltraLite", "Standard", "Performance"],
+        "UI_MODE": ["classic", "web", "custom"],
+        "API_COST_TIER": ["low", "balanced", "max"],
+        "UPDATER_SCHEDULE": ["never", "always", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "FTP_BACKUP_SCHEDULE": ["never", "daily", "weekly", "monthly", "90days", "180days"],
+        "UPDATE_POLICY": ["never", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "BACKUP_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "EVOLUTION_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "SELFAWARE_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
+    }
+
+    category_ui_state = {}
+
+    def _read_widget_value(widget_kind, widget_ref):
+        if widget_kind == "bool":
+            return bool(widget_ref.get())
+        if widget_kind == "int":
+            return int(widget_ref.get())
+        if widget_kind == "float":
+            return float(widget_ref.get())
+        if widget_kind == "str":
+            return str(widget_ref.get())
+        if widget_kind == "json":
+            import json as _json
+            raw_text = widget_ref.get("1.0", "end").strip()
+            return _json.loads(raw_text) if raw_text else None
+        if widget_kind == "readonly":
+            return str(widget_ref.get())
+        return None
+
+    def _apply_widget_value(widget_kind, widget_ref, new_value):
+        if widget_kind == "bool":
+            widget_ref.set(bool(new_value))
+        elif widget_kind == "int":
+            widget_ref.set(int(new_value))
+        elif widget_kind == "float":
+            widget_ref.set(float(new_value))
+        elif widget_kind == "str":
+            widget_ref.set(str(new_value))
+        elif widget_kind == "json":
+            import json as _json
+            widget_ref.delete("1.0", "end")
+            widget_ref.insert("1.0", _json.dumps(new_value, indent=2))
+        elif widget_kind == "readonly":
+            widget_ref.set(str(new_value))
+
+    def _filter_category_rows(category_name):
+        state = category_ui_state.get(category_name, {})
+        rows = state.get("rows", [])
+        if not rows:
+            return
+        search_text = str(state.get("search_var").get() or "").strip().lower()
+        mode = str(state.get("mode_var").get() or "all").strip().lower()
+        visible_count = 0
+        for row_info in rows:
+            matches_search = (not search_text) or (search_text in row_info.get("search_text", ""))
+            matches_mode = True
+            if mode == "essentials":
+                matches_mode = bool(row_info.get("essential"))
+            elif mode == "toggles":
+                matches_mode = row_info.get("type") == "bool"
+            elif mode == "advanced":
+                matches_mode = not bool(row_info.get("essential"))
+            if matches_search and matches_mode:
+                row_info["frame"].grid()
+                visible_count += 1
+            else:
+                row_info["frame"].grid_remove()
+        total_count = len(rows)
+        state.get("result_var").set(f"Showing {visible_count} of {total_count} settings")
+
+    def _set_visible_booleans(category_name, target_state: bool):
+        state = category_ui_state.get(category_name, {})
+        changed = 0
+        for row_info in state.get("rows", []):
+            if row_info.get("type") != "bool":
+                continue
+            if not row_info["frame"].winfo_ismapped():
+                continue
+            try:
+                row_info["widget_ref"].set(bool(target_state))
+                changed += 1
+            except Exception:
+                pass
+        status_var.set(f"Set {changed} visible toggles {'ON' if target_state else 'OFF'} in {category_name}")
+
+    def _reset_visible_settings(category_name):
+        state = category_ui_state.get(category_name, {})
+        changed = 0
+        for row_info in state.get("rows", []):
+            if not row_info["frame"].winfo_ismapped():
+                continue
+            try:
+                _apply_widget_value(row_info["type"], row_info["widget_ref"], row_info["default"])
+                changed += 1
+            except Exception:
+                pass
+        status_var.set(f"Reset {changed} visible settings in {category_name} (not saved yet)")
+
+    def _clear_category_search(category_name):
+        state = category_ui_state.get(category_name, {})
+        try:
+            state.get("search_var").set("")
+            state.get("mode_var").set("all")
+        except Exception:
+            pass
+        _filter_category_rows(category_name)
+
+    for category in sorted_categories:
+        items = categorized_items[category]
+        meta = tab_meta.get(category, {})
+        tab_frame = ttk.Frame(notebook)
+        notebook.add(tab_frame, text=f" {category} ({len(items)}) ")
+        tab_frame.grid_columnconfigure(0, weight=1)
+        tab_frame.grid_rowconfigure(1, weight=1)
+
+        top_frame = ttk.LabelFrame(tab_frame, text=meta.get("title", f"{category} Settings"))
+        top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 6))
+        top_frame.grid_columnconfigure(0, weight=1)
+
+        ttk.Label(
+            top_frame,
+            text=meta.get("description", f"Adjust {category.lower()} settings for SarahMemory."),
+            font=("Segoe UI", 10),
+            wraplength=1120,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 4))
+
+        toolbar = ttk.Frame(top_frame)
+        toolbar.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
+        toolbar.grid_columnconfigure(1, weight=1)
+        toolbar.grid_columnconfigure(7, weight=1)
+
+        result_var = tk.StringVar(value=f"Showing {len(items)} of {len(items)} settings")
+        search_var = tk.StringVar(value="")
+        mode_var = tk.StringVar(value="all")
+
+        ttk.Label(toolbar, text="Search", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 6))
+        search_entry = ttk.Entry(toolbar, textvariable=search_var, width=34)
+        search_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        ttk.Button(toolbar, text="All", width=8, command=lambda c=category: (category_ui_state[c]["mode_var"].set("all"), _filter_category_rows(c))).grid(row=0, column=2, padx=(0, 4))
+        ttk.Button(toolbar, text="Essentials", width=10, command=lambda c=category: (category_ui_state[c]["mode_var"].set("essentials"), _filter_category_rows(c))).grid(row=0, column=3, padx=(0, 4))
+        ttk.Button(toolbar, text="Toggles", width=8, command=lambda c=category: (category_ui_state[c]["mode_var"].set("toggles"), _filter_category_rows(c))).grid(row=0, column=4, padx=(0, 4))
+        ttk.Button(toolbar, text="Advanced", width=9, command=lambda c=category: (category_ui_state[c]["mode_var"].set("advanced"), _filter_category_rows(c))).grid(row=0, column=5, padx=(0, 8))
+        ttk.Label(toolbar, textvariable=result_var, font=("Segoe UI", 9)).grid(row=0, column=6, sticky="w", padx=(0, 8))
+        ttk.Button(toolbar, text="On", width=5, command=lambda c=category: _set_visible_booleans(c, True)).grid(row=0, column=7, sticky="e", padx=(0, 4))
+        ttk.Button(toolbar, text="Off", width=5, command=lambda c=category: _set_visible_booleans(c, False)).grid(row=0, column=8, sticky="e", padx=(0, 4))
+        ttk.Button(toolbar, text="Reset Visible", width=12, command=lambda c=category: _reset_visible_settings(c)).grid(row=0, column=9, sticky="e", padx=(0, 4))
+        ttk.Button(toolbar, text="Clear", width=7, command=lambda c=category: _clear_category_search(c)).grid(row=0, column=10, sticky="e")
+
+        content_frame = ttk.Frame(tab_frame)
+        content_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 6))
+        canvas, scroll_frame = _sm_create_scrollable_frame(content_frame)
+        scroll_frame.grid_columnconfigure(0, weight=1)
+
+        category_ui_state[category] = {
+            "rows": [],
+            "search_var": search_var,
+            "mode_var": mode_var,
+            "result_var": result_var,
+            "search_entry": search_entry,
+        }
+
+        row_index = 0
+        for key, value in items:
+            pretty_name = _sm_pretty_setting_name(key)
+            help_text = _sm_get_setting_help_text(key, category=category, value=value)
+            is_essential = _sm_is_essential_setting(key, category)
+            default_value = default_settings_map.get(key, value)
+
+            row_frame = ttk.Frame(scroll_frame, padding=(8, 8))
+            row_frame.grid(row=row_index, column=0, sticky="ew", padx=2, pady=2)
+            row_frame.grid_columnconfigure(0, weight=1)
+            row_frame.grid_columnconfigure(1, weight=0)
+            ttk.Separator(scroll_frame, orient="horizontal").grid(row=row_index + 1, column=0, sticky="ew", padx=4, pady=(0, 0))
+            row_index += 2
+
+            info_frame = ttk.Frame(row_frame)
+            info_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+            info_frame.grid_columnconfigure(0, weight=1)
+
+            title_text = pretty_name + ("  • Essential" if is_essential else "")
+            ttk.Label(info_frame, text=title_text, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+            ttk.Label(info_frame, text=key, font=("Consolas", 8), foreground="gray").grid(row=1, column=0, sticky="w", pady=(1, 2))
+            ttk.Label(info_frame, text=help_text, font=("Segoe UI", 9), wraplength=700, justify="left").grid(row=2, column=0, sticky="w")
+
+            control_frame = ttk.Frame(row_frame)
+            control_frame.grid(row=0, column=1, sticky="ne")
+
+            widget_kind = "readonly"
+            widget_ref = None
+
+            if isinstance(value, bool):
+                var = tk.BooleanVar(value=value)
+                status_chip = tk.StringVar(value="ON" if value else "OFF")
+                widget = ttk.Checkbutton(control_frame, variable=var)
+                widget.grid(row=0, column=0, sticky="w")
+                ttk.Label(control_frame, textvariable=status_chip, width=5, anchor="center", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", padx=(6, 8))
+                def _make_bool_trace(v=var, sv=status_chip):
+                    def _update(*_args):
+                        try:
+                            sv.set("ON" if bool(v.get()) else "OFF")
+                        except Exception:
+                            sv.set("OFF")
+                    return _update
+                var.trace_add("write", _make_bool_trace())
+                widget_kind = "bool"
+                widget_ref = var
+            elif isinstance(value, int):
+                var = tk.IntVar(value=value)
+                widget = ttk.Spinbox(control_frame, from_=-999999999, to=999999999, textvariable=var, width=18)
+                widget.grid(row=0, column=0, sticky="e", padx=(0, 8))
+                widget_kind = "int"
+                widget_ref = var
+            elif isinstance(value, float):
+                var = tk.DoubleVar(value=value)
+                widget = ttk.Entry(control_frame, textvariable=var, width=22)
+                widget.grid(row=0, column=0, sticky="e", padx=(0, 8))
+                widget_kind = "float"
+                widget_ref = var
+            elif isinstance(value, str):
+                var = tk.StringVar(value=value)
+                if key in enum_settings:
+                    widget = ttk.Combobox(control_frame, values=enum_settings[key], textvariable=var, state="readonly", width=28)
+                else:
+                    widget = ttk.Entry(control_frame, textvariable=var, width=34)
+                widget.grid(row=0, column=0, sticky="e", padx=(0, 8))
+                widget_kind = "str"
+                widget_ref = var
+            elif isinstance(value, (list, dict)):
+                import json as _json
+                text_holder = ttk.Frame(control_frame)
+                text_holder.grid(row=0, column=0, sticky="e", padx=(0, 8))
+                text_widget = tk.Text(text_holder, height=4, width=36, wrap="word", font=("Consolas", 8))
+                text_scroll = ttk.Scrollbar(text_holder, orient="vertical", command=text_widget.yview)
+                text_widget.configure(yscrollcommand=text_scroll.set)
+                text_widget.grid(row=0, column=0, sticky="nsew")
+                text_scroll.grid(row=0, column=1, sticky="ns")
+                try:
+                    text_widget.insert("1.0", _json.dumps(value, indent=2))
+                except Exception:
+                    text_widget.insert("1.0", str(value))
+                widget_kind = "json"
+                widget_ref = text_widget
+            else:
+                var = tk.StringVar(value=str(value))
+                widget = ttk.Entry(control_frame, textvariable=var, state="readonly", width=34)
+                widget.grid(row=0, column=0, sticky="e", padx=(0, 8))
+                widget_kind = "readonly"
+                widget_ref = var
+
+            ttk.Button(
+                control_frame,
+                text="Default",
+                width=10,
+                command=lambda kind=widget_kind, ref=widget_ref, dv=default_value, name=pretty_name: (_apply_widget_value(kind, ref, dv), status_var.set(f"Reset {name} to default (not saved yet)")),
+            ).grid(row=0, column=2, sticky="e")
+
+            all_widgets[key] = (widget_kind, widget_ref)
+            category_ui_state[category]["rows"].append({
+                "frame": row_frame,
+                "key": key,
+                "type": widget_kind,
+                "widget_ref": widget_ref,
+                "default": default_value,
+                "essential": is_essential,
+                "search_text": f"{key.lower()} {pretty_name.lower()} {help_text.lower()}",
+            })
+
+        search_var.trace_add("write", lambda *_args, c=category: _filter_category_rows(c))
+        _filter_category_rows(category)
 
     def collect_model_settings():
         payload = {"CUSTOM_MODEL_REPOS": dict(CUSTOM_MODEL_REPOS)}
