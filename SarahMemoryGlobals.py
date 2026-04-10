@@ -834,6 +834,184 @@ def resolve_model_repo(model_id):
     return MODEL_REPO_MAP.get(model_id, model_id)
 
 
+MODEL_CATEGORY_PRIMARY_ATTRS = globals().get("MODEL_CATEGORY_PRIMARY_ATTRS", {
+    "reasoning": "REASONING_MODEL_REPO",
+    "coder": "CODER_MODEL_REPO",
+    "embeddings": "EMBEDDING_EN_REPO",
+    "vision": "VISION_PRIMARY_REPO",
+    "image_generation": "IMAGEGEN_MODEL_REPO",
+    "tts": "TTS_MODEL_REPO",
+})
+
+MODEL_CATEGORY_FLAG_REPO_MAP = globals().get("MODEL_CATEGORY_FLAG_REPO_MAP", {
+    "reasoning": {
+        "ENABLE_MODEL_A": "microsoft/phi-1_5",
+        "ENABLE_MODEL_H": "microsoft/phi-2",
+        "ENABLE_MODEL_S": "microsoft/Phi-4-mini-instruct",
+        "ENABLE_MODEL_N": "Qwen/Qwen3-0.6B",
+        "ENABLE_MODEL_Q": "Qwen/Qwen2.5-7B-Instruct",
+        "ENABLE_MODEL_I": "tiiuae/falcon-rw-1b",
+        "ENABLE_MODEL_M": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+        "ENABLE_MODEL_J": "openchat/openchat-3.5-0106",
+        "ENABLE_MODEL_K": "NousResearch/Nous-Capybara-7B",
+        "ENABLE_MODEL_L": "mistralai/Mistral-7B-Instruct-v0.2",
+    },
+    "coder": {
+        "ENABLE_MODEL_O": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        "ENABLE_MODEL_P": "Qwen/Qwen2.5-Coder-3B-Instruct",
+        "ENABLE_MODEL_T": "Qwen/Qwen2.5-Coder-7B-Instruct",
+    },
+    "embeddings": {
+        "ENABLE_MODEL_B": "sentence-transformers/all-MiniLM-L6-v2",
+        "ENABLE_MODEL_C": "sentence-transformers/multi-qa-MiniLM-L6-cos-v1",
+        "ENABLE_MODEL_D": "sentence-transformers/paraphrase-MiniLM-L3-v2",
+        "ENABLE_MODEL_E": "sentence-transformers/distiluse-base-multilingual-cased-v2",
+        "ENABLE_MODEL_F": "allenai/specter",
+        "ENABLE_MODEL_G": "intfloat/e5-base",
+        "ENABLE_MODEL_R": "BAAI/bge-base-en-v1.5",
+        "ENABLE_MODEL_U": "BAAI/bge-m3",
+    },
+    "vision": {
+        "ENABLE_MODEL_V": "nielsr/yolov12n",
+        "ENABLE_MODEL_W": "ultralytics/yolov8",
+        "ENABLE_MODEL_X": "qualcomm/RF-DETR",
+        "ENABLE_MODEL_Y": "ultralytics/yolov8x",
+        "ENABLE_MODEL_AD": "qfgaohao/pytorch-ssd",
+    },
+    "image_generation": {
+        "ENABLE_MODEL_Z": "black-forest-labs/FLUX.1-schnell",
+        "ENABLE_MODEL_AA": "Freepik/flux.1-lite-8B",
+        "ENABLE_MODEL_AB": "black-forest-labs/FLUX.1-dev",
+    },
+    "tts": {
+        "ENABLE_MODEL_AC": "FunAudioLLM/CosyVoice2-0.5B",
+    },
+})
+
+MODEL_MANAGER_CATEGORY_LABELS = globals().get("MODEL_MANAGER_CATEGORY_LABELS", {
+    "reasoning": "Reasoning",
+    "coder": "Coder",
+    "embeddings": "Embeddings",
+    "vision": "Vision",
+    "image_generation": "Image Generation",
+    "tts": "Voice / TTS",
+})
+
+MODEL_MANAGER_CUSTOM_OPTION = "<CUSTOM REPO>"
+CUSTOM_MODEL_REPOS = globals().get("CUSTOM_MODEL_REPOS", {
+    "reasoning": "",
+    "coder": "",
+    "embeddings": "",
+    "vision": "",
+    "image_generation": "",
+    "tts": "",
+})
+
+def _sm_get_category_primary_attr(category):
+    return MODEL_CATEGORY_PRIMARY_ATTRS.get(str(category or "").strip().lower(), "")
+
+
+def _sm_get_category_current_repo(category):
+    attr = _sm_get_category_primary_attr(category)
+    if not attr:
+        return ""
+    return resolve_model_repo(str(globals().get(attr, "") or "").strip())
+
+
+def _sm_get_category_custom_repo(category):
+    return str((CUSTOM_MODEL_REPOS or {}).get(str(category or "").strip().lower(), "") or "").strip()
+
+
+def _sm_collect_model_repos_for_category(category):
+    category_key = str(category or "").strip().lower()
+    repos = []
+    try:
+        for tier_items in ((MODEL_CATALOG or {}).get(category_key, {}) or {}).values():
+            for repo in tier_items or []:
+                resolved = resolve_model_repo(repo)
+                if resolved and resolved not in repos:
+                    repos.append(resolved)
+    except Exception:
+        pass
+    for repo in (MODEL_CATEGORY_FLAG_REPO_MAP.get(category_key, {}) or {}).values():
+        resolved = resolve_model_repo(repo)
+        if resolved and resolved not in repos:
+            repos.append(resolved)
+    current_repo = _sm_get_category_current_repo(category_key)
+    if current_repo and current_repo not in repos:
+        repos.insert(0, current_repo)
+    custom_repo = _sm_get_category_custom_repo(category_key)
+    if custom_repo and custom_repo not in repos:
+        repos.insert(0, custom_repo)
+    return repos
+
+
+def _sm_sync_model_flags_for_category(category, repo):
+    category_key = str(category or "").strip().lower()
+    selected_repo = resolve_model_repo(repo)
+    for flag_name, flag_repo in (MODEL_CATEGORY_FLAG_REPO_MAP.get(category_key, {}) or {}).items():
+        try:
+            globals()[flag_name] = bool(resolve_model_repo(flag_repo) == selected_repo)
+        except Exception:
+            pass
+
+
+def _sm_set_category_model_repo(category, repo):
+    category_key = str(category or "").strip().lower()
+    attr = _sm_get_category_primary_attr(category_key)
+    selected_repo = str(repo or "").strip()
+    if not attr or not selected_repo:
+        return ""
+    globals()[attr] = selected_repo
+    known_repos = set(_sm_collect_model_repos_for_category(category_key))
+    if selected_repo in known_repos:
+        CUSTOM_MODEL_REPOS[category_key] = ""
+    else:
+        CUSTOM_MODEL_REPOS[category_key] = selected_repo
+    _sm_sync_model_flags_for_category(category_key, selected_repo)
+    return selected_repo
+
+
+def _sm_model_meta_summary(repo):
+    resolved = resolve_model_repo(repo)
+    meta = dict((MODEL_META or {}).get(resolved) or {})
+    parts = []
+    if meta.get("tier"):
+        parts.append(str(meta.get("tier")))
+    if meta.get("speed"):
+        parts.append(str(meta.get("speed")))
+    if meta.get("disk_gb_est") is not None:
+        parts.append(f"disk~{meta.get('disk_gb_est')}GB")
+    if meta.get("vram_gb_est") is not None:
+        parts.append(f"vram~{meta.get('vram_gb_est')}GB")
+    return " | ".join(parts) if parts else "n/a"
+
+
+def _sm_get_model_manager_snapshot(category, repo):
+    resolved = resolve_model_repo(repo)
+    snapshot = {
+        "repo": resolved,
+        "installed": False,
+        "local_dir": os.path.join(globals().get("MODELS_DIR", os.path.join(os.getcwd(), "data", "models")), resolved.replace("/", "_")) if resolved else "",
+        "local_size_gb": 0.0,
+        "estimated_size_gb": None,
+        "meta_summary": _sm_model_meta_summary(resolved),
+    }
+    try:
+        import SarahMemoryLLM as _SMLLM  # type: ignore
+        info = _SMLLM.get_model_install_snapshot(resolved)
+        if isinstance(info, dict):
+            snapshot.update({
+                "installed": bool(info.get("installed", False)),
+                "local_dir": str(info.get("local_dir") or snapshot["local_dir"]),
+                "local_size_gb": float(info.get("local_size_gb") or 0.0),
+                "estimated_size_gb": info.get("estimated_size_gb"),
+            })
+    except Exception:
+        pass
+    return snapshot
+
+
 
 # -----------------------------------------------------------------------------
 # Model Resolver (v8.0) — Single-model-per-category selection with fallbacks
@@ -3261,8 +3439,12 @@ def _sm_is_config_key(name, val):
         return False
     if callable(val):
         return False
-    # Exclude module references and complex objects
-    if name in ("SarahMemoryGlobals",):
+    # Exclude module references and large internal registries that now have dedicated UI surfaces
+    if name in (
+        "SarahMemoryGlobals",
+        "MODEL_CATALOG", "MODEL_REPO_MAP", "MODEL_META", "MODEL_CONFIG", "OBJECT_MODEL_CONFIG",
+        "MODEL_CATEGORY_PRIMARY_ATTRS", "MODEL_CATEGORY_FLAG_REPO_MAP", "MODEL_MANAGER_CATEGORY_LABELS",
+    ):
         return False
     return isinstance(val, (bool, int, float, str, list, dict))
 
@@ -3363,6 +3545,22 @@ def _sm_get_default_settings():
     # Models (aligned to Top Menu DEFAULTS)
     "AUTO_MODEL_SELECTOR": True,
     "MULTI_MODEL": True,
+
+    # Model routing selections
+    "REASONING_MODEL_REPO": "Qwen/Qwen3-0.6B",
+    "CODER_MODEL_REPO": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+    "EMBEDDING_EN_REPO": "sentence-transformers/all-MiniLM-L6-v2",
+    "VISION_PRIMARY_REPO": "nielsr/yolov12n",
+    "IMAGEGEN_MODEL_REPO": "black-forest-labs/FLUX.1-schnell",
+    "TTS_MODEL_REPO": "FunAudioLLM/CosyVoice2-0.5B",
+    "CUSTOM_MODEL_REPOS": {
+        "reasoning": "",
+        "coder": "",
+        "embeddings": "",
+        "vision": "",
+        "image_generation": "",
+        "tts": "",
+    },
 
     # --- Embeddings DEFAULTS = B, D, E, F, G ---
     "ENABLE_MODEL_B": True,   # all-MiniLM-L6-v2
@@ -3556,65 +3754,46 @@ def _sm_create_scrollable_frame(parent):
 
 def launch_settings_gui():
     """
-    Launch the SarahMemory Settings GUI.
-    
-    Features:
-    - Categorized tabs for different setting groups
-    - Scrollable frames for tabs with many settings
-    - Boolean checkboxes, integer spinboxes, string entries
-    - JSON editor for list/dict settings
-    - Combobox dropdowns for known enum-like settings
-    - Save button with confirmation dialog
-    - Restore Defaults button
-    - Exit button
-    - Settings persistence to settings.json
+    Launch the SarahMemory Settings + Model Manager GUI.
+
+    Added capabilities:
+    - Dedicated Model Manager tab with category dropdowns
+    - Custom Hugging Face repo input per category
+    - Direct install / download bridge into SarahMemoryLLM.py
+    - Live progress bar + activity log for model downloads
+    - Generic categorized settings tabs remain available for all other globals
     """
-    
-    # -------------------------------------------------------------------------
-    # Pre-flight checks: Skip GUI if no display available
-    # -------------------------------------------------------------------------
+
     if not _sm_has_display():
         print("[Settings GUI] Headless environment detected - skipping Tkinter window.")
         print("[Settings GUI] To modify settings, edit the settings.json file directly or set environment variables.")
         return
-    
-    # -------------------------------------------------------------------------
-    # Import Tkinter and PIL
-    # -------------------------------------------------------------------------
+
     try:
         import tkinter as tk
         from tkinter import ttk, messagebox
+        import queue
+        import threading
     except ImportError as e:
         print(f"[Settings GUI] Tkinter unavailable: {e}")
         return
-    
-    try:
-        from PIL import Image, ImageTk
-        _HAS_PIL = True
-    except ImportError:
-        _HAS_PIL = False
-    
-    # -------------------------------------------------------------------------
-    # Initialize main window
-    # -------------------------------------------------------------------------
+
     try:
         root = tk.Tk()
     except Exception as e:
         print(f"[Settings GUI] Failed to initialize Tk root window: {e}")
         return
-    
-    root.title("SarahMemory - Global Settings Configuration")
-    _sm_center_window(root, 1024, 720)
-    
-    # Set window icon if available
+
+    root.title("SarahMemory - Global Settings + Model Manager")
+    _sm_center_window(root, 1360, 860)
+
     try:
         icon_path = os.path.join(globals().get("BASE_DIR", os.getcwd()), "icon.ico")
         if os.path.exists(icon_path):
             root.iconbitmap(icon_path)
     except Exception:
         pass
-    
-    # Apply a modern theme if available
+
     try:
         style = ttk.Style()
         available_themes = style.theme_names()
@@ -3624,220 +3803,502 @@ def launch_settings_gui():
             style.theme_use("vista")
     except Exception:
         pass
-    
-    # -------------------------------------------------------------------------
-    # Header Frame with title and version
-    # -------------------------------------------------------------------------
+
     header_frame = ttk.Frame(root)
-    header_frame.pack(fill="x", padx=10, pady=(10, 5))
-    
-    title_label = ttk.Label(
-        header_frame,
-        text="SarahMemory Global Settings",
-        font=("Segoe UI", 16, "bold")
-    )
+    header_frame.pack(fill="x", padx=12, pady=(12, 6))
+
+    title_label = ttk.Label(header_frame, text="SarahMemory Global Settings", font=("Segoe UI", 18, "bold"))
     title_label.pack(side="left")
-    
-    version_text = f"Version: {globals().get('PROJECT_VERSION', '7.7.5')}"
-    version_label = ttk.Label(
+
+    subtitle_label = ttk.Label(
         header_frame,
-        text=version_text,
-        font=("Segoe UI", 10)
+        text="User-friendly runtime configuration, model routing, and guided local model downloads",
+        font=("Segoe UI", 10),
     )
+    subtitle_label.pack(side="left", padx=(14, 0))
+
+    version_label = ttk.Label(header_frame, text=f"Version: {globals().get('PROJECT_VERSION', '8.0.0')}", font=("Segoe UI", 10))
     version_label.pack(side="right")
-    
-    # -------------------------------------------------------------------------
-    # Collect and categorize all configuration keys
-    # -------------------------------------------------------------------------
+
+    notebook = ttk.Notebook(root)
+    notebook.pack(fill="both", expand=True, padx=10, pady=4)
+
+    status_bar_frame = ttk.Frame(root)
+    status_bar_frame.pack(fill="x", padx=10, pady=(0, 10))
+    status_var = tk.StringVar(value="Ready")
+    ttk.Label(status_bar_frame, textvariable=status_var, font=("Segoe UI", 9)).pack(side="left")
+
+    # ------------------------------------------------------------------
+    # Model Manager Tab
+    # ------------------------------------------------------------------
+    model_tab = ttk.Frame(notebook)
+    notebook.add(model_tab, text=" Model Manager ")
+
+    model_container = ttk.Frame(model_tab)
+    model_container.pack(fill="both", expand=True, padx=10, pady=10)
+    model_container.grid_columnconfigure(0, weight=1)
+
+    model_summary_var = tk.StringVar(value="Detecting installed models...")
+    model_task_var = tk.StringVar(value="No active model download")
+
+    summary_frame = ttk.LabelFrame(model_container, text="Model Summary")
+    summary_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+    summary_frame.grid_columnconfigure(0, weight=1)
+
+    ttk.Label(summary_frame, textvariable=model_summary_var, font=("Segoe UI", 10)).grid(row=0, column=0, sticky="w", padx=10, pady=8)
+
+    summary_button_frame = ttk.Frame(summary_frame)
+    summary_button_frame.grid(row=0, column=1, sticky="e", padx=10, pady=8)
+
+    model_rows_frame = ttk.LabelFrame(model_container, text="Category Model Routing")
+    model_rows_frame.grid(row=1, column=0, sticky="nsew", padx=0, pady=(0, 8))
+    model_container.grid_rowconfigure(1, weight=1)
+    model_rows_frame.grid_columnconfigure(1, weight=1)
+    model_rows_frame.grid_columnconfigure(2, weight=1)
+    model_rows_frame.grid_columnconfigure(3, weight=0)
+    model_rows_frame.grid_columnconfigure(4, weight=0)
+    model_rows_frame.grid_columnconfigure(5, weight=0)
+
+    headers = ["Category", "Catalog Selection", "Custom Repo", "Installed", "Metadata", "Actions"]
+    for idx, text in enumerate(headers):
+        ttk.Label(model_rows_frame, text=text, font=("Segoe UI", 10, "bold")).grid(row=0, column=idx, sticky="w", padx=8, pady=(8, 6))
+
+    model_rows = {}
+    model_download_queue = queue.Queue()
+    model_download_state = {"running": False, "last_message": "", "mode": "idle"}
+
+    progress_frame = ttk.LabelFrame(model_container, text="Download Activity")
+    progress_frame.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
+    progress_frame.grid_columnconfigure(0, weight=1)
+
+    ttk.Label(progress_frame, textvariable=model_task_var, font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 4))
+
+    model_progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
+    model_progress.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+
+    log_frame = ttk.Frame(progress_frame)
+    log_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=(0, 10))
+    log_frame.grid_columnconfigure(0, weight=1)
+    log_frame.grid_rowconfigure(0, weight=1)
+
+    model_log = tk.Text(log_frame, height=12, wrap="word", font=("Consolas", 9))
+    model_log.grid(row=0, column=0, sticky="nsew")
+    model_log.configure(state="disabled")
+    model_log_scroll = ttk.Scrollbar(log_frame, orient="vertical", command=model_log.yview)
+    model_log_scroll.grid(row=0, column=1, sticky="ns")
+    model_log.configure(yscrollcommand=model_log_scroll.set)
+
+    # ------------------------------------------------------------------
+    # Generic categorized tabs
+    # ------------------------------------------------------------------
     module_globals = globals()
     categorized_items = {}
-    
     for key, value in sorted(module_globals.items()):
         if _sm_is_config_key(key, value):
             category = _sm_group_for_key(key)
-            if category not in categorized_items:
-                categorized_items[category] = []
-            categorized_items[category].append((key, value))
-    
-    # Define tab order (most commonly used first)
+            categorized_items.setdefault(category, []).append((key, value))
+
     tab_order = [
         "Core", "APIs", "Models", "Research", "Vision", "Voice",
         "Agent", "Network", "GUI", "Performance", "Updates", "Paths", "General"
     ]
-    
-    # Sort categories by defined order, then alphabetically for any extras
-    sorted_categories = []
-    for cat in tab_order:
-        if cat in categorized_items:
-            sorted_categories.append(cat)
+    sorted_categories = [cat for cat in tab_order if cat in categorized_items]
     for cat in sorted(categorized_items.keys()):
         if cat not in sorted_categories:
             sorted_categories.append(cat)
-    
-    # -------------------------------------------------------------------------
-    # Create Notebook (tabbed interface)
-    # -------------------------------------------------------------------------
-    notebook = ttk.Notebook(root)
-    notebook.pack(fill="both", expand=True, padx=10, pady=5)
-    
-    # Dictionary to store all widget references for saving
+
     all_widgets = {}
-    
-    # Known enum-like settings with dropdown values
     enum_settings = {
         "ROUTE_MODE": ["Any", "Local", "Web", "API"],
         "RUN_MODE": ["local", "cloud", "test"],
         "DEVICE_PROFILE": ["UltraLite", "Standard", "Performance"],
+        "UI_MODE": ["classic", "web", "custom"],
         "API_COST_TIER": ["low", "balanced", "max"],
         "UPDATER_SCHEDULE": ["never", "always", "daily", "weekly", "monthly", "quarterly", "yearly"],
         "FTP_BACKUP_SCHEDULE": ["never", "daily", "weekly", "monthly", "90days", "180days"],
         "UPDATE_POLICY": ["never", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "BACKUP_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "EVOLUTION_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
+        "SELFAWARE_SCHEDULE": ["never", "always", "hourly", "daily", "weekly", "monthly", "quarterly", "yearly"],
     }
-    
-    # -------------------------------------------------------------------------
-    # Create tabs for each category
-    # -------------------------------------------------------------------------
+
     for category in sorted_categories:
         items = categorized_items[category]
-        
-        # Create tab frame
         tab_frame = ttk.Frame(notebook)
         notebook.add(tab_frame, text=f" {category} ({len(items)}) ")
-        
-        # Create scrollable frame for the tab
         canvas, scroll_frame = _sm_create_scrollable_frame(tab_frame)
-        
-        # Configure grid columns
-        scroll_frame.grid_columnconfigure(0, weight=0, minsize=300)  # Key column
-        scroll_frame.grid_columnconfigure(1, weight=1)               # Value column
-        scroll_frame.grid_columnconfigure(2, weight=0)               # Type indicator
-        
-        # Add header row
-        ttk.Label(
-            scroll_frame,
-            text="Setting Name",
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=0, sticky="w", padx=8, pady=4)
-        
-        ttk.Label(
-            scroll_frame,
-            text="Value",
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=1, sticky="w", padx=8, pady=4)
-        
-        ttk.Label(
-            scroll_frame,
-            text="Type",
-            font=("Segoe UI", 10, "bold")
-        ).grid(row=0, column=2, sticky="w", padx=8, pady=4)
-        
-        ttk.Separator(scroll_frame, orient="horizontal").grid(
-            row=1, column=0, columnspan=3, sticky="ew", pady=2
-        )
-        
-        # Add setting rows
+        scroll_frame.grid_columnconfigure(0, weight=0, minsize=280)
+        scroll_frame.grid_columnconfigure(1, weight=1)
+        scroll_frame.grid_columnconfigure(2, weight=0)
+
+        ttk.Label(scroll_frame, text="Setting Name", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", padx=8, pady=4)
+        ttk.Label(scroll_frame, text="Value", font=("Segoe UI", 10, "bold")).grid(row=0, column=1, sticky="w", padx=8, pady=4)
+        ttk.Label(scroll_frame, text="Type", font=("Segoe UI", 10, "bold")).grid(row=0, column=2, sticky="w", padx=8, pady=4)
+        ttk.Separator(scroll_frame, orient="horizontal").grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
+
         row_index = 2
         for key, value in items:
-            # Key label
-            key_label = ttk.Label(scroll_frame, text=key, font=("Consolas", 9))
-            key_label.grid(row=row_index, column=0, sticky="w", padx=8, pady=3)
-            
-            # Value widget based on type
+            ttk.Label(scroll_frame, text=key, font=("Consolas", 9)).grid(row=row_index, column=0, sticky="w", padx=8, pady=3)
+
             if isinstance(value, bool):
-                # Boolean: Checkbutton
                 var = tk.BooleanVar(value=value)
                 widget = ttk.Checkbutton(scroll_frame, variable=var)
                 widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
                 all_widgets[key] = ("bool", var)
                 type_text = "bool"
-                
             elif isinstance(value, int):
-                # Integer: Spinbox
                 var = tk.IntVar(value=value)
-                widget = ttk.Spinbox(
-                    scroll_frame,
-                    from_=-999999999,
-                    to=999999999,
-                    textvariable=var,
-                    width=15
-                )
+                widget = ttk.Spinbox(scroll_frame, from_=-999999999, to=999999999, textvariable=var, width=16)
                 widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
                 all_widgets[key] = ("int", var)
                 type_text = "int"
-                
             elif isinstance(value, float):
-                # Float: Entry
                 var = tk.DoubleVar(value=value)
                 widget = ttk.Entry(scroll_frame, textvariable=var, width=20)
                 widget.grid(row=row_index, column=1, sticky="w", padx=8, pady=3)
                 all_widgets[key] = ("float", var)
                 type_text = "float"
-                
             elif isinstance(value, str):
-                # String: Combobox (if enum) or Entry
                 var = tk.StringVar(value=value)
-                
                 if key in enum_settings:
-                    widget = ttk.Combobox(
-                        scroll_frame,
-                        values=enum_settings[key],
-                        textvariable=var,
-                        state="readonly",
-                        width=25
-                    )
+                    widget = ttk.Combobox(scroll_frame, values=enum_settings[key], textvariable=var, state="readonly", width=28)
                 else:
-                    widget = ttk.Entry(scroll_frame, textvariable=var, width=50)
-                
+                    widget = ttk.Entry(scroll_frame, textvariable=var, width=58)
                 widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
                 all_widgets[key] = ("str", var)
                 type_text = "str"
-                
             elif isinstance(value, (list, dict)):
-                # List/Dict: Text widget with JSON
                 import json as _json
-                text_widget = tk.Text(scroll_frame, height=3, width=50, wrap="word", font=("Consolas", 9))
+                text_widget = tk.Text(scroll_frame, height=4, width=58, wrap="word", font=("Consolas", 9))
                 try:
-                    json_str = _json.dumps(value, indent=2)
+                    text_widget.insert("1.0", _json.dumps(value, indent=2))
                 except Exception:
-                    json_str = str(value)
-                text_widget.insert("1.0", json_str)
+                    text_widget.insert("1.0", str(value))
                 text_widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
                 all_widgets[key] = ("json", text_widget)
                 type_text = "list" if isinstance(value, list) else "dict"
-            
             else:
-                # Unsupported type - display as read-only
                 var = tk.StringVar(value=str(value))
-                widget = ttk.Entry(scroll_frame, textvariable=var, state="readonly", width=50)
+                widget = ttk.Entry(scroll_frame, textvariable=var, state="readonly", width=58)
                 widget.grid(row=row_index, column=1, sticky="we", padx=8, pady=3)
                 all_widgets[key] = ("readonly", var)
                 type_text = type(value).__name__
-            
-            # Type indicator label
-            type_label = ttk.Label(scroll_frame, text=type_text, font=("Consolas", 8), foreground="gray")
-            type_label.grid(row=row_index, column=2, sticky="w", padx=8, pady=3)
-            
+
+            ttk.Label(scroll_frame, text=type_text, font=("Consolas", 8), foreground="gray").grid(row=row_index, column=2, sticky="w", padx=8, pady=3)
             row_index += 1
-    
-    # -------------------------------------------------------------------------
-    # Footer Frame with action buttons
-    # -------------------------------------------------------------------------
+
+    def append_model_log(message):
+        text = str(message or "").strip()
+        if not text:
+            return
+        model_log.configure(state="normal")
+        model_log.insert("end", text + "\n")
+        model_log.see("end")
+        model_log.configure(state="disabled")
+
+    def refresh_model_summary():
+        installed = 0
+        known = 0
+        for category_key in MODEL_CATEGORY_PRIMARY_ATTRS.keys():
+            seen = set()
+            for repo in _sm_collect_model_repos_for_category(category_key):
+                if repo in seen:
+                    continue
+                seen.add(repo)
+                known += 1
+                snapshot = _sm_get_model_manager_snapshot(category_key, repo)
+                if snapshot.get("installed"):
+                    installed += 1
+        try:
+            hs = hardware_score()
+            score = hs.get("score")
+            tier_rating = hs.get("tier_rating")
+            used = 0.0
+            try:
+                import SarahMemoryLLM as _SMLLM
+                used = float(_SMLLM.get_models_storage_usage_gb(globals().get("MODELS_DIR")))
+            except Exception:
+                pass
+            model_summary_var.set(
+                f"Hardware score {score} ({tier_rating})  |  Known installed model entries: {installed}/{max(known, 1)}  |  Model storage used: {used:.2f} GB"
+            )
+        except Exception:
+            model_summary_var.set(f"Known installed model entries: {installed}/{max(known, 1)}")
+
+    def get_selected_repo_for_category(category_key):
+        row = model_rows.get(category_key, {})
+        if not row:
+            return ""
+        choice = str(row["choice_var"].get() or "").strip()
+        custom_repo = str(row["custom_var"].get() or "").strip()
+        if choice == MODEL_MANAGER_CUSTOM_OPTION:
+            return custom_repo
+        if custom_repo and choice == _sm_get_category_custom_repo(category_key):
+            return custom_repo
+        return choice or custom_repo or _sm_get_category_current_repo(category_key)
+
+    def refresh_model_row(category_key):
+        row = model_rows.get(category_key, {})
+        if not row:
+            return
+        selected_repo = get_selected_repo_for_category(category_key)
+        snapshot = _sm_get_model_manager_snapshot(category_key, selected_repo) if selected_repo else {"installed": False, "local_size_gb": 0.0, "estimated_size_gb": None, "meta_summary": "n/a"}
+
+        if selected_repo:
+            if snapshot.get("installed"):
+                row["installed_var"].set(f"Installed ({snapshot.get('local_size_gb', 0.0):.2f} GB)")
+            else:
+                est = snapshot.get("estimated_size_gb")
+                if est is None:
+                    row["installed_var"].set("Not installed")
+                else:
+                    row["installed_var"].set(f"Not installed (est. {float(est):.2f} GB)")
+            row["meta_var"].set(snapshot.get("meta_summary") or "n/a")
+        else:
+            row["installed_var"].set("No repo selected")
+            row["meta_var"].set("n/a")
+
+    def refresh_all_model_rows():
+        for category_key in model_rows.keys():
+            refresh_model_row(category_key)
+        refresh_model_summary()
+
+    def apply_model_selection(category_key, persist_status=True):
+        selected_repo = get_selected_repo_for_category(category_key)
+        if not selected_repo:
+            messagebox.showwarning("Model Selection", f"No model repo selected for {MODEL_MANAGER_CATEGORY_LABELS.get(category_key, category_key)}.")
+            return ""
+        selected_repo = _sm_set_category_model_repo(category_key, selected_repo)
+        refresh_model_row(category_key)
+        if persist_status:
+            status_var.set(f"Updated {MODEL_MANAGER_CATEGORY_LABELS.get(category_key, category_key)} → {selected_repo}")
+        return selected_repo
+
+    def on_model_choice_changed(category_key, *_args):
+        row = model_rows.get(category_key, {})
+        if not row:
+            return
+        choice = str(row["choice_var"].get() or "").strip()
+        if choice and choice != MODEL_MANAGER_CUSTOM_OPTION and choice == _sm_get_category_custom_repo(category_key):
+            row["custom_var"].set(choice)
+        refresh_model_row(category_key)
+
+    def start_model_download(single_category=None):
+        if model_download_state.get("running"):
+            messagebox.showinfo("Model Download Busy", "A model download is already running. Please wait for it to finish.")
+            return
+
+        selections = []
+        categories = [single_category] if single_category else list(model_rows.keys())
+        for category_key in categories:
+            selected_repo = apply_model_selection(category_key, persist_status=False)
+            if selected_repo:
+                selections.append((category_key, selected_repo))
+
+        if not selections:
+            messagebox.showwarning("Model Download", "No valid model selection was found to download.")
+            return
+
+        model_download_state["running"] = True
+        model_download_state["last_message"] = ""
+        model_download_state["mode"] = "determinate"
+        model_progress.configure(mode="determinate")
+        model_progress["value"] = 0
+        model_task_var.set("Starting model download...")
+
+        def queue_progress_event(payload):
+            try:
+                model_download_queue.put(dict(payload or {}))
+            except Exception:
+                pass
+
+        def worker():
+            try:
+                import SarahMemoryLLM as _SMLLM
+            except Exception as exc:
+                queue_progress_event({"event": "error", "message": f"SarahMemoryLLM import failed: {exc}"})
+                return
+
+            for category_key, selected_repo in selections:
+                queue_progress_event({
+                    "event": "stage",
+                    "message": f"Starting {MODEL_MANAGER_CATEGORY_LABELS.get(category_key, category_key)} download: {selected_repo}",
+                    "progress": 0.0,
+                })
+                ok = _SMLLM.download_hf_model(
+                    selected_repo,
+                    _SMLLM.repo_to_local_dir(selected_repo),
+                    use_sentence_transformer=bool(category_key == "embeddings"),
+                    progress_callback=queue_progress_event,
+                    category=category_key,
+                )
+                if not ok:
+                    queue_progress_event({"event": "error", "message": f"Download failed for {selected_repo}"})
+                    return
+            queue_progress_event({"event": "worker_done", "message": "Model download workflow completed."})
+
+        threading.Thread(target=worker, name="SarahMemoryGlobalsModelDownload", daemon=True).start()
+
+    def apply_recommended_stack():
+        for category_key in model_rows.keys():
+            try:
+                tier = recommend_model_tier(category=category_key)
+                if tier == "beast":
+                    fallback = ["high", "mid", "low"]
+                elif tier == "high":
+                    fallback = ["mid", "low"]
+                elif tier == "mid":
+                    fallback = ["low"]
+                else:
+                    fallback = []
+                repo = pick_catalog_model(category_key, tier, fallback_tiers=fallback)
+            except Exception:
+                repo = None
+            if repo:
+                row = model_rows.get(category_key, {})
+                if row:
+                    resolved = resolve_model_repo(repo)
+                    current_values = list(row["combobox"].cget("values"))
+                    if resolved not in current_values:
+                        current_values.insert(0, resolved)
+                        row["combobox"]["values"] = current_values
+                    row["choice_var"].set(resolved)
+                    row["custom_var"].set("")
+                    refresh_model_row(category_key)
+        status_var.set("Applied recommended stack into the model dropdowns (not saved yet)")
+
+    for row_index, category_key in enumerate(MODEL_CATEGORY_PRIMARY_ATTRS.keys(), start=1):
+        label = MODEL_MANAGER_CATEGORY_LABELS.get(category_key, category_key.title())
+        current_repo = _sm_get_category_current_repo(category_key)
+        custom_repo = _sm_get_category_custom_repo(category_key)
+        values = _sm_collect_model_repos_for_category(category_key)
+        if MODEL_MANAGER_CUSTOM_OPTION not in values:
+            values.append(MODEL_MANAGER_CUSTOM_OPTION)
+        if current_repo and current_repo not in values:
+            values.insert(0, current_repo)
+
+        choice_var = tk.StringVar(value=current_repo or MODEL_MANAGER_CUSTOM_OPTION)
+        custom_var = tk.StringVar(value=custom_repo)
+        installed_var = tk.StringVar(value="Checking...")
+        meta_var = tk.StringVar(value="n/a")
+
+        ttk.Label(model_rows_frame, text=label, font=("Segoe UI", 10, "bold")).grid(row=row_index, column=0, sticky="w", padx=8, pady=6)
+
+        combo = ttk.Combobox(model_rows_frame, textvariable=choice_var, values=values, width=40, state="readonly")
+        combo.grid(row=row_index, column=1, sticky="ew", padx=8, pady=6)
+        combo.bind("<<ComboboxSelected>>", lambda _e, c=category_key: on_model_choice_changed(c))
+
+        custom_entry = ttk.Entry(model_rows_frame, textvariable=custom_var, width=42)
+        custom_entry.grid(row=row_index, column=2, sticky="ew", padx=8, pady=6)
+
+        ttk.Label(model_rows_frame, textvariable=installed_var, font=("Segoe UI", 9)).grid(row=row_index, column=3, sticky="w", padx=8, pady=6)
+        ttk.Label(model_rows_frame, textvariable=meta_var, font=("Consolas", 8), foreground="gray").grid(row=row_index, column=4, sticky="w", padx=8, pady=6)
+
+        action_frame = ttk.Frame(model_rows_frame)
+        action_frame.grid(row=row_index, column=5, sticky="e", padx=8, pady=6)
+
+        model_rows[category_key] = {
+            "choice_var": choice_var,
+            "custom_var": custom_var,
+            "installed_var": installed_var,
+            "meta_var": meta_var,
+            "combobox": combo,
+            "custom_entry": custom_entry,
+        }
+
+        ttk.Button(action_frame, text="Apply", width=9, command=lambda c=category_key: apply_model_selection(c)).pack(side="left", padx=(0, 4))
+        ttk.Button(action_frame, text="Download", width=10, command=lambda c=category_key: start_model_download(single_category=c)).pack(side="left")
+
+    def pump_download_events():
+        try:
+            while True:
+                event = model_download_queue.get_nowait()
+                event_name = str(event.get("event") or "message")
+                message = str(event.get("message") or "").strip()
+                progress_value = event.get("progress", None)
+                indeterminate = bool(event.get("indeterminate", False))
+
+                if indeterminate:
+                    if model_download_state.get("mode") != "indeterminate":
+                        try:
+                            model_progress.stop()
+                        except Exception:
+                            pass
+                        model_progress.configure(mode="indeterminate")
+                        model_progress.start(10)
+                        model_download_state["mode"] = "indeterminate"
+                elif progress_value is not None:
+                    try:
+                        pct = max(0.0, min(100.0, float(progress_value) * 100.0))
+                    except Exception:
+                        pct = 0.0
+                    if model_download_state.get("mode") != "determinate":
+                        try:
+                            model_progress.stop()
+                        except Exception:
+                            pass
+                        model_progress.configure(mode="determinate")
+                        model_download_state["mode"] = "determinate"
+                    model_progress["value"] = pct
+
+                if message and message != model_download_state.get("last_message"):
+                    append_model_log(message)
+                    model_download_state["last_message"] = message
+                    model_task_var.set(message)
+
+                if event_name in ("complete", "worker_done"):
+                    try:
+                        model_progress.stop()
+                    except Exception:
+                        pass
+                    model_progress.configure(mode="determinate")
+                    model_progress["value"] = 100
+                    model_download_state["running"] = False
+                    model_download_state["mode"] = "idle"
+                    refresh_all_model_rows()
+
+                if event_name in ("error", "cancelled"):
+                    try:
+                        model_progress.stop()
+                    except Exception:
+                        pass
+                    model_progress.configure(mode="determinate")
+                    model_download_state["running"] = False
+                    model_download_state["mode"] = "idle"
+                    refresh_all_model_rows()
+        except Exception:
+            pass
+        finally:
+            root.after(200, pump_download_events)
+
+    ttk.Button(summary_button_frame, text="Refresh Status", width=14, command=refresh_all_model_rows).pack(side="left", padx=(0, 4))
+    ttk.Button(summary_button_frame, text="Apply Recommended", width=16, command=apply_recommended_stack).pack(side="left", padx=(0, 4))
+    ttk.Button(summary_button_frame, text="Download All Selected", width=18, command=lambda: start_model_download(single_category=None)).pack(side="left")
+
+    # ------------------------------------------------------------------
+    # Footer / shared actions
+    # ------------------------------------------------------------------
     footer_frame = ttk.Frame(root)
     footer_frame.pack(fill="x", padx=10, pady=10)
-    
-    # Status label
-    status_var = tk.StringVar(value="Ready")
-    status_label = ttk.Label(footer_frame, textvariable=status_var, font=("Segoe UI", 9))
-    status_label.pack(side="left")
-    
-    # -------------------------------------------------------------------------
-    # Button Functions
-    # -------------------------------------------------------------------------
+
+    def collect_model_settings():
+        payload = {"CUSTOM_MODEL_REPOS": dict(CUSTOM_MODEL_REPOS)}
+        for category_key in model_rows.keys():
+            selected_repo = get_selected_repo_for_category(category_key)
+            if selected_repo:
+                selected_repo = _sm_set_category_model_repo(category_key, selected_repo)
+                attr = _sm_get_category_primary_attr(category_key)
+                if attr:
+                    payload[attr] = selected_repo
+        for category_key, flag_map in (MODEL_CATEGORY_FLAG_REPO_MAP or {}).items():
+            for flag_name in flag_map.keys():
+                if flag_name in globals():
+                    payload[flag_name] = bool(globals().get(flag_name))
+        return payload
+
     def do_save():
-        """Collect all widget values, update globals, and save to file."""
-        changed_settings = {}
+        changed_settings = collect_model_settings()
         errors = []
-        
         for key, (typ, widget) in all_widgets.items():
             try:
                 if typ == "bool":
@@ -3851,61 +4312,36 @@ def launch_settings_gui():
                 elif typ == "json":
                     import json as _json
                     raw_text = widget.get("1.0", "end").strip()
-                    if raw_text:
-                        new_value = _json.loads(raw_text)
-                    else:
-                        new_value = None
+                    new_value = _json.loads(raw_text) if raw_text else None
                 elif typ == "readonly":
-                    continue  # Skip read-only fields
+                    continue
                 else:
                     continue
-                
-                # Update globals
                 globals()[key] = new_value
                 changed_settings[key] = new_value
-                
-            except Exception as e:
-                errors.append(f"{key}: {str(e)}")
-        
-        # Attempt to save to file
+            except Exception as exc:
+                errors.append(f"{key}: {exc}")
+
         success, message = _sm_save_settings_to_file(changed_settings)
-        
-        # Show confirmation dialog
+        refresh_all_model_rows()
+
         if errors:
-            error_text = "\n".join(errors[:10])  # Limit to first 10 errors
+            error_text = "\n".join(errors[:10])
             if len(errors) > 10:
                 error_text += f"\n... and {len(errors) - 10} more errors"
-            messagebox.showwarning(
-                "Settings Saved with Warnings",
-                f"Saved {len(changed_settings)} setting(s).\n\nErrors:\n{error_text}\n\n{message}"
-            )
+            messagebox.showwarning("Settings Saved with Warnings", f"Saved {len(changed_settings)} setting(s).\n\nErrors:\n{error_text}\n\n{message}")
         else:
             if success:
-                messagebox.showinfo(
-                    "Settings Saved",
-                    f"Successfully saved {len(changed_settings)} setting(s).\n\n{message}"
-                )
+                messagebox.showinfo("Settings Saved", f"Successfully saved {len(changed_settings)} setting(s).\n\n{message}")
             else:
-                messagebox.showerror(
-                    "Save Error",
-                    f"Settings updated in memory but file save failed.\n\n{message}"
-                )
-        
+                messagebox.showerror("Save Error", f"Settings updated in memory but file save failed.\n\n{message}")
         status_var.set(f"Saved {len(changed_settings)} settings")
-    
+
     def do_restore_defaults():
-        """Restore default values for known settings."""
-        if not messagebox.askyesno(
-            "Restore Defaults",
-            "This will reset common settings to their default values.\n\n"
-            "Settings not in the defaults list will remain unchanged.\n\n"
-            "Continue?"
-        ):
+        if not messagebox.askyesno("Restore Defaults", "Restore recommended defaults for common settings and model routing?\n\nContinue?"):
             return
-        
         defaults = _sm_get_default_settings()
         restored_count = 0
-        
         for key, default_value in defaults.items():
             if key in all_widgets:
                 typ, widget = all_widgets[key]
@@ -3925,32 +4361,35 @@ def launch_settings_gui():
                     restored_count += 1
                 except Exception:
                     pass
-        
+
+        default_custom = defaults.get("CUSTOM_MODEL_REPOS", {}) if isinstance(defaults.get("CUSTOM_MODEL_REPOS", {}), dict) else {}
+        for category_key in model_rows.keys():
+            attr = _sm_get_category_primary_attr(category_key)
+            default_repo = str(defaults.get(attr, _sm_get_category_current_repo(category_key)) or "").strip()
+            row = model_rows.get(category_key, {})
+            if not row:
+                continue
+            current_values = list(row["combobox"].cget("values"))
+            if default_repo and default_repo not in current_values:
+                current_values.insert(0, default_repo)
+                row["combobox"]["values"] = current_values
+            row["choice_var"].set(default_repo or MODEL_MANAGER_CUSTOM_OPTION)
+            row["custom_var"].set(str(default_custom.get(category_key, "") or ""))
+            refresh_model_row(category_key)
+            restored_count += 1
+
         status_var.set(f"Restored {restored_count} defaults (not saved yet)")
-        messagebox.showinfo(
-            "Defaults Restored",
-            f"Restored {restored_count} setting(s) to default values.\n\n"
-            "Click 'Save Settings' to apply and persist these changes."
-        )
-    
+        messagebox.showinfo("Defaults Restored", f"Restored {restored_count} values.\n\nClick 'Save Settings' to persist these changes.")
+
     def do_exit():
-        """Exit the settings GUI."""
-        if messagebox.askyesno(
-            "Exit Settings",
-            "Exit without saving?\n\nAny unsaved changes will be lost."
-        ):
+        if messagebox.askyesno("Exit Settings", "Exit without saving?\n\nAny unsaved changes will be lost."):
             root.destroy()
-    
+
     def do_save_and_exit():
-        """Save settings and exit."""
         do_save()
         root.destroy()
-    
-    # -------------------------------------------------------------------------
-
 
     def do_env_import():
-        """Manually import string values from .env into Windows User environment variables."""
         try:
             import platform
             if platform.system().lower() != "windows":
@@ -3974,86 +4413,37 @@ def launch_settings_gui():
                 f"Skipped: {summary.get('skipped',0)}\n\n"
                 "Note: New values apply to NEW terminals/processes. Restart your shell/IDE if needed."
             )
-        except Exception as e:
+        except Exception as exc:
             try:
-                messagebox.showerror("Env Import Failed", str(e))
+                messagebox.showerror("Env Import Failed", str(exc))
             except Exception:
-                print(f"[Env Import Failed] {e}")
+                print(f"[Env Import Failed] {exc}")
 
-
-    # Create action buttons (right to left)
-    # -------------------------------------------------------------------------
-    ttk.Button(
-        footer_frame,
-        text="Exit",
-        command=do_exit,
-        width=12
-    ).pack(side="right", padx=5)
-    
-    ttk.Button(
-        footer_frame,
-        text="Save & Exit",
-        command=do_save_and_exit,
-        width=12
-    ).pack(side="right", padx=5)
-    
-    ttk.Button(
-        footer_frame,
-        text="Save Settings",
-        command=do_save,
-        width=12
-    ).pack(side="right", padx=5)
-    
+    ttk.Button(footer_frame, text="Exit", command=do_exit, width=12).pack(side="right", padx=5)
+    ttk.Button(footer_frame, text="Save & Exit", command=do_save_and_exit, width=12).pack(side="right", padx=5)
+    ttk.Button(footer_frame, text="Save Settings", command=do_save, width=12).pack(side="right", padx=5)
     ttk.Separator(footer_frame, orient="vertical").pack(side="right", fill="y", padx=10)
-    
-    ttk.Button(
-        footer_frame,
-        text="Restore Defaults",
-        command=do_restore_defaults,
-        width=14
-    ).pack(side="right", padx=5)
+    ttk.Button(footer_frame, text="Restore Defaults", command=do_restore_defaults, width=14).pack(side="right", padx=5)
 
-    # -------------------------------------------------------------------------
-    # Optional: .env → Windows Env (manual, one-way, string-only)
-    # -------------------------------------------------------------------------
     try:
         import platform as _pf
         if _pf.system().lower() == "windows":
-            ttk.Button(
-                footer_frame,
-                text="Import .env → Windows Env",
-                command=do_env_import,
-                width=22
-            ).pack(side="left", padx=5)
-            ttk.Button(
-                footer_frame,
-                text="Open Env Vars UI",
-                command=sm_open_windows_env_vars_ui,
-                width=16
-            ).pack(side="left", padx=5)
+            ttk.Button(footer_frame, text="Import .env → Windows Env", command=do_env_import, width=22).pack(side="left", padx=5)
+            ttk.Button(footer_frame, text="Open Env Vars UI", command=sm_open_windows_env_vars_ui, width=16).pack(side="left", padx=5)
     except Exception:
         pass
 
-    
-    # -------------------------------------------------------------------------
-    # Bind keyboard shortcuts
-    # -------------------------------------------------------------------------
     root.bind("<Control-s>", lambda e: do_save())
     root.bind("<Control-q>", lambda e: do_exit())
     root.bind("<Escape>", lambda e: do_exit())
-    
-    # -------------------------------------------------------------------------
-    # Handle window close button
-    # -------------------------------------------------------------------------
-    def on_closing():
-        do_exit()
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    
-    # -------------------------------------------------------------------------
-    # Start the main event loop
-    # -------------------------------------------------------------------------
+    root.protocol("WM_DELETE_WINDOW", do_exit)
+
+    refresh_all_model_rows()
+    pump_download_events()
+
     try:
         status_var.set(f"Loaded {len(all_widgets)} settings across {len(sorted_categories)} categories")
+        append_model_log("Model Manager ready. Select a model per category, optionally enter a custom Hugging Face repo, then click Apply or Download.")
         root.mainloop()
     except Exception as e:
         print(f"[Settings GUI] Mainloop error: {e}")
@@ -4860,7 +5250,7 @@ if __name__ == "__main__":
     
     # Launch Settings GUI
     print("")
-    print("Launching Settings GUI...")
+    print("Launching Settings + Model Manager GUI...")
     print("(Close the window or press Ctrl+C to exit)")
     print("")
     

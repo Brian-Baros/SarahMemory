@@ -53,7 +53,7 @@ import shutil
 import threading
 import queue
 import hashlib
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Callable, Any
 
 # Optional deps (never hard-crash)
 try:
@@ -359,6 +359,104 @@ def _meta_line(repo: str) -> str:
     if disk is not None: parts.append("disk~%sGB" % disk)
     if vram is not None: parts.append("vram~%sGB" % vram)
     return " | ".join(parts) if parts else "n/a"
+
+# ---------------------------------------------------------------------------
+# Download progress + GUI bridge helpers
+# ---------------------------------------------------------------------------
+
+def _emit_progress(progress_callback: Optional[Callable[[Dict[str, Any]], None]], **payload) -> None:
+    try:
+        if callable(progress_callback):
+            progress_callback(dict(payload))
+    except Exception:
+        pass
+
+
+def get_model_install_snapshot(repo: str) -> Dict[str, Any]:
+    repo = resolve_model_repo(repo)
+    local_dir = repo_to_local_dir(repo)
+    installed = is_repo_installed(repo)
+    estimated_size_gb = None
+    try:
+        estimated_size_gb = float((MODEL_META.get(repo, {}) or {}).get("disk_gb_est") or 0.0)
+        if estimated_size_gb <= 0.0:
+            estimated_size_gb = _estimate_hf_repo_size_gb(repo)
+    except Exception:
+        estimated_size_gb = None
+    return {
+        "repo": repo,
+        "local_dir": local_dir,
+        "installed": bool(installed),
+        "local_size_gb": round(local_dir_size_gb(local_dir), 3) if os.path.isdir(local_dir) else 0.0,
+        "estimated_size_gb": round(float(estimated_size_gb), 3) if estimated_size_gb else None,
+        "meta": dict((MODEL_META or {}).get(repo) or {}),
+    }
+
+
+def list_category_models(category: str) -> List[Dict[str, Any]]:
+    category_key = str(category or "").strip().lower()
+    if category_key in ("embedding", "semantic", "memory"):
+        category_key = "embeddings"
+    repos: List[str] = []
+    try:
+        for tier_items in ((MODEL_CATALOG or {}).get(category_key, {}) or {}).values():
+            for repo in tier_items or []:
+                resolved = resolve_model_repo(repo)
+                if resolved and resolved not in repos:
+                    repos.append(resolved)
+    except Exception:
+        pass
+    current_repo = resolve_model_repo(get_stack_primary_repo(category_key, text="", meta=None) or "")
+    if current_repo and current_repo not in repos:
+        repos.insert(0, current_repo)
+    return [get_model_install_snapshot(repo) for repo in repos]
+
+
+def _watch_download_progress(local_dir: str, estimated_size_gb: Optional[float], stop_event: threading.Event, progress_callback=None) -> None:
+    target_bytes = 0
+    try:
+        if estimated_size_gb and float(estimated_size_gb) > 0:
+            target_bytes = int(float(estimated_size_gb) * (1024 ** 3))
+    except Exception:
+        target_bytes = 0
+
+    while not stop_event.is_set():
+        try:
+            size_bytes = 0
+            if os.path.isdir(local_dir):
+                for root, _, files in os.walk(local_dir):
+                    for fn in files:
+                        try:
+                            size_bytes += os.path.getsize(os.path.join(root, fn))
+                        except Exception:
+                            pass
+            if target_bytes > 0:
+                raw = min(1.0, max(0.0, float(size_bytes) / float(target_bytes)))
+                progress = min(0.92, 0.05 + (raw * 0.85))
+                _emit_progress(progress_callback, event="progress", progress=progress, downloaded_bytes=size_bytes, total_bytes=target_bytes, indeterminate=False)
+            else:
+                _emit_progress(progress_callback, event="progress", indeterminate=True, downloaded_bytes=size_bytes, total_bytes=None)
+        except Exception:
+            pass
+        stop_event.wait(0.75)
+
+
+def download_category_model(category: str, repo: Optional[str] = None, progress_callback=None) -> bool:
+    category_key = str(category or "").strip().lower()
+    if category_key in ("embedding", "semantic", "memory"):
+        category_key = "embeddings"
+    selected_repo = resolve_model_repo(repo or get_stack_primary_repo(category_key, text="", meta=None) or "")
+    if not selected_repo:
+        _emit_progress(progress_callback, event="error", message=f"No model repo resolved for category: {category_key}", category=category_key, repo="")
+        return False
+    return bool(download_hf_model(
+        selected_repo,
+        repo_to_local_dir(selected_repo),
+        use_sentence_transformer=bool(category_key == "embeddings"),
+        progress_callback=progress_callback,
+        category=category_key,
+    ))
+
 
 # ---------------------------------------------------------------------------
 # Download helpers
