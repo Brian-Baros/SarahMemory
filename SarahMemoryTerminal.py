@@ -631,6 +631,38 @@ def _apply_cwd_update(session_id: str, target: str, current_cwd: str) -> None:
 # -----------------------------------------------------------------------------
 # Flask adapter helper (optional)
 # -----------------------------------------------------------------------------
+def terminal_api_status(payload: Optional[Dict[str, Any]] = None, *, caller: str = "api") -> Dict[str, Any]:
+    """
+    Lightweight status probe for the WebUI terminal surface.
+
+    Returns availability, developer-mode gate state, current/default workdir,
+    and the canonical Sarah prompt string expected by the frontend.
+    """
+    payload = payload or {}
+    ts = datetime.now().isoformat()
+    dev = bool(developers_mode_enabled())
+    requested_session_id = str(payload.get("session_id") or "").strip()
+    state = get_session_state(requested_session_id) if requested_session_id else None
+    cwd = str((state or {}).get("cwd") or _default_workdir())
+
+    reason = None if dev else "DEVELOPERSMODE is OFF; terminal is disabled."
+
+    return {
+        "ok": True,
+        "available": dev,
+        "developers_mode": dev,
+        "reason": reason,
+        "session_id": str((state or {}).get("id") or requested_session_id),
+        "cwd": cwd,
+        "default_workdir": _default_workdir(),
+        "base_dir": _base_dir(),
+        "platform": platform.system(),
+        "prompt": r"Sarah:\>",
+        "caller": caller,
+        "ts": ts,
+    }
+
+
 def terminal_api_execute(payload: Dict[str, Any], *, caller: str = "api") -> Dict[str, Any]:
     """
     Thin adapter for a Flask route:

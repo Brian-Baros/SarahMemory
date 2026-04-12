@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "SarahMemory AiOS Main",
-      "type": "debugpy",
+      "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/SarahMemoryMain.py",
       "cwd": "${workspaceFolder}",
@@ -13,7 +13,7 @@
     },
     {
       "name": "SarahMemory Flask API",
-      "type": "debugpy",
+      "type": "python",
       "request": "launch",
       "program": "${workspaceFolder}/api/server/app.py",
       "cwd": "${workspaceFolder}",
