@@ -10,7 +10,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | April 08, 2026 |
+| **Last Update** | April 12, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -905,24 +905,34 @@ The Following is on how to incorporate SarahMemory into Visual Studio Code.
 Local VS Code bridge for a running SarahMemory AiOS instance.
 # SarahMemory AiOS VS Code Extension
 
-SarahMemory-first VS Code chat, workspace, and runtime integration for a running SarahMemory AiOS instance.
+SarahMemory-first VS Code chat, workspace, runtime, and built-in Chat participant integration for a running SarahMemory AiOS instance.
 
 ## What this build does
 
-This revision moves SarahMemory from a simple panel into a workspace-owned chat/runtime surface:
+This revision makes SarahMemory a first-class part of VS Code in two surfaces:
+
+- a dedicated **SarahMemory** Activity Bar sidebar chat/runtime surface
+- a built-in **VS Code Chat participant** available as `@sarahmemory`
+
+It also:
 
 - launches `python SarahMemoryMain.py` automatically when VS Code starts
 - seeds VS Code settings automatically with SarahMemory defaults
 - defaults the SarahMemory API base URL to `http://127.0.0.1:8000`
 - sends active file content and workspace file context automatically with chat requests
-- surfaces SarahMemory health, routing, notes, and runtime diagnostics live in the chat UI
+- surfaces SarahMemory health, routing, notes, and runtime diagnostics live in the sidebar UI
 - discovers local model folders under `C:\SarahMemory\data\models` and exposes them in a quick-swap selector
 - discovers API key presence from `.env` and OS environment variables so you do not need to re-enter them in the extension
 - provides a terminal-task launcher and an agent-task chat launcher inside the SarahMemory chat surface
+- contributes a sticky chat participant with slash commands:
+  - `@sarahmemory /health`
+  - `@sarahmemory /models`
+  - `@sarahmemory /agent`
+  - `@sarahmemory /terminal`
 
 ## Important runtime note
 
-This extension uses SarahMemory as the chat backend. The SarahMemory chat view replies through your own SarahMemory runtime rather than VS Code's built-in AI surfaces.
+This extension uses **your SarahMemory runtime** as the chat backend. The sidebar chat replies through SarahMemory, and the built-in VS Code Chat participant routes prompts into SarahMemory as well.
 
 ## Expected SarahMemory routes
 
@@ -942,13 +952,25 @@ and that launching SarahMemory locally is done with:
 python SarahMemoryMain.py
 ```
 
+## How to use built-in VS Code Chat
+
+Open the built-in Chat view and use:
+
+```text
+@sarahmemory <your prompt>
+```
+
+Because the participant is registered as sticky, after the first use it tends to remain selected in that chat input.
+
+The extension also provides participant detection metadata so VS Code can try routing suitable SarahMemory-oriented prompts automatically.
+
 ## Local model discovery
 
 The extension scans:
 
 - `C:\SarahMemory\data\models`
 
-Every top-level model directory is surfaced in the chat UI. Folder names such as:
+Every top-level model directory is surfaced in the sidebar UI. Folder names such as:
 
 - `Qwen_Qwen2.5-7B-Instruct`
 - `google_gemma-3-4b-it`
@@ -975,7 +997,7 @@ It surfaces availability only. It does not render secret values in the UI.
 
 Windows:
 
-`%USERPROFILE%\.vscode\extensions\softdev0-local.sarahmemory-aios-0.3.0`
+`%USERPROFILE%\.vscode\extensions\softdev0-local.sarahmemory-aios-0.4.0`
 
 Then reload VS Code.
 
@@ -992,8 +1014,9 @@ Then in VS Code choose **Extensions → ... → Install from VSIX...**
 
 ## Commands
 
-- `SarahMemory: Focus Chat`
+- `SarahMemory: Focus Sidebar Chat`
 - `SarahMemory: Open Full Chat Panel`
+- `SarahMemory: Open VS Code Chat`
 - `SarahMemory: Ask`
 - `SarahMemory: Send Selection`
 - `SarahMemory: Check Health`
@@ -1017,15 +1040,22 @@ On activation, the extension seeds these settings when missing:
 - `sarahMemory.modelsRoot = C:\SarahMemory\data\models`
 - `sarahMemory.selectedProvider = local_llm`
 
+It also makes a best-effort attempt to ensure `chat.disableAIFeatures = false` if that setting had been disabled.
+
 ## Operational model
 
 This build is designed so SarahMemory can function as:
 
-- the VS Code chat surface for the user
+- the VS Code sidebar chat surface
+- a built-in VS Code Chat participant (`@sarahmemory`)
 - the runtime launcher for local SarahMemory
 - the workspace-aware context bridge into SarahMemory
 - a model-swap front-end for locally installed models
 - a diagnostics and routing console for SarahMemory runtime state
+
+## Important platform limitation
+
+This build makes SarahMemory a first-class participant in VS Code Chat, but it does **not** replace Microsoft's built-in Copilot backend globally. In the built-in Chat surface, SarahMemory is used through the supported participant model (`@sarahmemory`) rather than by taking ownership of Copilot itself.
 
 ---
 # **📜 License**
