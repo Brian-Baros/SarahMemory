@@ -1,8 +1,8 @@
 {
   "name": "sarahmemory-aios",
   "displayName": "SarahMemory AiOS",
-  "description": "Local VS Code integration for a running SarahMemory AiOS instance.",
-  "version": "0.1.0",
+  "description": "SarahMemory-first VS Code chat and workspace integration for a running SarahMemory AiOS instance.",
+  "version": "0.3.0",
   "publisher": "softdev0-local",
   "license": "UNLICENSED",
   "engines": {
@@ -17,24 +17,40 @@
     "local-ai",
     "chat",
     "assistant",
-    "python"
+    "python",
+    "sidebar",
+    "webview",
+    "workspace",
+    "agent"
   ],
   "main": "./extension.js",
   "activationEvents": [
+    "onStartupFinished",
+    "onView:sarahMemory.chatView",
+    "onCommand:sarahMemory.focusChat",
     "onCommand:sarahMemory.openPanel",
     "onCommand:sarahMemory.ask",
     "onCommand:sarahMemory.sendSelection",
     "onCommand:sarahMemory.checkHealth",
     "onCommand:sarahMemory.startAiOS",
+    "onCommand:sarahMemory.stopAiOS",
+    "onCommand:sarahMemory.restartAiOS",
     "onCommand:sarahMemory.startApi",
     "onCommand:sarahMemory.insertLastReply",
-    "onCommand:sarahMemory.setApiBaseUrl"
+    "onCommand:sarahMemory.setApiBaseUrl",
+    "onCommand:sarahMemory.refreshModels",
+    "onCommand:sarahMemory.runTerminalTask",
+    "onCommand:sarahMemory.launchAgentTask"
   ],
   "contributes": {
     "commands": [
       {
+        "command": "sarahMemory.focusChat",
+        "title": "SarahMemory: Focus Chat"
+      },
+      {
         "command": "sarahMemory.openPanel",
-        "title": "SarahMemory: Open Panel"
+        "title": "SarahMemory: Open Full Chat Panel"
       },
       {
         "command": "sarahMemory.ask",
@@ -53,6 +69,14 @@
         "title": "SarahMemory: Start AiOS Main"
       },
       {
+        "command": "sarahMemory.stopAiOS",
+        "title": "SarahMemory: Stop AiOS Main"
+      },
+      {
+        "command": "sarahMemory.restartAiOS",
+        "title": "SarahMemory: Restart AiOS Main"
+      },
+      {
         "command": "sarahMemory.startApi",
         "title": "SarahMemory: Start Flask API"
       },
@@ -63,15 +87,45 @@
       {
         "command": "sarahMemory.setApiBaseUrl",
         "title": "SarahMemory: Set API Base URL"
+      },
+      {
+        "command": "sarahMemory.refreshModels",
+        "title": "SarahMemory: Refresh Local Models"
+      },
+      {
+        "command": "sarahMemory.runTerminalTask",
+        "title": "SarahMemory: Run Terminal Task"
+      },
+      {
+        "command": "sarahMemory.launchAgentTask",
+        "title": "SarahMemory: Launch Agent Task"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sarahMemorySidebar",
+          "title": "SarahMemory",
+          "icon": "resources/sarahmemory.svg"
+        }
+      ]
+    },
+    "views": {
+      "sarahMemorySidebar": [
+        {
+          "type": "webview",
+          "id": "sarahMemory.chatView",
+          "name": "Chat"
+        }
+      ]
+    },
     "configuration": {
       "title": "SarahMemory AiOS",
       "properties": {
         "sarahMemory.apiBaseUrl": {
           "type": "string",
-          "default": "",
-          "description": "Base URL for the running SarahMemory API, for example http://127.0.0.1:5000 or http://127.0.0.1:8000. Leave blank to be prompted the first time."
+          "default": "http://127.0.0.1:8000",
+          "description": "Base URL for the running SarahMemory API. The extension seeds this to http://127.0.0.1:8000 by default."
         },
         "sarahMemory.requestTimeoutMs": {
           "type": "number",
@@ -82,7 +136,7 @@
         "sarahMemory.launchConfigMain": {
           "type": "string",
           "default": "SarahMemory AiOS Main",
-          "description": "Name of the launch.json configuration used to start SarahMemoryMain.py."
+          "description": "Name of the launch.json configuration used when debug-launching SarahMemoryMain.py."
         },
         "sarahMemory.launchConfigApi": {
           "type": "string",
@@ -92,7 +146,76 @@
         "sarahMemory.autoHealthCheck": {
           "type": "boolean",
           "default": true,
-          "description": "Run a health check when the extension activates."
+          "description": "Run recurring health checks against SarahMemory when the extension activates."
+        },
+        "sarahMemory.autoFocusSidebarOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically reveal the SarahMemory sidebar when VS Code starts."
+        },
+        "sarahMemory.autoStartAiOSOnStartup": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create a SarahMemory terminal and run python SarahMemoryMain.py when VS Code starts."
+        },
+        "sarahMemory.autoStartDelayMs": {
+          "type": "number",
+          "default": 1200,
+          "minimum": 0,
+          "description": "Delay before auto-launching SarahMemoryMain.py on startup."
+        },
+        "sarahMemory.healthPollMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 5000,
+          "description": "Polling interval in milliseconds for SarahMemory diagnostics."
+        },
+        "sarahMemory.modelsRoot": {
+          "type": "string",
+          "default": "C:\\SarahMemory\\data\\models",
+          "description": "Root folder used to discover installed local models for quick swapping."
+        },
+        "sarahMemory.autoInjectActiveFile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically attach the active file content and selection to SarahMemory chat requests."
+        },
+        "sarahMemory.autoInjectWorkspaceContext": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically attach the workspace file list to SarahMemory chat requests."
+        },
+        "sarahMemory.workspaceFileListLimit": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of workspace files to attach as lightweight context per request."
+        },
+        "sarahMemory.maxActiveFileChars": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "Maximum number of characters of the active file to include in request context."
+        },
+        "sarahMemory.autoDiscoverApiKeys": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover API key presence from .env and process environment and surface key availability in the chat UI."
+        },
+        "sarahMemory.selectedProvider": {
+          "type": "string",
+          "default": "local_llm",
+          "description": "Preferred SarahMemory provider hint for chat requests."
+        },
+        "sarahMemory.selectedModel": {
+          "type": "string",
+          "default": "",
+          "description": "Preferred model override to attach to chat requests and startup environment."
+        },
+        "sarahMemory.aiosTerminalName": {
+          "type": "string",
+          "default": "SarahMemory AiOS",
+          "description": "Name of the integrated terminal that runs SarahMemoryMain.py."
         }
       }
     },
@@ -102,6 +225,33 @@
           "command": "sarahMemory.sendSelection",
           "group": "navigation@99",
           "when": "editorHasSelection"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "sarahMemory.checkHealth",
+          "when": "view == sarahMemory.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sarahMemory.startAiOS",
+          "when": "view == sarahMemory.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sarahMemory.restartAiOS",
+          "when": "view == sarahMemory.chatView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "sarahMemory.refreshModels",
+          "when": "view == sarahMemory.chatView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "sarahMemory.openPanel",
+          "when": "view == sarahMemory.chatView",
+          "group": "navigation@5"
         }
       ]
     }
