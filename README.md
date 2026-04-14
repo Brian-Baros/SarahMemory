@@ -1058,10 +1058,10 @@ This build is designed so SarahMemory can function as:
 This build makes SarahMemory a first-class participant in VS Code Chat, but it does **not** replace Microsoft's built-in Copilot backend globally. In the built-in Chat surface, SarahMemory is used through the supported participant model (`@sarahmemory`) rather than by taking ownership of Copilot itself.
 
 VISUAL STUDIOS CODE EXTENTION SCREENSHOTS
-![SarahMemory VS-CODE-1](documents/SM-VSC-Screenshot%2026-04-13 185902.jpg)
-![SarahMemory VS-CODE-2](documents/SM-VSC-Screenshot%2026-04-13 203009.jpg)
-![SarahMemory VS-CODE-3](documents/SM-VSC-Screenshot%2026-04-13 203123.jpg)
-![SarahMemory VS-CODE-4](documents/SM-VSC-Screenshot%2026-04-13 203230.jpg)
+![SarahMemory VS-CODE-1](documents/SM-VSC-Screenshot%2026-04-13%185902.jpg)
+![SarahMemory VS-CODE-2](documents/SM-VSC-Screenshot%2026-04-13%203009.jpg)
+![SarahMemory VS-CODE-3](documents/SM-VSC-Screenshot%2026-04-13%203123.jpg)
+![SarahMemory VS-CODE-4](documents/SM-VSC-Screenshot%2026-04-13%203230.jpg)
 
 ---
 # **📜 License**
