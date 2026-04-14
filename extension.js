@@ -3,11 +3,11 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { URL } = require('url');
 
 const SARAH_MEMORY_CONTAINER_ID = 'sarahMemorySidebar';
 const SARAH_MEMORY_VIEW_ID = 'sarahMemory.chatView';
+const CHAT_PARTICIPANT_ID = 'softdev0-local.sarahmemory';
 const DEFAULT_API_BASE_URL = 'http://127.0.0.1:8000';
 const DEFAULT_MODELS_ROOT = 'C:\\SarahMemory\\data\\models';
 const DEFAULT_TERMINAL_NAME = 'SarahMemory AiOS';
@@ -38,8 +38,8 @@ let sarahTerminal;
 let discoveredModelState = [];
 let discoveredKeyState = {};
 let currentDiagnostics = {};
-let startupCompleted = false;
 let startupInFlight = false;
+let chatParticipant;
 
 function activate(context) {
   extensionContext = context;
@@ -60,17 +60,18 @@ function activate(context) {
   );
 
   registerCommands(context);
+  registerChatParticipant(context);
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async (event) => {
     if (event.affectsConfiguration('sarahMemory.modelsRoot')) {
       await refreshModelCatalog({ announce: false, postToViews: true });
     }
     if (event.affectsConfiguration('sarahMemory.healthPollMs')) {
-      restartPolling();
+      await restartPolling();
     }
   }));
 
-  initializeExtension(context).catch((error) => {
+  initializeExtension().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     outputChannel.appendLine(`[activate-error] ${message}`);
   });
@@ -87,7 +88,7 @@ function deactivate() {
   }
 }
 
-async function initializeExtension(context) {
+async function initializeExtension() {
   await seedSettings();
   await refreshDiscoveredSecrets({ announce: false, postToViews: false });
   await refreshModelCatalog({ announce: false, postToViews: false });
@@ -102,8 +103,13 @@ async function initializeExtension(context) {
     await autoStartSarahMemory();
   }
 
-  restartPolling();
-  startupCompleted = true;
+  if (getConfig('autoOpenVsCodeChatOnStartup')) {
+    setTimeout(() => {
+      vscode.commands.executeCommand('workbench.action.chat.open').catch(() => {});
+    }, 1400);
+  }
+
+  await restartPolling();
   broadcastPayload({
     type: 'startup',
     ok: true,
@@ -123,6 +129,11 @@ function registerCommands(context) {
 
   context.subscriptions.push(vscode.commands.registerCommand('sarahMemory.openPanel', async () => {
     await openPanel();
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('sarahMemory.openVsCodeChat', async () => {
+    await vscode.commands.executeCommand('workbench.action.chat.open');
+    vscode.window.showInformationMessage('VS Code Chat opened. Use @sarahmemory, or rely on participant detection after the first use.');
   }));
 
   context.subscriptions.push(vscode.commands.registerCommand('sarahMemory.ask', async () => {
@@ -214,6 +225,181 @@ function registerCommands(context) {
   }));
 }
 
+function registerChatParticipant(context) {
+  if (!vscode.chat || typeof vscode.chat.createChatParticipant !== 'function') {
+    outputChannel.appendLine('[chat-participant] VS Code Chat Participant API is unavailable in this build. Sidebar chat remains available.');
+    return;
+  }
+
+  const handler = async (request, chatContext, stream, token) => {
+    try {
+      await ensureRuntimeReady(stream);
+
+      if (request.command === 'health') {
+        stream.progress('Checking SarahMemory runtime health...');
+        const body = await runHealthCheck({ announce: false, revealOutputOnError: true, postToViews: true });
+        stream.markdown(renderHealthMarkdown(body, currentDiagnostics));
+        addCommonChatButtons(stream);
+        return { metadata: { kind: 'health', ok: Boolean(body && body.ok !== false) } };
+      }
+
+      if (request.command === 'models') {
+        stream.progress('Refreshing local model catalog...');
+        const models = await refreshModelCatalog({ announce: false, postToViews: true });
+        stream.markdown(renderModelsMarkdown(models, String(getConfig('selectedModel') || '')));
+        addCommonChatButtons(stream);
+        return { metadata: { kind: 'models', count: models.length } };
+      }
+
+      if (request.command === 'terminal') {
+        const command = String(request.prompt || '').trim();
+        if (!command) {
+          stream.markdown('Provide a shell command after `/terminal`, for example `/terminal pytest -q`.');
+          return { metadata: { kind: 'terminal', ok: false } };
+        }
+        stream.progress(`Running terminal task: ${command}`);
+        await runTerminalTask(command, { announce: false, revealSidebar: false });
+        stream.markdown(`Started terminal task:\n\n\
+\
+${command}\n\
+\
+`);
+        addCommonChatButtons(stream);
+        return { metadata: { kind: 'terminal', ok: true, command } };
+      }
+
+      const agentTask = request.command === 'agent';
+      const prompt = String(request.prompt || '').trim();
+      if (!prompt) {
+        stream.markdown('Enter a prompt for SarahMemory.');
+        addCommonChatButtons(stream);
+        return { metadata: { kind: 'empty', ok: false } };
+      }
+
+      stream.progress('Routing prompt into SarahMemory...');
+      const response = await sendPrompt(prompt, { agentTask, chatContext });
+      const diagnostics = currentDiagnostics || {};
+      stream.markdown(response.reply);
+
+      const routingMeta = response.raw && (response.raw.meta || response.raw.routing) ? (response.raw.meta || response.raw.routing) : {};
+      if (routingMeta && Object.keys(routingMeta).length) {
+        stream.markdown(`\n\n---\n**Routing**\n\n\
+\
+${safeJson(routingMeta)}\n\
+\
+`);
+      }
+      if (diagnostics && Object.keys(diagnostics).length) {
+        stream.markdown(`\n\n**Runtime Diagnostics**\n\n\
+\
+${safeJson(diagnostics)}\n\
+\
+`);
+      }
+
+      addCommonChatButtons(stream);
+      return {
+        metadata: {
+          kind: agentTask ? 'agent' : 'chat',
+          ok: true,
+          model: String(getConfig('selectedModel') || ''),
+          provider: String(getConfig('selectedProvider') || 'local_llm')
+        }
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      outputChannel.appendLine(`[chat-participant-error] ${message}`);
+      stream.markdown(`SarahMemory chat participant error:\n\n\
+\
+${message}\n\
+\
+`);
+      stream.button({ command: 'sarahMemory.startAiOS', title: 'Start SarahMemory Main' });
+      stream.button({ command: 'sarahMemory.openPanel', title: 'Open SarahMemory Panel' });
+      return { metadata: { kind: 'error', ok: false, error: message } };
+    }
+  };
+
+  chatParticipant = vscode.chat.createChatParticipant(CHAT_PARTICIPANT_ID, handler);
+  chatParticipant.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'sarahmemory.svg');
+  chatParticipant.followupProvider = {
+    provideFollowups(result, chatContext, token) {
+      return [
+        { prompt: 'Show SarahMemory runtime health and routing details', label: 'Show health' },
+        { prompt: 'Review the active file and suggest governed fixes', label: 'Review active file' },
+        { prompt: 'List my local models and tell me which one is selected', label: 'List models' }
+      ];
+    }
+  };
+  context.subscriptions.push(chatParticipant);
+}
+
+async function ensureRuntimeReady(stream) {
+  const baseUrl = normalizeBaseUrl(String(getConfig('apiBaseUrl') || DEFAULT_API_BASE_URL));
+  const up = await quickHealthProbe(baseUrl);
+  if (up) return true;
+  stream.progress('SarahMemory runtime is not responding. Launching SarahMemoryMain.py...');
+  await startAiOSTerminal({ announce: false, restart: false });
+  for (let i = 0; i < 12; i += 1) {
+    await sleep(1000);
+    if (await quickHealthProbe(baseUrl)) {
+      return true;
+    }
+  }
+  throw new Error(`SarahMemory runtime did not become healthy at ${baseUrl}.`);
+}
+
+function addCommonChatButtons(stream) {
+  try {
+    stream.button({ command: 'sarahMemory.focusChat', title: 'Open SarahMemory Sidebar' });
+    stream.button({ command: 'sarahMemory.checkHealth', title: 'Check Health' });
+    stream.button({ command: 'sarahMemory.refreshModels', title: 'Refresh Models' });
+  } catch {
+    // best effort
+  }
+}
+
+function renderHealthMarkdown(body, diagnostics) {
+  const version = body && body.version ? `- Version: ${body.version}` : '';
+  const routing = body && body.routing ? safeJson(body.routing) : '{}';
+  const diag = diagnostics ? safeJson(diagnostics) : '{}';
+  return [
+    '## SarahMemory Runtime Health',
+    '',
+    `- API Base URL: ${normalizeBaseUrl(String(getConfig('apiBaseUrl') || DEFAULT_API_BASE_URL))}`,
+    `- Healthy: ${Boolean(body && body.ok !== false)}`,
+    version,
+    '',
+    '**Routing**',
+    '',
+    '```json',
+    routing,
+    '```',
+    '',
+    '**Diagnostics**',
+    '',
+    '```json',
+    diag,
+    '```'
+  ].filter(Boolean).join('\n');
+}
+
+function renderModelsMarkdown(models, selectedModel) {
+  const lines = ['## SarahMemory Local Models', ''];
+  lines.push(`- Models root: ${String(getConfig('modelsRoot') || DEFAULT_MODELS_ROOT)}`);
+  lines.push(`- Selected model: ${selectedModel || '(auto/default)'}`);
+  lines.push('');
+  if (!models || !models.length) {
+    lines.push('No model folders were discovered.');
+    return lines.join('\n');
+  }
+  for (const model of models) {
+    const marker = (selectedModel && model.repo === selectedModel) ? ' **(selected)**' : '';
+    lines.push(`- ${model.label}${marker}`);
+  }
+  return lines.join('\n');
+}
+
 class SarahMemorySidebarProvider {
   constructor(context) {
     this.context = context;
@@ -227,7 +413,7 @@ class SarahMemorySidebarProvider {
       enableScripts: true,
       localResourceRoots: [this.context.extensionUri]
     };
-    webviewView.webview.html = getWebviewHtml(webviewView.webview, { mode: 'sidebar' });
+    webviewView.webview.html = getWebviewHtml({ mode: 'sidebar' });
     attachWebviewMessageHandler(webviewView.webview, { source: 'sidebar' });
 
     webviewView.onDidDispose(() => {
@@ -266,6 +452,7 @@ async function seedSettings() {
     launchConfigApi: 'SarahMemory Flask API',
     autoHealthCheck: true,
     autoFocusSidebarOnStartup: true,
+    autoOpenVsCodeChatOnStartup: false,
     autoStartAiOSOnStartup: true,
     healthPollMs: 15000,
     modelsRoot: DEFAULT_MODELS_ROOT,
@@ -286,6 +473,16 @@ async function seedSettings() {
       await setConfig(key, value, target);
     }
   }
+
+  try {
+    const chatConfig = vscode.workspace.getConfiguration('chat');
+    const disabled = chatConfig.get('disableAIFeatures');
+    if (disabled === true) {
+      await chatConfig.update('disableAIFeatures', false, target);
+    }
+  } catch {
+    // best effort only
+  }
 }
 
 async function focusChatSidebar() {
@@ -294,7 +491,7 @@ async function focusChatSidebar() {
     try {
       currentSidebarView.show?.(true);
     } catch {
-      // Ignore best-effort focus failure.
+      // ignore
     }
     return currentSidebarView;
   }
@@ -475,12 +672,14 @@ async function restartPolling() {
     apiStateTimer = setInterval(() => {
       refreshRuntimeState().catch(() => {});
     }, healthPollMs);
-    extensionContext.subscriptions.push({
-      dispose: () => {
-        if (healthTimer) clearInterval(healthTimer);
-        if (apiStateTimer) clearInterval(apiStateTimer);
-      }
-    });
+    if (extensionContext) {
+      extensionContext.subscriptions.push({
+        dispose: () => {
+          if (healthTimer) clearInterval(healthTimer);
+          if (apiStateTimer) clearInterval(apiStateTimer);
+        }
+      });
+    }
   }
 }
 
@@ -576,7 +775,7 @@ async function sendPromptAndPresent(prompt, options = {}) {
   if (revealSidebar) {
     await focusChatSidebar();
   }
-  const response = await sendPrompt(prompt, { agentTask });
+  const response = await sendPrompt(prompt, { agentTask, chatContext: options.chatContext });
   if (response && response.reply) {
     if (revealPanel) {
       await openPanel();
@@ -627,6 +826,8 @@ async function buildChatPayload(prompt, options = {}) {
     });
   }
 
+  const history = extractChatHistory(options.chatContext);
+
   return {
     text: prompt,
     source: 'vscode_extension',
@@ -641,6 +842,7 @@ async function buildChatPayload(prompt, options = {}) {
     workspace: contextBlock.workspace,
     active_file: contextBlock.activeFile,
     agent_task: Boolean(options.agentTask),
+    history,
     meta: {
       panel: 'vscode_chat',
       addon: 'vscode_extension',
@@ -658,10 +860,29 @@ async function buildChatPayload(prompt, options = {}) {
       vscode: {
         workspaceName: vscode.workspace.name || '',
         machineId: vscode.env.machineId || '',
-        sessionId: extensionContext?.globalState.get('sarahMemory.sessionId') || await getOrCreateSessionId()
+        sessionId: await getOrCreateSessionId()
       }
     }
   };
+}
+
+function extractChatHistory(chatContext) {
+  if (!chatContext || !Array.isArray(chatContext.history)) {
+    return [];
+  }
+  return chatContext.history.slice(-6).map((item) => {
+    try {
+      if (item && typeof item.prompt === 'string') {
+        return { role: 'user', content: item.prompt };
+      }
+      if (item && Array.isArray(item.response)) {
+        return { role: 'assistant', content: item.response.map((part) => String(part.value || '')).join('\n') };
+      }
+    } catch {
+      // ignore malformed items
+    }
+    return null;
+  }).filter(Boolean);
 }
 
 async function gatherContextForPrompt() {
@@ -802,7 +1023,7 @@ async function discoverEnvironmentSources() {
       const content = await fs.promises.readFile(envPath, 'utf8');
       Object.assign(parsed, parseDotEnv(content));
     } catch {
-      // Ignore missing .env files.
+      // ignore missing .env files
     }
   }
   return { env: parsed, paths: envPaths };
@@ -874,7 +1095,7 @@ async function openPanel() {
     }
   );
 
-  currentPanel.webview.html = getWebviewHtml(currentPanel.webview, { mode: 'panel' });
+  currentPanel.webview.html = getWebviewHtml({ mode: 'panel' });
   attachWebviewMessageHandler(currentPanel.webview, { source: 'panel' });
   broadcastConfig();
 
@@ -958,6 +1179,9 @@ function attachWebviewMessageHandler(webview, { source }) {
         case 'refreshModels':
           await refreshModelCatalog({ announce: true, postToViews: true });
           break;
+        case 'openVsCodeChat':
+          await vscode.commands.executeCommand('workbench.action.chat.open');
+          break;
       }
     } catch (error) {
       const messageText = error instanceof Error ? error.message : String(error);
@@ -1001,7 +1225,7 @@ function postToWebview(webview, payload) {
   webview.postMessage(payload);
 }
 
-function getWebviewHtml(webview, options = {}) {
+function getWebviewHtml(options = {}) {
   const mode = String(options.mode || 'sidebar');
   const nonce = String(Date.now()) + String(Math.random()).slice(2);
   const isSidebar = mode === 'sidebar';
@@ -1134,7 +1358,10 @@ function getWebviewHtml(webview, options = {}) {
           <div class="bannerTitle">${title}</div>
           <div class="status" id="status">Idle</div>
         </div>
-        ${isSidebar ? '<button id="openFullPanel" class="secondary">Full Panel</button>' : ''}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button id="openVsCodeChat" class="secondary">VS Code Chat</button>
+          ${isSidebar ? '<button id="openFullPanel" class="secondary">Full Panel</button>' : ''}
+        </div>
       </div>
       <div class="toolbarWrap">
         <button id="startMain">Start Main</button>
@@ -1340,6 +1567,7 @@ function getWebviewHtml(webview, options = {}) {
       vscode.postMessage({ type: 'runTerminalTask', command });
       terminalCommand.value = '';
     });
+    document.getElementById('openVsCodeChat').addEventListener('click', () => vscode.postMessage({ type: 'openVsCodeChat' }));
 
     const openFullPanel = document.getElementById('openFullPanel');
     if (openFullPanel) {
@@ -1473,6 +1701,14 @@ async function getOrCreateSessionId() {
     await extensionContext?.globalState.update('sarahMemory.sessionId', sessionId);
   }
   return sessionId;
+}
+
+function safeJson(value) {
+  try {
+    return JSON.stringify(value || {}, null, 2);
+  } catch {
+    return '{}';
+  }
 }
 
 function sleep(ms) {
