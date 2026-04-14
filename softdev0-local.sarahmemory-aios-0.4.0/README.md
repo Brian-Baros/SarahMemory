@@ -74,6 +74,7 @@ are converted into display labels such as:
 
 - `Qwen/Qwen2.5-7B-Instruct`
 - `google/gemma-3-4b-it`
+- `NOTE THIS SYSTEM CAN ACCEPT PRETTY MUCH ANY MODEL INCLUDING GEMMA 4, GPT, ETC`
 
 The selected model is attached to SarahMemory requests and also exported into the SarahMemory launch environment as `ACTIVE_LLM_MODEL` when the extension starts `SarahMemoryMain.py`.
 
