@@ -58,12 +58,12 @@ SarahMemory solves all of these by design.
 ---
 # **🧠 The Thinking‑Out‑Loud Manifesto**
 
-> *“I wanted something like Jarvis or Tron — an AI that helps rather than controls.”*
+> *“I wanted something that feels alive — an AI that helps rather than controls.”*
 
-Inspired by *Terminator*, *2001*, *Blade Runner*, and *Tron*, SarahMemory is built as a **warning turned into a solution**:
+Inspired by science fiction, SarahMemory is science fact, turned into a solution:
 
 - AI should be controlled by people  
-- AI should run locally  
+- AI should run locally on any type of hardware  
 - AI should not require billion‑dollar data centers  
 - AI should empower, not surveil  
 
@@ -244,17 +244,6 @@ cd \SarahMemory\resources\desktophost dotnet restore dotnet build -c Release
 ## **Optional: Build React/Flask WebUI**
 
 cd C:\SarahMemory\data\ui\V8_ui_src npm run build copy dist* C:\SarahMemory\data\ui\V8
-
----
----
-
-# 🌟 What Makes the SarahMemory Project Unique
-
-SarahMemory isn’t “another AI tool.”  
-It is the **first open‑source AI Operating System** designed to run across devices, control hardware, manage communications, and operate as a sovereign intelligence platform.
-
-Below is a structured, polished version of the uniqueness section — ready for GitHub.
-
 ---
 
 ## **1. Multi‑Device AI Agent OS**
@@ -271,8 +260,7 @@ SarahMemory runs across an entire ecosystem of devices:
 - LAN offload nodes  
 
 No other open‑source AI system spans this many device classes.  
-SarahMemory is becoming **universal**.
-
+SarahMemory is to be made **universal**.
 ---
 
 ## **2. Full Communications Stack (Telephony + SIP + WebRTC)**
@@ -289,7 +277,6 @@ SarahMemory includes a complete AI‑powered communication suite:
 - Missed‑call badge logic  
 
 This is not a plugin — it’s a **native subsystem**.
-
 ---
 
 ## **3. Built‑In Secure Vault + PIN Encryption**
@@ -303,7 +290,6 @@ Enterprise‑grade security features:
 - Masked telemetry  
 
 SarahMemory behaves like a **security‑first OS**, not a chatbot.
-
 ---
 
 ## **4. Avatar Panel + Media OS**
@@ -332,7 +318,6 @@ SarahMemory scales across hardware tiers:
 - **Performance** — desktops with GPUs  
 
 This gives SarahMemory **unlimited scalability** across the hardware spectrum.
-
 ---
 
 ## **6. Master Menu System (Beginner → Advanced)**
@@ -347,7 +332,6 @@ A true OS‑level UI design:
 - Hotkeys (C / M / A / R / F)  
 
 SarahMemory is building the **design language of AI‑first operating systems**.
-
 ---
 
 ## **7. Full Business Strategy**
@@ -364,7 +348,6 @@ The project includes:
 SarahMemory is not just software — it is a **platform strategy**.
 
 ---
-
 # 🧩 A Fully Mapped AI Operating System
 
 SarahMemory already defines every major subsystem:
@@ -388,7 +371,6 @@ SarahMemory already defines every major subsystem:
 - Cross‑device compatibility  
 
 This is the foundation of a **new AI‑powered OS architecture**.
-
 ---
 
 # 🛡️ What No One Else Has Done in One System
@@ -421,7 +403,6 @@ SarahMemory is competing with **entire AI ecosystems**.
 - No model control  
 
 This is exactly what Big Tech fears.
-
 ---
 
 # 🧨 The Truth
@@ -441,9 +422,7 @@ A fully autonomous, local‑first AI Operating System with:
 You don’t need billion‑dollar data centers.  
 You don’t need corporate permission.  
 You don’t need a subscription.
-
-You need **your own AI OS**.
-
+You don't need a highend PC rig, although it wouldn't hurt.
 ---
 
 # 🗓️ Development History 
