@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useSarahStore } from '@/stores/useSarahStore';
+import { useNavigationStore } from "@/stores/useNavigationStore";
 import { cn } from '@/lib/utils';
 
 // ✅ Add these imports
@@ -31,10 +32,43 @@ interface NodeInfo {
  * Shows node status, messaging, calls, and file transfer
  */
 export function SarahNetScreen() {
+  const { setCurrentScreen } = useNavigationStore();
   const { contacts } = useSarahStore();
   const [nodes, setNodes] = useState<NodeInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
+
+
+      // ---------------------------------------------------------------------------
+      // SarahMemory UI Control Bus listener (Chat-driven automation)
+      // ---------------------------------------------------------------------------
+      useEffect(() => {
+        const handler = (ev: any) => {
+          const actions = ev?.detail?.actions || [];
+          if (!Array.isArray(actions) || actions.length === 0) return;
+          for (const a of actions) {
+            if (!a || !a.type) continue;
+            try {
+
+if (a.type === "navigate" || a.type === "set_screen") {
+  const screen = a.payload?.screen || a.payload?.route;
+  if (typeof screen === "string" && screen) {
+    const s = screen.replace(/^\//, "");
+    if (s) setCurrentScreen(s as any);
+  }
+}
+if (a.type === "sarahnet_refresh") {
+  // If screen has a refresh handler exposed via payload callback, ignore; otherwise allow button to be clicked by user.
+}
+
+            } catch (e) {
+              console.warn("[SarahNetScreen] UI action failed:", a, e);
+            }
+          }
+        };
+        window.addEventListener("sarah:ui", handler as any);
+        return () => window.removeEventListener("sarah:ui", handler as any);
+      }, []);
 
   useEffect(() => {
     checkAvailability();

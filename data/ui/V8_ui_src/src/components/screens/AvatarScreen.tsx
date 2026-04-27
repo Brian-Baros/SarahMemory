@@ -1,5 +1,5 @@
 import { User, Mic, Volume2, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { useSarahStore } from '@/stores/useSarahStore';
@@ -20,6 +20,40 @@ export function AvatarScreen() {
     toggleVoice,
     avatarSpeaking,
   } = useSarahStore();
+
+
+      // ---------------------------------------------------------------------------
+      // SarahMemory UI Control Bus listener (Chat-driven automation)
+      // ---------------------------------------------------------------------------
+      useEffect(() => {
+        const handler = (ev: any) => {
+          const actions = ev?.detail?.actions || [];
+          if (!Array.isArray(actions) || actions.length === 0) return;
+          for (const a of actions) {
+            if (!a || !a.type) continue;
+            try {
+
+if (a.type === "navigate" || a.type === "set_screen") {
+  // no-op here; navigation handled by shell
+}
+if (a.type === "avatar_toggle_cam") {
+  void handleToggleCam();
+}
+if (a.type === "avatar_toggle_mic") {
+  void handleToggleMic();
+}
+if (a.type === "avatar_toggle_voice") {
+  void handleToggleVoice();
+}
+
+            } catch (e) {
+              console.warn("[AvatarScreen] UI action failed:", a, e);
+            }
+          }
+        };
+        window.addEventListener("sarah:ui", handler as any);
+        return () => window.removeEventListener("sarah:ui", handler as any);
+      }, []);
 
   const [isTogglingCam, setIsTogglingCam] = useState(false);
   const [isTogglingMic, setIsTogglingMic] = useState(false);

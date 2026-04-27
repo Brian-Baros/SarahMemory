@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronUp, Palette, Image, Music, Video, Loader2, Sparkles, Download } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -90,6 +90,52 @@ export function CreativeToolsPanel() {
       case 'video': return Video;
     }
   };
+
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a?.type) continue;
+
+        if (a.type === "creative.open" || (a.type === "panel.open" && a.payload?.panel === "creative")) {
+          setIsExpanded(true);
+        }
+
+        if (a.type === "creative.close" || (a.type === "panel.close" && a.payload?.panel === "creative")) {
+          setIsExpanded(false);
+        }
+
+        if (a.type === "creative.set_tab") {
+          const tab = String(a.payload?.tab ?? a.payload?.mode ?? "");
+          if (tab === "image" || tab === "music" || tab === "video") setActiveTab(tab as any);
+        }
+
+        if (a.type === "creative.set_prompt") {
+          setPrompt(String(a.payload?.prompt ?? a.payload?.value ?? ""));
+        }
+
+        if (a.type === "creative.generate") {
+          void handleGenerate();
+        }
+
+        if (a.type === "creative.clear") {
+          setPrompt("");
+          setResults([]);
+          setProgress(0);
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler);
+    return () => window.removeEventListener("sarah:ui", handler);
+  }, []);
+  // [SM_UIBUS_CREATIVE]
+
 
   return (
     <div className="border-b border-sidebar-border">

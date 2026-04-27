@@ -22,6 +22,35 @@ export function StudiosScreen() {
     'image' | 'music' | 'voice' | 'video' | 'communication'
   >('image');
 
+
+      // ---------------------------------------------------------------------------
+      // SarahMemory UI Control Bus listener (Chat-driven automation)
+      // ---------------------------------------------------------------------------
+      useEffect(() => {
+        const handler = (ev: any) => {
+          const actions = ev?.detail?.actions || [];
+          if (!Array.isArray(actions) || actions.length === 0) return;
+          for (const a of actions) {
+            if (!a || !a.type) continue;
+            try {
+
+if (a.type === "navigate" || a.type === "set_screen") {
+  // handled by shell; Studios tab control is local
+}
+if (a.type === "studio_set_tab") {
+  const tab = a.payload?.tab;
+  if (typeof tab === "string") setActiveTab(tab as any);
+}
+
+            } catch (e) {
+              console.warn("[StudiosScreen] UI action failed:", a, e);
+            }
+          }
+        };
+        window.addEventListener("sarah:ui", handler as any);
+        return () => window.removeEventListener("sarah:ui", handler as any);
+      }, []);
+
   useEffect(() => {
     addMessage({ role: 'user', content: '[Studios] Opened Creative Studios' });
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -9,10 +9,9 @@
  * - Desktop mirror
  */
 
-import { Suspense, useRef, useEffect, useState } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { Image, Volume2, Play, Pause, X, PhoneOff, Mic, MicOff, Camera, CameraOff, Speaker } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { cn } from '@/lib/utils';
 import { usePreviewStore } from '@/stores/usePreviewStore';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { AvatarPanel } from './AvatarPanel';
@@ -89,7 +88,7 @@ function AudioPreview({ url, base64, onClose }: { url?: string; base64?: string;
   );
 }
 
-// Image Preview Component
+// Image Player Component
 function ImagePreview({ url, base64, onClose }: { url?: string; base64?: string; onClose: () => void }) {
   const imgSrc = url ? normalizeMediaUrl(url) : base64 ? `data:image/png;base64,${base64}` : null;
 
@@ -153,49 +152,49 @@ function CallPreview({ callId, onEndCall }: { callId?: string; onEndCall: () => 
       {/* Remote video (main) */}
       <div className="flex-1 bg-muted flex items-center justify-center relative">
         <div className="text-muted-foreground text-sm">Remote Video</div>
-        
-        {/* Local video (PiP) */}
-        <div className="absolute bottom-2 right-2 w-24 h-18 bg-sidebar rounded border border-border flex items-center justify-center">
-          <span className="text-xs text-muted-foreground">You</span>
-        </div>
       </div>
 
-      {/* Call Controls */}
-      <div className="flex items-center justify-center gap-3 p-3 bg-sidebar border-t border-border">
-        <Button
-          variant={micMuted ? 'destructive' : 'outline'}
-          size="icon"
-          onClick={() => setMicMuted(!micMuted)}
-        >
-          {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-        </Button>
-        <Button
-          variant={camOff ? 'destructive' : 'outline'}
-          size="icon"
-          onClick={() => setCamOff(!camOff)}
-        >
-          {camOff ? <CameraOff className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-        >
-          <Speaker className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="destructive"
-          size="icon"
-          onClick={onEndCall}
-        >
-          <PhoneOff className="h-4 w-4" />
-        </Button>
+      {/* Local video + Call Controls */}
+      <div className="min-h-[38%] bg-sidebar border-t border-border flex flex-col">
+        <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+          Local User Camera
+        </div>
+        <div className="flex items-center justify-center gap-3 p-3 border-t border-border">
+          <Button
+            variant={micMuted ? 'destructive' : 'outline'}
+            size="icon"
+            onClick={() => setMicMuted(!micMuted)}
+          >
+            {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+          </Button>
+          <Button
+            variant={camOff ? 'destructive' : 'outline'}
+            size="icon"
+            onClick={() => setCamOff(!camOff)}
+          >
+            {camOff ? <CameraOff className="h-4 w-4" /> : <Camera className="h-4 w-4" />}
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+          >
+            <Speaker className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="destructive"
+            size="icon"
+            onClick={onEndCall}
+          >
+            <PhoneOff className="h-4 w-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );
 }
 
 export function PreviewSurface() {
-  const { current, restorePrevious, endCall, resetToAvatar } = usePreviewStore();
+  const { current, restorePrevious, endCall } = usePreviewStore();
   const addMessage = useSarahStore((s) => s.addMessage);
 
   const handleCloseMedia = () => {
@@ -212,7 +211,7 @@ export function PreviewSurface() {
 
   // Render based on current preview type
   return (
-    <div className="relative aspect-video">
+    <div className="relative h-full min-h-0 w-full">
       {/* Base layer: Always render AvatarPanel as the foundation */}
       <AvatarPanel />
 

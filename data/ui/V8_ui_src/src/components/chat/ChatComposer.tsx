@@ -36,7 +36,7 @@ declare global {
 }
 
 type Props = {
-  onSendText: (text: string) => Promise<void> | void;
+  onSendText: (text: string, files?: File[]) => Promise<void> | void;
   isSending?: boolean;
 };
 
@@ -183,7 +183,7 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
     try {
       setMessage("");
       setSelectedFiles([]);
-      await onSendText(payloadText);
+      await onSendText(payloadText, selectedFiles);
     } catch (e) {
       console.error("[ChatComposer] send failed:", e);
       toast.error("Failed to send message");

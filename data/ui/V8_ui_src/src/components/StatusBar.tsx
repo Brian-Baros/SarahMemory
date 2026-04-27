@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   AlertTriangle,
   Loader2,
+  Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -35,7 +36,6 @@ interface SystemStatus {
   network: boolean;
 }
 
-// Mode display map
 const MODE_LABELS: Record<string, { label: string; icon: typeof Zap }> = {
   any: { label: "Any", icon: Zap },
   local: { label: "Local", icon: Database },
@@ -45,14 +45,8 @@ const MODE_LABELS: Record<string, { label: string; icon: typeof Zap }> = {
 
 const MODE_ORDER = ["any", "local", "web", "api"] as const;
 
-// ----------------------------------------------------------------------------
-// Taskbar / icon order persistence
-// - Phase 1: localStorage fallback
-// - Phase 1.5+: if settings.taskbar.items exists, use + update it
-// ----------------------------------------------------------------------------
 const TASKBAR_ORDER_KEY = "sm_taskbar_order_v1";
 
-// Default built-in taskbar items
 const DEFAULT_TASKBAR_IDS = [
   "chat",
   "history",
@@ -63,6 +57,7 @@ const DEFAULT_TASKBAR_IDS = [
   "sarahnet",
   "media",
   "dlengine",
+  "terminal",
   "addons",
   "settings",
 ] as const;
@@ -98,7 +93,6 @@ function mergeWithDefaults(userOrder: TaskbarId[] | null) {
 }
 
 function formatClock(d: Date) {
-  // compact: 08:41 PM (no seconds)
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
@@ -116,20 +110,12 @@ export function StatusBar() {
     network: true,
   });
 
-  // ✅ Clock
   const [now, setNow] = useState<Date>(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  // --------------------------------------------------------------------------
-  // Taskbar order state (drag-reorder)
-  // Priority:
-  //  1) settings.taskbar.items (if present)
-  //  2) localStorage
-  //  3) defaults
-  // --------------------------------------------------------------------------
   const initialOrder = useMemo(() => {
     const s = settings as any;
     const fromSettings = Array.isArray(s?.taskbar?.items)
@@ -144,26 +130,20 @@ export function StatusBar() {
         : null,
     );
     return mergeWithDefaults(saved);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // only once (we don’t want reorder to reset while running)
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [taskbarOrder, setTaskbarOrder] = useState<TaskbarId[]>(initialOrder);
 
-  // Persist order to localStorage (fallback)
   useEffect(() => {
     try {
       window.localStorage.setItem(TASKBAR_ORDER_KEY, JSON.stringify(taskbarOrder));
-    } catch {
-      // ignore (private mode / storage disabled)
-    }
+    } catch {}
   }, [taskbarOrder]);
 
-  // Best-effort persist order into settings.taskbar.items (if schema exists)
   useEffect(() => {
     const s: any = settings as any;
     if (!s?.taskbar) return;
 
-    // Only write if it differs (avoid loops)
     const existing = Array.isArray(s.taskbar.items) ? s.taskbar.items.map(String) : [];
     const desired = taskbarOrder.map(String);
 
@@ -180,12 +160,9 @@ export function StatusBar() {
           items: desired,
         },
       } as any);
-    } catch {
-      // silent (store might be strict until we patch useSarahStore.ts)
-    }
+    } catch {}
   }, [taskbarOrder, settings, updateSettings]);
 
-  // Drag state
   const dragIdRef = useRef<string | null>(null);
 
   const moveItem = (fromId: string, toId: string) => {
@@ -201,12 +178,6 @@ export function StatusBar() {
     });
   };
 
-  // --------------------------------------------------------------------------
-  // Taskbar sizing CSS vars
-  // We keep your legacy --bottom-bar-h and add:
-  //   --taskbar-dock (default "bottom" until DesktopShell drives it)
-  //   --taskbar-size (computed)
-  // --------------------------------------------------------------------------
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -218,8 +189,6 @@ export function StatusBar() {
 
       document.documentElement.style.setProperty("--taskbar-dock", String(dock));
       document.documentElement.style.setProperty("--taskbar-size", `${size}px`);
-
-      // legacy var used by some window maximize logic
       document.documentElement.style.setProperty("--bottom-bar-h", `${el.offsetHeight || 56}px`);
     };
 
@@ -241,7 +210,6 @@ export function StatusBar() {
     };
   }, [settings]);
 
-  // Check API health on mount via edge function
   useEffect(() => {
     const checkHealth = async () => {
       try {
@@ -260,7 +228,6 @@ export function StatusBar() {
     return () => clearInterval(interval);
   }, []);
 
-  // Current mode
   const currentModeId = (settings.mode || "any") as keyof typeof MODE_LABELS;
   const currentMode = MODE_LABELS[currentModeId] || MODE_LABELS.any;
   const ModeIcon = currentMode.icon;
@@ -273,20 +240,14 @@ export function StatusBar() {
 
   const cycleMode = async () => {
     const newMode = nextModeId;
-
-    // Update store immediately so UI changes right away
     updateSettings({ mode: newMode });
 
-    // Best-effort save to backend (same conventions SettingsModal uses)
     try {
       await api.settings.setSetting("api_mode", newMode);
       await api.settings.setSetting("mode", newMode);
-    } catch {
-      // silent: local UI still updated
-    }
+    } catch {}
   };
 
-  // Window open/focus behavior (like dock)
   const clickWindow = (id: any) => {
     const win = windows.find((w) => w.id === id);
     if (!win) {
@@ -298,7 +259,6 @@ export function StatusBar() {
     }
   };
 
-  // Taskbar item registry (maps id -> label/icon/action)
   const TASKBAR_ITEMS: Record<
     string,
     { label: string; Icon: any; onClick: () => void }
@@ -348,6 +308,11 @@ export function StatusBar() {
       Icon: Cpu,
       onClick: () => clickWindow("dlengine"),
     },
+    terminal: {
+      label: "Terminal",
+      Icon: Terminal,
+      onClick: () => clickWindow("terminal"),
+    },
     addons: {
       label: "Addons",
       Icon: LayoutGrid,
@@ -362,7 +327,7 @@ export function StatusBar() {
 
   const renderTaskbarButton = (id: string) => {
     const entry = TASKBAR_ITEMS[id];
-    if (!entry) return null; // unknown IDs are allowed later (custom pins), skipped for now
+    if (!entry) return null;
 
     const isOpen = windows.some((w) => w.id === id);
     const isFocused = focusedWindowId === id;
@@ -418,7 +383,6 @@ export function StatusBar() {
     );
   };
 
-  // ✅ Compact status pill (replaces LEDs)
   const overall = useMemo(() => {
     if (status.api) return { label: "Ready", tone: "ok" as const };
     return { label: "Connecting", tone: "warn" as const };
@@ -444,7 +408,6 @@ export function StatusBar() {
       className="h-14 bg-card/95 backdrop-blur-sm border-t border-border flex items-center justify-between px-3 shrink-0"
       data-taskbar="true"
     >
-      {/* LEFT: MODE + GitHub link */}
       <div className="flex items-center gap-3 min-w-0">
         <button
           type="button"
@@ -482,16 +445,13 @@ export function StatusBar() {
         </a>
       </div>
 
-      {/* CENTER: TASKBAR ICONS (dynamic order) */}
       <div className="flex items-center justify-center flex-1">
         <div className="flex items-center gap-1 px-3 py-1.5 bg-secondary/50 rounded-xl">
           {taskbarOrder.map((id) => renderTaskbarButton(String(id)))}
         </div>
       </div>
 
-      {/* RIGHT: Clock + Donate + Compact Status */}
       <div className="flex items-center gap-3">
-        {/* Clock */}
         <div
           className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-md bg-secondary/30"
           title={now.toLocaleString()}
@@ -504,7 +464,6 @@ export function StatusBar() {
 
         <div className="h-4 w-px bg-border hidden sm:block" />
 
-        {/* Donate Button (ONLY HERE) */}
         <Button
           variant="outline"
           size="sm"
@@ -524,7 +483,6 @@ export function StatusBar() {
 
         <div className="h-4 w-px bg-border hidden sm:block" />
 
-        {/* Compact Status Pill */}
         <div
           className={cn(
             "flex items-center gap-2 px-2.5 py-1 rounded-md",

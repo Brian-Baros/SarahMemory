@@ -81,9 +81,14 @@ export function ChatPanel() {
 
   const estimateSpeakingDuration = (text: string): number => {
     const wordCount = text.split(/\s+/).filter(Boolean).length;
-    const wordsPerSecond = 2.2;
+
+    // Keep the 2D avatar mouth frames active for the full spoken response.
+    // The previous 12s ceiling made the avatar stop while slower backend/OS TTS
+    // was still talking. This is a fallback watchdog only; real audio/TTS
+    // onended/onerror handlers still stop the animation precisely when available.
+    const wordsPerSecond = 1.45;
     const estimatedMs = (wordCount / wordsPerSecond) * 1000;
-    return Math.max(800, Math.min(12000, estimatedMs));
+    return Math.max(1600, Math.min(180000, estimatedMs + 4000));
   };
 
   const stopAvatarSpeaking = () => {
@@ -108,19 +113,29 @@ export function ChatPanel() {
       setSpeechCues([]);
     }
 
-    const durationMs = avatarSpeech?.duration_ms || estimateSpeakingDuration(response.content);
+    const backendDurationMs = Number(avatarSpeech?.duration_ms || 0);
+    const durationMs = Math.max(backendDurationMs, estimateSpeakingDuration(response.content));
 
     setAvatarSpeaking(true);
     setSpeechStartTime(Date.now());
     api.avatar.setSpeaking(true).catch(() => {});
 
+    // Fallback watchdog only. Browser/audio TTS end events below are authoritative.
     speakingTimeoutRef.current = setTimeout(() => {
       stopAvatarSpeaking();
-    }, durationMs + 500);
+    }, durationMs);
   };
 
   const useBrowserTTS = (text: string) => {
     if (!("speechSynthesis" in window)) return;
+
+    if (speakingTimeoutRef.current) {
+      clearTimeout(speakingTimeoutRef.current);
+      speakingTimeoutRef.current = null;
+    }
+    setAvatarSpeaking(true);
+    setSpeechStartTime(Date.now());
+    api.avatar.setSpeaking(true).catch(() => {});
 
     const utterance = new SpeechSynthesisUtterance(text);
 
@@ -158,7 +173,13 @@ export function ChatPanel() {
       utterance.rate = 0.95;
 
       utterance.onend = () => stopAvatarSpeaking();
+      utterance.onerror = () => stopAvatarSpeaking();
       speechSynthesis.speak(utterance);
+
+      // Emergency watchdog only; normal completion is utterance.onend.
+      speakingTimeoutRef.current = setTimeout(() => {
+        stopAvatarSpeaking();
+      }, estimateSpeakingDuration(text) + 15000);
     };
 
     let voices = speechSynthesis.getVoices();
@@ -182,8 +203,18 @@ export function ChatPanel() {
 
         if (audioSrc) {
           const audio = new Audio(audioSrc);
+          if (speakingTimeoutRef.current) {
+            clearTimeout(speakingTimeoutRef.current);
+            speakingTimeoutRef.current = null;
+          }
+          setAvatarSpeaking(true);
+          setSpeechStartTime(Date.now());
+          api.avatar.setSpeaking(true).catch(() => {});
           audio.onended = () => stopAvatarSpeaking();
           audio.onerror = () => stopAvatarSpeaking();
+          speakingTimeoutRef.current = setTimeout(() => {
+            stopAvatarSpeaking();
+          }, estimateSpeakingDuration(text) + 15000);
           await audio.play();
           return;
         }
@@ -199,7 +230,7 @@ export function ChatPanel() {
   };
 
   // Unified send (used by composer + follow-ups + regenerate)
-  const sendText = async (text: string) => {
+  const sendText = async (text: string, files?: File[]) => {
     const clean = (text || "").trim();
     if (!clean) return;
     if (isTyping) return;
@@ -207,8 +238,69 @@ export function ChatPanel() {
     // If user is near bottom, keep it pinned there as new content comes in
     shouldAutoScrollRef.current = true;
 
-    addMessage({ role: "user", content: clean });
+    addMessage({ role: "user", content: clean, attachments: (files||[]).map((f:any, i:number)=>({ id: `${Date.now()}_${i}`, name: f.name, type: f.type || "application/octet-stream", size: f.size })) });
     setTyping(true);
+
+// -------------------------------------------------------------------
+// Local-only manual ingestion: "EAT THIS" + attachments
+// - Will NOT send content to remote APIs.
+// - Uses appsys.py endpoint: POST /api/ingest/eat_this
+// -------------------------------------------------------------------
+const cmd = (clean || "").trim().toLowerCase();
+const hasFiles = Array.isArray(files) && files.length > 0;
+
+if (hasFiles && cmd === "eat this") {
+  try {
+    const form = new FormData();
+    form.append("text", "EAT THIS");
+    for (const f of files || []) form.append("files", f);
+
+    const resp = await fetch("/api/ingest/eat_this", {
+      method: "POST",
+      body: form,
+    });
+
+    const data = await resp.json().catch(() => ({} as any));
+    setTyping(false);
+
+    if (!resp.ok || !data?.ok) {
+      const msg = data?.error || `Ingest failed (HTTP ${resp.status})`;
+      toast.error(msg);
+      addMessage({ role: "assistant", content: `❌ ${msg}` });
+      return;
+    }
+
+    const learned = Number(data?.learned || 0);
+    const count = Number(data?.files?.length || (files || []).length);
+    addMessage({
+      role: "assistant",
+      content: `✅ Ingest complete. Learned ${learned} item(s) from ${count} file(s).`,
+    });
+
+    // optional UI toast action via bus
+    try {
+      window.dispatchEvent(
+        new CustomEvent("sarah:ui", {
+          detail: {
+            source: "chat",
+            ts: Date.now(),
+            actions: [{ type: "toast", payload: { kind: "success", message: `Ingested ${count} file(s)` } }],
+          },
+        })
+      );
+    } catch {}
+
+    return;
+  } catch (e: any) {
+    setTyping(false);
+    const msg = e?.message ? String(e.message) : "Ingest failed";
+    toast.error(msg);
+    addMessage({ role: "assistant", content: `❌ ${msg}` });
+    return;
+  }
+}
+
+
 
     try {
       await api.avatar.setListening(true);

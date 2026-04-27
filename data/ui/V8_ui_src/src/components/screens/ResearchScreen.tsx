@@ -1,226 +1,341 @@
-import { useState } from "react";
-import { Search, BookOpen, Link, Loader2, AlertCircle, Plus, ExternalLink } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { useSarahStore } from "@/stores/useSarahStore";
-import { api } from "@/lib/api";
+import { Loader2, ExternalLink, ArrowLeft, ArrowRight, RefreshCw, Globe, Search } from "lucide-react";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
+import { useNavigationStore } from "@/stores/useNavigationStore";
 
-interface SearchResult {
-  id: string;
-  title: string;
-  snippet: string;
+type FetchBundle = {
+  ok: boolean;
   url?: string;
-  source?: string;
+  title?: string;
+  clean_html?: string;
+  text?: string;
+  links?: Array<{ text: string; url: string }>;
+  content_type?: string;
+  error?: string;
+  detail?: string;
+};
+
+function normalizeUrl(raw: string): string {
+  const u = (raw || "").trim();
+  if (!u) return "";
+  if (u.startsWith("http://") || u.startsWith("https://")) return u;
+  // basic host/path heuristic
+  if (/^[a-z0-9.-]+\.[a-z]{2,}([/:].*)?$/i.test(u)) return `https://${u}`;
+  return u; // treat as query
 }
 
-/**
- * Research Screen - Search and knowledge gathering
- * Supports web search, summarization, and add-to-memory
- */
+function isProbablyUrl(raw: string): boolean {
+  const u = (raw || "").trim();
+  if (!u) return false;
+  if (u.startsWith("http://") || u.startsWith("https://")) return true;
+  return /^[a-z0-9.-]+\.[a-z]{2,}([/:].*)?$/i.test(u);
+}
+
+async function postJson<T>(url: string, body: any): Promise<T> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = (await res.json().catch(() => ({}))) as any;
+  if (!res.ok || data?.ok === false) {
+    const msg = data?.error || `Request failed (${res.status})`;
+    const detail = data?.detail ? ` — ${data.detail}` : "";
+    throw new Error(`${msg}${detail}`);
+  }
+  return data as T;
+}
+
 export function ResearchScreen() {
-  const { addMessage } = useSarahStore();
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [isAvailable, setIsAvailable] = useState<boolean | null>(null);
+  const { setCurrentScreen } = useNavigationStore();
+  const [address, setAddress] = useState("https://duckduckgo.com/");
+  const [loading, setLoading] = useState(false);
 
-  const formatResultsForChat = (q: string, res: SearchResult[]) => {
-    const safeQ = (q || "").trim();
-    if (!res || res.length === 0) {
-      return `No results returned for: ${safeQ}`;
+
+      // ---------------------------------------------------------------------------
+      // SarahMemory UI Control Bus listener (Chat-driven automation)
+      // ---------------------------------------------------------------------------
+      useEffect(() => {
+        const handler = (ev: any) => {
+          const actions = ev?.detail?.actions || [];
+          if (!Array.isArray(actions) || actions.length === 0) return;
+          for (const a of actions) {
+            if (!a || !a.type) continue;
+            try {
+
+if (a.type === "navigate" || a.type === "set_screen") {
+  const screen = a.payload?.screen || a.payload?.route;
+  if (typeof screen === "string" && screen) {
+    const s = screen.replace(/^\//, "");
+    if (s) setCurrentScreen(s as any);
+  }
+}
+if (a.type === "research_open") {
+  const url = a.payload?.url || a.payload?.href || a.payload?.address;
+  if (typeof url === "string" && url.trim()) void navigateReader(url.trim());
+}
+if (a.type === "research_back") {
+  if (canBack) {
+    const u = hist[histIdx - 1];
+    if (u) {
+      setHistIdx((x) => x - 1);
+      void navigateReader(u, true);
     }
+  }
+}
+if (a.type === "research_forward") {
+  if (canFwd) {
+    const u = hist[histIdx + 1];
+    if (u) {
+      setHistIdx((x) => x + 1);
+      void navigateReader(u, true);
+    }
+  }
+}
 
-    // Keep chat output compact so we don't spam the thread
-    const top = res.slice(0, 6);
-    const lines = top.map((r, i) => {
-      const title = (r.title || "Result").trim();
-      const snippet = (r.snippet || "").trim();
-      const url = (r.url || "").trim();
-      const oneLineSnippet = snippet.replace(/\s+/g, " ").slice(0, 180);
-      return url
-        ? `${i + 1}. ${title}\n   ${oneLineSnippet}\n   Source: ${url}`
-        : `${i + 1}. ${title}\n   ${oneLineSnippet}`;
-    });
+            } catch (e) {
+              console.warn("[ResearchScreen] UI action failed:", a, e);
+            }
+          }
+        };
+        window.addEventListener("sarah:ui", handler as any);
+        return () => window.removeEventListener("sarah:ui", handler as any);
+      }, []);
 
-    return `Research results for: ${safeQ}\n\n${lines.join("\n\n")}`;
-  };
+  // Reader Mode bundle
+  const [bundle, setBundle] = useState<FetchBundle | null>(null);
 
-  const handleSearch = async () => {
-    if (!query.trim()) return;
+  // very lightweight history (Reader Mode)
+  const [hist, setHist] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState<number>(-1);
 
-    setIsSearching(true);
+  const canBack = histIdx > 0;
+  const canFwd = histIdx >= 0 && histIdx < hist.length - 1;
+
+  const currentUrl = useMemo(() => {
+    if (histIdx >= 0 && histIdx < hist.length) return hist[histIdx];
+    return bundle?.url || "";
+  }, [bundle?.url, hist, histIdx]);
+
+  const htmlRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // init first entry into history so back/forward behaves immediately
+    const u = normalizeUrl(address);
+    if (u && isProbablyUrl(u)) {
+      setHist([u]);
+      setHistIdx(0);
+      // auto-fetch first page
+      void navigateReader(u, true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function navigateReader(url: string, replaceHistory = false) {
+    const u = normalizeUrl(url);
+    if (!u) return;
+
+    setLoading(true);
     try {
-      const clean = query.trim();
-      let finalResults: SearchResult[] = [];
+      const data = await postJson<FetchBundle>("/api/browser/fetch", { url: u });
+      setBundle(data);
 
-      // Try research endpoint
-      const response = await api.proxy.call("/api/research/search", {
-        method: "POST",
-        body: { query: clean },
-      });
-
-      if (response && (response as any).results) {
-        finalResults = (response as any).results as SearchResult[];
-        setResults(finalResults);
-        setIsAvailable(true);
+      if (replaceHistory) {
+        setHist([data.url || u]);
+        setHistIdx(0);
       } else {
-        // Fallback: use chat with research mode
-        const chatResponse = await api.chat.sendMessage([{ role: "user", content: clean }], {
-          researchMode: true,
+        const nextUrl = data.url || u;
+        setHist((prev) => {
+          const base = prev.slice(0, histIdx + 1);
+          base.push(nextUrl);
+          return base;
         });
-
-        if (chatResponse.sources && chatResponse.sources.length > 0) {
-          finalResults = chatResponse.sources.map((src, idx) => ({
-            id: String(idx),
-            title: src,
-            snippet: chatResponse.content.substring(0, 200),
-            url: src,
-          }));
-          setResults(finalResults);
-          setIsAvailable(true);
-        } else {
-          finalResults = [
-            {
-              id: "0",
-              title: "AI Response",
-              snippet: chatResponse.content,
-            },
-          ];
-          setResults(finalResults);
-          setIsAvailable(true);
-        }
+        setHistIdx((prev) => prev + 1);
       }
 
-      // Log to chat (both the query + the returned results)
-      addMessage({ role: "user", content: `[Research] ${clean}` });
-
-      // Mirror the research output into chat so it becomes part of History / threads
-      addMessage({
-        role: "assistant",
-        content: `[Research Results]\n${formatResultsForChat(clean, finalResults)}`,
+      setAddress(data.url || u);
+    } catch (e: any) {
+      toast.error(e?.message || "Fetch failed");
+      setBundle({
+        ok: false,
+        error: e?.message || "Fetch failed",
+        url: u,
+        title: u,
+        clean_html: `<pre>${String(e?.message || "Fetch failed")}</pre>`,
+        text: String(e?.message || "Fetch failed"),
+        links: [],
       });
-    } catch (error) {
-      console.warn("[Research] Search failed:", error);
-      setIsAvailable(false);
-      toast.error("Research search not available");
     } finally {
-      setIsSearching(false);
+      setLoading(false);
     }
-  };
+  }
 
-  const handleAddToMemory = async (result: SearchResult) => {
-    try {
-      await api.proxy.call("/api/memory/add", {
-        method: "POST",
-        body: {
-          content: result.snippet,
-          title: result.title,
-          source: result.url,
-        },
-      });
-      toast.success("Added to memory");
+  function openInLiveBrowser(url: string) {
+    const u = normalizeUrl(url);
+    if (!u) return;
 
-      addMessage({
-        role: "assistant",
-        content: `[Memory] Added: ${result.title}`,
-      });
-    } catch (error) {
-      console.warn("[Research] Add to memory failed:", error);
-      toast.error("Could not add to memory");
+    // DesktopHost bridge (WebView2)
+    const anyWin = window as any;
+    if (anyWin?.chrome?.webview?.postMessage) {
+      try {
+        anyWin.chrome.webview.postMessage(JSON.stringify({ type: "NAVIGATE_BROWSER", url: u }));
+        toast.success("Routed to Live Browser");
+        return;
+      } catch {
+        // fall through
+      }
     }
-  };
+
+    // Local Flask can open a pywebview window (when local-only)
+    postJson("/api/browser/open_native", { url: u })
+      .then(() => toast.success("Opened native browser"))
+      .catch(() => {
+        // final fallback
+        window.open(u, "_blank", "noopener,noreferrer");
+      });
+  }
+
+  async function handleGo() {
+    const raw = address.trim();
+    if (!raw) return;
+
+    // If user typed a URL → Reader navigate
+    if (isProbablyUrl(raw)) {
+      await navigateReader(raw);
+      return;
+    }
+
+    // Otherwise treat as search query → DuckDuckGo
+    const q = encodeURIComponent(raw);
+    const ddg = `https://duckduckgo.com/?q=${q}`;
+    await navigateReader(ddg);
+  }
+
+  async function handleBack() {
+    if (!canBack) return;
+    const nextIdx = histIdx - 1;
+    const url = hist[nextIdx];
+    setHistIdx(nextIdx);
+    await navigateReader(url, true);
+  }
+
+  async function handleForward() {
+    if (!canFwd) return;
+    const nextIdx = histIdx + 1;
+    const url = hist[nextIdx];
+    setHistIdx(nextIdx);
+    await navigateReader(url, true);
+  }
+
+  async function handleReload() {
+    const u = currentUrl || address;
+    if (!u) return;
+    await navigateReader(u, true);
+  }
+
+  function onReaderClickCapture(e: React.MouseEvent) {
+    // Intercept anchor clicks inside Reader HTML and keep navigation in-app
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    const a = target.closest("a") as HTMLAnchorElement | null;
+    if (!a) return;
+
+    const href = (a.getAttribute("href") || "").trim();
+    if (!href) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Open in Reader by default; user can route to Live Browser with button
+    void navigateReader(href);
+  }
 
   return (
-    <div className="flex flex-col h-full bg-background">
-      {/* Header */}
-      <div className="shrink-0 p-4 border-b border-border bg-card/50">
-        <div className="flex items-center gap-2">
-          <BookOpen className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">Research Hub</h1>
-        </div>
-        <p className="text-xs text-muted-foreground mt-1">Search, summarize, and save knowledge</p>
-      </div>
+    <div className="h-full w-full flex flex-col gap-3 p-3">
+      {/* Toolbar */}
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="icon" disabled={!canBack || loading} onClick={handleBack}>
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon" disabled={!canFwd || loading} onClick={handleForward}>
+          <ArrowRight className="h-4 w-4" />
+        </Button>
+        <Button variant="outline" size="icon" disabled={loading} onClick={handleReload}>
+          <RefreshCw className="h-4 w-4" />
+        </Button>
 
-      {/* Search Input */}
-      <div className="p-4 border-b border-border">
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              placeholder="Search for information..."
-              className="pl-9"
-            />
-          </div>
-          <Button onClick={handleSearch} disabled={isSearching || !query.trim()}>
-            {isSearching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+        <div className="flex-1 flex items-center gap-2">
+          <Input
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void handleGo();
+            }}
+            placeholder="Enter URL or search query"
+          />
+          <Button onClick={() => void handleGo()} disabled={loading}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            <span className="ml-2">Go</span>
           </Button>
         </div>
+
+        <Button variant="secondary" onClick={() => openInLiveBrowser(currentUrl || address)} disabled={loading}>
+          <Globe className="h-4 w-4" />
+          <span className="ml-2">Live Browser</span>
+        </Button>
+
+        <Button variant="outline" onClick={() => window.open(normalizeUrl(currentUrl || address) || "about:blank", "_blank")}>
+          <ExternalLink className="h-4 w-4" />
+        </Button>
       </div>
 
-      {/* Results */}
-      <ScrollArea className="flex-1">
-        <div className="p-4 space-y-3">
-          {isAvailable === false && (
-            <div className="p-4 rounded-xl bg-muted/50 border border-border">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm font-medium">Not available (server configuration)</p>
-                  <p className="text-xs text-muted-foreground mt-1">Research features require server-side support.</p>
-                </div>
-              </div>
-            </div>
-          )}
+      {/* Title / status */}
+      <div className="flex items-center justify-between gap-2 text-sm opacity-80">
+        <div className="truncate">
+          <span className="font-medium">Reader:</span>{" "}
+          <span className="truncate">{bundle?.title || currentUrl || "—"}</span>
+        </div>
+        <div className="shrink-0">
+          {loading ? "Loading…" : bundle?.content_type ? bundle.content_type : ""}
+        </div>
+      </div>
 
-          {results.length === 0 && !isSearching && (
-            <div className="text-center py-12">
-              <Search className="h-12 w-12 mx-auto text-muted-foreground/50 mb-3" />
-              <p className="text-sm text-muted-foreground">Enter a query to search for information</p>
-            </div>
-          )}
+      {/* Reader surface */}
+      <div className="flex-1 rounded-lg border bg-background overflow-auto">
+        <div
+          ref={htmlRef}
+          className="prose prose-invert max-w-none p-4"
+          onClickCapture={onReaderClickCapture}
+          // backend already sanitizes via bleach; this is still a trust boundary so keep it restricted to that endpoint
+          dangerouslySetInnerHTML={{ __html: bundle?.clean_html || "<p>Enter a URL or query, then press Go.</p>" }}
+        />
+      </div>
 
-          {isSearching && (
-            <div className="flex items-center justify-center py-12">
-              <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-            </div>
-          )}
-
-          {results.map((result) => (
-            <div key={result.id} className="p-4 rounded-xl bg-card border border-border">
-              <div className="flex items-start justify-between gap-2">
-                <h3 className="font-medium text-sm">{result.title}</h3>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 shrink-0"
-                  onClick={() => handleAddToMemory(result)}
+      {/* Quick links (optional metadata) */}
+      {!!bundle?.links?.length && (
+        <div className="rounded-lg border p-3">
+          <div className="text-sm font-medium mb-2">Links</div>
+          <div className="grid gap-2">
+            {bundle.links.slice(0, 12).map((l, idx) => (
+              <div key={`${l.url}-${idx}`} className="flex items-center justify-between gap-2">
+                <button
+                  className="text-left text-sm underline truncate"
+                  onClick={() => void navigateReader(l.url)}
+                  title={l.url}
                 >
-                  <Plus className="h-4 w-4" />
+                  {l.text || l.url}
+                </button>
+                <Button variant="outline" size="sm" onClick={() => openInLiveBrowser(l.url)}>
+                  Live
                 </Button>
               </div>
-              <p className="text-xs text-muted-foreground mt-2 line-clamp-3">{result.snippet}</p>
-              {result.url && (
-                <a
-                  href={result.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-2"
-                >
-                  <Link className="h-3 w-3" />
-                  View source
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </ScrollArea>
+      )}
     </div>
   );
 }

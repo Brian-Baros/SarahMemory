@@ -166,6 +166,57 @@ export function ContactsPanel() {
     });
   };
 
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a?.type) continue;
+
+        if (a.type === "contacts.search") {
+          const q = String(a.payload?.query ?? a.payload?.value ?? "");
+          setSearchQuery(q);
+        }
+
+        if (a.type === "contacts.refresh") {
+          void fetchContacts();
+        }
+
+        if (a.type === "contacts.open_add") {
+          setEditingContact(null);
+          setFormData({ name: "", email: "", phone: "", address: "", notes: "" });
+          setIsAddDialogOpen(true);
+        }
+
+        if (a.type === "contacts.edit") {
+          const id = String(a.payload?.id ?? a.payload?.contact_id ?? "");
+          if (!id) continue;
+          const c = (backendContacts || []).find((x) => String((x as any)?.id) === id) || null;
+          if (c) {
+            setEditingContact(c as any);
+            setFormData({
+              name: (c as any)?.name || "",
+              email: (c as any)?.email || "",
+              phone: (c as any)?.phone || "",
+              address: (c as any)?.address || "",
+              notes: (c as any)?.notes || "",
+            });
+            setIsAddDialogOpen(true);
+          }
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler);
+    return () => window.removeEventListener("sarah:ui", handler);
+  }, [backendContacts]);
+  // [SM_UIBUS_CONTACTS]
+
+
   return (
     <div className="p-3 space-y-3">
       {/* Search & Refresh */}

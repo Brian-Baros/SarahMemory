@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Phone, PhoneOff, User, Hash, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -98,6 +98,55 @@ export function DialerPanel() {
     // This will be handled by the contacts panel
     toast.info('Contact saving feature coming soon');
   };
+
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a?.type) continue;
+
+        if (a.type === "dialer.open" || (a.type === "panel.open" && a.payload?.panel === "dialer")) {
+          setIsExpanded(true);
+        }
+
+        if (a.type === "dialer.close" || (a.type === "panel.close" && a.payload?.panel === "dialer")) {
+          setIsExpanded(false);
+        }
+
+        if (a.type === "dialer.set_input") {
+          const v = a.payload?.value ?? a.payload?.dial ?? "";
+          setDialInput(String(v));
+        }
+
+        if (a.type === "dialer.append") {
+          const digit = String(a.payload?.digit ?? a.payload?.value ?? "");
+          if (digit) setDialInput((prev) => prev + digit);
+        }
+
+        if (a.type === "dialer.backspace") {
+          setDialInput((prev) => prev.slice(0, -1));
+        }
+
+        if (a.type === "dialer.call") {
+          void handleCall();
+        }
+
+        if (a.type === "dialer.end_call" || a.type === "dialer.hangup") {
+          void handleEndCall();
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler);
+    return () => window.removeEventListener("sarah:ui", handler);
+  }, [handleCall, handleEndCall]);
+  // [SM_UIBUS_DIALER]
+
 
   return (
     <div className="border-b border-sidebar-border">

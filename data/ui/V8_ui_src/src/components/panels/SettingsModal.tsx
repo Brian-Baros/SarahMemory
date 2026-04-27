@@ -273,6 +273,52 @@ export function SettingsModal() {
   // Display themes - prefer loaded themes, fallback to defaults
   const displayThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
 
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a?.type) continue;
+
+        if (a.type === "settings.open") setSettingsOpen(true);
+        if (a.type === "settings.close") setSettingsOpen(false);
+
+        if (a.type === "settings.set_mode") {
+          const mode = String(a.payload?.mode ?? a.payload?.value ?? "");
+          if (mode) setSelectedMode(mode);
+        }
+
+        if (a.type === "settings.update") {
+          const patch = a.payload?.settings;
+          if (patch && typeof patch === "object") updateSettings(patch);
+        }
+
+        if (a.type === "settings.set_theme") {
+          const theme = String(a.payload?.theme ?? a.payload?.value ?? "");
+          if (theme) updateSettings({ theme });
+        }
+
+        if (a.type === "settings.set_voice") {
+          const voice = String(a.payload?.voice ?? a.payload?.value ?? "");
+          if (voice) updateSettings({ selectedVoice: voice });
+        }
+
+        if (a.type === "settings.save") {
+          void handleSave();
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler);
+    return () => window.removeEventListener("sarah:ui", handler);
+  }, [setSettingsOpen, updateSettings, handleSave]);
+  // [SM_UIBUS_SETTINGSMODAL]
+
+
   return (
     <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
       <DialogContent className="sm:max-w-md bg-card border-border" aria-describedby="settings-dialog-description">

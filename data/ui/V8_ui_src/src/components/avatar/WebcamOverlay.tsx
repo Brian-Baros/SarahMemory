@@ -5,19 +5,17 @@ import { Camera, EyeOff, Eye, AlertTriangle } from "lucide-react";
 
 /**
  * WebcamOverlay:
- * - Shows webcam feed in-corner
- * - Optionally streams frames to backend at low FPS for vision (wave detection etc)
- *
- * Backend optional endpoints you can add:
- * - api.avatar.pushVisionFrame({ imageBase64, ts })
- * OR a websocket "vision_frame" event.
+ * - overlay layout: legacy corner camera overlay
+ * - inline layout: full bottom-screen camera/vision pane for AvatarPanel dual-screen mode
+ * - streams low-FPS frames to /api/vision/frame when streamToBackend is enabled
  */
 export function WebcamOverlay({
   enabled,
   visible,
   onToggleVisible,
   streamToBackend = true,
-  maxFps = 4, // keep it safe by default
+  maxFps = 4,
+  layout = "overlay",
   className,
 }: {
   enabled: boolean;
@@ -25,6 +23,7 @@ export function WebcamOverlay({
   onToggleVisible: () => void;
   streamToBackend?: boolean;
   maxFps?: number;
+  layout?: "overlay" | "inline";
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -33,10 +32,12 @@ export function WebcamOverlay({
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isInline = layout === "inline";
   const canStream = enabled && visible && streamToBackend;
 
   useEffect(() => {
     let stream: MediaStream | null = null;
+    let cancelled = false;
 
     const start = async () => {
       if (!enabled) return;
@@ -49,6 +50,11 @@ export function WebcamOverlay({
           video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: "user" },
           audio: false,
         });
+
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -64,16 +70,17 @@ export function WebcamOverlay({
     start();
 
     return () => {
+      cancelled = true;
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
   }, [enabled]);
 
-  // Throttled frame push - placeholder for future vision API
   useEffect(() => {
     if (!canStream) return;
 
     let raf = 0;
     let lastSent = 0;
+    let sending = false;
 
     const loop = () => {
       raf = requestAnimationFrame(loop);
@@ -81,28 +88,45 @@ export function WebcamOverlay({
       const now = performance.now();
       const minInterval = 1000 / Math.max(1, maxFps);
       if (now - lastSent < minInterval) return;
+      if (sending) return;
 
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      if (!video || !canvas) return;
-      if (!ready) return;
+      if (!video || !canvas || !ready) return;
+      if (video.videoWidth <= 0 || video.videoHeight <= 0) return;
 
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Draw current frame into canvas
       const w = 320;
       const h = 180;
       canvas.width = w;
       canvas.height = h;
       ctx.drawImage(video, 0, 0, w, h);
 
-      // Encode frame (ready for future backend vision endpoint)
-      // const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
       lastSent = now;
+      sending = true;
 
-      // Note: pushVisionFrame endpoint not yet implemented in api.ts
-      // When ready, uncomment and call: api.avatar.pushVisionFrame({ image: dataUrl, ts: Date.now() })
+      void fetch("/api/vision/frame", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          imageBase64: dataUrl,
+          source: "webcam_overlay",
+          width: w,
+          height: h,
+          mime: "image/jpeg",
+          ts: Date.now(),
+        }),
+      })
+        .catch(() => {
+          // Vision endpoint is optional; never break the UI.
+        })
+        .finally(() => {
+          sending = false;
+        });
     };
 
     raf = requestAnimationFrame(loop);
@@ -111,15 +135,52 @@ export function WebcamOverlay({
 
   if (!enabled) return null;
 
+  if (isInline) {
+    return (
+      <div className={cn("relative h-full w-full overflow-hidden bg-slate-950", className)}>
+        {visible ? (
+          <div className="relative h-full w-full">
+            {error ? (
+              <div className="flex h-full w-full items-center justify-center p-3 text-xs text-muted-foreground">
+                <div className="flex max-w-[80%] items-center gap-2 rounded-lg border border-red-500/20 bg-red-950/20 p-3">
+                  <AlertTriangle className="h-4 w-4" />
+                  {error}
+                </div>
+              </div>
+            ) : (
+              <>
+                <video ref={videoRef} className="block h-full w-full object-cover" playsInline muted />
+                <canvas ref={canvasRef} className="hidden" />
+                {!ready && (
+                  <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
+                    Starting camera…
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        ) : (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-muted-foreground">
+            <EyeOff className="h-8 w-8 text-cyan-400/50" />
+            <div className="text-sm">Local vision hidden</div>
+            <Button variant="outline" size="sm" onClick={onToggleVisible}>
+              Show Webcam
+            </Button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className={cn("absolute top-2 left-2 z-30", className)}>
+    <div className={cn("absolute left-2 top-2 z-30", className)}>
       <div
         className={cn(
-          "rounded-lg overflow-hidden border border-border bg-background/70 backdrop-blur shadow-sm",
+          "overflow-hidden rounded-lg border border-border bg-background/70 shadow-sm backdrop-blur",
           !visible && "opacity-70",
         )}
       >
-        <div className="flex items-center justify-between px-2 py-1 border-b border-border">
+        <div className="flex items-center justify-between border-b border-border px-2 py-1">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Camera className="h-3.5 w-3.5" />
             Vision
@@ -138,13 +199,13 @@ export function WebcamOverlay({
         {visible && (
           <div className="relative">
             {error ? (
-              <div className="p-3 text-xs text-muted-foreground flex items-center gap-2">
+              <div className="flex items-center gap-2 p-3 text-xs text-muted-foreground">
                 <AlertTriangle className="h-4 w-4" />
                 {error}
               </div>
             ) : (
               <>
-                <video ref={videoRef} className="block w-[240px] h-[135px] object-cover" playsInline muted />
+                <video ref={videoRef} className="block h-[135px] w-[240px] object-cover" playsInline muted />
                 <canvas ref={canvasRef} className="hidden" />
                 {!ready && (
                   <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">

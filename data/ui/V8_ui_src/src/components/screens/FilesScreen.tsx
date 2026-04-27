@@ -42,6 +42,8 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
+import { useNavigationStore } from "@/stores/useNavigationStore";
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -234,12 +236,67 @@ async function apiUpload<T>(url: string, form: FormData): Promise<T> {
 }
 
 export function FilesScreen() {
+  const { setCurrentScreen } = useNavigationStore();
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [capsNote, setCapsNote] = useState<string>("");
   const [drives, setDrives] = useState<DriveItem[]>([]);
   const [cwd, setCwd] = useState<string>("/");
   const [items, setItems] = useState<FileItem[]>([]);
   const [loading, setLoading] = useState(false);
+
+
+      // ---------------------------------------------------------------------------
+      // SarahMemory UI Control Bus listener (Chat-driven automation)
+      // ---------------------------------------------------------------------------
+      useEffect(() => {
+        const handler = (ev: any) => {
+          const actions = ev?.detail?.actions || [];
+          if (!Array.isArray(actions) || actions.length === 0) return;
+          for (const a of actions) {
+            if (!a || !a.type) continue;
+            try {
+
+if (a.type === "navigate" || a.type === "set_screen") {
+  const screen = a.payload?.screen || a.payload?.route;
+  if (typeof screen === "string" && screen) {
+    const s = screen.replace(/^\//, "");
+    if (s) setCurrentScreen(s as any);
+  }
+}
+if (a.type === "files_set_cwd" || a.type === "files_cd") {
+  const next = a.payload?.cwd || a.payload?.path || a.payload?.dir;
+  if (typeof next === "string" && next.trim()) {
+    setCwd(next.trim());
+    void list(next.trim());
+  }
+}
+if (a.type === "files_refresh") {
+  void refreshAll();
+}
+if (a.type === "files_preview" || a.type === "files_open") {
+  const path = a.payload?.path;
+  if (typeof path === "string" && path.trim()) {
+    const hit = items.find((x) => x.path === path.trim());
+    if (hit) {
+      if (a.type === "files_preview") void openFilePreview(hit);
+      else void openItem(hit);
+    } else {
+      const name = path.trim().split(/[\\/]/).filter(Boolean).pop() || path.trim();
+      const it: any = { name, path: path.trim(), type: a.payload?.type || "file" };
+      if (a.type === "files_preview") void openFilePreview(it);
+      else void openItem(it);
+    }
+  }
+}
+
+            } catch (e) {
+              console.warn("[FilesScreen] UI action failed:", a, e);
+            }
+          }
+        };
+        window.addEventListener("sarah:ui", handler as any);
+        return () => window.removeEventListener("sarah:ui", handler as any);
+      }, []);
 
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Record<string, boolean>>({});

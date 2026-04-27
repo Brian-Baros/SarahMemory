@@ -11,9 +11,9 @@ import { AvatarScreen } from "@/components/screens/AvatarScreen";
 import { SarahNetScreen } from "@/components/screens/SarahNetScreen";
 import { MediaScreen } from "@/components/screens/MediaScreen";
 import { DLEngineScreen } from "@/components/screens/DLEngineScreen";
-import { SettingsScreen } from "@/components/screens/SettingsScreen"; // ✅
+import { SettingsScreen } from "@/components/screens/SettingsScreen";
+import TerminalScreen from "@/components/screens/TerminalScreen";
 
-// NOTE: AddonsScreen will be implemented next; for now render a minimal placeholder
 const AddonsPlaceholder = () => (
   <div className="p-4 text-sm text-muted-foreground">
     Addons launcher coming next… (dynamic from ../data/addons)
@@ -30,8 +30,9 @@ const WINDOW_CONTENT: Record<string, JSX.Element> = {
   sarahnet: <SarahNetScreen />,
   media: <MediaScreen />,
   dlengine: <DLEngineScreen />,
-  addons: <AddonsPlaceholder />, // ✅ prevent undefined render
-  settings: <SettingsScreen />, // ✅
+  terminal: <TerminalScreen />,
+  addons: <AddonsPlaceholder />,
+  settings: <SettingsScreen />,
 };
 
 type Dock = "bottom" | "top" | "left" | "right";
@@ -41,7 +42,6 @@ export function WindowManager() {
 
   const [dock, setDock] = useState<Dock>("bottom");
 
-  // Read the dock value DesktopShell publishes on <html>
   useEffect(() => {
     const readDock = () => {
       try {
@@ -61,8 +61,6 @@ export function WindowManager() {
 
     readDock();
 
-    // In case dock changes via settings while app is open,
-    // we can re-check on resize + a small interval (cheap, safe).
     window.addEventListener("resize", readDock);
     const t = window.setInterval(readDock, 750);
 
@@ -72,7 +70,6 @@ export function WindowManager() {
     };
   }, []);
 
-  // Workspace bounds: taskbar size is published as --taskbar-size
   const workspaceStyle: React.CSSProperties = {
     position: "absolute",
     top: dock === "top" ? "var(--taskbar-size, 56px)" : 0,

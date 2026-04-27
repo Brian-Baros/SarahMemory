@@ -202,6 +202,65 @@ export function RemindersPanel() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a?.type) continue;
+
+        if (a.type === "reminders.open" || (a.type === "panel.open" && a.payload?.panel === "reminders")) {
+          setIsExpanded(true);
+        }
+
+        if (a.type === "reminders.close" || (a.type === "panel.close" && a.payload?.panel === "reminders")) {
+          setIsExpanded(false);
+        }
+
+        if (a.type === "reminders.open_add") {
+          setFormData({
+            title: "",
+            description: "",
+            dueDate: "",
+            dueTime: "",
+            priority: "medium",
+            category: "",
+          });
+          setIsAddDialogOpen(true);
+        }
+
+        if (a.type === "reminders.set_form") {
+          const patch = a.payload?.form;
+          if (patch && typeof patch === "object") {
+            setFormData((prev) => ({ ...prev, ...(patch as any) }));
+          }
+        }
+
+        if (a.type === "reminders.create") {
+          void handleAdd();
+        }
+
+        if (a.type === "reminders.refresh") {
+          void fetchReminders();
+        }
+
+        if (a.type === "reminders.delete") {
+          const id = String(a.payload?.id ?? a.payload?.reminder_id ?? "");
+          if (id) void handleDeleteReminder(id);
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler);
+    return () => window.removeEventListener("sarah:ui", handler);
+  }, [handleAdd, fetchReminders, handleDeleteReminder]);
+  // [SM_UIBUS_REMINDERS]
+
+
   return (
     <div className="border-b border-sidebar-border">
       {/* Header */}

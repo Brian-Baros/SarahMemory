@@ -13,6 +13,7 @@ import { ResearchScreen } from "@/components/screens/ResearchScreen";
 import { FilesScreen } from "@/components/screens/FilesScreen";
 import { MediaScreen } from "@/components/screens/MediaScreen";
 import { DLEngineScreen } from "@/components/screens/DLEngineScreen";
+import TerminalScreen from "@/components/screens/TerminalScreen";
 
 interface MobileShellProps {
   className?: string;
@@ -25,14 +26,12 @@ interface MobileShellProps {
 export function MobileShell({ className }: MobileShellProps) {
   const { currentScreen, swipeLeft, swipeRight } = useNavigationStore();
 
-  // Swipe gesture handlers
   const swipeHandlers = useSwipeGesture({
-    onSwipeLeft: swipeRight, // Swipe left = go right in screen order
-    onSwipeRight: swipeLeft, // Swipe right = go left in screen order
+    onSwipeLeft: swipeRight,
+    onSwipeRight: swipeLeft,
     threshold: 75,
   });
 
-  // Render current screen
   const renderScreen = () => {
     switch (currentScreen) {
       case "history":
@@ -53,8 +52,9 @@ export function MobileShell({ className }: MobileShellProps) {
         return <MediaScreen />;
       case "dlengine":
         return <DLEngineScreen />;
+      case "terminal":
+        return <TerminalScreen />;
       case "settings":
-        // Single master settings UI is the SettingsModal; no dedicated Settings screen.
         return <ChatPanel />;
       default:
         return <ChatPanel />;

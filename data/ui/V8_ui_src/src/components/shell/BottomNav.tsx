@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import {
   Clock,
   Palette,
@@ -8,6 +8,7 @@ import {
   Folder,
   Search,
   Cpu,
+  Terminal,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -23,6 +24,7 @@ const iconMap: Record<string, React.ElementType> = {
   folder: Folder,
   search: Search,
   cpu: Cpu,
+  terminal: Terminal,
 };
 
 // Map MobileScreen -> DesktopApp (desktop shell mode)
@@ -38,6 +40,8 @@ function screenToDesktopApp(screen: string) {
       return "research";
     case "dlengine":
       return "dlengine";
+    case "terminal":
+      return "terminal";
     case "avatar":
       return "avatar";
     case "sarahnet":
@@ -45,10 +49,10 @@ function screenToDesktopApp(screen: string) {
     case "studios":
       return "studio";
     case "history":
+      return "history";
     case "settings":
+      return "settings";
     default:
-      // Desktop shell doesn't have a dedicated "history/settings app" yet;
-      // default to chat for now.
       return "chat";
   }
 }
@@ -69,26 +73,38 @@ export function BottomNav() {
     setActiveDesktopApp,
   } = useNavigationStore();
 
-  // Show on mobile always, and on desktop only when shell mode is enabled
   const shouldRender = isMobile || isDesktopShellMode;
   if (!shouldRender) return null;
 
   const isDesktopDock = !isMobile && isDesktopShellMode;
 
+  // Add terminal item even if store list has not been updated yet.
+  const navItems = useMemo(() => {
+    const base = Array.isArray(BOTTOM_NAV_ITEMS) ? [...BOTTOM_NAV_ITEMS] : [];
+
+    const hasTerminal = base.some((item) => String(item?.screen) === "terminal");
+    if (!hasTerminal) {
+      base.push({
+        screen: "terminal",
+        label: "Terminal",
+        icon: "terminal",
+      } as any);
+    }
+
+    return base;
+  }, []);
+
   return (
     <nav
       className={cn(
         "fixed left-0 right-0 z-50",
-        // Mobile: bottom nav
         isMobile && "bottom-0 lg:hidden",
-        // Desktop shell: also bottom, but allow on lg+
         isDesktopDock && "bottom-0 hidden lg:block",
       )}
     >
       <div className="px-2 pb-[env(safe-area-inset-bottom)]">
         <div
           className={cn(
-            // Mobile: max-w-md; Desktop dock: wider
             "mx-auto mb-2 h-14",
             isDesktopDock ? "max-w-5xl" : "max-w-md",
             "rounded-2xl border border-border/60",
@@ -96,7 +112,7 @@ export function BottomNav() {
           )}
         >
           <div className="flex items-center justify-around h-full px-1">
-            {BOTTOM_NAV_ITEMS.map((item) => {
+            {navItems.map((item) => {
               const Icon = iconMap[item.icon] || MessageCircle;
 
               const isActive = isDesktopDock

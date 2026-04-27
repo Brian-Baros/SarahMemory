@@ -6,6 +6,7 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSarahStore } from '@/stores/useSarahStore';
+import { useNavigationStore } from "@/stores/useNavigationStore";
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
 
@@ -470,6 +471,37 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
  * ✅ Desktop Window version (always visible, no Dialog wrapper)
  */
 export function SettingsScreen() {
+  const { setCurrentScreen } = useNavigationStore();
+
+  // ---------------------------------------------------------------------------
+  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const handler = (ev: any) => {
+      const actions = ev?.detail?.actions || [];
+      if (!Array.isArray(actions) || actions.length === 0) return;
+
+      for (const a of actions) {
+        if (!a || !a.type) continue;
+        try {
+          if (a.type === "navigate" || a.type === "set_screen") {
+            const screen = a.payload?.screen || a.payload?.route;
+            if (typeof screen === "string" && screen) {
+              const s = screen.replace(/^\//, "");
+              if (s) setCurrentScreen(s as any);
+            }
+          }
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("[SettingsScreen] UI action failed:", a, e);
+        }
+      }
+    };
+
+    window.addEventListener("sarah:ui", handler as any);
+    return () => window.removeEventListener("sarah:ui", handler as any);
+  }, [setCurrentScreen]);
+
   return (
     <div className="h-full w-full overflow-auto">
       <div className="px-4 pt-4">
@@ -486,7 +518,6 @@ export function SettingsScreen() {
     </div>
   );
 }
-
 /**
  * ✅ Modal version (kept for mobile / legacy triggers)
  */

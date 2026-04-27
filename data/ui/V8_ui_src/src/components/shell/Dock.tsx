@@ -13,6 +13,7 @@ import {
   Heart,
   ExternalLink,
   Wifi,
+  Terminal,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
@@ -24,7 +25,7 @@ import {
 } from "@/components/ui/tooltip";
 
 interface DockItem {
-  id: WindowId;
+  id: WindowId | string;
   label: string;
   icon: ReactNode;
 }
@@ -39,22 +40,13 @@ const DOCK_ITEMS: DockItem[] = [
   { id: "sarahnet", label: "SarahNet", icon: <Network className="h-5 w-5" /> },
   { id: "media", label: "Media", icon: <Play className="h-5 w-5" /> },
   { id: "dlengine", label: "DL Engine", icon: <Cpu className="h-5 w-5" /> },
+  { id: "terminal", label: "Terminal", icon: <Terminal className="h-5 w-5" /> },
   { id: "settings", label: "Settings", icon: <Settings className="h-5 w-5" /> },
 ];
 
 type RouteMode = "Any" | "Local" | "Web" | "API";
 const ROUTE_MODES: RouteMode[] = ["Any", "Local", "Web", "API"];
 
-/**
- * Dock (combined bottom bar)
- *
- * We intentionally keep this as the single bottom bar in DesktopShell:
- * - Left: Mode toggle + backend/source links
- * - Center: Dock icons
- * - Right: status indicator + Donate
- *
- * NOTE: we keep this lightweight; anything backend-specific is best-effort only.
- */
 export function Dock() {
   const barRef = useRef<HTMLDivElement>(null);
 
@@ -66,11 +58,6 @@ export function Dock() {
     focusedWindowId,
   } = useWindowStore();
 
-  // ---------------------------------------------------------------------------
-  // Route Mode (Any/Local/Web/API)
-  // - Stored in localStorage so it survives reloads.
-  // - Broadcast via a CustomEvent so other parts of the app can optionally react.
-  // ---------------------------------------------------------------------------
   const [routeMode, setRouteMode] = useState<RouteMode>(() => {
     try {
       const v = (localStorage.getItem("route_mode") || "Any") as RouteMode;
@@ -94,7 +81,6 @@ export function Dock() {
       localStorage.setItem("route_mode", v);
     } catch {}
 
-    // Optional: allow other modules to hook in without hard coupling.
     try {
       window.dispatchEvent(
         new CustomEvent("sarah:route_mode", { detail: { mode: v } })
@@ -102,9 +88,6 @@ export function Dock() {
     } catch {}
   };
 
-  // ---------------------------------------------------------------------------
-  // Height -> CSS variable for maximized windows (Window.tsx reads this)
-  // ---------------------------------------------------------------------------
   useEffect(() => {
     const el = barRef.current;
     if (!el) return;
@@ -116,7 +99,6 @@ export function Dock() {
 
     apply();
 
-    // ResizeObserver is best; fallback to window resize.
     let ro: ResizeObserver | null = null;
     try {
       ro = new ResizeObserver(() => apply());
@@ -133,18 +115,17 @@ export function Dock() {
     };
   }, []);
 
-  const handleDockClick = (id: WindowId) => {
+  const handleDockClick = (id: WindowId | string) => {
     const win = windows.find((w) => w.id === id);
     if (!win) {
-      openWindow(id);
+      openWindow(id as any);
     } else if (win.isMinimized) {
-      restoreWindow(id);
+      restoreWindow(id as any);
     } else {
-      focusWindow(id);
+      focusWindow(id as any);
     }
   };
 
-  // Connection indicator (simple UI-only label; real connectivity lives elsewhere)
   const connectionLabel = "Ready";
 
   return (
@@ -156,7 +137,6 @@ export function Dock() {
       )}
     >
       <TooltipProvider delayDuration={200}>
-        {/* LEFT: Mode + source links */}
         <div className="min-w-0 flex items-center gap-2 text-xs text-muted-foreground">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -197,7 +177,6 @@ export function Dock() {
           </div>
         </div>
 
-        {/* CENTER: Dock icons */}
         <div className="flex-1 flex items-center justify-center">
           <div className="flex items-center gap-1 px-3 py-1.5 bg-secondary/50 rounded-xl">
             {DOCK_ITEMS.map((item) => {
@@ -206,7 +185,7 @@ export function Dock() {
               const isMinimized = windows.find((w) => w.id === item.id)?.isMinimized;
 
               return (
-                <Tooltip key={item.id}>
+                <Tooltip key={String(item.id)}>
                   <TooltipTrigger asChild>
                     <button
                       onClick={() => handleDockClick(item.id)}
@@ -230,7 +209,6 @@ export function Dock() {
                         {item.icon}
                       </span>
 
-                      {/* Open indicator dot */}
                       {isOpen && (
                         <span
                           className={cn(
@@ -250,14 +228,12 @@ export function Dock() {
           </div>
         </div>
 
-        {/* RIGHT: Status + Donate */}
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <Wifi className="h-4 w-4 opacity-70" />
             <span className="hidden sm:inline">{connectionLabel}</span>
           </div>
 
-          {/* Single Donate button */}
           <Tooltip>
             <TooltipTrigger asChild>
               <a

@@ -1,6 +1,6 @@
 // AvatarPanel.tsx
 import React, { Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, Maximize2, RefreshCw } from "lucide-react";
+import { Camera, ExternalLink, Maximize2, Monitor, RefreshCw, UserRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -13,7 +13,6 @@ import { AvatarBackground } from "./AvatarBackground";
 import { WebcamOverlay } from "./WebcamOverlay";
 import { Avatar3D, AvatarSpec } from "./Avatar3D";
 
-import sarahAvatarWebp from "@/assets/sarah-avatar.png?format=webp&w=640";
 import sarahAvatarPng from "@/assets/sarah-avatar.png?w=640";
 
 type LocalAvatarState = {
@@ -22,8 +21,6 @@ type LocalAvatarState = {
   speaking: boolean;
   listening: boolean;
   current_action?: string;
-
-  // LOCAL ONLY for now (because backend AvatarState doesn't include spec yet)
   spec?: AvatarSpec;
 };
 
@@ -37,7 +34,6 @@ function joinUrl(base: string, path: string): string {
 }
 
 async function probeUrl(url: string): Promise<{ ok: boolean; contentType?: string }> {
-  // Some servers block HEAD; try GET with small timeout and abort early.
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), 2000);
   try {
@@ -68,7 +64,6 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
   const lastChosenRef = useRef<string | null>(null);
 
   const candidates = useMemo(() => {
-    // Common endpoint guesses (you can add your real one here)
     const paths = [
       "/api/desktop/mjpeg",
       "/api/desktop/stream",
@@ -82,7 +77,6 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
       "/screen/stream",
     ];
 
-    // Build absolute URLs
     const base = apiBase || window.location.origin;
     return paths.map((p) => joinUrl(base, p));
   }, [apiBase]);
@@ -93,19 +87,16 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
     setProbing(true);
     setError(null);
 
-    // If we already found one this session, prefer it first
     const ordered = lastChosenRef.current
       ? [lastChosenRef.current, ...candidates.filter((c) => c !== lastChosenRef.current)]
       : candidates;
 
     for (const url of ordered) {
-      const testUrl = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`; // cache-bust
+      const testUrl = `${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`;
       const res = await probeUrl(testUrl);
       if (!res.ok) continue;
 
       const kind = classifyContentType(res.contentType);
-
-      // Accept if it looks like a stream or image
       if (kind === "mjpeg" || kind === "video" || kind === "image" || kind === "unknown") {
         lastChosenRef.current = url;
         setMirrorUrl(testUrl);
@@ -118,13 +109,10 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
     setMirrorUrl(null);
     setMirrorKind("unknown");
     setProbing(false);
-    setError(
-      "No desktop mirror endpoint responded. Add/confirm a backend stream endpoint (MJPEG/video/image) and include it in the candidate list.",
-    );
+    setError("No desktop mirror stream endpoint responded yet.");
   };
 
   useEffect(() => {
-    // When entering desktop mirror mode, auto-detect
     detect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, apiBase]);
@@ -132,24 +120,23 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
   if (!enabled) return null;
 
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center">
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-background">
       {mirrorUrl ? (
         <>
           {mirrorKind === "video" ? (
-            <video className="w-full h-full object-cover" src={mirrorUrl} autoPlay playsInline muted controls={false} />
+            <video className="h-full w-full object-cover" src={mirrorUrl} autoPlay playsInline muted controls={false} />
           ) : (
-            // MJPEG streams are usually best rendered as an <img>
-            <img className="w-full h-full object-cover" src={mirrorUrl} alt="Desktop Mirror" draggable={false} />
+            <img className="h-full w-full object-cover" src={mirrorUrl} alt="Desktop Mirror" draggable={false} />
           )}
 
-          <div className="absolute top-2 left-2 flex items-center gap-2">
-            <div className="px-2 py-1 rounded bg-background/80 backdrop-blur text-xs text-muted-foreground">
+          <div className="absolute left-3 top-3 flex items-center gap-2">
+            <div className="rounded-md border border-cyan-500/30 bg-slate-950/95 px-2 py-1 text-xs text-cyan-100 shadow-lg backdrop-blur">
               Desktop Mirror {mirrorKind !== "unknown" ? `(${mirrorKind})` : ""}
             </div>
             <Button
               variant="ghost"
               size="icon"
-              className="h-8 w-8 bg-background/80 backdrop-blur"
+              className="h-8 w-8 border border-cyan-500/20 bg-slate-950/95 text-cyan-100 backdrop-blur hover:bg-slate-900"
               onClick={detect}
               disabled={probing}
               title="Retry mirror detection"
@@ -159,9 +146,10 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
           </div>
         </>
       ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-muted-foreground">
+        <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-slate-950/70 text-muted-foreground">
+          <Monitor className="h-8 w-8 text-cyan-400/70" />
           <div className="text-sm">Desktop Mirror not available</div>
-          {error && <div className="text-xs max-w-[80%] text-center opacity-80">{error}</div>}
+          {error && <div className="max-w-[80%] text-center text-xs opacity-80">{error}</div>}
           <Button variant="outline" size="sm" onClick={detect} disabled={probing}>
             {probing ? "Detecting…" : "Retry"}
           </Button>
@@ -171,26 +159,49 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
   );
 }
 
+function ScreenHeader({ icon, title, right }: { icon: React.ReactNode; title: string; right?: React.ReactNode }) {
+  return (
+    <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex items-center justify-between">
+      <div className="flex items-center gap-2 rounded-md border border-cyan-500/20 bg-slate-950/95 px-2 py-1 text-xs text-cyan-100 shadow-lg backdrop-blur">
+        {icon}
+        <span>{title}</span>
+      </div>
+      {right}
+    </div>
+  );
+}
+
 export function AvatarPanel() {
   const mediaState = useSarahStore((s) => s.mediaState);
   const setScreenMode = useSarahStore((s) => s.setScreenMode);
 
   const avatarSpeaking = useSarahStore((s) => s.avatarSpeaking);
-  // ✅ prevent TS/build crash if your store doesn’t define avatarListening yet
   const avatarListening = useSarahStore((s) => (s as any).avatarListening ?? false);
-
   const bootstrapData = useSarahStore((s) => s.bootstrapData);
 
-  const [avatarState, setAvatarState] = useState<LocalAvatarState>({
+  type LiveAvatarState = LocalAvatarState & {
+    current_image?: string;
+    avatar_image?: string;
+    avatar_image_url?: string;
+    emotion?: string;
+    sequence?: number;
+    manifest?: { files?: string[]; base_url?: string; role_map?: Record<string, string> };
+  };
+
+  const [avatarState, setAvatarState] = useState<LiveAvatarState>({
     mode: "avatar_2d",
     expression: "neutral",
+    emotion: "neutral",
     speaking: false,
     listening: false,
+    current_action: "idle",
+    current_image: "sarah-avatar.png",
     spec: { renderMode: "procedural_holo" },
   });
 
   const [webcamVisible, setWebcamVisible] = useState(true);
-  const [isAnimating, setIsAnimating] = useState(false);
+  const [frameTick, setFrameTick] = useState(0);
+  const [imageLoadFailed, setImageLoadFailed] = useState(false);
 
   const screenModes = useMemo(
     () => [
@@ -203,46 +214,118 @@ export function AvatarPanel() {
     [],
   );
 
-  const is3DMode = mediaState.screenMode === "avatar_3d";
-  const isDesktopMirror = mediaState.screenMode === "desktop_mirror";
-
-  // Best API base (works on pythonanywhere + local)
+  const currentMode = (mediaState.screenMode || avatarState.mode || "avatar_2d") as LocalAvatarState["mode"];
+  const is3DMode = currentMode === "avatar_3d";
+  const isDesktopMirror = currentMode === "desktop_mirror";
+  const isCallMode = currentMode === "media" && String(avatarState.current_action || "").toLowerCase().includes("call");
   const apiBase = bootstrapData?.env?.api_base || "";
 
-  // Poll backend avatar state
+  const normalizeAvatarUrl = (url: string): string => {
+    if (!url) return sarahAvatarPng;
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) return url;
+    return joinUrl(apiBase || window.location.origin, url);
+  };
+
+  const localRoleFile = useMemo(() => {
+    const expression = String(avatarState.expression || avatarState.emotion || "neutral").toLowerCase();
+    if (avatarState.speaking) return frameTick % 2 === 0 ? "07_speaking_soft.png" : "08_speaking_open.png";
+    if (avatarState.listening) return "09_listening_thinking.png";
+    if (expression === "joy" || expression === "happy") return "11_happy_open_smile.png";
+    if (expression === "surprise") return "13_surprised_open_mouth.png";
+    if (expression === "anger" || expression === "angry") return "16_angry_yelling.png";
+    if (expression === "sad" || expression === "sadness") return "05_sad_worried.png";
+    if (expression === "thinking") return "09_listening_thinking.png";
+    return "19_neutral_forward.png";
+  }, [avatarState.speaking, avatarState.listening, avatarState.expression, avatarState.emotion, frameTick]);
+
+  const avatarImageSrc = useMemo(() => {
+    if (imageLoadFailed) return sarahAvatarPng;
+
+    // Speaking/listening animation must be driven by the local frame clock.
+    // Do not let the backend's last avatar_image_url freeze the mouth frame
+    // between /api/avatar/state polls while Sarah is still speaking.
+    const liveAnimationActive = Boolean(avatarState.speaking || avatarState.listening);
+    const backendUrl = liveAnimationActive ? "" : avatarState.avatar_image_url;
+    const raw = backendUrl || `/api/avatar/2d/${localRoleFile}`;
+    const absolute = normalizeAvatarUrl(raw);
+    const seq = liveAnimationActive ? frameTick : avatarState.sequence ?? frameTick;
+    return `${absolute}${absolute.includes("?") ? "&" : "?"}seq=${seq}`;
+  }, [avatarState.avatar_image_url, avatarState.sequence, avatarState.speaking, avatarState.listening, frameTick, imageLoadFailed, localRoleFile]);
+
+  const fetchAvatarState = async (): Promise<Partial<LiveAvatarState>> => {
+    const url = joinUrl(apiBase || window.location.origin, "/api/avatar/state");
+    const res = await fetch(`${url}?t=${Date.now()}`, {
+      method: "GET",
+      credentials: "include",
+      cache: "no-store",
+    });
+    if (!res.ok) throw new Error(`Avatar state failed: ${res.status}`);
+    return (await res.json()) as Partial<LiveAvatarState>;
+  };
+
+  const postAvatarState = async (payload: Record<string, unknown>): Promise<Partial<LiveAvatarState>> => {
+    const url = joinUrl(apiBase || window.location.origin, "/api/avatar/state/live");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) throw new Error(`Avatar update failed: ${res.status}`);
+    return (await res.json()) as Partial<LiveAvatarState>;
+  };
+
   useEffect(() => {
     let alive = true;
 
-    const fetchState = async () => {
+    const syncState = async () => {
       try {
-        const state = await api.avatar.getState();
+        const state = await fetchAvatarState();
         if (!alive) return;
-
+        setImageLoadFailed(false);
         setAvatarState((prev) => ({
           ...prev,
           ...state,
-          spec: prev.spec,
+          mode: (state.mode as LocalAvatarState["mode"]) || prev.mode || "avatar_2d",
+          expression: String(state.expression || state.emotion || prev.expression || "neutral"),
+          speaking: Boolean(state.speaking ?? prev.speaking),
+          listening: Boolean(state.listening ?? prev.listening),
+          spec: (state.spec as AvatarSpec) || prev.spec || { renderMode: "procedural_holo" },
         }));
       } catch {
-        // keep UI alive
+        // Keep UI alive with the hardcoded sarah-avatar.png / local role-file fallback.
       }
     };
 
-    fetchState();
-    const interval = setInterval(fetchState, 1500);
+    void syncState();
+    const interval = window.setInterval(syncState, avatarState.speaking ? 300 : 900);
     return () => {
       alive = false;
-      clearInterval(interval);
+      window.clearInterval(interval);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, avatarState.speaking]);
 
-  // Keep backend in sync with speaking/listening (store-driven)
   useEffect(() => {
-    api.avatar.setSpeaking(!!avatarSpeaking).catch(() => {});
+    if (!avatarState.speaking && !avatarState.listening) return;
+    const interval = window.setInterval(() => setFrameTick((v) => v + 1), avatarState.speaking ? 180 : 420);
+    return () => window.clearInterval(interval);
+  }, [avatarState.speaking, avatarState.listening]);
+
+  useEffect(() => {
+    setAvatarState((prev) => ({ ...prev, speaking: !!avatarSpeaking, listening: avatarSpeaking ? false : prev.listening }));
+    postAvatarState({ speaking: !!avatarSpeaking }).catch(() => {
+      api.avatar.setSpeaking(!!avatarSpeaking).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avatarSpeaking]);
 
   useEffect(() => {
-    api.avatar.setListening(!!avatarListening).catch(() => {});
+    setAvatarState((prev) => ({ ...prev, listening: !!avatarListening, speaking: avatarListening ? false : prev.speaking }));
+    postAvatarState({ listening: !!avatarListening }).catch(() => {
+      api.avatar.setListening(!!avatarListening).catch(() => {});
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [avatarListening]);
 
   const handleModeChange = async (mode: LocalAvatarState["mode"]) => {
@@ -250,117 +333,168 @@ export function AvatarPanel() {
     setAvatarState((p) => ({ ...p, mode }));
 
     try {
-      await api.avatar.setMode(mode);
+      const state = await postAvatarState({ mode });
+      setAvatarState((p) => ({ ...p, ...state, mode }));
     } catch {
-      // ok
+      try {
+        await api.avatar.setMode(mode);
+      } catch {
+        // backend mode sync is optional; local UI still switches immediately
+      }
     }
   };
 
   const openFullscreen = () => toast.info("Wire fullscreen to your layout manager when ready.");
   const openExternal = () => toast.info("Wire external view routing when ready.");
+  const statusLabel = avatarState.speaking ? "Speaking" : avatarState.listening ? "Listening" : "Ready";
 
   return (
-    <div className="relative aspect-video bg-gradient-to-b from-background/80 to-background border-b border-sidebar-border overflow-hidden">
-      <AvatarBackground />
+    <div className="flex h-full min-h-[520px] flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950 text-foreground shadow-[0_0_30px_rgba(0,148,255,0.10)]">
+      {/* TOP SCREEN: Avatar / Desktop Mirror / Remote Conference Surface */}
+      <section className="relative min-h-[260px] flex-[0_0_54%] overflow-hidden border-b border-cyan-500/15 bg-slate-950">
+        <AvatarBackground />
 
-      {/* ✅ Desktop Mirror layer (renders above background, below controls) */}
-      <DesktopMirrorView apiBase={apiBase} enabled={isDesktopMirror} />
-
-      {/* Avatar display (hidden when desktop mirror is active) */}
-      {!isDesktopMirror && (
-        <div className="absolute inset-0 flex items-center justify-center z-10">
-          {is3DMode ? (
-            <Suspense
-              fallback={
-                <div className="flex items-center justify-center h-full text-muted-foreground">Loading 3D Avatar…</div>
-              }
-            >
-              <Avatar3D
-                speaking={avatarState.speaking}
-                listening={avatarState.listening}
-                expression={avatarState.expression}
-                spec={avatarState.spec}
-              />
-            </Suspense>
-          ) : (
-            <picture>
-              <source srcSet={sarahAvatarWebp} type="image/webp" />
-              <img
-                src={sarahAvatarPng}
-                alt="Sarah AI Avatar"
-                fetchPriority="high"
-                width={640}
-                height={360}
+        <ScreenHeader
+          icon={isDesktopMirror ? <Monitor className="h-3.5 w-3.5" /> : <UserRound className="h-3.5 w-3.5" />}
+          title={isCallMode ? "Remote Conference" : isDesktopMirror ? "Desktop Vision" : "Avatar Surface"}
+          right={
+            <div className="rounded-md border border-cyan-500/20 bg-slate-950/95 px-2 py-1 text-xs text-muted-foreground shadow-lg backdrop-blur">
+              <span
                 className={cn(
-                  "w-full h-full object-cover opacity-90 transition-all duration-300",
-                  isAnimating && "scale-105",
-                  avatarState.speaking && "animate-pulse",
+                  "mr-1.5 inline-block h-1.5 w-1.5 rounded-full",
+                  avatarState.speaking
+                    ? "bg-status-warning animate-pulse"
+                    : avatarState.listening
+                      ? "bg-status-info animate-pulse"
+                      : "bg-status-online animate-pulse",
                 )}
               />
-            </picture>
-          )}
-        </div>
-      )}
+              {statusLabel}
+            </div>
+          }
+        />
 
-      {/* Webcam overlay (optional: you might want to auto-hide this in desktop mirror mode) */}
-      <WebcamOverlay
-        enabled={mediaState.webcamEnabled}
-        visible={webcamVisible && !isDesktopMirror} // ✅ avoid covering the mirrored desktop
-        onToggleVisible={() => setWebcamVisible((v) => !v)}
-        streamToBackend={false}
-        maxFps={4}
-      />
+        <DesktopMirrorView apiBase={apiBase} enabled={isDesktopMirror} />
 
-      {/* Controls */}
-      <div className="absolute bottom-2 left-2 right-2 flex items-center gap-2 z-20">
-        <Select value={mediaState.screenMode} onValueChange={(v) => handleModeChange(v as any)}>
-          <SelectTrigger className="h-8 text-xs bg-background/80 backdrop-blur border-border flex-1">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {screenModes.map((mode) => (
-              <SelectItem key={mode.value} value={mode.value} className="text-xs">
-                {mode.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        <Button variant="ghost" size="icon" className="h-8 w-8 bg-background/80 backdrop-blur" onClick={openFullscreen}>
-          <Maximize2 className="h-4 w-4" />
-        </Button>
-        <Button variant="ghost" size="icon" className="h-8 w-8 bg-background/80 backdrop-blur" onClick={openExternal}>
-          <ExternalLink className="h-4 w-4" />
-        </Button>
-      </div>
-
-      {/* Status indicator */}
-      <div className="absolute top-2 right-2 z-20 flex flex-col gap-1 items-end">
-        <div className="px-2 py-1 bg-background/80 backdrop-blur rounded text-xs text-muted-foreground flex items-center gap-1.5">
-          <span
-            className={cn(
-              "w-1.5 h-1.5 rounded-full",
-              avatarState.speaking
-                ? "bg-status-warning animate-pulse"
-                : avatarState.listening
-                  ? "bg-status-info animate-pulse"
-                  : "bg-status-online animate-pulse",
+        {!isDesktopMirror && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center">
+            {is3DMode ? (
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-muted-foreground">Loading 3D Avatar…</div>
+                }
+              >
+                <Avatar3D
+                  speaking={avatarState.speaking}
+                  listening={avatarState.listening}
+                  expression={avatarState.expression}
+                  spec={avatarState.spec}
+                />
+              </Suspense>
+            ) : (
+              <div className="flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+                <img
+                  src={avatarImageSrc}
+                  alt="Sarah AI Avatar"
+                  fetchPriority="high"
+                  width={1254}
+                  height={1254}
+                  className="h-full w-full object-contain opacity-100 transition-opacity duration-100"
+                  draggable={false}
+                  onLoad={() => setImageLoadFailed(false)}
+                  onError={() => setImageLoadFailed(true)}
+                />
+              </div>
             )}
-          />
-          {avatarState.speaking ? "Speaking" : avatarState.listening ? "Listening" : "Ready"}
-        </div>
+          </div>
+        )}
 
-        {mediaState.webcamEnabled && !webcamVisible && !isDesktopMirror && (
+        {/* Opaque mode controls. Kept inside top screen but locked above all render layers. */}
+        <div className="absolute bottom-3 left-3 right-3 z-40 flex items-center gap-2">
+          <Select value={currentMode} onValueChange={(v) => handleModeChange(v as LocalAvatarState["mode"])}>
+            <SelectTrigger className="h-10 flex-1 border-cyan-500/40 bg-slate-950 text-sm text-cyan-50 shadow-xl backdrop-blur-none hover:bg-slate-900 focus:ring-2 focus:ring-cyan-500">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent
+              position="popper"
+              sideOffset={6}
+              className="z-[9999] border-cyan-500/40 bg-slate-950 text-cyan-50 shadow-2xl backdrop-blur-none"
+            >
+              {screenModes.map((mode) => (
+                <SelectItem
+                  key={mode.value}
+                  value={mode.value}
+                  className="text-sm text-cyan-50 focus:bg-cyan-500/20 focus:text-white"
+                >
+                  {mode.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
           <Button
             variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs bg-background/80 backdrop-blur"
-            onClick={() => setWebcamVisible(true)}
+            size="icon"
+            className="h-10 w-10 border border-cyan-500/20 bg-slate-950 text-cyan-100 shadow-xl hover:bg-slate-900"
+            onClick={openFullscreen}
           >
-            Show Webcam
+            <Maximize2 className="h-4 w-4" />
           </Button>
-        )}
-      </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-10 w-10 border border-cyan-500/20 bg-slate-950 text-cyan-100 shadow-xl hover:bg-slate-900"
+            onClick={openExternal}
+          >
+            <ExternalLink className="h-4 w-4" />
+          </Button>
+        </div>
+      </section>
+
+      {/* BOTTOM SCREEN: Local Webcam / Local Vision / User Conference Surface */}
+      <section className="relative min-h-[220px] flex-1 overflow-hidden bg-slate-950/95">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,212,255,0.10),transparent_55%)]" />
+        <ScreenHeader
+          icon={<Camera className="h-3.5 w-3.5" />}
+          title={isCallMode ? "Local User" : "Local Webcam Vision"}
+          right={
+            <div className="pointer-events-auto flex items-center gap-2">
+              {mediaState.webcamEnabled && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 border border-cyan-500/20 bg-slate-950/95 px-2 text-xs text-cyan-100 hover:bg-slate-900"
+                  onClick={() => setWebcamVisible((v) => !v)}
+                >
+                  {webcamVisible ? "Hide" : "Show"}
+                </Button>
+              )}
+            </div>
+          }
+        />
+
+        <div className="absolute inset-0 z-10 pt-12">
+          {mediaState.webcamEnabled ? (
+            <WebcamOverlay
+              enabled={mediaState.webcamEnabled}
+              visible={webcamVisible}
+              onToggleVisible={() => setWebcamVisible((v) => !v)}
+              streamToBackend={true}
+              maxFps={4}
+              layout="inline"
+              className="h-full w-full"
+            />
+          ) : (
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-muted-foreground">
+              <Camera className="h-8 w-8 text-cyan-400/50" />
+              <div className="text-sm">Camera is off</div>
+              <div className="max-w-[80%] text-center text-xs opacity-80">
+                Enable Camera in Media Controls to activate local vision under the avatar screen.
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 }
