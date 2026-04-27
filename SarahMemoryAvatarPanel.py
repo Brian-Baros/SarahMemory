@@ -2119,6 +2119,20 @@ class AvatarPanelAPI:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    def set_speaking(self, speaking: bool) -> Dict[str, Any]:
+        """Set speaking state for WebUI sync."""
+        self._state.set_speaking(bool(speaking))
+        if bool(speaking):
+            self._animation_engine.start_lip_sync(0.0)
+        else:
+            self._animation_engine.stop_lip_sync()
+        return {"success": True, "speaking": bool(speaking), "state": self.get_state()}
+
+    def set_listening(self, listening: bool) -> Dict[str, Any]:
+        """Set listening state for WebUI sync."""
+        self._state.set_listening(bool(listening))
+        return {"success": True, "listening": bool(listening), "state": self.get_state()}
+
     def get_avatar_frame(self, width: int = 300, height: int = 300, format: str = "base64") -> Dict[str, Any]:
         """
         Get current avatar frame for WebUI rendering.
