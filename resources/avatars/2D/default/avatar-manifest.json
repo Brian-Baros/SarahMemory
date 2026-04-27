@@ -1,10 +1,41 @@
 {
-  
   "target_dimensions": [
     1254,
     1254
   ],
   "processing": "preserve aspect ratio; resize each to target height; center on 1254x1254 checker canvas; PNG output",
+  "default_file": "sarah-avatar.png",
+  "base_url": "/api/avatar/2d",
+  "role_map": {
+    "default": "sarah-avatar.png",
+    "neutral": "19_neutral_forward.png",
+    "ready": "20_soft_smile.png",
+    "idle": "19_neutral_forward.png",
+    "thinking": "09_listening_thinking.png",
+    "listening": "09_listening_thinking.png",
+    "speaking_soft": "07_speaking_soft.png",
+    "speaking_open": "08_speaking_open.png",
+    "happy": "11_happy_open_smile.png",
+    "joy": "11_happy_open_smile.png",
+    "trust": "20_soft_smile.png",
+    "surprise": "13_surprised_open_mouth.png",
+    "shocked": "14_shocked_wide_eyes.png",
+    "sad": "05_sad_worried.png",
+    "sadness": "05_sad_worried.png",
+    "concerned": "03_concerned_worried.png",
+    "worried": "03_concerned_worried.png",
+    "skeptical": "04_skeptical_side_eye.png",
+    "frustrated": "10_overwhelmed_frustrated.png",
+    "annoyed": "15_annoyed_pout.png",
+    "anger": "16_angry_yelling.png",
+    "angry": "16_angry_yelling.png",
+    "playful": "17_playful_wink_laugh.png",
+    "pointing": "18_playful_pointing.png",
+    "hello": "12_waving_hello.png",
+    "waving": "12_waving_hello.png",
+    "sleepy": "02_sleepy_half_lidded.png",
+    "relaxed": "01_relaxed_closed_eyes.png"
+  },
   "files": [
     "01_relaxed_closed_eyes.png",
     "02_sleepy_half_lidded.png",
