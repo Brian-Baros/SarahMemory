@@ -1,0 +1,30 @@
+{
+  
+  "target_dimensions": [
+    1254,
+    1254
+  ],
+  "processing": "preserve aspect ratio; resize each to target height; center on 1254x1254 checker canvas; PNG output",
+  "files": [
+    "01_relaxed_closed_eyes.png",
+    "02_sleepy_half_lidded.png",
+    "03_concerned_worried.png",
+    "04_skeptical_side_eye.png",
+    "05_sad_worried.png",
+    "06_sad_pout.png",
+    "07_speaking_soft.png",
+    "08_speaking_open.png",
+    "09_listening_thinking.png",
+    "10_overwhelmed_frustrated.png",
+    "11_happy_open_smile.png",
+    "12_waving_hello.png",
+    "13_surprised_open_mouth.png",
+    "14_shocked_wide_eyes.png",
+    "15_annoyed_pout.png",
+    "16_angry_yelling.png",
+    "17_playful_wink_laugh.png",
+    "18_playful_pointing.png",
+    "19_neutral_forward.png",
+    "20_soft_smile.png"
+  ]
+}
