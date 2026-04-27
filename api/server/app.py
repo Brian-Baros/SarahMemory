@@ -1997,15 +1997,6 @@ def _sm_operatorcore_should_handle(ingress_route: dict | None) -> bool:
 
 
 def _sm_operatorcore_execution_mode(payload: dict | None, *, local_only: bool, safe_mode: bool, require_user: bool) -> str:
-    """
-    Choose the live SMGET execution mode for /api/chat ingress.
-
-    Key rule:
-    - SAFE / confirmation-required / cloud requests must not perform real local actuation.
-    - Local desktop requests should default to APPLY even when the UI mode is ANY.
-
-    LOCAL_ONLY_MODE governs network scope, not whether local desktop application control is allowed.
-    """
     payload = payload or {}
     requested = str(payload.get("execution_mode") or payload.get("operator_mode") or payload.get("smget_mode") or "").strip().lower()
     if requested in {"apply", "simulate", "draft"}:
@@ -2017,7 +2008,7 @@ def _sm_operatorcore_execution_mode(payload: dict | None, *, local_only: bool, s
             return "simulate"
     except Exception:
         pass
-    return "apply"
+    return "apply" if bool(local_only) else "simulate"
 
 
 def _sm_operatorcore_bundle_from_result(
@@ -4083,6 +4074,256 @@ If you didn't request this, please ignore this email.
     except Exception as e:
         app_logger.error(f" Unexpected error sending email to {email}: {e}", exc_info=True)
 
+
+# ---------------------------------------------------------------------------
+# SarahMemory 2D Avatar Live PNG State / Manifest Contract
+# ---------------------------------------------------------------------------
+# WebUI-facing contract for the Custom AvatarPanel. This exposes the current
+# governed 2D still-frame selection while preserving the existing 3D, media,
+# desktop mirror, and legacy AvatarPanel API paths.
+_AVATAR_LIVE_LOCK = threading.RLock()
+_AVATAR_LIVE_STATE = {
+    "mode": "avatar_2d",
+    "expression": "neutral",
+    "emotion": "neutral",
+    "speaking": False,
+    "listening": False,
+    "thinking": False,
+    "current_action": "idle",
+    "sequence": 0,
+    "updated_at": time.time(),
+}
+
+_AVATAR_ROLE_MAP = {
+    "default": "sarah-avatar.png",
+    "neutral": "19_neutral_forward.png",
+    "ready": "20_soft_smile.png",
+    "idle": "19_neutral_forward.png",
+    "thinking": "09_listening_thinking.png",
+    "listening": "09_listening_thinking.png",
+    "speaking_soft": "07_speaking_soft.png",
+    "speaking_open": "08_speaking_open.png",
+    "happy": "11_happy_open_smile.png",
+    "joy": "11_happy_open_smile.png",
+    "trust": "20_soft_smile.png",
+    "surprise": "13_surprised_open_mouth.png",
+    "shocked": "14_shocked_wide_eyes.png",
+    "sad": "05_sad_worried.png",
+    "sadness": "05_sad_worried.png",
+    "concerned": "03_concerned_worried.png",
+    "worried": "03_concerned_worried.png",
+    "skeptical": "04_skeptical_side_eye.png",
+    "frustrated": "10_overwhelmed_frustrated.png",
+    "annoyed": "15_annoyed_pout.png",
+    "anger": "16_angry_yelling.png",
+    "angry": "16_angry_yelling.png",
+    "playful": "17_playful_wink_laugh.png",
+    "pointing": "18_playful_pointing.png",
+    "hello": "12_waving_hello.png",
+    "waving": "12_waving_hello.png",
+    "sleepy": "02_sleepy_half_lidded.png",
+    "relaxed": "01_relaxed_closed_eyes.png",
+}
+
+_AVATAR_VALID_MODES = {"avatar_2d", "avatar_3d", "desktop_mirror", "media", "idle"}
+
+def _avatar_default_dir() -> str:
+    try:
+        root = _globals_paths().get("ROOT_DIR") or BASE_DIR
+    except Exception:
+        root = BASE_DIR
+    candidates = [
+        os.path.join(root, "resources", "avatars", "2D", "default"),
+        os.path.join(BASE_DIR, "resources", "avatars", "2D", "default"),
+        os.path.join(os.getcwd(), "resources", "avatars", "2D", "default"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+def _avatar_manifest_path() -> str:
+    d = _avatar_default_dir()
+    for name in ("avatar-manifest.json", "manifest.json"):
+        pth = os.path.join(d, name)
+        if os.path.isfile(pth):
+            return pth
+    return os.path.join(d, "avatar-manifest.json")
+
+def _safe_avatar_files() -> list[str]:
+    files: list[str] = []
+    try:
+        manifest = _avatar_manifest_path()
+        if os.path.isfile(manifest):
+            with open(manifest, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            raw = data.get("files") if isinstance(data, dict) else []
+            if isinstance(raw, list):
+                for item in raw:
+                    name = os.path.basename(str(item or "").strip())
+                    if name.lower().endswith(".png") and name not in files:
+                        files.append(name)
+    except Exception:
+        pass
+    try:
+        d = _avatar_default_dir()
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                safe = os.path.basename(fn)
+                if safe.lower().endswith(".png") and safe not in files:
+                    files.append(safe)
+    except Exception:
+        pass
+    return files
+
+def _avatar_public_url(filename: str) -> str:
+    return f"/api/avatar/2d/{os.path.basename(filename or 'sarah-avatar.png')}"
+
+def _avatar_normalize_mode(mode: str | None) -> str:
+    m = str(mode or "avatar_2d").strip().lower()
+    if m in {"2d", "avatar2d", "avatar_2d", "avatar-2d", "avater_2d"}:
+        return "avatar_2d"
+    if m in {"3d", "avatar3d", "avatar_3d", "avatar-3d"}:
+        return "avatar_3d"
+    if m in {"desktop", "mirror", "desktop_mirror", "desktop-mirror"}:
+        return "desktop_mirror"
+    if m in {"media", "call", "video_conference", "conference"}:
+        return "media"
+    if m == "idle":
+        return "idle"
+    return "avatar_2d"
+
+def _avatar_pick_image(state: dict | None = None) -> str:
+    state = dict(state or {})
+    available = set(_safe_avatar_files())
+
+    def choose(role_or_file: str) -> str:
+        key = str(role_or_file or "").lower().strip()
+        mapped = _AVATAR_ROLE_MAP.get(key, role_or_file or "")
+        mapped = os.path.basename(str(mapped or ""))
+        if mapped in available:
+            return mapped
+        if "sarah-avatar.png" in available:
+            return "sarah-avatar.png"
+        if "19_neutral_forward.png" in available:
+            return "19_neutral_forward.png"
+        return sorted(available)[0] if available else "sarah-avatar.png"
+
+    if bool(state.get("speaking")):
+        # Alternates mouth frames without CSS scale/pulse artifacts.
+        # Frontend frameTick is the primary live animation clock; this keeps
+        # backend polling consistent for non-React/API consumers.
+        return choose("speaking_open" if int(time.monotonic() * 8) % 2 == 0 else "speaking_soft")
+    if bool(state.get("listening")) or bool(state.get("thinking")):
+        return choose("listening")
+
+    action = str(state.get("current_action") or "").lower()
+    if "hello" in action or "greet" in action or "wave" in action:
+        return choose("hello")
+    if "think" in action or "reason" in action or "process" in action:
+        return choose("thinking")
+
+    expr = str(state.get("expression") or state.get("emotion") or "neutral").lower().strip()
+    return choose(expr or "neutral")
+
+def _avatar_manifest_payload() -> dict:
+    return {
+        "success": True,
+        "base_url": "/api/avatar/2d",
+        "default_file": "sarah-avatar.png",
+        "role_map": dict(_AVATAR_ROLE_MAP),
+        "files": _safe_avatar_files(),
+        "target_dimensions": [1254, 1254],
+        "manifest_path": _avatar_manifest_path(),
+    }
+
+def _avatar_state_payload(extra: dict | None = None) -> dict:
+    with _AVATAR_LIVE_LOCK:
+        state = dict(_AVATAR_LIVE_STATE)
+        if isinstance(extra, dict):
+            # Preserve the live WebUI transient state as the source of truth.
+            # Controller state is attached for diagnostics/spec only; it must not
+            # overwrite speaking/listening/image-frame values each poll.
+            protected = {
+                "mode", "expression", "emotion", "speaking", "listening",
+                "thinking", "current_action", "current_image", "avatar_image",
+                "avatar_image_url", "sequence", "updated_at",
+            }
+            state.update({k: v for k, v in extra.items() if v is not None and k not in protected})
+            state["controller_state"] = {k: v for k, v in extra.items() if v is not None}
+        state["mode"] = _avatar_normalize_mode(state.get("mode"))
+        current_file = _avatar_pick_image(state)
+        state["current_image"] = current_file
+        state["avatar_image"] = current_file
+        state["avatar_image_url"] = _avatar_public_url(current_file)
+        state["manifest"] = _avatar_manifest_payload()
+        state["success"] = True
+        state.setdefault("spec", {"renderMode": "procedural_holo"})
+        return state
+
+def _avatar_update_state(**updates) -> dict:
+    clean: dict[str, object] = {}
+    for k, v in updates.items():
+        if k == "mode":
+            clean[k] = _avatar_normalize_mode(str(v or "avatar_2d"))
+        elif k in {"expression", "emotion", "current_action"}:
+            clean[k] = str(v or "").strip() or _AVATAR_LIVE_STATE.get(k, "neutral")
+        elif k in {"speaking", "listening", "thinking"}:
+            clean[k] = bool(v)
+    with _AVATAR_LIVE_LOCK:
+        if clean.get("speaking") is True:
+            clean["listening"] = False
+            clean.setdefault("current_action", "speaking")
+        if clean.get("listening") is True:
+            clean["speaking"] = False
+            clean.setdefault("current_action", "listening")
+        _AVATAR_LIVE_STATE.update(clean)
+        if _AVATAR_LIVE_STATE.get("speaking"):
+            _AVATAR_LIVE_STATE["current_action"] = "speaking"
+        elif _AVATAR_LIVE_STATE.get("listening"):
+            _AVATAR_LIVE_STATE["current_action"] = "listening"
+        elif not _AVATAR_LIVE_STATE.get("thinking"):
+            _AVATAR_LIVE_STATE["current_action"] = str(_AVATAR_LIVE_STATE.get("current_action") or "idle")
+        _AVATAR_LIVE_STATE["sequence"] = int(_AVATAR_LIVE_STATE.get("sequence") or 0) + 1
+        _AVATAR_LIVE_STATE["updated_at"] = time.time()
+        return _avatar_state_payload()
+
+@app.route("/api/avatar/manifest", methods=["GET"])
+def avatar_live_manifest():
+    return jsonify(_avatar_manifest_payload()), 200
+
+@app.route("/api/avatar/2d/<path:filename>", methods=["GET"])
+def avatar_live_asset(filename: str):
+    safe_name = os.path.basename(filename or "")
+    allowed = set(_safe_avatar_files())
+    if safe_name not in allowed and safe_name != "sarah-avatar.png":
+        abort(404)
+    try:
+        return send_from_directory(_avatar_default_dir(), safe_name, mimetype="image/png", max_age=1)
+    except Exception:
+        abort(404)
+
+@app.route("/api/avatar/state/live", methods=["GET", "POST"])
+def avatar_live_state():
+    data = request.get_json(silent=True) or {}
+    if request.method == "POST" and isinstance(data, dict):
+        updates = {k: data.get(k) for k in ("mode", "expression", "emotion", "current_action", "speaking", "listening", "thinking") if k in data}
+        if updates:
+            return jsonify(_avatar_update_state(**updates)), 200
+    return jsonify(_avatar_state_payload()), 200
+
+@app.route("/api/avatar/speaking", methods=["POST"])
+def avatar_live_speaking():
+    data = request.get_json(silent=True) or {}
+    value = data.get("speaking", data.get("state", data.get("enabled", False)))
+    return jsonify(_avatar_update_state(speaking=bool(value))), 200
+
+@app.route("/api/avatar/listening", methods=["POST"])
+def avatar_live_listening():
+    data = request.get_json(silent=True) or {}
+    value = data.get("listening", data.get("state", data.get("enabled", False)))
+    return jsonify(_avatar_update_state(listening=bool(value))), 200
+
 # ===========================================================================
 # AVATAR PANEL / MULTIMEDIA / VIDEO CONFERENCE API ROUTES
 # ===========================================================================
@@ -4135,32 +4376,48 @@ def _avatar_api_response_wrapper(func):
             return jsonify({"error": str(e), "message": "Failed to perform avatar action."}), 500
     return wrapper
 
-@app.route("/api/avatar/state", methods=['POST'])
-@_avatar_api_response_wrapper
-def avatar_get_state(api):
-    return api.get_state()
-
-@app.route("/api/avatar/mode", methods=['POST'])
-@_avatar_api_response_wrapper
-def avatar_set_mode(api):
-    data = request.get_json(silent=True) or {}
-    mode = data.get("mode", "AVATAR_2D")
-    return api.set_mode(mode)
-
-@app.route("/api/avatar/emotion", methods=['POST'])
-@_avatar_api_response_wrapper
-def avatar_set_emotion(api):
-    data = request.get_json(silent=True) or {}
-    emotion = data.get("emotion", "neutral")
-    intensity = data.get("intensity", 1.0)
-    # Validate intensity is a float between 0.0 and 1.0
+@app.route("/api/avatar/state", methods=["GET", "POST"])
+def avatar_get_state():
+    controller_state = {}
     try:
-        intensity = float(intensity)
-        if not (0.0 <= intensity <= 1.0):
-            raise ValueError("Intensity must be between 0.0 and 1.0")
-    except ValueError as e:
-        return jsonify({"error": f"Invalid intensity parameter: {e}"}), 400
-    return api.set_emotion(emotion, intensity)
+        api = get_avatar_panel_api()
+        if api and hasattr(api, "get_state"):
+            raw_state = api.get_state()
+            if isinstance(raw_state, dict):
+                controller_state = raw_state
+    except Exception as e:
+        app_logger.debug(f"Avatar controller state unavailable: {e}")
+    return jsonify(_avatar_state_payload(controller_state)), 200
+
+@app.route("/api/avatar/mode", methods=["POST"])
+def avatar_set_mode():
+    data = request.get_json(silent=True) or {}
+    mode = _avatar_normalize_mode(data.get("mode", "avatar_2d"))
+    controller_result = None
+    try:
+        api = get_avatar_panel_api()
+        if api and hasattr(api, "set_mode"):
+            controller_result = api.set_mode(mode)
+    except Exception as e:
+        controller_result = {"success": False, "error": str(e)}
+    state = _avatar_update_state(mode=mode)
+    state["controller_result"] = controller_result
+    return jsonify(state), 200
+
+@app.route("/api/avatar/emotion", methods=["POST"])
+def avatar_set_emotion():
+    data = request.get_json(silent=True) or {}
+    emotion = str(data.get("emotion", data.get("expression", "neutral")) or "neutral").strip().lower()
+    controller_result = None
+    try:
+        api = get_avatar_panel_api()
+        if api and hasattr(api, "set_emotion"):
+            controller_result = api.set_emotion(emotion)
+    except Exception as e:
+        controller_result = {"success": False, "error": str(e)}
+    state = _avatar_update_state(emotion=emotion, expression=emotion)
+    state["controller_result"] = controller_result
+    return jsonify(state), 200
 
 @app.route("/api/avatar/frame", methods=['POST'])
 @_avatar_api_response_wrapper
@@ -4895,6 +5152,14 @@ def api_ui_event():
 # --- Terminal API (DEVELOPERSMODE gated by SarahMemoryTerminal) ---
 from flask import request, jsonify
 import SarahMemoryTerminal as smterm
+
+@app.get("/api/terminal/status")
+def api_terminal_status():
+    payload = {
+        "session_id": request.args.get("session_id", ""),
+    }
+    result = smterm.terminal_api_status(payload, caller="Flask:/api/terminal/status")
+    return jsonify(result), 200
 
 @app.post("/api/terminal/execute")
 def api_terminal_execute():
