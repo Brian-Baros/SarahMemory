@@ -463,3 +463,70 @@ def apply_render_instructions(instr: dict):
 # ====================================================================
 # END OF SarahMemoryAvatar.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# SARAH_AVATAR_REM_STATE_V1
+# Backend REM Sleep state persistence helpers. Additive and legacy-safe.
+# -----------------------------------------------------------------------------
+def _ensure_avatar_rem_table():
+    try:
+        db_path = os.path.join(DATASETS_DIR, DB_FILENAME)
+        os.makedirs(os.path.dirname(db_path), exist_ok=True)
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS avatar_rem_state (
+                    id INTEGER PRIMARY KEY,
+                    ts TEXT,
+                    phase TEXT,
+                    expression TEXT,
+                    reason TEXT,
+                    metadata_json TEXT
+                )
+            """)
+            cur.execute("SELECT COUNT(*) FROM avatar_rem_state WHERE id = 1")
+            if cur.fetchone()[0] == 0:
+                cur.execute("INSERT INTO avatar_rem_state (id, ts, phase, expression, reason, metadata_json) VALUES (1, ?, ?, ?, ?, ?)", (datetime.now().isoformat(), "awake", "ready", "initialized", "{}"))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"avatar_rem_state table init failed: {e}")
+
+def set_avatar_rem_state(phase: str, expression: str = "sleepy", reason: str = "", metadata: dict | None = None) -> bool:
+    """Persist REM Sleep visual state for backend/UI synchronization."""
+    try:
+        _ensure_avatar_rem_table()
+        db_path = os.path.join(DATASETS_DIR, DB_FILENAME)
+        import json as _json
+        clean_phase = str(phase or "awake").strip()
+        clean_expression = str(expression or "ready").strip()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE avatar_rem_state SET ts=?, phase=?, expression=?, reason=?, metadata_json=? WHERE id=1", (datetime.now().isoformat(), clean_phase, clean_expression, str(reason or ""), _json.dumps(metadata or {}, ensure_ascii=False)))
+            conn.commit()
+        try:
+            set_avatar_state(clean_phase); set_avatar_expression(clean_expression); set_avatar_emotion(clean_expression)
+        except Exception:
+            pass
+        log_avatar_event("REM State", f"phase={clean_phase}; expression={clean_expression}; reason={reason}")
+        return True
+    except Exception as e:
+        logger.error(f"set_avatar_rem_state failed: {e}")
+        return False
+
+def get_avatar_rem_state() -> dict:
+    """Return current REM Sleep avatar state."""
+    try:
+        _ensure_avatar_rem_table()
+        db_path = os.path.join(DATASETS_DIR, DB_FILENAME)
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.cursor(); row = cur.execute("SELECT ts, phase, expression, reason, metadata_json FROM avatar_rem_state WHERE id=1").fetchone()
+        if not row:
+            return {"phase": "awake", "expression": "ready", "reason": "missing_row"}
+        import json as _json
+        try: meta = _json.loads(row[4] or "{}")
+        except Exception: meta = {}
+        return {"ts": row[0], "phase": row[1], "expression": row[2], "reason": row[3], "metadata": meta}
+    except Exception as e:
+        logger.error(f"get_avatar_rem_state failed: {e}")
+        return {"phase": "awake", "expression": "ready", "reason": str(e)}
+
+_ensure_avatar_rem_table()

@@ -944,3 +944,23 @@ if __name__ == "__main__":
         "caller_identity": {"caller_id": "core:demo", "trust_tier": TRUST_TIER_CORE},
     }
     print(json.dumps(evaluate_action_assurance(demo_contract, demo_governance, demo_security), indent=2, ensure_ascii=False))
+
+# -----------------------------------------------------------------------------
+# SARAH_REM_ASSURANCE_V1
+# REM Sleep assurance gate. Requires sandbox pass + rollback/promotion readiness.
+# -----------------------------------------------------------------------------
+def evaluate_rem_candidate_assurance(candidate: Dict[str, Any], *, snapshot: Optional[Dict[str, Any]] = None, sandbox: Optional[Dict[str, Any]] = None, governance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    candidate = candidate or {}; snapshot = snapshot or {}; sandbox = sandbox or {}; governance = governance or {}
+    reasons: List[str] = []; missing: List[str] = []; risk_factors: List[str] = []
+    target_files = [os.path.basename(str(x)) for x in (candidate.get("target_files") or [])]
+    proposed = candidate.get("proposed_action") if isinstance(candidate.get("proposed_action"), dict) else {}
+    allow = True
+    if not bool(governance.get("allow", False)): allow = False; reasons.append("CognitiveServices did not allow this REM candidate.")
+    if not bool(sandbox.get("passed", False)): allow = False; missing.append("sandbox_pass")
+    if "SarahMemoryGlobals.py" in target_files:
+        allow = False; risk_factors.append("protected_globals_file_targeted"); reasons.append("SarahMemoryGlobals.py is immutable and cannot pass assurance for mutation.")
+    if proposed.get("type") not in ("metadata_only", "research_only", "analysis_only", None) and not sandbox.get("rollback_ready"):
+        allow = False; missing.append("rollback_ready")
+    assurance_score = 0.92 if allow else 0.35
+    if allow: reasons.append("REM candidate passed assurance for bounded sandbox/promotion handling.")
+    return {"review_id":"rem-assure-" + uuid.uuid4().hex[:12],"ts":datetime.now().isoformat(),"decision":"ALLOW" if allow else "DENY","allow":bool(allow),"confidence":assurance_score,"assurance_score":assurance_score,"threshold":0.75,"verification_ready":bool(sandbox.get("passed", False)),"rollback_ready":bool(sandbox.get("rollback_ready", proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None))),"reasons":reasons,"risk_factors":risk_factors,"missing_requirements":missing,"protected_files":["SarahMemoryGlobals.py"]}

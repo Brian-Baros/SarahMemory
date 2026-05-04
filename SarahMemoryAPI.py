@@ -2620,3 +2620,40 @@ def _sm_sanitize_llm_text(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
     return t
+
+# =============================================================================
+# SARAH_REM_API_LANE_V1
+# API capability snapshot for REM Sleep. Default is metadata-only to prevent
+# runaway API usage/cost during idle cycles.
+# =============================================================================
+
+def rem_api_capability_snapshot(snapshot: Optional[Dict[str, Any]] = None, include_test_call: bool = False) -> Dict[str, Any]:
+    """Return provider/API readiness for REM without spending API calls by default."""
+    started = time.time()
+    snapshot = snapshot or {}
+    out: Dict[str, Any] = {
+        "ok": True,
+        "lane": "api",
+        "metadata_only": not bool(include_test_call),
+        "providers": {},
+        "selected_provider": None,
+        "duration_ms": 0,
+        "notes": ["REM API lane defaults to metadata-only; no provider calls are made unless include_test_call=True."],
+    }
+    try:
+        out["providers"] = get_provider_status()
+    except Exception as exc:
+        out["providers_error"] = str(exc)
+    try:
+        out["selected_provider"] = get_best_provider_for_intent("research")
+    except Exception as exc:
+        out["selected_provider_error"] = str(exc)
+
+    if include_test_call and str(os.getenv("SARAH_REM_ALLOW_API_TEST_CALL", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            res = send_to_api("REM health probe. Reply with OK only.", intent="system_status", max_tokens=8, temperature=0.0)
+            out["test_call"] = res.to_dict() if hasattr(res, "to_dict") else res
+        except Exception as exc:
+            out["test_call"] = {"error": str(exc)}
+    out["duration_ms"] = int((time.time() - started) * 1000)
+    return out

@@ -232,6 +232,13 @@ class AvatarPanelState:
         self._avatar_type: str = "2d"  # "2d" or "3d"
         self._avatar_zoom: float = 1.0
         self._avatar_animation_active: bool = True
+        self._avatar_speaking: bool = False
+        self._avatar_listening: bool = False
+        self._avatar_thinking: bool = False
+        self._avatar_busy: bool = False
+        self._avatar_diagnostics: bool = False
+        self._avatar_life_state: str = "boot_greeting"
+        self._last_interaction_at: float = time.time()
         
         # Conference state
         self._remote_peer: Optional[str] = None
@@ -336,6 +343,73 @@ class AvatarPanelState:
         """Set avatar zoom level (0.25 - 3.0)."""
         with self._lock:
             self._avatar_zoom = max(0.25, min(3.0, zoom))
+
+    def set_speaking(self, speaking: bool) -> None:
+        """Set live speaking flag for WebUI/avatar API synchronization."""
+        with self._lock:
+            self._avatar_speaking = bool(speaking)
+            if self._avatar_speaking:
+                self._avatar_listening = False
+                self._avatar_busy = False
+                self._avatar_diagnostics = False
+                self._avatar_life_state = "speaking"
+                self._last_interaction_at = time.time()
+            elif self._avatar_life_state == "speaking":
+                self._avatar_life_state = "ready"
+
+    def get_speaking(self) -> bool:
+        """Return live speaking flag."""
+        with self._lock:
+            return bool(self._avatar_speaking)
+
+    def set_listening(self, listening: bool) -> None:
+        """Set live listening flag for WebUI/avatar API synchronization."""
+        with self._lock:
+            self._avatar_listening = bool(listening)
+            if self._avatar_listening:
+                self._avatar_speaking = False
+                self._avatar_busy = False
+                self._avatar_diagnostics = False
+                self._avatar_life_state = "listening"
+                self._last_interaction_at = time.time()
+            elif self._avatar_life_state == "listening":
+                self._avatar_life_state = "ready"
+
+    def get_listening(self) -> bool:
+        """Return live listening flag."""
+        with self._lock:
+            return bool(self._avatar_listening)
+
+    def set_thinking(self, thinking: bool) -> None:
+        """Set live thinking flag for diagnostics/life-cycle sync."""
+        with self._lock:
+            self._avatar_thinking = bool(thinking)
+            if self._avatar_thinking:
+                self._avatar_life_state = "thinking"
+                self._last_interaction_at = time.time()
+
+    def set_busy(self, busy: bool) -> None:
+        """Set live busy flag for diagnostics/life-cycle sync."""
+        with self._lock:
+            self._avatar_busy = bool(busy)
+            if self._avatar_busy:
+                self._avatar_life_state = "busy"
+                self._last_interaction_at = time.time()
+
+    def set_diagnostics(self, diagnostics: bool) -> None:
+        """Set live diagnostics flag for diagnostics/life-cycle sync."""
+        with self._lock:
+            self._avatar_diagnostics = bool(diagnostics)
+            if self._avatar_diagnostics:
+                self._avatar_life_state = "diagnostics"
+                self._last_interaction_at = time.time()
+
+    def set_life_state(self, life_state: str) -> None:
+        """Set avatar life-cycle state without changing panel mode."""
+        with self._lock:
+            self._avatar_life_state = str(life_state or "ready").strip() or "ready"
+            self._last_interaction_at = time.time()
+
     
     # -------------------------------------------------------------------------
     # Conference State
@@ -464,6 +538,13 @@ class AvatarPanelState:
                 "avatar_type": self._avatar_type,
                 "avatar_zoom": self._avatar_zoom,
                 "avatar_animation_active": self._avatar_animation_active,
+                "speaking": self._avatar_speaking,
+                "listening": self._avatar_listening,
+                "thinking": self._avatar_thinking,
+                "busy": self._avatar_busy,
+                "diagnostics": self._avatar_diagnostics,
+                "life_state": self._avatar_life_state,
+                "last_interaction_at": self._last_interaction_at,
                 "remote_peer": self._remote_peer,
                 "local_stream_active": self._local_stream_active,
                 "remote_stream_active": self._remote_stream_active,
@@ -486,6 +567,18 @@ class AvatarPanelState:
                 self._avatar_type = data["avatar_type"]
             if "avatar_zoom" in data:
                 self._avatar_zoom = data["avatar_zoom"]
+            if "speaking" in data:
+                self._avatar_speaking = bool(data["speaking"])
+            if "listening" in data:
+                self._avatar_listening = bool(data["listening"])
+            if "thinking" in data:
+                self._avatar_thinking = bool(data["thinking"])
+            if "busy" in data:
+                self._avatar_busy = bool(data["busy"])
+            if "diagnostics" in data:
+                self._avatar_diagnostics = bool(data["diagnostics"])
+            if "life_state" in data:
+                self._avatar_life_state = str(data["life_state"] or "ready")
 
 
 # ============================================================================
@@ -1978,7 +2071,21 @@ class AvatarPanelAPI:
             Updated state dictionary
         """
         try:
-            panel_mode = PanelMode[mode.upper()]
+            mode_key = str(mode or "AVATAR_2D").strip().upper().replace("-", "_")
+            alias_map = {
+                "2D": "AVATAR_2D",
+                "AVATAR2D": "AVATAR_2D",
+                "AVATAR_2D": "AVATAR_2D",
+                "3D": "AVATAR_3D",
+                "AVATAR3D": "AVATAR_3D",
+                "AVATAR_3D": "AVATAR_3D",
+                "DESKTOP": "DESKTOP_MIRROR",
+                "MIRROR": "DESKTOP_MIRROR",
+                "DESKTOP_MIRROR": "DESKTOP_MIRROR",
+                "MEDIA": "MEDIA_IMAGE",
+                "IDLE": "IDLE",
+            }
+            panel_mode = PanelMode[alias_map.get(mode_key, mode_key)]
             self._state.set_mode(panel_mode)
             return {"success": True, "state": self.get_state()}
         except KeyError:

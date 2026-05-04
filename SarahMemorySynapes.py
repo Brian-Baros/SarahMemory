@@ -2891,3 +2891,26 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemorySynapes.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# SARAH_REM_SANDBOX_V1
+# REM Sleep sandbox trial. Writes only sandbox/reports artifacts; never applies.
+# -----------------------------------------------------------------------------
+def run_rem_sandbox_trial(candidate: Dict[str, Any], *, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    candidate = candidate or {}; snapshot = snapshot or {}
+    trial_id = "rem-sandbox-" + hashlib.sha256(f"{time.time()}::{candidate.get('dream_id')}".encode()).hexdigest()[:12]
+    rem_dir = os.path.join(SANDBOX_TESTING_DIR, "rem_sleep"); os.makedirs(rem_dir, exist_ok=True)
+    target_files = [os.path.basename(str(x)) for x in (candidate.get("target_files") or [])]
+    if "SarahMemoryGlobals.py" in target_files:
+        result = {"trial_id":trial_id,"passed":False,"reason":"SarahMemoryGlobals.py is immutable.","rollback_ready":False,"artifact_path":os.path.join(rem_dir, f"{trial_id}.json")}
+    else:
+        proposed = candidate.get("proposed_action") if isinstance(candidate.get("proposed_action"), dict) else {}; code = proposed.get("code") or proposed.get("proposed_code") or ""
+        syntax_ok = True; syntax_error = ""
+        if isinstance(code, str) and code.strip():
+            try: ast.parse(code)
+            except Exception as e: syntax_ok = False; syntax_error = str(e)
+        result = {"trial_id":trial_id,"sandboxed":True,"passed":bool(syntax_ok),"syntax_ok":bool(syntax_ok),"syntax_error":syntax_error,"rollback_ready":proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None) or bool(proposed.get("rollback_plan")),"artifact_path":os.path.join(rem_dir, f"{trial_id}.json"),"notes":["Sandbox trial is isolated; no core files were changed."],"protected_files":["SarahMemoryGlobals.py"]}
+    try:
+        with open(result.get("artifact_path") or os.path.join(rem_dir, f"{trial_id}.json"), "w", encoding="utf-8") as f: json.dump({"candidate":candidate,"snapshot":snapshot,"result":result}, f, indent=2, ensure_ascii=False, default=str)
+    except Exception as e: result.setdefault("notes", []).append(f"artifact_write_failed:{e}")
+    return result

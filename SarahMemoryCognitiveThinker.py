@@ -1460,3 +1460,33 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# -----------------------------------------------------------------------------
+# SARAH_REM_DREAM_GENERATOR_V1
+# Governed REM Sleep dream/possibility generator. Produces bounded, sandboxable
+# possibility tickets only; it never patches runtime code directly.
+# -----------------------------------------------------------------------------
+def generate_rem_dreams(*, snapshot: Optional[Dict[str, Any]] = None, max_dreams: int = 5) -> List[Dict[str, Any]]:
+    snapshot = snapshot or {}
+    max_dreams = max(1, min(int(max_dreams or 5), 12))
+    cycle_id = str(snapshot.get("cycle_id") or _cycle_id())
+    seed_material = json.dumps(snapshot, sort_keys=True, default=str) + str(time.time())
+    rng = __import__("random").Random(hash(seed_material))
+    templates = [
+        {"category":"self_study","title":"Build a def/class/import relationship map","rationale":"Improve SarahMemory's understanding of its own code without modifying files.","risk_tier":"low","proposed_action":{"type":"metadata_only","operation":"ast_inventory","writes_core_files":False},"target_files":[]},
+        {"category":"performance","title":"Evaluate cache/index tuning opportunities","rationale":"Look for low-risk speed improvements using metrics and logs.","risk_tier":"low","proposed_action":{"type":"metadata_only","operation":"performance_hypothesis","writes_core_files":False},"target_files":[]},
+        {"category":"avatar_behavior","title":"Tune avatar REM/idle behavior timing","rationale":"Improve companion feeling using observed user interaction patterns.","risk_tier":"low","proposed_action":{"type":"metadata_only","operation":"avatar_timing_model","writes_core_files":False},"target_files":[]},
+        {"category":"learning_hygiene","title":"Detect duplicate low-value learning records","rationale":"Prevent database bloat while preserving useful learning.","risk_tier":"low","proposed_action":{"type":"metadata_only","operation":"dedupe_plan","writes_core_files":False,"deletes_user_data":False},"target_files":[]},
+        {"category":"user_companion","title":"Prepare return briefing pattern","rationale":"Make SarahMemory more interactive when the user returns from idle time.","risk_tier":"low","proposed_action":{"type":"metadata_only","operation":"briefing_summary","writes_core_files":False},"target_files":[]},
+        {"category":"research","title":"Research a missing local capability safely","rationale":"Use allowed research paths to understand how to improve without downloading the internet.","risk_tier":"medium","proposed_action":{"type":"research_only","operation":"bounded_research","writes_core_files":False,"network_budget_required":True},"target_files":[]},
+    ]
+    rng.shuffle(templates)
+    dreams: List[Dict[str, Any]] = []
+    for i, base in enumerate(templates[:max_dreams], start=1):
+        ticket_id = "remdream-" + uuid.uuid4().hex[:12]
+        dream = dict(base)
+        dream.update({"dream_id":ticket_id,"ticket_id":ticket_id,"cycle_id":cycle_id,"ts":datetime.now().isoformat(),"state":"PROPOSED","priority":i,"random_seeded":True,"requires_user":dream.get("risk_tier") not in ("low","LOW"),"safeguards":{"sandbox_only":True,"no_globals_patch":True,"no_attachment_opening":True,"no_unknown_execution":True,"rollback_required_before_promotion":True},"evidence":{"snapshot_keys":sorted(list(snapshot.keys()))[:24]}})
+        dreams.append(dream)
+        try: log_thinker_event("REM_DREAM_PROPOSED", dream.get("title", ""), cycle_id=cycle_id, ticket_id=ticket_id, meta=dream)
+        except Exception: pass
+    return dreams

@@ -2113,3 +2113,113 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryFilesystem.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# SARAH_REM_FILESYSTEM_LANE_V1
+# Read-only REM filesystem study. No deletes, moves, writes, uploads, executions,
+# or SarahMemoryGlobals.py patch/stage operations.
+# =============================================================================
+
+def _rem_is_protected_path(path: str) -> bool:
+    try:
+        name = os.path.basename(path or "").lower()
+        if name == "sarahmemoryglobals.py":
+            return True
+        parts = {p.lower() for p in Path(path).parts}
+        blocked_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv", "backup", "backups", "quarantine"}
+        return bool(parts & blocked_dirs)
+    except Exception:
+        return True
+
+
+def rem_filesystem_study_tick(root_paths: Optional[List[str]] = None, max_files: int = 300, max_read_chars: int = 4096) -> Dict[str, Any]:
+    """Study local files in read-only mode for REM awareness."""
+    started = time.time()
+    roots = list(root_paths or [])
+    if not roots:
+        env_roots = os.getenv("SARAH_REM_USER_SCAN_ROOTS", "").strip()
+        if env_roots:
+            roots = [x.strip() for x in env_roots.split(os.pathsep) if x.strip()]
+    if not roots:
+        roots = [DOCUMENTS_DIR, os.path.join(DATA_DIR, "documents"), os.path.join(DATA_DIR, "projects")]
+
+    text_exts = {".txt", ".md", ".py", ".json", ".csv", ".log", ".html", ".css", ".js", ".ts", ".tsx"}
+    doc_exts = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+    image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+    summary: Dict[str, Any] = {
+        "ok": True,
+        "lane": "filesystem",
+        "read_only": True,
+        "writes": False,
+        "uploads": False,
+        "executions": False,
+        "protected_files": ["SarahMemoryGlobals.py"],
+        "roots": roots,
+        "counts": {"seen": 0, "text": 0, "documents": 0, "images": 0, "other": 0, "skipped": 0},
+        "samples": [],
+        "questions": [],
+        "duration_ms": 0,
+    }
+    try:
+        from PIL import Image as _PILImage  # type: ignore
+    except Exception:
+        _PILImage = None
+
+    for root in roots:
+        if summary["counts"]["seen"] >= max_files:
+            break
+        try:
+            root_path = Path(root).expanduser().resolve()
+        except Exception:
+            summary["counts"]["skipped"] += 1
+            continue
+        if not root_path.exists() or _rem_is_protected_path(str(root_path)):
+            summary["counts"]["skipped"] += 1
+            continue
+        iterator = root_path.rglob("*") if root_path.is_dir() else [root_path]
+        for p in iterator:
+            if summary["counts"]["seen"] >= max_files:
+                break
+            try:
+                if not p.is_file() or _rem_is_protected_path(str(p)):
+                    summary["counts"]["skipped"] += 1
+                    continue
+                ext = p.suffix.lower()
+                rec: Dict[str, Any] = {"path": str(p), "name": p.name, "ext": ext, "size_bytes": int(p.stat().st_size)}
+                if ext in text_exts:
+                    summary["counts"]["text"] += 1
+                    try:
+                        rec["text_preview"] = p.read_text(encoding="utf-8", errors="ignore")[:max_read_chars]
+                    except Exception:
+                        rec["text_preview"] = ""
+                elif ext in doc_exts:
+                    summary["counts"]["documents"] += 1
+                    rec["document_policy"] = "metadata_only_until_document_parser_lane"
+                elif ext in image_exts:
+                    summary["counts"]["images"] += 1
+                    rec["image_policy"] = "local_metadata_only_no_upload"
+                    if _PILImage is not None:
+                        try:
+                            with _PILImage.open(str(p)) as img:
+                                rec["image_size"] = list(img.size)
+                                rec["image_mode"] = img.mode
+                        except Exception:
+                            pass
+                else:
+                    summary["counts"]["other"] += 1
+                summary["counts"]["seen"] += 1
+                if len(summary["samples"]) < 30:
+                    summary["samples"].append(rec)
+            except Exception:
+                summary["counts"]["skipped"] += 1
+                continue
+    if summary["counts"]["images"]:
+        summary["questions"].append("I found local images. User confirmation is required before labeling people or identities.")
+    if summary["counts"]["documents"]:
+        summary["questions"].append("I found document files. Deeper parsing should remain read-only and bounded.")
+    try:
+        log_filesystem_event("rem_filesystem_study", details=json.dumps(summary.get("counts", {}), ensure_ascii=False), success=True)
+    except Exception:
+        pass
+    summary["duration_ms"] = int((time.time() - started) * 1000)
+    return summary

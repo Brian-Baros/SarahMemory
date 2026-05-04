@@ -1683,3 +1683,71 @@ def research_patch_suggestions_from_payload(payload: Dict[str, Any], max_chars: 
         return str(r)[:15000]
     except Exception as e:
         return f"Research helper failed: {type(e).__name__}: {e}"
+
+# =============================================================================
+# SARAH_REM_RESEARCH_LANE_V1
+# Bounded REM research helper. This is intentionally small, auditable, and
+# budget-limited so REM Sleep can learn without downloading the internet.
+# =============================================================================
+
+def rem_research_dream_tick(snapshot: Optional[Dict[str, Any]] = None, max_queries: int = 3, allow_web: Optional[bool] = None) -> Dict[str, Any]:
+    """Run a bounded REM research pass.
+
+    Rules:
+      - Uses a small query budget.
+      - Honors LOCAL_ONLY_MODE and configured research flags.
+      - Returns summaries only; it does not write code or execute external content.
+    """
+    started = time.time()
+    snapshot = snapshot or {}
+    try:
+        local_only = bool(getattr(config, "LOCAL_ONLY_MODE", False) or (snapshot.get("policy") or {}).get("LOCAL_ONLY_MODE"))
+    except Exception:
+        local_only = True
+    if allow_web is None:
+        allow_web = bool((not local_only) and getattr(config, "WEB_RESEARCH_ENABLED", False))
+
+    base_queries = [
+        "SarahMemory self-study code map improvement strategy",
+        "safe bounded idle-time learning without database bloat",
+        "Python application mobile friendly React avatar panel layout",
+        "local-first email classification no attachments opened",
+        "safe autonomous sandbox testing rollback policy",
+    ]
+    try:
+        dreams = snapshot.get("dreams") or []
+        for d in dreams:
+            if isinstance(d, dict) and d.get("title"):
+                base_queries.insert(0, str(d.get("title")))
+    except Exception:
+        pass
+
+    results: List[Dict[str, Any]] = []
+    for query in base_queries[: max(1, int(max_queries or 1))]:
+        try:
+            intent = "research"
+            if allow_web:
+                data = get_research_data(query)
+                if isinstance(data, dict):
+                    snippet = str(data.get("data") or data.get("snippet") or data.get("answer") or data)[:1200]
+                    src = str(data.get("source") or "research_engine")
+                else:
+                    snippet = str(data)[:1200]
+                    src = "research_engine"
+            else:
+                local = LocalResearch.search(query, intent)
+                snippet = local.content[:1200] if local else "No local REM research match."
+                src = local.source.value if local else "local_only_no_match"
+            results.append({"query": query, "source": src, "summary": snippet, "web_allowed": bool(allow_web)})
+        except Exception as exc:
+            results.append({"query": query, "error": str(exc), "web_allowed": bool(allow_web)})
+
+    return {
+        "ok": True,
+        "lane": "research",
+        "web_allowed": bool(allow_web),
+        "queries_run": len(results),
+        "duration_ms": int((time.time() - started) * 1000),
+        "results": results,
+        "bloat_guard": {"max_queries": max_queries, "no_bulk_download": True, "summary_only": True},
+    }

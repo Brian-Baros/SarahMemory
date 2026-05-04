@@ -3400,3 +3400,46 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemoryDiagnostics.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# SARAH_REM_DIAGNOSTICS_LANE_V1
+# Lightweight diagnostics for REM Sleep gating. Does not run network pings or
+# full heavy diagnostics unless explicitly requested elsewhere.
+# =============================================================================
+
+def rem_diagnostics_snapshot(snapshot: dict | None = None) -> dict:
+    """Return a fast, non-destructive health snapshot for REM Sleep."""
+    started = time.time()
+    report = {
+        "ok": True,
+        "lane": "diagnostics",
+        "ts": datetime.now().isoformat(),
+        "heavy_checks": False,
+        "network_probe": False,
+        "system": {
+            "platform": platform.system(),
+            "release": platform.release(),
+            "processor": platform.processor(),
+            "python": platform.python_version(),
+        },
+        "duration_ms": 0,
+    }
+    try:
+        report["db_health"] = get_db_health_summary()
+    except Exception as exc:
+        report["db_health"] = {"status": "error", "error": str(exc)}
+    try:
+        report["driver_registry_health"] = get_driver_registry_health()
+    except Exception as exc:
+        report["driver_registry_health"] = {"available": False, "error": str(exc)}
+    try:
+        report["response_memory_schema"] = _get_response_layer_schema_report()
+    except Exception as exc:
+        report["response_memory_schema"] = {"available": False, "error": str(exc)}
+    try:
+        if snapshot:
+            report["rem_policy"] = (snapshot.get("policy") or {}) if isinstance(snapshot, dict) else {}
+    except Exception:
+        pass
+    report["duration_ms"] = int((time.time() - started) * 1000)
+    return report

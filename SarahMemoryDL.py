@@ -1600,3 +1600,37 @@ def dl_patch_hints_from_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
         "mode": "heuristic",
         "hints": hints,
     }
+
+# =============================================================================
+# SARAH_REM_DL_LANE_V1
+# Lightweight REM consolidation. This does NOT train or mutate models by default.
+# It analyzes existing memory patterns and returns bounded hints.
+# =============================================================================
+
+def rem_deep_learning_consolidation_tick(snapshot: Optional[Dict[str, Any]] = None, max_items: int = 50) -> Dict[str, Any]:
+    """Run a bounded, non-training REM learning consolidation pass."""
+    started = time.time()
+    out: Dict[str, Any] = {
+        "ok": True,
+        "lane": "deep_learning",
+        "training_started": False,
+        "model_mutation": False,
+        "max_items": int(max_items or 50),
+        "duration_ms": 0,
+        "results": {},
+    }
+    try:
+        out["results"]["conversation_patterns"] = evaluate_conversation_patterns()
+    except Exception as exc:
+        out["results"]["conversation_patterns"] = {"error": str(exc)}
+    try:
+        user_context = deep_learn_user_context()
+        out["results"]["user_context_hints"] = list(user_context or [])[: int(max_items or 50)]
+    except Exception as exc:
+        out["results"]["user_context_hints"] = {"error": str(exc)}
+    try:
+        out["results"]["behavior"] = analyze_user_behavior()
+    except Exception as exc:
+        out["results"]["behavior"] = {"error": str(exc)}
+    out["duration_ms"] = int((time.time() - started) * 1000)
+    return out

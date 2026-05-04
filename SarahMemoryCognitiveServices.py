@@ -2201,3 +2201,36 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryCognitiveServices.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# SARAH_REM_GOVERNOR_V1
+# REM Sleep candidate governance. This is decision-only; no execution here.
+# -----------------------------------------------------------------------------
+def govern_rem_candidate(candidate: Dict[str, Any], *, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    snapshot = snapshot or {}; candidate = candidate or {}; reasons: list[str] = []; risk_factors: list[str] = []
+    target_files = [os.path.basename(str(x)) for x in (candidate.get("target_files") or [])]
+    proposed = candidate.get("proposed_action") if isinstance(candidate.get("proposed_action"), dict) else {}
+    neosky = bool(getattr(config, "NEOSKYMATRIX", False)); risk_tier = str(candidate.get("risk_tier") or proposed.get("risk_tier") or "medium").lower()
+    decision = "ALLOW"; allow = True; require_user = False
+    if not neosky:
+        decision, allow = "DENY", False; reasons.append("NEOSKYMATRIX is disabled; REM self-evolution is locked.")
+    if "SarahMemoryGlobals.py" in target_files:
+        decision, allow = "DENY", False; risk_factors.append("protected_globals_file_targeted"); reasons.append("SarahMemoryGlobals.py is immutable and cannot be patched, staged, or rewritten.")
+    if proposed.get("opens_attachment") or proposed.get("open_attachment"):
+        decision, allow = "DENY", False; risk_factors.append("attachment_opening_forbidden"); reasons.append("REM is not allowed to open email attachments.")
+    if proposed.get("deletes_user_data") or proposed.get("destructive"):
+        decision, allow, require_user = "REQUIRE_USER", False, True; risk_factors.append("destructive_or_user_data_change")
+    if proposed.get("installs_dependency") or proposed.get("new_dependency"):
+        decision, allow, require_user = "REQUIRE_USER", False, True; risk_factors.append("new_dependency_requires_user")
+    if proposed.get("expands_authority") or proposed.get("changes_security") or proposed.get("changes_network_permissions"):
+        decision, allow, require_user = "REQUIRE_USER", False, True; risk_factors.append("authority_expansion_requires_user")
+    if risk_tier not in ("low", "tier_0_info", "tier_1_harmless_local_ui"):
+        require_user = True
+        if allow: decision, allow = "DEFER", False
+        risk_factors.append(f"risk_tier_{risk_tier}_not_auto_apply")
+    if allow: reasons.append("REM candidate is bounded, low-risk, sandbox-only, and eligible for assurance review.")
+    elif not reasons: reasons.append("REM candidate requires user review or was denied by policy.")
+    out = {"decision":decision,"allow":bool(allow),"require_user":bool(require_user),"risk_tier":risk_tier,"risk_score":10 if allow else (55 if require_user else 90),"risk_factors":risk_factors,"reasons":reasons,"protected_files":["SarahMemoryGlobals.py"],"recommended_next":"sandbox_then_assurance" if allow else "stage_or_reject","ts":datetime.now().isoformat()}
+    try: log_cognitive_event("REM_GOVERNANCE", str(candidate.get("title") or candidate.get("dream_id") or "candidate"), meta=out)
+    except Exception: pass
+    return out

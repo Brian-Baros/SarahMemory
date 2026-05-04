@@ -122,6 +122,9 @@ import random
 import os
 import subprocess
 import json
+import hashlib
+import platform
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -161,6 +164,56 @@ try:
     import SarahMemorySoftwareResearch as soft_research_module
 except ImportError:
     soft_research_module = None
+
+try:
+    import SarahMemoryCognitiveThinker as cognitive_thinker_module
+except Exception:
+    cognitive_thinker_module = None
+
+try:
+    import SarahMemoryCognitiveServices as cognitive_services_module
+except Exception:
+    cognitive_services_module = None
+
+try:
+    import SarahMemoryAssuranceGate as assurance_gate_module
+except Exception:
+    assurance_gate_module = None
+
+try:
+    import SarahMemorySelfAware as selfaware_module
+except Exception:
+    selfaware_module = None
+
+try:
+    import SarahMemoryEvolution as evolution_module
+except Exception:
+    evolution_module = None
+
+try:
+    import SarahMemoryDL as dl_module
+except Exception:
+    dl_module = None
+
+try:
+    import SarahMemoryAPI as api_module
+except Exception:
+    api_module = None
+
+try:
+    import SarahMemoryDiagnostics as diagnostics_module
+except Exception:
+    diagnostics_module = None
+
+try:
+    import SarahMemoryEmail as email_module
+except Exception:
+    email_module = None
+
+try:
+    import SarahMemoryFilesystem as filesystem_module
+except Exception:
+    filesystem_module = None
 
 import SarahMemoryGlobals as globals_module
 
@@ -378,6 +431,28 @@ class UnifiedAvatarController:
         self.ai = ai_functions
         self.render_count = 0
         self.last_emotion = "neutral"
+
+        # REM Sleep / Idle Evolution runtime state (backend-only, additive).
+        self._rem_lock = threading.RLock()
+        self._rem_stop_event = threading.Event()
+        self._rem_thread = None
+        self._rem_last_user_activity = time.time()
+        self._rem_state = {
+            "enabled": bool(getattr(globals_module, "NEOSKYMATRIX", False)),
+            "running": False,
+            "phase": "awake",
+            "cycle_id": "",
+            "started_at": None,
+            "updated_at": None,
+            "last_activity_at": self._rem_last_user_activity,
+            "last_report": {},
+            "reports": [],
+            "cycles_completed": 0,
+            "auto_applied": 0,
+            "staged": 0,
+            "rejected": 0,
+            "reason": "initialized",
+        }
 
         # Ensure avatar_state DB exists
         self._ensure_avatar_state_db()
@@ -605,6 +680,274 @@ class UnifiedAvatarController:
         except Exception as e:
             logger.error(f"[v8.0] Avatar speak error: {e}")
 
+    # -------------------------------------------------------------------------
+    # REM Sleep / Idle Evolution Orchestration
+    # -------------------------------------------------------------------------
+    def mark_user_activity(self, source: str = "user") -> None:
+        """Mark activity so REM Sleep pauses/waits before using idle cycles."""
+        now = time.time()
+        with self._rem_lock:
+            self._rem_last_user_activity = now
+            self._rem_state["last_activity_at"] = now
+            self._rem_state["reason"] = f"activity:{source}"
+        try:
+            if self.avatar and hasattr(self.avatar, "set_avatar_rem_state"):
+                self.avatar.set_avatar_rem_state("awake", "ready", f"activity:{source}")
+        except Exception:
+            pass
+        self.stop_rem_sleep(reason=f"activity:{source}")
+
+    def _rem_idle_threshold_seconds(self) -> int:
+        try:
+            return int(os.getenv("SARAH_REM_IDLE_SECONDS", str(getattr(globals_module, "SARAH_REM_IDLE_SECONDS", 600))) or 600)
+        except Exception:
+            return 600
+
+    def _rem_cycle_limit(self) -> int:
+        try:
+            return max(1, int(os.getenv("SARAH_REM_MAX_CYCLES", str(getattr(globals_module, "SARAH_REM_MAX_CYCLES", 3))) or 3))
+        except Exception:
+            return 3
+
+    def _rem_sleep_interval_seconds(self) -> float:
+        try:
+            return max(5.0, float(os.getenv("SARAH_REM_CYCLE_INTERVAL_SECONDS", str(getattr(globals_module, "SARAH_REM_CYCLE_INTERVAL_SECONDS", 60))) or 60.0))
+        except Exception:
+            return 60.0
+
+    def _neoskymatrix_enabled(self) -> bool:
+        """Owner kill-switch. SarahMemoryGlobals.py is read-only and never patched."""
+        try:
+            return bool(getattr(globals_module, "NEOSKYMATRIX", False))
+        except Exception:
+            return False
+
+    def rem_idle_ready(self) -> Tuple[bool, Dict[str, Any]]:
+        """Return whether REM may begin under idle/resource/governance conditions."""
+        now = time.time()
+        idle_seconds = max(0.0, now - float(self._rem_last_user_activity or now))
+        checks: Dict[str, Any] = {
+            "neosky_enabled": self._neoskymatrix_enabled(),
+            "idle_seconds": idle_seconds,
+            "idle_threshold_seconds": self._rem_idle_threshold_seconds(),
+            "thread_running": bool(self._rem_thread and self._rem_thread.is_alive()),
+            "host_process_awake": True,
+            "globals_file_immutable": True,
+        }
+        if not checks["neosky_enabled"]:
+            checks["blocked_reason"] = "NEOSKYMATRIX is disabled; REM self-evolution is locked."
+            return False, checks
+        if idle_seconds < checks["idle_threshold_seconds"]:
+            checks["blocked_reason"] = "Idle threshold not reached."
+            return False, checks
+        if checks["thread_running"]:
+            checks["blocked_reason"] = "REM thread already running."
+            return False, checks
+        return True, checks
+
+    def start_rem_sleep(self, reason: str = "idle") -> Dict[str, Any]:
+        """Start governed REM Sleep asynchronously when idle gates pass."""
+        ready, checks = self.rem_idle_ready()
+        if not ready:
+            with self._rem_lock:
+                self._rem_state["phase"] = "blocked"
+                self._rem_state["reason"] = checks.get("blocked_reason", "not_ready")
+                self._rem_state["updated_at"] = datetime.now().isoformat()
+            return {"ok": False, "started": False, "checks": checks, "state": self.get_rem_status()}
+        with self._rem_lock:
+            self._rem_stop_event.clear()
+            cycle_id = "rem-" + hashlib.sha256(f"{time.time()}::{random.random()}".encode()).hexdigest()[:12]
+            self._rem_state.update({"enabled": True, "running": True, "phase": "rem_starting", "cycle_id": cycle_id, "started_at": datetime.now().isoformat(), "updated_at": datetime.now().isoformat(), "reason": reason})
+        self._set_rem_avatar_state("rem_starting", "sleepy", reason)
+        self._rem_thread = threading.Thread(target=self._run_rem_loop, name="SarahMemory-REM-Sleep", daemon=True)
+        self._rem_thread.start()
+        return {"ok": True, "started": True, "checks": checks, "state": self.get_rem_status()}
+
+    def stop_rem_sleep(self, reason: str = "manual") -> Dict[str, Any]:
+        """Request REM Sleep pause/stop without killing the host runtime."""
+        self._rem_stop_event.set()
+        with self._rem_lock:
+            if self._rem_state.get("running"):
+                self._rem_state["phase"] = "stopping"
+            self._rem_state["reason"] = reason
+            self._rem_state["updated_at"] = datetime.now().isoformat()
+        self._set_rem_avatar_state("awake", "ready", reason)
+        return {"ok": True, "stopping": True, "state": self.get_rem_status()}
+
+    def _set_rem_avatar_state(self, phase: str, expression: str = "sleepy", reason: str = "") -> None:
+        try:
+            if self.avatar and hasattr(self.avatar, "set_avatar_rem_state"):
+                self.avatar.set_avatar_rem_state(phase, expression, reason)
+            elif self.avatar and hasattr(self.avatar, "set_avatar_state"):
+                self.avatar.set_avatar_state(phase)
+        except Exception as e:
+            logger.debug(f"[REM] avatar state sync skipped: {e}")
+
+    def _build_rem_snapshot(self) -> Dict[str, Any]:
+        """Build machine/runtime/self snapshot before dreaming."""
+        base_dir = Path(getattr(globals_module, "BASE_DIR", os.getcwd()))
+        data_dir = Path(getattr(globals_module, "DATA_DIR", base_dir / "data"))
+        snapshot: Dict[str, Any] = {
+            "ts": datetime.now().isoformat(),
+            "cycle_id": self._rem_state.get("cycle_id"),
+            "identity": {"project_version": str(getattr(globals_module, "PROJECT_VERSION", "8.0.0")), "base_dir": str(base_dir), "data_dir": str(data_dir)},
+            "policy": {"NEOSKYMATRIX": self._neoskymatrix_enabled(), "SAFE_MODE": bool(getattr(globals_module, "SAFE_MODE", False)), "LOCAL_ONLY_MODE": bool(getattr(globals_module, "LOCAL_ONLY_MODE", False)), "DEVELOPERSMODE": bool(getattr(globals_module, "DEVELOPERSMODE", False)), "protected_files": ["SarahMemoryGlobals.py"], "globals_file_immutable": True},
+            "hardware": {"platform": platform.platform(), "machine": platform.machine(), "processor": platform.processor(), "python": platform.python_version(), "cpu_count": os.cpu_count()},
+            "budgets": {"max_cycles": self._rem_cycle_limit(), "cycle_interval_seconds": self._rem_sleep_interval_seconds(), "no_attachment_opening": True, "no_private_uploads": True, "no_globals_patch": True},
+            "modules": {"avatar": bool(self.avatar), "tts": bool(self.tts), "cognitive_thinker": bool(cognitive_thinker_module), "cognitive_services": bool(cognitive_services_module), "assurance_gate": bool(assurance_gate_module), "selfaware": bool(selfaware_module), "synapes": bool(synapes_module), "dl": bool(dl_module), "research": bool(research_module), "evolution": bool(evolution_module), "api": bool(api_module), "diagnostics": bool(diagnostics_module), "email": bool(email_module), "filesystem": bool(filesystem_module)},
+        }
+        try:
+            usage = shutil.disk_usage(str(base_dir))
+            snapshot["hardware"]["disk"] = {"total": int(usage.total), "used": int(usage.used), "free": int(usage.free)}
+        except Exception:
+            pass
+        return snapshot
+
+    def _run_rem_loop(self) -> None:
+        report: Dict[str, Any] = {"cycle_id": self._rem_state.get("cycle_id"), "started_at": datetime.now().isoformat(), "cycles": []}
+        try:
+            for idx in range(self._rem_cycle_limit()):
+                if self._rem_stop_event.is_set():
+                    break
+                self._set_rem_avatar_state("rem_dreaming", "sleepy", "dream_cycle")
+                with self._rem_lock:
+                    self._rem_state["phase"] = "rem_dreaming"
+                    self._rem_state["updated_at"] = datetime.now().isoformat()
+                cycle_report = self._run_single_rem_cycle(idx + 1)
+                report["cycles"].append(cycle_report)
+                with self._rem_lock:
+                    self._rem_state["cycles_completed"] = int(self._rem_state.get("cycles_completed") or 0) + 1
+                    self._rem_state["last_report"] = cycle_report
+                    self._rem_state["updated_at"] = datetime.now().isoformat()
+                if self._rem_stop_event.wait(self._rem_sleep_interval_seconds()):
+                    break
+        except Exception as e:
+            logger.error(f"[REM] loop failed: {e}", exc_info=True)
+            report["error"] = str(e)
+            self._set_rem_avatar_state("rem_error", "concerned", str(e))
+        finally:
+            report["finished_at"] = datetime.now().isoformat()
+            with self._rem_lock:
+                self._rem_state["running"] = False
+                self._rem_state["phase"] = "rem_complete" if not report.get("error") else "rem_error"
+                self._rem_state["updated_at"] = datetime.now().isoformat()
+                reports = list(self._rem_state.get("reports") or [])
+                reports.append(report)
+                self._rem_state["reports"] = reports[-10:]
+                self._rem_state["last_report"] = report
+            self._set_rem_avatar_state("rem_complete", "ready", "cycle_complete")
+
+    def _run_rem_subprocess_lanes(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Run bounded REM support lanes: diagnostics, API metadata, DL, research, email, filesystem."""
+        lanes: Dict[str, Any] = {}
+        lane_specs = [
+            ("diagnostics", diagnostics_module, "rem_diagnostics_snapshot", {"snapshot": snapshot}),
+            ("api", api_module, "rem_api_capability_snapshot", {"snapshot": snapshot, "include_test_call": False}),
+            ("deep_learning", dl_module, "rem_deep_learning_consolidation_tick", {"snapshot": snapshot, "max_items": 25}),
+            ("research", research_module, "rem_research_dream_tick", {"snapshot": snapshot, "max_queries": 2}),
+            ("email", email_module, "rem_email_intelligence_tick", {"limit": 5}),
+            ("filesystem", filesystem_module, "rem_filesystem_study_tick", {"max_files": 150}),
+        ]
+        for lane_name, module, fn_name, kwargs in lane_specs:
+            if self._rem_stop_event.is_set():
+                lanes[lane_name] = {"ok": False, "skipped": True, "reason": "rem_stop_requested"}
+                continue
+            try:
+                if module is None or not hasattr(module, fn_name):
+                    lanes[lane_name] = {"ok": False, "skipped": True, "reason": f"{fn_name} unavailable"}
+                    continue
+                self._set_rem_avatar_state(f"rem_{lane_name}", "pondering", f"lane:{lane_name}")
+                fn = getattr(module, fn_name)
+                lanes[lane_name] = fn(**kwargs)
+            except Exception as e:
+                lanes[lane_name] = {"ok": False, "error": str(e)}
+        return lanes
+
+    def _run_single_rem_cycle(self, cycle_number: int) -> Dict[str, Any]:
+        snapshot = self._build_rem_snapshot()
+        out: Dict[str, Any] = {"cycle_number": cycle_number, "snapshot": snapshot, "subprocesses": {}, "dreams": [], "results": []}
+        out["subprocesses"] = self._run_rem_subprocess_lanes(snapshot)
+        dreams: List[Dict[str, Any]] = []
+        try:
+            if cognitive_thinker_module and hasattr(cognitive_thinker_module, "generate_rem_dreams"):
+                dreams = cognitive_thinker_module.generate_rem_dreams(snapshot=snapshot, max_dreams=5)
+        except Exception as e:
+            logger.debug(f"[REM] CognitiveThinker dream generation failed: {e}")
+        if not dreams:
+            dreams = [{"dream_id": f"fallback-{cycle_number}", "title": "Map self-code relationships", "category": "self_study", "risk_tier": "low", "target_files": [], "proposed_action": {"type": "metadata_only", "description": "Study code map without modifying files."}, "requires_user": False}]
+        out["dreams"] = dreams
+        for dream in dreams:
+            if self._rem_stop_event.is_set():
+                break
+            result = self._evaluate_rem_dream(dream, snapshot)
+            out["results"].append(result)
+            with self._rem_lock:
+                decision = str(result.get("promotion", {}).get("decision") or result.get("decision", "")).lower()
+                if "auto" in decision:
+                    self._rem_state["auto_applied"] = int(self._rem_state.get("auto_applied") or 0) + 1
+                elif "stage" in decision or "review" in decision:
+                    self._rem_state["staged"] = int(self._rem_state.get("staged") or 0) + 1
+                elif "reject" in decision or "deny" in decision or "fail" in decision:
+                    self._rem_state["rejected"] = int(self._rem_state.get("rejected") or 0) + 1
+        return out
+
+    def _evaluate_rem_dream(self, dream: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"dream": dream, "decision": "UNREVIEWED"}
+        target_files = [os.path.basename(str(x)) for x in (dream.get("target_files") or [])]
+        if "SarahMemoryGlobals.py" in target_files:
+            result.update({"decision": "DENY", "reason": "SarahMemoryGlobals.py is immutable and cannot be patched/staged."})
+            return result
+        try:
+            if cognitive_services_module and hasattr(cognitive_services_module, "govern_rem_candidate"):
+                result["governance"] = cognitive_services_module.govern_rem_candidate(dream, snapshot=snapshot)
+            else:
+                result["governance"] = {"decision": "ALLOW", "allow": True, "risk_tier": dream.get("risk_tier", "low")}
+        except Exception as e:
+            result["governance"] = {"decision": "DENY", "allow": False, "error": str(e)}
+        if not bool(result["governance"].get("allow")):
+            result["decision"] = "DENY"
+            return result
+        try:
+            if synapes_module and hasattr(synapes_module, "run_rem_sandbox_trial"):
+                self._set_rem_avatar_state("rem_sandbox", "pondering", "sandbox_trial")
+                result["sandbox"] = synapes_module.run_rem_sandbox_trial(dream, snapshot=snapshot)
+            else:
+                result["sandbox"] = {"passed": True, "sandboxed": False, "notes": ["Synapes unavailable; metadata-only trial."]}
+        except Exception as e:
+            result["sandbox"] = {"passed": False, "error": str(e)}
+        try:
+            if assurance_gate_module and hasattr(assurance_gate_module, "evaluate_rem_candidate_assurance"):
+                result["assurance"] = assurance_gate_module.evaluate_rem_candidate_assurance(dream, snapshot=snapshot, sandbox=result.get("sandbox"), governance=result.get("governance"))
+            else:
+                result["assurance"] = {"decision": "ALLOW", "allow": bool(result.get("sandbox", {}).get("passed")), "assurance_score": 0.8}
+        except Exception as e:
+            result["assurance"] = {"decision": "DENY", "allow": False, "error": str(e)}
+        try:
+            if evolution_module and hasattr(evolution_module, "rem_promote_or_stage"):
+                self._set_rem_avatar_state("rem_review", "serious_focus", "promotion_review")
+                result["promotion"] = evolution_module.rem_promote_or_stage(dream, snapshot=snapshot, sandbox=result.get("sandbox"), governance=result.get("governance"), assurance=result.get("assurance"))
+            else:
+                result["promotion"] = {"decision": "STAGE_FOR_REVIEW", "reason": "Evolution module unavailable."}
+        except Exception as e:
+            result["promotion"] = {"decision": "REJECT", "error": str(e)}
+        result["decision"] = result.get("promotion", {}).get("decision", "COMPLETE")
+        return result
+
+    def get_rem_status(self) -> Dict[str, Any]:
+        with self._rem_lock:
+            state = dict(self._rem_state)
+        state["thread_alive"] = bool(self._rem_thread and self._rem_thread.is_alive())
+        state["idle_ready"] = self.rem_idle_ready()[0] if not state.get("running") else False
+        state["neosky_enabled"] = self._neoskymatrix_enabled()
+        state["protected_files"] = ["SarahMemoryGlobals.py"]
+        return state
+
+    def get_rem_report(self, limit: int = 5) -> Dict[str, Any]:
+        with self._rem_lock:
+            reports = list(self._rem_state.get("reports") or [])[-max(1, int(limit)):]
+            last = dict(self._rem_state.get("last_report") or {})
+        return {"ok": True, "last_report": last, "reports": reports, "status": self.get_rem_status()}
+
     def get_avatar_status(self) -> Dict[str, Any]:
         """
         Get current avatar status.
@@ -621,7 +964,8 @@ class UnifiedAvatarController:
                 "avatar_module_loaded": self.avatar is not None,
                 "tts_module_loaded": self.tts is not None,
                 "version": "8.0.0",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "rem_sleep": self.get_rem_status()
             }
         except Exception as e:
             logger.error(f"[v8.0] Status error: {e}")
@@ -885,3 +1229,33 @@ logger.info("[v8.0] UnifiedAvatarController module loaded successfully")
 # ====================================================================
 # END OF UnifiedAvatarController.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# SARAH_REM_SLEEP_MODULE_API_V1
+# Module-level REM controller helpers for Flask/app.py and legacy callers.
+# -----------------------------------------------------------------------------
+_REM_CONTROLLER_SINGLETON = None
+_REM_CONTROLLER_LOCK = threading.RLock()
+
+def get_unified_avatar_controller() -> UnifiedAvatarController:
+    """Return a process-local UnifiedAvatarController singleton."""
+    global _REM_CONTROLLER_SINGLETON
+    with _REM_CONTROLLER_LOCK:
+        if _REM_CONTROLLER_SINGLETON is None:
+            _REM_CONTROLLER_SINGLETON = UnifiedAvatarController()
+        return _REM_CONTROLLER_SINGLETON
+
+def start_rem_sleep(reason: str = "idle") -> Dict[str, Any]:
+    return get_unified_avatar_controller().start_rem_sleep(reason=reason)
+
+def stop_rem_sleep(reason: str = "manual") -> Dict[str, Any]:
+    return get_unified_avatar_controller().stop_rem_sleep(reason=reason)
+
+def get_rem_status() -> Dict[str, Any]:
+    return get_unified_avatar_controller().get_rem_status()
+
+def get_rem_report(limit: int = 5) -> Dict[str, Any]:
+    return get_unified_avatar_controller().get_rem_report(limit=limit)
+
+def mark_user_activity(source: str = "user") -> None:
+    get_unified_avatar_controller().mark_user_activity(source=source)
