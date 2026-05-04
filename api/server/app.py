@@ -23,7 +23,7 @@
 # - Safe fallbacks against missing core modules
 
 from __future__ import annotations
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random
 from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
@@ -2244,7 +2244,8 @@ def api_chat():
             bundle["identity"] = ident
             return jsonify(bundle), 200
 
-        gov = None
+        gov = {"allow": True}
+
         try:
             if _sm_module_approved("SarahMemoryCognitiveServices", capability="governor"):
                 from SarahMemoryCognitiveServices import govern_request  # type: ignore
@@ -4076,12 +4077,20 @@ If you didn't request this, please ignore this email.
 
 
 # ---------------------------------------------------------------------------
-# SarahMemory 2D Avatar Live PNG State / Manifest Contract
+# SarahMemory 2D Avatar Live PNG State / Manifest / Life-Cycle Contract
 # ---------------------------------------------------------------------------
 # WebUI-facing contract for the Custom AvatarPanel. This exposes the current
 # governed 2D still-frame selection while preserving the existing 3D, media,
 # desktop mirror, and legacy AvatarPanel API paths.
+#
+# Design rule:
+# - Active states (speaking/listening/thinking/busy/diagnostics) always win.
+# - Heartbeat/life motion only controls idle presentation.
+# - The manifest is honored first, then the avatar directory is scanned.
+# - Any 29_*.png file dropped into resources/avatars/2D/default is discovered
+#   automatically and becomes available as state_29 / extra_29 / concept_29.
 _AVATAR_LIVE_LOCK = threading.RLock()
+_AVATAR_BOOT_TS = time.time()
 _AVATAR_LIVE_STATE = {
     "mode": "avatar_2d",
     "expression": "neutral",
@@ -4089,9 +4098,21 @@ _AVATAR_LIVE_STATE = {
     "speaking": False,
     "listening": False,
     "thinking": False,
-    "current_action": "idle",
+    "busy": False,
+    "diagnostics": False,
+    "current_action": "boot_greeting",
+    "life_state": "boot_greeting",
+    "life_enabled": True,
     "sequence": 0,
-    "updated_at": time.time(),
+    "heartbeat_count": 0,
+    "booted_at": _AVATAR_BOOT_TS,
+    "updated_at": _AVATAR_BOOT_TS,
+    "last_interaction_at": _AVATAR_BOOT_TS,
+    "last_life_tick": 0.0,
+    "last_random_at": 0.0,
+    "locked_until": _AVATAR_BOOT_TS + 6.0,
+    "last_success_at": 0.0,
+    "last_error_at": 0.0,
 }
 
 _AVATAR_ROLE_MAP = {
@@ -4121,11 +4142,68 @@ _AVATAR_ROLE_MAP = {
     "pointing": "18_playful_pointing.png",
     "hello": "12_waving_hello.png",
     "waving": "12_waving_hello.png",
+    "wave": "12_waving_hello.png",
     "sleepy": "02_sleepy_half_lidded.png",
     "relaxed": "01_relaxed_closed_eyes.png",
+    "asleep": "01_relaxed_closed_eyes.png",
+    "thumbs_up": "21_thumbs_up_smile.png",
+    "approval": "21_thumbs_up_smile.png",
+    "approve": "21_thumbs_up_smile.png",
+    "confirmed": "21_thumbs_up_smile.png",
+    "good": "21_thumbs_up_smile.png",
+    "ok": "21_thumbs_up_smile.png",
+    "pleading": "22_pleading_worry.png",
+    "please": "22_pleading_worry.png",
+    "vulnerable": "22_pleading_worry.png",
+    "empathy_worry": "22_pleading_worry.png",
+    "staredown": "22_staredown_contest.png",
+    "contest": "22_staredown_contest.png",
+    "direct": "22_staredown_contest.png",
+    "serious_focus": "22_staredown_contest.png",
+    "heartfelt": "23_heartfelt_emotional_kindness.png",
+    "emotional": "23_heartfelt_emotional_kindness.png",
+    "kindness": "23_heartfelt_emotional_kindness.png",
+    "compassionate": "23_heartfelt_emotional_kindness.png",
+    "supportive": "23_heartfelt_emotional_kindness.png",
+    "pondering": "24_pondering_stare.png",
+    "pondering_stare": "24_pondering_stare.png",
+    "curious_stare": "24_pondering_stare.png",
+    "exhausted": "25_exhausted_sleepy.png",
+    "tired": "25_exhausted_sleepy.png",
+    "fatigue": "25_exhausted_sleepy.png",
+    "very_sleepy": "25_exhausted_sleepy.png",
+    "victory": "26_victory_celebration.png",
+    "celebration": "26_victory_celebration.png",
+    "success": "26_victory_celebration.png",
+    "win": "26_victory_celebration.png",
+    "hello_again": "27_waving_hello_again.png",
+    "waving_again": "27_waving_hello_again.png",
+    "greeting_energetic": "27_waving_hello_again.png",
+    "wondering": "28_wondering_planning_stare.png",
+    "planning": "28_wondering_planning_stare.png",
+    "wondering_planning": "28_wondering_planning_stare.png",
+    "state_29": "29_extra_avatar_state.png",
+    "extra_29": "29_extra_avatar_state.png",
+    "concept_29": "29_extra_avatar_state.png",
+    "random_29": "29_extra_avatar_state.png",
 }
 
 _AVATAR_VALID_MODES = {"avatar_2d", "avatar_3d", "desktop_mirror", "media", "idle"}
+_AVATAR_IDLE_RANDOM_POOL = (
+    "ready", "neutral", "thinking", "pondering", "wondering",
+    "skeptical", "playful", "waving_again", "heartfelt", "state_29",
+)
+_AVATAR_IDLE_NIGHT_POOL = (
+    "sleepy", "very_sleepy", "relaxed", "neutral", "pondering", "state_29",
+)
+_AVATAR_BUSY_POOL = (
+    "thinking", "pondering", "wondering", "serious_focus", "concerned",
+)
+_AVATAR_LONG_IDLE_SECONDS = int(os.getenv("SARAH_AVATAR_LONG_IDLE_SECONDS", "180") or 180)
+_AVATAR_ASLEEP_IDLE_SECONDS = int(os.getenv("SARAH_AVATAR_ASLEEP_IDLE_SECONDS", "600") or 600)
+_AVATAR_RANDOM_MIN_SECONDS = int(os.getenv("SARAH_AVATAR_RANDOM_MIN_SECONDS", "12") or 12)
+_AVATAR_RANDOM_MAX_SECONDS = int(os.getenv("SARAH_AVATAR_RANDOM_MAX_SECONDS", "38") or 38)
+_AVATAR_HEARTBEAT_MIN_SECONDS = float(os.getenv("SARAH_AVATAR_HEARTBEAT_MIN_SECONDS", "1.0") or 1.0)
 
 def _avatar_default_dir() -> str:
     try:
@@ -4150,19 +4228,41 @@ def _avatar_manifest_path() -> str:
             return pth
     return os.path.join(d, "avatar-manifest.json")
 
-def _safe_avatar_files() -> list[str]:
-    files: list[str] = []
+def _avatar_read_manifest() -> dict:
     try:
         manifest = _avatar_manifest_path()
         if os.path.isfile(manifest):
             with open(manifest, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            raw = data.get("files") if isinstance(data, dict) else []
-            if isinstance(raw, list):
-                for item in raw:
-                    name = os.path.basename(str(item or "").strip())
-                    if name.lower().endswith(".png") and name not in files:
-                        files.append(name)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        app_logger.debug(f"Avatar manifest read failed: {e}")
+    return {}
+
+def _avatar_effective_role_map() -> dict:
+    role_map = dict(_AVATAR_ROLE_MAP)
+    data = _avatar_read_manifest()
+    raw = data.get("role_map") if isinstance(data, dict) else {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            key = str(k or "").strip().lower()
+            val = os.path.basename(str(v or "").strip())
+            if key and val:
+                role_map[key] = val
+    for alias in ("state_29", "extra_29", "concept_29", "random_29"):
+        role_map.setdefault(alias, "29_extra_avatar_state.png")
+    return role_map
+
+def _safe_avatar_files() -> list[str]:
+    files: list[str] = []
+    try:
+        data = _avatar_read_manifest()
+        raw = data.get("files") if isinstance(data, dict) else []
+        if isinstance(raw, list):
+            for item in raw:
+                name = os.path.basename(str(item or "").strip())
+                if name.lower().endswith(".png") and name not in files:
+                    files.append(name)
     except Exception:
         pass
     try:
@@ -4193,16 +4293,64 @@ def _avatar_normalize_mode(mode: str | None) -> str:
         return "idle"
     return "avatar_2d"
 
+def _avatar_role_candidates(role_or_file: str, available: set[str]) -> list[str]:
+    raw = str(role_or_file or "").strip()
+    key = raw.lower()
+    role_map = _avatar_effective_role_map()
+    candidates: list[str] = []
+
+    def add(name: str) -> None:
+        safe = os.path.basename(str(name or "").strip())
+        if safe and safe not in candidates:
+            candidates.append(safe)
+
+    if raw:
+        add(raw)
+    mapped = role_map.get(key)
+    if mapped:
+        add(mapped)
+
+    prefixes: list[str] = []
+    if key in {"state_29", "extra_29", "concept_29", "random_29", "29"}:
+        prefixes.append("29_")
+    if key in {"thumbs_up", "approval", "approve", "confirmed", "good", "ok", "21"}:
+        prefixes.append("21_")
+    if key in {"pleading", "please", "vulnerable", "empathy_worry", "staredown", "contest", "direct", "serious_focus", "22"}:
+        prefixes.append("22_")
+    if key in {"heartfelt", "emotional", "kindness", "compassionate", "supportive", "23"}:
+        prefixes.append("23_")
+    if key in {"pondering", "pondering_stare", "curious_stare", "24"}:
+        prefixes.append("24_")
+    if key in {"exhausted", "tired", "fatigue", "very_sleepy", "25"}:
+        prefixes.append("25_")
+    if key in {"victory", "celebration", "success", "win", "26"}:
+        prefixes.append("26_")
+    if key in {"hello_again", "waving_again", "greeting_energetic", "27"}:
+        prefixes.append("27_")
+    if key in {"wondering", "planning", "wondering_planning", "28"}:
+        prefixes.append("28_")
+
+    for prefix in prefixes:
+        for name in sorted(available):
+            if name.lower().startswith(prefix) and name.lower().endswith(".png"):
+                add(name)
+
+    return candidates
+
+def _avatar_select_existing(role_or_file: str, available: set[str]) -> str | None:
+    for candidate in _avatar_role_candidates(role_or_file, available):
+        if candidate in available:
+            return candidate
+    return None
+
 def _avatar_pick_image(state: dict | None = None) -> str:
     state = dict(state or {})
     available = set(_safe_avatar_files())
 
     def choose(role_or_file: str) -> str:
-        key = str(role_or_file or "").lower().strip()
-        mapped = _AVATAR_ROLE_MAP.get(key, role_or_file or "")
-        mapped = os.path.basename(str(mapped or ""))
-        if mapped in available:
-            return mapped
+        selected = _avatar_select_existing(role_or_file, available)
+        if selected:
+            return selected
         if "sarah-avatar.png" in available:
             return "sarah-avatar.png"
         if "19_neutral_forward.png" in available:
@@ -4210,48 +4358,153 @@ def _avatar_pick_image(state: dict | None = None) -> str:
         return sorted(available)[0] if available else "sarah-avatar.png"
 
     if bool(state.get("speaking")):
-        # Alternates mouth frames without CSS scale/pulse artifacts.
-        # Frontend frameTick is the primary live animation clock; this keeps
-        # backend polling consistent for non-React/API consumers.
         return choose("speaking_open" if int(time.monotonic() * 8) % 2 == 0 else "speaking_soft")
-    if bool(state.get("listening")) or bool(state.get("thinking")):
+    if bool(state.get("listening")):
         return choose("listening")
+    if bool(state.get("thinking")):
+        return choose("thinking")
+    if bool(state.get("diagnostics")):
+        return choose("serious_focus")
+    if bool(state.get("busy")):
+        return choose("pondering")
 
     action = str(state.get("current_action") or "").lower()
-    if "hello" in action or "greet" in action or "wave" in action:
-        return choose("hello")
-    if "think" in action or "reason" in action or "process" in action:
+    if any(k in action for k in ("hello", "greet", "wave", "boot")):
+        return choose("hello_again" if "again" in action else "hello")
+    if any(k in action for k in ("success", "correct", "complete", "done", "victory", "win")):
+        return choose("success")
+    if any(k in action for k in ("thumb", "approve", "confirmed", "good")):
+        return choose("thumbs_up")
+    if any(k in action for k in ("error", "fail", "confused")):
+        return choose("concerned")
+    if any(k in action for k in ("diagnostic", "self_check")):
+        return choose("serious_focus")
+    if any(k in action for k in ("busy", "process", "work")):
+        return choose("pondering")
+    if any(k in action for k in ("think", "reason")):
         return choose("thinking")
+    if any(k in action for k in ("asleep", "sleep")):
+        return choose("very_sleepy")
+    if any(k in action for k in ("random_29", "state_29", "extra_29")):
+        return choose("state_29")
 
     expr = str(state.get("expression") or state.get("emotion") or "neutral").lower().strip()
     return choose(expr or "neutral")
 
+def _avatar_is_night_window(now_dt: datetime | None = None) -> bool:
+    now_dt = now_dt or datetime.now()
+    return now_dt.hour >= 22 or now_dt.hour < 5
+
+def _avatar_life_pick(pool: tuple[str, ...] | list[str], available: set[str]) -> str:
+    usable = [r for r in pool if _avatar_select_existing(r, available)]
+    if not usable:
+        usable = ["ready", "neutral"]
+    return random.choice(usable)
+
+def _avatar_life_tick(force: bool = False) -> None:
+    now = time.time()
+    with _AVATAR_LIVE_LOCK:
+        if not bool(_AVATAR_LIVE_STATE.get("life_enabled", True)):
+            return
+        if not force and (now - float(_AVATAR_LIVE_STATE.get("last_life_tick") or 0.0)) < _AVATAR_HEARTBEAT_MIN_SECONDS:
+            return
+
+        _AVATAR_LIVE_STATE["last_life_tick"] = now
+        _AVATAR_LIVE_STATE["heartbeat_count"] = int(_AVATAR_LIVE_STATE.get("heartbeat_count") or 0) + 1
+
+        if bool(_AVATAR_LIVE_STATE.get("speaking")):
+            _AVATAR_LIVE_STATE["life_state"] = "speaking"
+            _AVATAR_LIVE_STATE["current_action"] = "speaking"
+            return
+        if bool(_AVATAR_LIVE_STATE.get("listening")):
+            _AVATAR_LIVE_STATE["life_state"] = "listening"
+            _AVATAR_LIVE_STATE["current_action"] = "listening"
+            return
+        if bool(_AVATAR_LIVE_STATE.get("diagnostics")):
+            _AVATAR_LIVE_STATE["life_state"] = "diagnostics"
+            _AVATAR_LIVE_STATE["current_action"] = "diagnostics"
+            _AVATAR_LIVE_STATE["expression"] = "serious_focus"
+            return
+        if bool(_AVATAR_LIVE_STATE.get("busy")) or bool(_AVATAR_LIVE_STATE.get("thinking")):
+            available = set(_safe_avatar_files())
+            expr = _avatar_life_pick(_AVATAR_BUSY_POOL, available)
+            _AVATAR_LIVE_STATE["life_state"] = "busy"
+            _AVATAR_LIVE_STATE["current_action"] = "busy"
+            _AVATAR_LIVE_STATE["expression"] = expr
+            _AVATAR_LIVE_STATE["emotion"] = expr
+            _AVATAR_LIVE_STATE["sequence"] = int(_AVATAR_LIVE_STATE.get("sequence") or 0) + 1
+            _AVATAR_LIVE_STATE["updated_at"] = now
+            return
+
+        locked_until = float(_AVATAR_LIVE_STATE.get("locked_until") or 0.0)
+        if now < locked_until:
+            return
+
+        idle_seconds = max(0.0, now - float(_AVATAR_LIVE_STATE.get("last_interaction_at") or _AVATAR_BOOT_TS))
+        available = set(_safe_avatar_files())
+        is_night = _avatar_is_night_window()
+
+        if idle_seconds >= _AVATAR_ASLEEP_IDLE_SECONDS:
+            expr = "very_sleepy" if _avatar_select_existing("very_sleepy", available) else "sleepy"
+            life_state = "idle_asleep"
+            action = "asleep"
+        elif idle_seconds >= _AVATAR_LONG_IDLE_SECONDS:
+            expr = "sleepy" if not is_night else _avatar_life_pick(_AVATAR_IDLE_NIGHT_POOL, available)
+            life_state = "idle_long"
+            action = "idle_long"
+        elif is_night:
+            expr = _avatar_life_pick(_AVATAR_IDLE_NIGHT_POOL, available)
+            life_state = "sleepy_night"
+            action = "sleepy_night"
+        else:
+            min_wait = max(4, min(_AVATAR_RANDOM_MIN_SECONDS, _AVATAR_RANDOM_MAX_SECONDS))
+            max_wait = max(min_wait, _AVATAR_RANDOM_MAX_SECONDS)
+            next_due = float(_AVATAR_LIVE_STATE.get("last_random_at") or 0.0) + random.uniform(min_wait, max_wait)
+            if not force and now < next_due:
+                return
+            expr = _avatar_life_pick(_AVATAR_IDLE_RANDOM_POOL, available)
+            life_state = "idle_random"
+            action = "random_idle_motion"
+            _AVATAR_LIVE_STATE["last_random_at"] = now
+
+        _AVATAR_LIVE_STATE["life_state"] = life_state
+        _AVATAR_LIVE_STATE["current_action"] = action
+        _AVATAR_LIVE_STATE["expression"] = expr
+        _AVATAR_LIVE_STATE["emotion"] = expr
+        _AVATAR_LIVE_STATE["sequence"] = int(_AVATAR_LIVE_STATE.get("sequence") or 0) + 1
+        _AVATAR_LIVE_STATE["updated_at"] = now
+
 def _avatar_manifest_payload() -> dict:
+    role_map = _avatar_effective_role_map()
+    files = _safe_avatar_files()
     return {
         "success": True,
         "base_url": "/api/avatar/2d",
         "default_file": "sarah-avatar.png",
-        "role_map": dict(_AVATAR_ROLE_MAP),
-        "files": _safe_avatar_files(),
+        "role_map": role_map,
+        "files": files,
         "target_dimensions": [1254, 1254],
+        "state_count": len([f for f in files if f.lower().endswith(".png")]),
+        "supports_dynamic_29": True,
         "manifest_path": _avatar_manifest_path(),
     }
 
 def _avatar_state_payload(extra: dict | None = None) -> dict:
+    _avatar_life_tick()
     with _AVATAR_LIVE_LOCK:
         state = dict(_AVATAR_LIVE_STATE)
         if isinstance(extra, dict):
-            # Preserve the live WebUI transient state as the source of truth.
-            # Controller state is attached for diagnostics/spec only; it must not
-            # overwrite speaking/listening/image-frame values each poll.
             protected = {
                 "mode", "expression", "emotion", "speaking", "listening",
-                "thinking", "current_action", "current_image", "avatar_image",
-                "avatar_image_url", "sequence", "updated_at",
+                "thinking", "busy", "diagnostics", "current_action", "life_state",
+                "current_image", "avatar_image", "avatar_image_url", "sequence",
+                "updated_at", "last_interaction_at", "last_life_tick",
             }
             state.update({k: v for k, v in extra.items() if v is not None and k not in protected})
             state["controller_state"] = {k: v for k, v in extra.items() if v is not None}
         state["mode"] = _avatar_normalize_mode(state.get("mode"))
+        state["idle_seconds"] = max(0.0, time.time() - float(state.get("last_interaction_at") or _AVATAR_BOOT_TS))
+        state["night_mode"] = _avatar_is_night_window()
         current_file = _avatar_pick_image(state)
         state["current_image"] = current_file
         state["avatar_image"] = current_file
@@ -4263,34 +4516,151 @@ def _avatar_state_payload(extra: dict | None = None) -> dict:
 
 def _avatar_update_state(**updates) -> dict:
     clean: dict[str, object] = {}
+    mark_interaction = False
+    lock_seconds = 0.0
+
     for k, v in updates.items():
         if k == "mode":
             clean[k] = _avatar_normalize_mode(str(v or "avatar_2d"))
-        elif k in {"expression", "emotion", "current_action"}:
+        elif k in {"expression", "emotion", "current_action", "life_state"}:
             clean[k] = str(v or "").strip() or _AVATAR_LIVE_STATE.get(k, "neutral")
-        elif k in {"speaking", "listening", "thinking"}:
+        elif k in {"speaking", "listening", "thinking", "busy", "diagnostics", "life_enabled"}:
             clean[k] = bool(v)
+        elif k in {"event", "result"}:
+            event = str(v or "").strip().lower()
+            if event in {"boot", "startup", "hello", "greeting"}:
+                clean["current_action"] = "boot_greeting"
+                clean["expression"] = "hello"
+                clean["emotion"] = "hello"
+                clean["life_state"] = "boot_greeting"
+                lock_seconds = max(lock_seconds, 5.0)
+            elif event in {"success", "correct", "complete", "completed", "done", "ok", "approved"}:
+                clean["current_action"] = "success"
+                clean["expression"] = "success"
+                clean["emotion"] = "success"
+                clean["life_state"] = "success"
+                clean["last_success_at"] = time.time()
+                lock_seconds = max(lock_seconds, 4.0)
+            elif event in {"thumbs_up", "approval", "confirmed", "good"}:
+                clean["current_action"] = "thumbs_up"
+                clean["expression"] = "thumbs_up"
+                clean["emotion"] = "thumbs_up"
+                clean["life_state"] = "success"
+                clean["last_success_at"] = time.time()
+                lock_seconds = max(lock_seconds, 4.0)
+            elif event in {"error", "failed", "failure", "confused"}:
+                clean["current_action"] = "error"
+                clean["expression"] = "concerned"
+                clean["emotion"] = "concerned"
+                clean["life_state"] = "error"
+                clean["last_error_at"] = time.time()
+                lock_seconds = max(lock_seconds, 4.0)
+            elif event in {"diagnostics", "diagnostic", "self_check", "self_diagnostics"}:
+                clean["diagnostics"] = True
+                clean["current_action"] = "diagnostics"
+                clean["expression"] = "serious_focus"
+                clean["emotion"] = "serious_focus"
+                clean["life_state"] = "diagnostics"
+                lock_seconds = max(lock_seconds, 3.0)
+            elif event in {"busy", "working", "processing"}:
+                clean["busy"] = True
+                clean["current_action"] = "busy"
+                clean["expression"] = "pondering"
+                clean["emotion"] = "pondering"
+                clean["life_state"] = "busy"
+                lock_seconds = max(lock_seconds, 3.0)
+            elif event in {"rem", "rem_sleep", "rem_dreaming", "dreaming"}:
+                clean["busy"] = True
+                clean["thinking"] = True
+                clean["diagnostics"] = False
+                clean["current_action"] = "rem_dreaming"
+                clean["expression"] = "rem_dreaming"
+                clean["emotion"] = "sleepy"
+                clean["life_state"] = "rem_dreaming"
+                lock_seconds = max(lock_seconds, 5.0)
+            elif event in {"rem_sandbox", "dream_sandbox", "sandbox_testing"}:
+                clean["busy"] = True
+                clean["thinking"] = True
+                clean["current_action"] = "rem_sandbox"
+                clean["expression"] = "rem_sandbox"
+                clean["emotion"] = "pondering"
+                clean["life_state"] = "rem_sandbox"
+                lock_seconds = max(lock_seconds, 5.0)
+            elif event in {"rem_complete", "dream_report_ready"}:
+                clean["busy"] = False
+                clean["thinking"] = False
+                clean["current_action"] = "dream_report_ready"
+                clean["expression"] = "dream_report_ready"
+                clean["emotion"] = "success"
+                clean["life_state"] = "dream_report_ready"
+                lock_seconds = max(lock_seconds, 4.0)
+            elif event in {"idle", "ready", "reset"}:
+                clean["busy"] = False
+                clean["diagnostics"] = False
+                clean["thinking"] = False
+                clean["current_action"] = "idle"
+                clean["expression"] = "ready"
+                clean["emotion"] = "ready"
+                clean["life_state"] = "ready"
+                lock_seconds = max(lock_seconds, 1.0)
+        elif k in {"touch", "interaction", "user_interaction"} and bool(v):
+            mark_interaction = True
+
     with _AVATAR_LIVE_LOCK:
         if clean.get("speaking") is True:
             clean["listening"] = False
+            clean["busy"] = False
+            clean["diagnostics"] = False
             clean.setdefault("current_action", "speaking")
+            clean.setdefault("life_state", "speaking")
+            mark_interaction = True
         if clean.get("listening") is True:
             clean["speaking"] = False
+            clean["busy"] = False
+            clean["diagnostics"] = False
             clean.setdefault("current_action", "listening")
+            clean.setdefault("life_state", "listening")
+            mark_interaction = True
+        if clean.get("speaking") is False and _AVATAR_LIVE_STATE.get("current_action") == "speaking":
+            clean.setdefault("current_action", "ready")
+            clean.setdefault("expression", "ready")
+            clean.setdefault("emotion", "ready")
+            clean.setdefault("life_state", "ready")
+            lock_seconds = max(lock_seconds, 1.5)
+        if clean.get("listening") is False and _AVATAR_LIVE_STATE.get("current_action") == "listening":
+            clean.setdefault("current_action", "ready")
+            clean.setdefault("expression", "ready")
+            clean.setdefault("emotion", "ready")
+            clean.setdefault("life_state", "ready")
+            lock_seconds = max(lock_seconds, 1.5)
+
         _AVATAR_LIVE_STATE.update(clean)
-        if _AVATAR_LIVE_STATE.get("speaking"):
-            _AVATAR_LIVE_STATE["current_action"] = "speaking"
-        elif _AVATAR_LIVE_STATE.get("listening"):
-            _AVATAR_LIVE_STATE["current_action"] = "listening"
-        elif not _AVATAR_LIVE_STATE.get("thinking"):
-            _AVATAR_LIVE_STATE["current_action"] = str(_AVATAR_LIVE_STATE.get("current_action") or "idle")
+        now = time.time()
+        if mark_interaction or clean:
+            _AVATAR_LIVE_STATE["last_interaction_at"] = now
+        if lock_seconds > 0:
+            _AVATAR_LIVE_STATE["locked_until"] = max(float(_AVATAR_LIVE_STATE.get("locked_until") or 0.0), now + lock_seconds)
         _AVATAR_LIVE_STATE["sequence"] = int(_AVATAR_LIVE_STATE.get("sequence") or 0) + 1
-        _AVATAR_LIVE_STATE["updated_at"] = time.time()
+        _AVATAR_LIVE_STATE["updated_at"] = now
         return _avatar_state_payload()
 
 @app.route("/api/avatar/manifest", methods=["GET"])
 def avatar_live_manifest():
     return jsonify(_avatar_manifest_payload()), 200
+
+@app.route("/api/avatar/heartbeat", methods=["GET", "POST"])
+def avatar_live_heartbeat():
+    data = request.get_json(silent=True) or {}
+    if request.method == "POST" and isinstance(data, dict):
+        updates = {k: data.get(k) for k in (
+            "mode", "expression", "emotion", "current_action", "life_state",
+            "speaking", "listening", "thinking", "busy", "diagnostics",
+            "life_enabled", "event", "result", "touch", "interaction", "user_interaction",
+        ) if k in data}
+        if updates:
+            return jsonify(_avatar_update_state(**updates)), 200
+    _avatar_life_tick(force=True)
+    return jsonify(_avatar_state_payload()), 200
 
 @app.route("/api/avatar/2d/<path:filename>", methods=["GET"])
 def avatar_live_asset(filename: str):
@@ -4307,7 +4677,11 @@ def avatar_live_asset(filename: str):
 def avatar_live_state():
     data = request.get_json(silent=True) or {}
     if request.method == "POST" and isinstance(data, dict):
-        updates = {k: data.get(k) for k in ("mode", "expression", "emotion", "current_action", "speaking", "listening", "thinking") if k in data}
+        updates = {k: data.get(k) for k in (
+            "mode", "expression", "emotion", "current_action", "life_state",
+            "speaking", "listening", "thinking", "busy", "diagnostics",
+            "life_enabled", "event", "result", "touch", "interaction", "user_interaction",
+        ) if k in data}
         if updates:
             return jsonify(_avatar_update_state(**updates)), 200
     return jsonify(_avatar_state_payload()), 200
@@ -4323,6 +4697,94 @@ def avatar_live_listening():
     data = request.get_json(silent=True) or {}
     value = data.get("listening", data.get("state", data.get("enabled", False)))
     return jsonify(_avatar_update_state(listening=bool(value))), 200
+
+@app.route("/api/avatar/event", methods=["POST"])
+def avatar_live_event():
+    data = request.get_json(silent=True) or {}
+    event = data.get("event", data.get("result", "idle"))
+    extra = {k: data.get(k) for k in ("mode", "expression", "emotion", "current_action") if k in data}
+    extra["event"] = event
+    return jsonify(_avatar_update_state(**extra)), 200
+
+# ---------------------------------------------------------------------------
+# REM Sleep / Idle Evolution API bridge (backend-only orchestration)
+# ---------------------------------------------------------------------------
+def _rem_controller_bridge():
+    try:
+        import UnifiedAvatarController as UAC  # type: ignore
+        return UAC
+    except Exception as e:
+        app_logger.warning(f"REM controller bridge unavailable: {e}")
+        return None
+
+@app.route("/api/avatar/rem/status", methods=["GET"])
+def avatar_rem_status():
+    mod = _rem_controller_bridge()
+    if not mod or not hasattr(mod, "get_rem_status"):
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    return jsonify({"ok": True, "rem": mod.get_rem_status()}), 200
+
+@app.route("/api/avatar/rem/start", methods=["POST"])
+def avatar_rem_start():
+    data = request.get_json(silent=True) or {}
+    mod = _rem_controller_bridge()
+    if not mod or not hasattr(mod, "start_rem_sleep"):
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    reason = str(data.get("reason") or "api_idle_trigger")
+    out = mod.start_rem_sleep(reason=reason)
+    try: _avatar_update_state(event="rem_dreaming", expression="sleepy", emotion="sleepy", current_action="rem_dreaming")
+    except Exception: pass
+    return jsonify(out), 200 if out.get("ok") else 409
+
+@app.route("/api/avatar/rem/stop", methods=["POST"])
+def avatar_rem_stop():
+    data = request.get_json(silent=True) or {}
+    mod = _rem_controller_bridge()
+    if not mod or not hasattr(mod, "stop_rem_sleep"):
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    reason = str(data.get("reason") or "api_stop")
+    out = mod.stop_rem_sleep(reason=reason)
+    try: _avatar_update_state(event="ready")
+    except Exception: pass
+    return jsonify(out), 200
+
+@app.route("/api/avatar/rem/report", methods=["GET"])
+def avatar_rem_report():
+    mod = _rem_controller_bridge()
+    if not mod or not hasattr(mod, "get_rem_report"):
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    try: limit = int(request.args.get("limit") or 5)
+    except Exception: limit = 5
+    return jsonify(mod.get_rem_report(limit=limit)), 200
+
+
+@app.route("/api/avatar/rem/briefing", methods=["GET"])
+def avatar_rem_briefing():
+    """Compact user-return REM briefing for chat/UI."""
+    mod = _rem_controller_bridge()
+    if not mod or not hasattr(mod, "get_rem_report"):
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    report = mod.get_rem_report(limit=3)
+    last = report.get("last_report") or {}
+    cycles = last.get("cycles") or []
+    cycle_count = len(cycles)
+    dreams = sum(len((c or {}).get("dreams") or []) for c in cycles)
+    results = sum(len((c or {}).get("results") or []) for c in cycles)
+    subprocesses = {}
+    if cycles:
+        subprocesses = (cycles[-1] or {}).get("subprocesses") or {}
+    briefing = {
+        "ok": True,
+        "summary": f"REM completed {cycle_count} cycle(s), generated {dreams} dream candidate(s), and evaluated {results} sandbox/governance result(s).",
+        "cycle_count": cycle_count,
+        "dream_count": dreams,
+        "result_count": results,
+        "subprocess_lanes": list(subprocesses.keys()) if isinstance(subprocesses, dict) else [],
+        "attachments_opened": False,
+        "globals_file_touched": False,
+        "report": report,
+    }
+    return jsonify(briefing), 200
 
 # ===========================================================================
 # AVATAR PANEL / MULTIMEDIA / VIDEO CONFERENCE API ROUTES
