@@ -1048,7 +1048,14 @@ VISUAL STUDIOS CODE EXTENTION SCREENSHOTS
 This update cycle focused on closing the gap between the visible Front-End panels and the actual SarahMemory backend runtime. The major goal was to make the **2D Avatar more realistic and move/ REM Sleep / Deep Learning / Cognitive Trace / Avatar / Chat / Runtime Health** systems behave like one connected AiOS runtime instead of disconnected screens.
 
 ---
-## **1. REM Sleep + Deep Learning Runtime Direction**
+## **1. 2D Avatar Build / REM Sleep + Deep Learning Runtime Direction**
+The 2D Avatar build is a series of Images placed in the ../resources/avatars/2D/default directory, with an emotional manifest.json file. 
+-SarahMemoryAvatarPanel.py
+=SarahMemoryAPI.py
+-UnifiedAvatarController.py
+-AvatarPanel.tsx
+      -and more were modified and coded to allow 2D animation to happen. A 3D avatar build is currently being developed the Avatar Panel UI was also updated so the WebCam Live View no longer overlaps the 2D image.
+      
 The REM Sleep and Deep Learning systems were clarified as two related but separate learning lanes:
 
 ### **REM Sleep**
