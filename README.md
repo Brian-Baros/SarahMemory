@@ -109,7 +109,7 @@ A next‑generation AI Operating System capable of:
 ![SarahMemory Dataflow](documents/SARAHMEMORY-AIOS.png)
 
 ### **Full Workstation Mode (05/07/2026)**
-![SarahMemory Workstation](documents/SM_AIOS-Full_WorkStation_Screenshot_05072026.png)
+![SarahMemory Workstation](documents/SM_AIOS_Full_WorkStation_Screenshot_05072026.png)
 
 ---
 # **⚖️ Feature Comparison**
