@@ -10,7 +10,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | April 12, 2026 |
+| **Last Update** | May 07, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -108,8 +108,8 @@ A next‑generation AI Operating System capable of:
 ### **Cognitive / Neuron / Synaptic Dataflow**
 ![SarahMemory Dataflow](documents/SARAHMEMORY-AIOS.png)
 
-### **Full Workstation Mode (03/05/2026)**
-![SarahMemory Workstation](documents/SarahMemory-Full_Workstation.png)
+### **Full Workstation Mode (05/07/2026)**
+![SarahMemory Workstation](documents/SM_AIOS_Full WorkStation_Screenshot_05072026.png)
 
 ---
 # **⚖️ Feature Comparison**
@@ -1041,7 +1041,106 @@ VISUAL STUDIOS CODE EXTENTION SCREENSHOTS
 ![SarahMemory VS-CODE-2](documents/SM-VSC-Screenshot_2026-04-13_203009.jpg)
 ![SarahMemory VS-CODE-3](documents/SM-VSC-Screenshot_2026-04-13_203123.jpg)
 ![SarahMemory VS-CODE-4](documents/SM-VSC-Screenshot_2026-04-13_203230.jpg)
+---
 
+---
+## **📅 April 13 – May 7, 2026 — 2D Avatar build, REM Sleep, Deep Learning Engine, Shutdown Lifecycle, and Core Runtime Stabilization**
+This update cycle focused on closing the gap between the visible Front-End panels and the actual SarahMemory backend runtime. The major goal was to make the **2D Avatar more realistic and move/ REM Sleep / Deep Learning / Cognitive Trace / Avatar / Chat / Runtime Health** systems behave like one connected AiOS runtime instead of disconnected screens.
+
+---
+## **1. REM Sleep + Deep Learning Runtime Direction**
+The REM Sleep and Deep Learning systems were clarified as two related but separate learning lanes:
+
+### **REM Sleep**
+REM Sleep is now treated as SarahMemory’s self-study and environment-study mode.
+REM is intended for:
+- Self-study
+- Environmental study
+- System file review
+- Hardware/runtime review
+- Learning from local files
+- Research pipeline activity
+- Staged self-improvement
+- Safe evolution review
+- Future self-repair candidate generation
+
+### **Deep Learning**
+Deep Learning is now treated as the conversation/runtime learning lane.
+Deep Learning is intended for:
+- Conversational pattern learning
+- Cognitive trace review
+- Live response evaluation
+- Confidence/risk tracking
+- User interaction learning
+- Subject tracking
+- Runtime model/learning telemetry
+- Updating learning signals while Chat and Avatar are active
+
+This separates **dream/self-study behavior** from **conversation/runtime learning behavior** while still allowing both to share telemetry and reports.
+
+---
+## **2. DL Engine Screen Live Telemetry Upgrade**
+The **DL Engine Screen** was updated so it no longer behaves like a static placeholder panel.
+
+### Improvements Added
+- Reduced flickering caused by the Cognitive Trace / Chat Thinking Process refresh loop
+- Stabilized React state updates so the panel no longer redraws every microsecond
+- Added polling guards so multiple status checks cannot stack on top of each other
+- Increased polling discipline to prevent UI overload
+- Added stable trace IDs so live trace rows update instead of constantly remounting
+- Added dynamic runtime bars for:
+  - CPU
+  - Memory
+  - GPU
+  - Thinking load
+  - Confidence
+  - Risk
+- Reworked the DL Engine panel so it observes system state without keeping the entire AiOS awake
+- Improved live Runtime Health reporting so values are no longer stuck at `0`, `0%`, or static confidence/risk numbers
+- Connected live chat/cognitive activity into the DL Engine reporting path
+- Added live Cognitive Trace events for:
+  - Chat thinking started
+  - Chat thinking completed
+  - Quick route completed
+  - Identity route completed
+  - Governor route completed
+  - Chat errors
+- Added dynamic DL subjects and thought traces sourced from actual runtime events
+
+### Result
+The DL Engine Screen now behaves more like a true live runtime monitor instead of a decorative dashboard. It updates dynamically while reducing UI flicker and avoids blocking REM Sleep / Dream-state initialization.
+---
+
+## **3. REM / DL / AvatarPanel Integration Improvements**
+The project identified a major air gap between:
+- Chat
+- AvatarPanel
+- Cognitive Trace
+- DL Engine
+- REM Sleep
+- Deep Learning state
+This update begins closing that gap.
+
+### Improvements Added
+- Chat activity now feeds DL Engine trace events
+- DL Engine telemetry now reflects real runtime activity
+- REM status is merged into DL Engine status reporting
+- DL Engine status can expose REM phase, cycle ID, completed cycles, staged items, rejected items, auto-applied metadata, and active learning state
+- Runtime telemetry is now designed to be **idle-compatible**
+- Monitoring the DL Engine should no longer prevent SarahMemory from entering idle mode
+- Avatar/Chat activity and DL Engine activity are now better aligned through backend status routes
+
+### Result
+SarahMemory can now move closer to this intended lifecycle:
+```text to:
+User Active
+→ Chat / Avatar / Cognitive Trace active
+→ DL Engine observes and learns
+→ User becomes idle
+→ Avatar enters idle state
+→ REM Sleep becomes eligible
+→ Dream / self-study / deep-learning routines can begin
+```
 ---
 # **📜 License**
 
