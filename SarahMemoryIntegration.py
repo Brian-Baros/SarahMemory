@@ -40,6 +40,7 @@ from __future__ import annotations
 # --- SARAHMETA END ---
 import logging
 import os
+import json
 import subprocess
 import re
 import sys
@@ -208,6 +209,201 @@ logger.addHandler(stream_handler)
 # GLOBAL STATE
 # =============================================================================
 terminate_flag = threading.Event()
+
+_shutdown_started = False
+_shutdown_lock = threading.RLock()
+
+
+def _cfg_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean setting from config or environment without making shutdown fragile."""
+    try:
+        value = getattr(config, name, default)
+    except Exception:
+        value = default
+    try:
+        env_val = os.getenv(name, None)
+        if env_val is None:
+            env_val = os.getenv(f"SARAH_{name}", None)
+        if env_val is not None and str(env_val).strip() != "":
+            value = env_val
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
+
+
+def _runtime_pid_paths() -> list:
+    paths = []
+    try:
+        data_dir = getattr(config, "DATA_DIR", os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data"))
+    except Exception:
+        data_dir = os.path.join(os.getcwd(), "data")
+    for name in ("sarahmemory.pid", "local_api.pid"):
+        try:
+            paths.append(os.path.join(data_dir, name))
+        except Exception:
+            pass
+    return paths
+
+
+def _clear_runtime_state_files() -> None:
+    """Mark runtime state offline and remove PID marker files."""
+    try:
+        data_dir = getattr(config, "DATA_DIR", os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data"))
+        os.makedirs(data_dir, exist_ok=True)
+        state_file = os.path.join(data_dir, "server_state.json")
+        state = {}
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    state = loaded
+            except Exception:
+                state = {}
+        now_ts = time.time()
+        notes = state.get("notes") if isinstance(state.get("notes"), list) else []
+        notes = (notes + [f"{time.strftime('%Y-%m-%d %H:%M:%S')} shutdown:integration"])[-20:]
+        state.update({
+            "ok": True,
+            "ts": now_ts,
+            "source": "SarahMemoryIntegration",
+            "notes": notes,
+            "main_running": False,
+            "main_pid": None,
+            "api_running": False,
+            "api_pid": None,
+            "MAIN_RUNNING": False,
+            "MAIN_PID": None,
+            "API_RUNNING": False,
+            "API_PID": None,
+        })
+        tmp = state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        os.replace(tmp, state_file)
+    except Exception:
+        pass
+
+    for path in _runtime_pid_paths():
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+def _call_main_process_cleanup() -> bool:
+    """Call SarahMemoryMain/__main__ lifecycle cleanup when available."""
+    for module_name in ("SarahMemoryMain", "__main__"):
+        try:
+            mod = sys.modules.get(module_name)
+            if mod is None:
+                continue
+            cleanup = getattr(mod, "main_process_cleanup", None)
+            if callable(cleanup):
+                cleanup(reason="integration_shutdown")
+                return True
+            stop_api = getattr(mod, "stop_local_api_server", None)
+            if callable(stop_api):
+                stop_api(timeout=4.0)
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _kill_api_port_fallback(port: int) -> None:
+    """Best-effort port/PID cleanup for the local Flask API child process."""
+    try:
+        pids = set()
+        for raw in (
+            os.environ.get("SARAHMEMORY_LOCAL_API_PID"),
+            os.environ.get("SARAHMEMORY_API_PID"),
+        ):
+            if raw and str(raw).strip().isdigit():
+                pids.add(int(str(raw).strip()))
+
+        for path in _runtime_pid_paths():
+            try:
+                if path.endswith("local_api.pid") and os.path.exists(path):
+                    raw = open(path, "r", encoding="utf-8", errors="ignore").read().strip()
+                    if raw.isdigit():
+                        pids.add(int(raw))
+            except Exception:
+                pass
+
+        if os.name == "nt":
+            try:
+                out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
+            except Exception:
+                out = ""
+            needle = f":{int(port)}"
+            for line in out.splitlines():
+                if needle in line and "LISTENING" in line.upper():
+                    parts = line.split()
+                    if parts and parts[-1].isdigit():
+                        pids.add(int(parts[-1]))
+
+            for pid in sorted(pids):
+                if pid <= 0 or pid == os.getpid():
+                    continue
+                try:
+                    info = subprocess.check_output(
+                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                        text=True,
+                        errors="ignore",
+                    ).strip()
+                    image = info.split(",")[0].strip('"').lower() if info else ""
+                    if image and ("python" in image or "wsgi" in image or "gunicorn" in image):
+                        subprocess.run(
+                            ["taskkill", "/PID", str(pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=3.0,
+                        )
+                except Exception:
+                    pass
+        else:
+            import signal
+            for pid in sorted(pids):
+                if pid <= 0 or pid == os.getpid():
+                    continue
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except Exception:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    finally:
+        try:
+            os.environ.pop("SARAHMEMORY_LOCAL_API_PID", None)
+            os.environ.pop("SARAHMEMORY_API_PID", None)
+        except Exception:
+            pass
+
+
+def _join_sarahmemory_threads(timeout_each: float = 0.75) -> None:
+    """Give non-daemon SarahMemory threads a small window to exit after terminate_flag is set."""
+    try:
+        current = threading.current_thread()
+        for th in list(threading.enumerate()):
+            try:
+                if th is current or not th.is_alive():
+                    continue
+                name = str(getattr(th, "name", "") or "")
+                if not (name.startswith("SM_") or name.startswith("SarahMemory")):
+                    continue
+                th.join(timeout=timeout_each)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
 
 # =============================================================================
 # RUNTIME SERVICES (POST-API) - v8.0
@@ -753,35 +949,68 @@ def launch_gui():
 # =============================================================================
 # SHUTDOWN SEQUENCE
 # =============================================================================
-def shutdown_sequence():
+def shutdown_sequence(exit_code: int = 0):
     """
-    v8.0 Enhanced: Clean shutdown with voice confirmation.
+    v8.0 Enhanced: Clean shutdown with one authoritative lifecycle gate.
+
+    This function is intentionally idempotent:
+    - GUI close may call it.
+    - menu option 2 may call it.
+    - Ctrl+C / exception cleanup may call into Main separately.
+    - duplicate calls should not hang or double-kill.
     """
+    global _shutdown_started
+
     try:
-        synthesize_voice("Shutting down. Have a great day!")
+        with _shutdown_lock:
+            if _shutdown_started:
+                raise SystemExit(exit_code)
+            _shutdown_started = True
+    except SystemExit:
+        raise
     except Exception:
-        pass
-    logger.info("[v8.0] Initiating safe shutdown procedures.")
+        if _shutdown_started:
+            raise SystemExit(exit_code)
+        _shutdown_started = True
+
+    terminate_flag.set()
 
     print("\n" + "═" * 78)
     print("  SARAHMEMORY v8.0 - SHUTTING DOWN")
     print("═" * 78)
 
-    terminate_flag.set()
-
-    # Run the centralized local cleanup first so threads, shared memory, DBs, and OpenCV release cleanly.
+    # Voice confirmation is best-effort only. Shutdown must never wait on TTS.
     try:
-        import SarahMemoryInitialization as init
-        init.safe_shutdown()
-    except Exception as e:
-        logger.warning(f"[v8.0] Initialization safe shutdown hook failed: {e}")
-
-    try:
-        shutdown_tts()
+        synthesize_voice("Shutting down. Have a great day!")
     except Exception:
         pass
 
-    # v8.0 Hotfix: Ensure local API server fully terminates and releases PORT (Windows)
+    logger.info("[v8.0] Initiating safe shutdown procedures.")
+
+    # Stop voice/TTS early so a TTS engine thread cannot keep python.exe alive.
+    try:
+        shutdown_tts()
+        print("  ✓ TTS shutdown requested")
+    except Exception as e:
+        logger.debug("[v8.0] TTS shutdown skipped: %s", e)
+
+    # Central module cleanup: shared frames, OpenCV windows, context, etc.
+    try:
+        import SarahMemoryInitialization as init
+        init.safe_shutdown()
+        print("  ✓ Initialization cleanup completed")
+    except Exception as e:
+        logger.warning(f"[v8.0] Initialization safe shutdown hook failed: {e}")
+
+    # Stop local API child process through Main when possible.
+    try:
+        called = _call_main_process_cleanup()
+        if called:
+            print("  ✓ Main/API lifecycle cleanup completed")
+    except Exception as e:
+        logger.debug("[v8.0] Main lifecycle cleanup failed: %s", e)
+
+    # Fallback: collect/kill API pid/port only if Main cleanup was unavailable or incomplete.
     try:
         port_val = os.environ.get("PORT") or str(getattr(config, "DEFAULT_PORT", "8000"))
         port = int(port_val)
@@ -789,67 +1018,50 @@ def shutdown_sequence():
         port = 8000
 
     try:
-        pids = set()
-        pid_env = (os.environ.get("SARAHMEMORY_LOCAL_API_PID") or "").strip()
-        if pid_env.isdigit():
-            pids.add(int(pid_env))
-
-        if os.name == "nt":
-            # netstat -> collect all LISTENING PIDs on port
-            try:
-                out = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
-            except Exception:
-                out = ""
-            needle = f":{port}"
-            for line in out.splitlines():
-                if needle in line and "LISTENING" in line.upper():
-                    parts = line.split()
-                    if parts and parts[-1].isdigit():
-                        pids.add(int(parts[-1]))
-
-            # Kill only python-ish processes to avoid collateral damage
-            for pid in sorted(pids):
-                if pid <= 0 or pid == os.getpid():
-                    continue
-                try:
-                    info = subprocess.check_output(
-                        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
-                        text=True,
-                        errors="ignore",
-                    ).strip()
-                    if not info or "No tasks" in info:
-                        continue
-                    image = info.split(",")[0].strip('"').lower()
-                    if "python" not in image and "wsgi" not in image and "gunicorn" not in image:
-                        continue
-                    subprocess.run(
-                        ["taskkill", "/PID", str(pid), "/T", "/F"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                    logger.info("[v8.0] Stopped local API server process (pid=%s).", pid)
-                except Exception:
-                    # Best-effort only; do not block shutdown
-                    pass
-
-            # Briefly wait for the listening port to drop so the same console can relaunch cleanly.
-            for _ in range(20):
-                try:
-                    chk = subprocess.check_output(["netstat", "-ano", "-p", "tcp"], text=True, errors="ignore")
-                except Exception:
-                    chk = ""
-                if f":{port}" not in chk:
-                    break
-                time.sleep(0.15)
+        _kill_api_port_fallback(port)
+        print("  ✓ Local API port cleanup completed")
     except Exception:
         pass
 
-    logger.info("[v8.0] Safe shutdown completed successfully.")
+    # Mark state offline and remove stale pid markers so WebUI health is not poisoned on relaunch.
+    try:
+        _clear_runtime_state_files()
+        print("  ✓ Runtime state and PID markers cleared")
+    except Exception:
+        pass
+
+    # Give known SarahMemory threads a brief chance to see terminate_flag and exit.
+    try:
+        _join_sarahmemory_threads(timeout_each=0.75)
+    except Exception:
+        pass
 
     print("\n  ✓ Shutdown complete. Thank you for using SarahMemory!")
     print("  ✓ Visit https://www.sarahmemory.com for updates\n")
 
-    sys.exit(0)
+    try:
+        logger.info("[v8.0] Safe shutdown completed successfully.")
+    except Exception:
+        pass
+
+    # Flush before final process exit.
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+
+    # Desktop runtime default: force the current process to exit only after cleanup.
+    # This replaces the external pytaskkill.bat dependency without killing unrelated Python jobs.
+    if _cfg_bool("SARAH_FORCE_PROCESS_EXIT_ON_SHUTDOWN", True):
+        os._exit(int(exit_code))
+
+    raise SystemExit(exit_code)
 
 
 # =============================================================================
