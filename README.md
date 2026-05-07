@@ -1,5 +1,7 @@
 ![SarahMemory Logo](documents/SMAIOSLOGO.jpg)
 
+![SMAIOS_BANNER](documents/SarahMemoryAiOS-10x3-Banner.png)
+
 # **SarahMemory AI Operating System (AiOS)**  
 ### **Version 8.0.0 — Developer & Functional Release**
 
