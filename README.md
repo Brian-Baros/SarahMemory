@@ -1060,6 +1060,40 @@ The 2D Avatar build is a series of Images placed in the ../resources/avatars/2D/
       
 The REM Sleep and Deep Learning systems were clarified as two related but separate learning lanes:
 
+To FORCE the AIOS into REM SLEEP 
+PowerShell
+```
+ Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/avatar/rem/start" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body (@{
+    reason = "manual_powershell_force_rem"
+    force  = $true
+    source = "PowerShell"
+  } | ConvertTo-Json)
+```
+The BackEnd Route is: 
+```
+POST /api/avatar/rem/start
+```
+To Check Status:
+```
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/avatar/rem/status" -Method GET
+```
+To FORCE the AIOS to WakeUp from REM SLEEP
+Powershell
+```
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/avatar/rem/stop" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body (@{
+    reason = "manual_powershell_wake"
+    source = "PowerShell"
+  } | ConvertTo-Json)
+```
+
 ### **REM Sleep**
 REM Sleep is now treated as SarahMemory’s self-study and environment-study mode.
 REM is intended for:
