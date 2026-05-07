@@ -1264,7 +1264,37 @@ def get_stack_primary_repo(category, text="", meta=None):
 # Hardware Scoring Metrics (utility-only; no boot-flow changes)
 # ---------------------------------------------------------------------------
 def get_system_metrics(models_dir=None):
-    """Best-effort hardware snapshot for model tiering (never raises)."""
+    """Best-effort hardware snapshot for model tiering (never raises).
+
+    v8.0 unified environment rule:
+    - Prefer the single boot environment snapshot from SarahMemoryHi.
+    - Fall back to direct probing only if the snapshot is unavailable.
+    This prevents boot from grading CPU/GPU/RAM once, then driver readiness and
+    chat/API layers probing the same hardware again with conflicting labels.
+    """
+    try:
+        if not globals().get("_SM_HARDWARE_DIRECT_PROBE", False):
+            import SarahMemoryHi as _SMHi  # type: ignore
+            metrics_fn = getattr(_SMHi, "get_boot_environment_model_metrics", None)
+            if callable(metrics_fn):
+                cached_metrics = metrics_fn(force_refresh=False)
+                if isinstance(cached_metrics, dict) and cached_metrics:
+                    return {
+                        "cpu_count": cached_metrics.get("cpu_count"),
+                        "cpu_pct": cached_metrics.get("cpu_pct"),
+                        "ram_total_mb": cached_metrics.get("ram_total_mb"),
+                        "ram_avail_mb": cached_metrics.get("ram_avail_mb"),
+                        "disk_free_gb": cached_metrics.get("disk_free_gb"),
+                        "disk_total_gb": cached_metrics.get("disk_total_gb"),
+                        "gpu_name": cached_metrics.get("gpu_name"),
+                        "gpu_vram_total_mb": cached_metrics.get("gpu_vram_total_mb"),
+                        "gpu_vram_free_mb": cached_metrics.get("gpu_vram_free_mb"),
+                        "gpu_temp_c": cached_metrics.get("gpu_temp_c"),
+                        "cpu_temp_c": cached_metrics.get("cpu_temp_c"),
+                    }
+    except Exception:
+        pass
+
     models_dir = models_dir or globals().get("MODELS_DIR") or os.path.join(os.getcwd(), "data", "models")
     out = {
         "cpu_count": None,

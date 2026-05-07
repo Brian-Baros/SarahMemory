@@ -509,6 +509,7 @@ PROVIDER_PRIORITY: List[str] = [
     "huggingface",  #HUGGING FACE API
     "mesh",         # SarahMemory ONLINE CLOUD Server/Distributed/AiOS NETWORK NODES/ tier LAST unless explicitly requested LAST RESORT, P2P ,node, 
 ]
+PRIMARY_PROVIDER = next((p for p in PROVIDER_PRIORITY if _safe_bool(API_KEYS.get(p))), "local")
 # ============================================================================
 # ENHANCED ROLE MAP (60+ SPECIALIZED ROLES)
 # ============================================================================
@@ -2357,12 +2358,13 @@ def _candidate_models_for_intent(intent: str = "chat") -> List[str]:
 
 def get_available_providers() -> List[str]:
     """
-    Get list of providers with valid API keys.
+    Get list of providers that are enabled and usable under SarahMemoryGlobals.
 
-    Returns:
-        List of provider names
+    Local lanes do not require API keys, but they must still be enabled. External
+    lanes require both the Globals toggle and credentials. This prevents the UI
+    and REM reports from showing a disabled/unavailable provider as selected.
     """
-    return [p for p in PROVIDER_PRIORITY if API_KEYS.get(p)]
+    return [p for p in PROVIDER_PRIORITY if _provider_has_credentials(p)]
 
 
 def get_provider_status() -> Dict[str, Dict[str, Any]]:
@@ -2375,13 +2377,74 @@ def get_provider_status() -> Dict[str, Dict[str, Any]]:
     status = {}
     for provider in PROVIDER_PRIORITY:
         key = API_KEYS.get(provider)
+        enabled = _provider_is_enabled(provider)
+        available = _provider_has_credentials(provider)
         status[provider] = {
-            "available": bool(key),
+            "available": bool(available),
+            "enabled": bool(enabled),
+            "requires_key": bool(_provider_requires_key(provider)),
             "key_set": bool(key),
             "default_model": DEFAULT_MODELS.get(provider),
             "url": API_URLS.get(provider)
         }
     return status
+
+
+def rem_api_capability_snapshot(snapshot: Optional[Dict[str, Any]] = None, include_test_call: bool = False) -> Dict[str, Any]:
+    """Bounded REM API lane snapshot.
+
+    Metadata-only by default. It reports the currently usable provider/model for
+    the DL Engine and REM dashboards without making provider calls unless the
+    caller explicitly asks for a test call.
+    """
+    started = time.time()
+    providers = get_provider_status()
+    selected_provider = next((p for p in PROVIDER_PRIORITY if providers.get(p, {}).get("available")), None)
+    selected_model = DEFAULT_MODELS.get(selected_provider) if selected_provider else None
+
+    # If no external/local provider is currently enabled, still report the SarahMemory
+    # core runtime as an active capability. This prevents the DL Engine dashboard from
+    # looking dead while the core AIOS is operating without third-party providers.
+    if not selected_provider:
+        selected_provider = "core"
+        selected_model = "SarahMemory Core Runtime"
+
+    out: Dict[str, Any] = {
+        "ok": True,
+        "lane": "api",
+        "metadata_only": not bool(include_test_call),
+        "providers": providers,
+        "selected_provider": selected_provider,
+        "selected_model": selected_model,
+        "active_provider": selected_provider,
+        "active_model": selected_model,
+        "models_loaded": 1 if selected_provider else 0,
+        "notes": [
+            "REM API lane defaults to metadata-only; no provider calls are made unless include_test_call=True.",
+            "Selected provider is the first enabled and credentialed provider in governed priority order; falls back to SarahMemory Core Runtime when no third-party provider is active."
+        ],
+    }
+    if include_test_call and selected_provider:
+        try:
+            probe = send_to_api(
+                "SarahMemory REM API health probe. Reply with OK only.",
+                provider=selected_provider,
+                intent="diagnostic",
+                tone="technical",
+                complexity="adult",
+                max_tokens=8,
+                temperature=0.0,
+            )
+            out["test_call"] = {
+                "ok": bool(probe and probe.get("data")),
+                "source": (probe or {}).get("source"),
+                "model_used": (probe or {}).get("model_used"),
+                "error": (probe or {}).get("error"),
+            }
+        except Exception as exc:
+            out["test_call"] = {"ok": False, "error": str(exc)}
+    out["duration_ms"] = int((time.time() - started) * 1000)
+    return out
 
 
 # ============================================================================
@@ -2545,6 +2608,7 @@ __all__ = [
     "get_best_provider_for_intent",
     "get_available_providers",
     "get_provider_status",
+    "rem_api_capability_snapshot",
 
     # Cognitive analysis
     "run_cognitive_analysis",
@@ -2620,40 +2684,3 @@ def _sm_sanitize_llm_text(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
     return t
-
-# =============================================================================
-# SARAH_REM_API_LANE_V1
-# API capability snapshot for REM Sleep. Default is metadata-only to prevent
-# runaway API usage/cost during idle cycles.
-# =============================================================================
-
-def rem_api_capability_snapshot(snapshot: Optional[Dict[str, Any]] = None, include_test_call: bool = False) -> Dict[str, Any]:
-    """Return provider/API readiness for REM without spending API calls by default."""
-    started = time.time()
-    snapshot = snapshot or {}
-    out: Dict[str, Any] = {
-        "ok": True,
-        "lane": "api",
-        "metadata_only": not bool(include_test_call),
-        "providers": {},
-        "selected_provider": None,
-        "duration_ms": 0,
-        "notes": ["REM API lane defaults to metadata-only; no provider calls are made unless include_test_call=True."],
-    }
-    try:
-        out["providers"] = get_provider_status()
-    except Exception as exc:
-        out["providers_error"] = str(exc)
-    try:
-        out["selected_provider"] = get_best_provider_for_intent("research")
-    except Exception as exc:
-        out["selected_provider_error"] = str(exc)
-
-    if include_test_call and str(os.getenv("SARAH_REM_ALLOW_API_TEST_CALL", "0")).strip().lower() in ("1", "true", "yes", "on"):
-        try:
-            res = send_to_api("REM health probe. Reply with OK only.", intent="system_status", max_tokens=8, temperature=0.0)
-            out["test_call"] = res.to_dict() if hasattr(res, "to_dict") else res
-        except Exception as exc:
-            out["test_call"] = {"error": str(exc)}
-    out["duration_ms"] = int((time.time() - started) * 1000)
-    return out

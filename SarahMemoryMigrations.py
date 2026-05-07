@@ -197,14 +197,17 @@ def _exec(cur: sqlite3.Cursor, sql: str, params: tuple = None) -> bool:
             cur.execute(sql)
         return True
     except sqlite3.OperationalError as e:
-        # Table/column already exists - this is expected in idempotent migrations
-        if "already exists" in str(e).lower():
+        # Table/column already exists - this is expected in idempotent migrations.
+        # SQLite reports duplicate ALTER TABLE columns as "duplicate column name";
+        # that is not a migration failure when the desired schema already exists.
+        err = str(e).lower()
+        if "already exists" in err or "duplicate column name" in err:
             logger.debug(f"Schema element already exists (expected): {e}")
             return True
-        else:
-            logger.warning(f"SQL operation error: {e}")
-            logger.debug(f"Failed SQL: {sql[:100]}...")
-            return False
+
+        logger.warning(f"SQL operation error: {e}")
+        logger.debug(f"Failed SQL: {sql[:100]}...")
+        return False
     except Exception as e:
         logger.error(f"Unexpected error executing SQL: {e}")
         logger.debug(f"Failed SQL: {sql[:100]}...")
@@ -356,6 +359,45 @@ def run_versioned_migrations(target_version: str = None) -> bool:
 # MIGRATION HELPERS
 #======================================================================
 
+def _table_columns(cur: sqlite3.Cursor, table_name: str) -> List[str]:
+    """Return existing column names for a table. Never raises for migration callers."""
+    try:
+        safe_table = str(table_name or "").replace('"', '""')
+        cur.execute(f'PRAGMA table_info("{safe_table}")')
+        return [str(row[1]) for row in cur.fetchall()]
+    except Exception as e:
+        logger.debug(f"Column inspection failed for {table_name}: {e}")
+        return []
+
+
+def _column_exists(cur: sqlite3.Cursor, table_name: str, column_name: str) -> bool:
+    """Idempotent schema helper used before ALTER TABLE ADD COLUMN."""
+    try:
+        wanted = str(column_name or "").strip().lower()
+        return wanted in {c.strip().lower() for c in _table_columns(cur, table_name)}
+    except Exception:
+        return False
+
+
+def _add_column_if_missing(cur: sqlite3.Cursor, table_name: str, column_name: str, column_sql: str) -> bool:
+    """
+    Add a column only when missing.
+
+    This prevents repeat boot warnings like:
+        duplicate column name: context
+        duplicate column name: source
+
+    Returns True when the column already exists or was added successfully.
+    """
+    if _column_exists(cur, table_name, column_name):
+        logger.debug(f"Schema column already present: {table_name}.{column_name}")
+        return True
+
+    safe_table = str(table_name or "").replace('"', '""')
+    sql = f'ALTER TABLE "{safe_table}" ADD COLUMN {column_sql}'
+    return _exec(cur, sql)
+
+
 def ensure_traits_last_updated_column(conn):
     """
     Ensures the traits table contains the 'last_updated' column.
@@ -363,16 +405,15 @@ def ensure_traits_last_updated_column(conn):
     """
     try:
         cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(traits);")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if "last_updated" not in columns:
-            cursor.execute(
-                "ALTER TABLE traits ADD COLUMN last_updated TEXT DEFAULT CURRENT_TIMESTAMP"
-            )
+        if _add_column_if_missing(
+            cursor,
+            "traits",
+            "last_updated",
+            "last_updated TEXT DEFAULT CURRENT_TIMESTAMP",
+        ):
             conn.commit()
     except Exception as e:
-        print(f"[MIGRATIONS] Failed to ensure traits.last_updated column: {e}")
+        logger.warning(f"[MIGRATIONS] Failed to ensure traits.last_updated column: {e}")
 
 # ============================================================================
 # VERSION-SPECIFIC MIGRATIONS
@@ -504,20 +545,11 @@ def _migrate_v3_0() -> bool:
         conn = _connect()
         cur = conn.cursor()
         
-        # Add personality columns to existing tables if needed
-        # This uses ALTER TABLE which is supported in SQLite 3.2.0+
-        
-        # Add context to emotion_states if not exists
-        try:
-            _exec(cur, "ALTER TABLE emotion_states ADD COLUMN context TEXT")
-        except:
-            pass  # Column may already exist
-        
-        # Add source to traits if not exists
-        try:
-            _exec(cur, "ALTER TABLE traits ADD COLUMN source TEXT")
-        except:
-            pass  # Column may already exist
+        # Add personality columns to existing tables only when missing.
+        # v2.0 already creates these columns on clean installs, so v3.0 must not
+        # blindly ALTER them again or the boot logs create false-positive errors.
+        _add_column_if_missing(cur, "emotion_states", "context", "context TEXT")
+        _add_column_if_missing(cur, "traits", "source", "source TEXT")
         
         conn.commit()
         conn.close()

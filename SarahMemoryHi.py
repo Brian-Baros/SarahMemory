@@ -118,6 +118,7 @@ import json
 import sqlite3
 import socket
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union, Any, Tuple
 from pathlib import Path
@@ -142,6 +143,446 @@ if not logger.hasHandlers():
 NETWORK_STATE = "unknown"  # green, yellow, red, unknown
 _last_net_io = None
 _network_state_cache = {"state": "unknown", "updated": None}
+
+
+# =============================================================================
+# SINGLE BOOT ENVIRONMENT SNAPSHOT - v8.0 Enterprise Body Map
+# =============================================================================
+# One authoritative hardware/body snapshot is captured once per boot and then reused
+# by boot logging, model-tier grading, driver readiness, chat answers, diagnostics,
+# and API/UI endpoints. This prevents repeated CPU/GPU/driver scans and keeps
+# SarahMemory's answers aligned with the environment it actually booted into.
+_BOOT_ENVIRONMENT_CACHE: Dict[str, Any] = {"snapshot": None, "ts": 0.0, "boot_id": ""}
+_BOOT_ENVIRONMENT_BUILDING = False
+_BOOT_ENVIRONMENT_SCHEMA_VERSION = "8.0.0-env-unified-1"
+
+
+def _datasets_dir_path() -> Path:
+    try:
+        return Path(str(getattr(config, "DATASETS_DIR", ""))).expanduser().resolve()
+    except Exception:
+        pass
+    try:
+        data_dir = Path(str(getattr(config, "DATA_DIR", ""))).expanduser().resolve()
+        if str(data_dir):
+            return (data_dir / "memory" / "datasets").resolve()
+    except Exception:
+        pass
+    return (Path(os.getcwd()).resolve() / "data" / "memory" / "datasets").resolve()
+
+
+def _environment_snapshot_json_path() -> Path:
+    return _datasets_dir_path() / "runtime_environment_snapshot.json"
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _read_json_file(path: Path) -> Dict[str, Any]:
+    try:
+        if path.exists() and path.is_file():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+
+def _write_json_file_atomic(path: Path, data: Dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except Exception as exc:
+        logger.debug(f"[v8.0] environment snapshot persist skipped: {exc}")
+
+
+def _current_os_boot_id() -> str:
+    try:
+        boot_ts = psutil.boot_time()
+        return f"{platform.node()}::{int(float(boot_ts))}"
+    except Exception:
+        return f"{platform.node()}::unknown"
+
+
+def _current_os_boot_time_iso() -> Optional[str]:
+    try:
+        return datetime.fromtimestamp(psutil.boot_time()).isoformat()
+    except Exception:
+        return None
+
+
+def _powershell_json(script: str, timeout: float = 10.0) -> Any:
+    try:
+        if platform.system() != "Windows":
+            return None
+        ps = shutil.which("powershell") or shutil.which("pwsh")
+        if not ps:
+            return None
+        result = _run_probe_command([ps, "-NoProfile", "-Command", script], timeout=timeout)
+        if result.get("ok") and str(result.get("stdout") or "").strip():
+            return json.loads(str(result.get("stdout") or ""))
+    except Exception as exc:
+        logger.debug(f"[v8.0] PowerShell JSON probe failed: {exc}")
+    return None
+
+
+def _first_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, list) and value and isinstance(value[0], dict):
+        return value[0]
+    return {}
+
+
+def _detect_cpu_identity() -> Dict[str, Any]:
+    uname = platform.uname()
+    name = (platform.processor() or getattr(uname, "processor", "") or getattr(uname, "machine", "") or "Unknown CPU").strip()
+    cores_physical = None
+    cores_logical = None
+    max_clock_mhz = None
+    current_clock_mhz = None
+    usage_pct = None
+
+    try:
+        cores_physical = psutil.cpu_count(logical=False)
+    except Exception:
+        pass
+    try:
+        cores_logical = psutil.cpu_count(logical=True)
+    except Exception:
+        pass
+    try:
+        freq = psutil.cpu_freq()
+        if freq:
+            current_clock_mhz = _safe_float(getattr(freq, "current", None), 0.0) or None
+            max_clock_mhz = _safe_float(getattr(freq, "max", None), 0.0) or None
+    except Exception:
+        pass
+    try:
+        usage_pct = round(float(psutil.cpu_percent(interval=0.2)), 2)
+    except Exception:
+        usage_pct = None
+
+    if platform.system() == "Windows":
+        data = _powershell_json(
+            "Get-CimInstance Win32_Processor | "
+            "Select-Object Name,Manufacturer,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | "
+            "ConvertTo-Json -Depth 4",
+            timeout=10.0,
+        )
+        row = _first_dict(data)
+        if row:
+            name = str(row.get("Name") or name).strip() or name
+            cores_physical = _safe_int(row.get("NumberOfCores"), cores_physical or 0) or cores_physical
+            cores_logical = _safe_int(row.get("NumberOfLogicalProcessors"), cores_logical or 0) or cores_logical
+            max_clock_mhz = _safe_float(row.get("MaxClockSpeed"), max_clock_mhz or 0.0) or max_clock_mhz
+
+    return {
+        "name": name,
+        "manufacturer": "",
+        "architecture": getattr(uname, "machine", ""),
+        "physical_cores": cores_physical,
+        "logical_threads": cores_logical,
+        "current_clock_mhz": current_clock_mhz,
+        "max_clock_mhz": max_clock_mhz,
+        "usage_pct": usage_pct,
+    }
+
+
+def _detect_memory_identity() -> Dict[str, Any]:
+    try:
+        vm = psutil.virtual_memory()
+        swap = psutil.swap_memory()
+        return {
+            "total_gb": round(float(vm.total) / (1024 ** 3), 2),
+            "available_gb": round(float(vm.available) / (1024 ** 3), 2),
+            "used_gb": round(float(vm.used) / (1024 ** 3), 2),
+            "usage_pct": round(float(vm.percent), 2),
+            "swap_total_gb": round(float(swap.total) / (1024 ** 3), 2),
+            "swap_usage_pct": round(float(swap.percent), 2),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _detect_gpu_identity() -> Dict[str, Any]:
+    gpu = get_gpu_info() or {}
+    out: Dict[str, Any] = {
+        "available": bool(gpu),
+        "name": str(gpu.get("Name") or gpu.get("Info") or gpu.get("Type") or "").strip() or None,
+        "type": gpu.get("Type"),
+        "driver": gpu.get("Driver"),
+        "memory": gpu.get("Memory"),
+        "raw": gpu,
+    }
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name,driver_version,memory.total,memory.free,temperature.gpu,utilization.gpu", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            parts = [x.strip() for x in result.stdout.strip().splitlines()[0].split(",")]
+            if len(parts) >= 6:
+                out.update({
+                    "available": True,
+                    "name": parts[0],
+                    "driver": parts[1],
+                    "vram_total_mb": _safe_int(parts[2], 0),
+                    "vram_free_mb": _safe_int(parts[3], 0),
+                    "temperature_c": None if parts[4].upper() in {"N/A", ""} else _safe_float(parts[4], 0.0),
+                    "utilization_pct": _safe_float(parts[5], 0.0),
+                    "backend": "nvidia-smi",
+                })
+    except Exception:
+        pass
+    return out
+
+
+def _detect_storage_identity() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen = set()
+    try:
+        for part in psutil.disk_partitions(all=False) or []:
+            mount = str(getattr(part, "mountpoint", "") or "").strip()
+            device = str(getattr(part, "device", "") or "").strip()
+            if not mount or mount in seen:
+                continue
+            seen.add(mount)
+            row: Dict[str, Any] = {
+                "device": device,
+                "mountpoint": mount,
+                "fstype": str(getattr(part, "fstype", "") or ""),
+                "opts": str(getattr(part, "opts", "") or ""),
+            }
+            try:
+                usage = psutil.disk_usage(mount)
+                row.update({
+                    "total_gb": round(float(usage.total) / (1024 ** 3), 2),
+                    "used_gb": round(float(usage.used) / (1024 ** 3), 2),
+                    "free_gb": round(float(usage.free) / (1024 ** 3), 2),
+                    "usage_pct": round(float(usage.percent), 2),
+                })
+            except Exception:
+                pass
+            items.append(row)
+    except Exception as exc:
+        logger.debug(f"[v8.0] storage identity probe failed: {exc}")
+    return items
+
+
+def _detect_network_identity() -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    try:
+        stats = psutil.net_if_stats() or {}
+        addrs = psutil.net_if_addrs() or {}
+        for name, addr_rows in addrs.items():
+            low = str(name).lower()
+            if low.startswith("lo") or "loopback" in low:
+                continue
+            st = stats.get(name)
+            ips = []
+            macs = []
+            for addr in addr_rows or []:
+                fam = str(getattr(addr, "family", ""))
+                address = str(getattr(addr, "address", "") or "").strip()
+                if not address:
+                    continue
+                if "AF_LINK" in fam or "AF_PACKET" in fam:
+                    macs.append(address)
+                elif "." in address or ":" in address:
+                    ips.append(address)
+            items.append({
+                "name": _hardware_label(name),
+                "is_up": bool(getattr(st, "isup", False)) if st else None,
+                "speed_mbps": getattr(st, "speed", None) if st else None,
+                "mtu": getattr(st, "mtu", None) if st else None,
+                "ip_addresses": ips,
+                "mac_addresses": macs,
+            })
+    except Exception as exc:
+        logger.debug(f"[v8.0] network identity probe failed: {exc}")
+    return items
+
+
+def _boot_environment_chat_facts(snapshot: Dict[str, Any]) -> Dict[str, str]:
+    body = snapshot.get("body") if isinstance(snapshot.get("body"), dict) else {}
+    cpu = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+    gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+    ram = body.get("ram") if isinstance(body.get("ram"), dict) else {}
+    motherboard = str(body.get("motherboard") or "Unknown motherboard")
+    gpu_name = str(gpu.get("name") or "No dedicated GPU detected")
+    cpu_name = str(cpu.get("name") or "Unknown CPU")
+    facts = {
+        "cpu": cpu_name,
+        "gpu": gpu_name,
+        "motherboard": motherboard,
+        "ram": f"{ram.get('total_gb', 'Unknown')} GB total, {ram.get('available_gb', 'Unknown')} GB available",
+        "network_adapters": str(len(body.get("network_adapters") or [])),
+        "storage_devices": str(len(body.get("storage") or [])),
+    }
+    return facts
+
+
+def _build_boot_environment_snapshot(refresh_reason: str = "boot") -> Dict[str, Any]:
+    motherboard_items = _detect_motherboard_items()
+    cpu = _detect_cpu_identity()
+    ram = _detect_memory_identity()
+    gpu = _detect_gpu_identity()
+    storage = _detect_storage_identity()
+    network = _detect_network_identity()
+    audio = _detect_audio_items()
+    cameras = _detect_camera_items()
+    printers = _detect_printer_items()
+    bluetooth = _detect_bluetooth_items()
+    npu = _detect_npu_items()
+    driver_readiness = _build_b_level_driver_readiness_snapshot_uncached()
+
+    root_path = None
+    try:
+        root_path = str(getattr(config, "BASE_DIR", os.getcwd()))
+    except Exception:
+        root_path = os.getcwd()
+    model_metrics = {
+        "cpu_count": cpu.get("logical_threads"),
+        "cpu_pct": cpu.get("usage_pct"),
+        "ram_total_mb": _safe_int(_safe_float(ram.get("total_gb"), 0.0) * 1024, 0),
+        "ram_avail_mb": _safe_int(_safe_float(ram.get("available_gb"), 0.0) * 1024, 0),
+        "disk_free_gb": None,
+        "disk_total_gb": None,
+        "gpu_name": gpu.get("name"),
+        "gpu_vram_total_mb": gpu.get("vram_total_mb"),
+        "gpu_vram_free_mb": gpu.get("vram_free_mb"),
+        "gpu_temp_c": gpu.get("temperature_c"),
+        "cpu_temp_c": None,
+    }
+    try:
+        disk_for_root = shutil.disk_usage(root_path or os.getcwd())
+        model_metrics["disk_total_gb"] = float(disk_for_root.total) / (1024 ** 3)
+        model_metrics["disk_free_gb"] = float(disk_for_root.free) / (1024 ** 3)
+    except Exception:
+        if storage:
+            model_metrics["disk_total_gb"] = storage[0].get("total_gb")
+            model_metrics["disk_free_gb"] = storage[0].get("free_gb")
+
+    hardware_grade: Dict[str, Any] = {}
+    try:
+        grade_fn = getattr(config, "hardware_score", None)
+        if callable(grade_fn):
+            hardware_grade = grade_fn(model_metrics)
+    except Exception as exc:
+        hardware_grade = {"score": None, "tier": "low", "tier_rating": "Unknown", "error": str(exc), "metrics": model_metrics}
+
+    snapshot: Dict[str, Any] = {
+        "ok": True,
+        "schema_version": _BOOT_ENVIRONMENT_SCHEMA_VERSION,
+        "source": "SarahMemoryHi.get_boot_environment_snapshot",
+        "refresh_reason": str(refresh_reason or "boot"),
+        "timestamp": datetime.now().isoformat(),
+        "pid": os.getpid(),
+        "boot_id": _current_os_boot_id(),
+        "os_boot_time": _current_os_boot_time_iso(),
+        "platform": {
+            "system": platform.system(),
+            "release": platform.release(),
+            "version": platform.version(),
+            "machine": platform.machine(),
+            "node": platform.node(),
+            "python": platform.python_version(),
+        },
+        "body": {
+            "motherboard": motherboard_items[0].replace(" Motherboard", "") if motherboard_items else "Unknown motherboard",
+            "motherboard_items": motherboard_items,
+            "cpu": cpu,
+            "ram": ram,
+            "gpu": gpu,
+            "storage": storage,
+            "network_adapters": network,
+            "audio_devices": audio,
+            "camera_devices": cameras,
+            "printer_devices": printers,
+            "bluetooth_devices": bluetooth,
+            "npu_devices": npu,
+        },
+        "model_metrics": model_metrics,
+        "hardware_grade": hardware_grade,
+        "driver_readiness": driver_readiness,
+    }
+    snapshot["chat_facts"] = _boot_environment_chat_facts(snapshot)
+    return snapshot
+
+
+def get_boot_environment_snapshot(force_refresh: bool = False, refresh_reason: str = "runtime", persist: bool = True) -> Dict[str, Any]:
+    """Return the single authoritative boot environment/body snapshot.
+
+    - force_refresh=True performs the one expensive boot scan and persists it.
+    - force_refresh=False reuses in-memory cache, then persisted same-boot cache,
+      and only falls back to a fresh scan if no valid same-boot snapshot exists.
+    """
+    global _BOOT_ENVIRONMENT_BUILDING
+    boot_id = _current_os_boot_id()
+    cached = _BOOT_ENVIRONMENT_CACHE.get("snapshot")
+    if not force_refresh and isinstance(cached, dict) and cached.get("boot_id") == boot_id:
+        return json.loads(json.dumps(cached, ensure_ascii=False))
+
+    disk_snapshot = _read_json_file(_environment_snapshot_json_path())
+    if not force_refresh and disk_snapshot.get("boot_id") == boot_id and disk_snapshot.get("ok"):
+        _BOOT_ENVIRONMENT_CACHE.update({"snapshot": disk_snapshot, "ts": time.time(), "boot_id": boot_id})
+        return json.loads(json.dumps(disk_snapshot, ensure_ascii=False))
+
+    if _BOOT_ENVIRONMENT_BUILDING:
+        # Re-entrant protection: return the best available partial/persisted snapshot.
+        if isinstance(cached, dict):
+            return dict(cached)
+        if isinstance(disk_snapshot, dict) and disk_snapshot:
+            return dict(disk_snapshot)
+        return {"ok": False, "error": "environment_snapshot_build_in_progress", "boot_id": boot_id}
+
+    _BOOT_ENVIRONMENT_BUILDING = True
+    try:
+        snap = _build_boot_environment_snapshot(refresh_reason=refresh_reason)
+        _BOOT_ENVIRONMENT_CACHE.update({"snapshot": snap, "ts": time.time(), "boot_id": boot_id})
+        if persist:
+            _write_json_file_atomic(_environment_snapshot_json_path(), snap)
+        return json.loads(json.dumps(snap, ensure_ascii=False))
+    finally:
+        _BOOT_ENVIRONMENT_BUILDING = False
+
+
+def get_cached_boot_environment_snapshot() -> Dict[str, Any]:
+    return get_boot_environment_snapshot(force_refresh=False, refresh_reason="cached")
+
+
+def get_boot_environment_model_metrics(force_refresh: bool = False) -> Dict[str, Any]:
+    snap = get_boot_environment_snapshot(force_refresh=force_refresh, refresh_reason="model_metrics")
+    metrics = snap.get("model_metrics") if isinstance(snap.get("model_metrics"), dict) else {}
+    return dict(metrics)
+
+
+def get_boot_environment_chat_fact(key: str = "") -> Any:
+    snap = get_boot_environment_snapshot(force_refresh=False, refresh_reason="chat_fact")
+    facts = snap.get("chat_facts") if isinstance(snap.get("chat_facts"), dict) else {}
+    if key:
+        return facts.get(str(key).strip().lower())
+    return facts
 
 # =============================================================================
 # SYSTEM INFORMATION - v8.0 Enhanced
@@ -1063,9 +1504,9 @@ def _detect_npu_items() -> List[str]:
     return list(dict.fromkeys(items))
 
 
-def get_b_level_driver_readiness_snapshot(drivers_root: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+def _build_b_level_driver_readiness_snapshot_uncached(drivers_root: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     """
-    Boot-safe hardware readiness snapshot.
+    Internal uncached boot-safe hardware readiness snapshot.
     Returns detected hardware items and READY/NOT READY status based on generic
     Level B driver families present under ./data/drivers/com.softdev0.*.
     """
@@ -1120,6 +1561,22 @@ def get_b_level_driver_readiness_snapshot(drivers_root: Optional[Union[str, Path
         'timestamp': datetime.now().isoformat(),
         'version': '8.0.0',
     }
+
+
+def get_b_level_driver_readiness_snapshot(drivers_root: Optional[Union[str, Path]] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    """Return driver readiness from the single boot environment snapshot.
+
+    This preserves the old public function name while preventing the readiness
+    detectors from running a second or third time during boot/API/chat calls.
+    """
+    if drivers_root is not None or force_refresh:
+        snap = get_boot_environment_snapshot(force_refresh=force_refresh, refresh_reason="driver_readiness")
+    else:
+        snap = get_boot_environment_snapshot(force_refresh=False, refresh_reason="driver_readiness")
+    readiness = snap.get("driver_readiness") if isinstance(snap.get("driver_readiness"), dict) else {}
+    if readiness:
+        return dict(readiness)
+    return _build_b_level_driver_readiness_snapshot_uncached(drivers_root=drivers_root)
 
 
 def get_b_level_driver_readiness_report(drivers_root: Optional[Union[str, Path]] = None) -> List[str]:

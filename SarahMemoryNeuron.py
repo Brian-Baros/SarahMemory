@@ -1120,12 +1120,21 @@ def _detect_system_kind(text: str, intent: str = "") -> Optional[str]:
         return "diagnostics"
     if "diagnos" in t or "self-test" in t or "self test" in t or "health check" in t:
         return "diagnostics"
-    # Hardware/system stats
+    # Hardware/system stats. Keep specific hardware questions in the safe read-only
+    # system lane. Do not route these into SMGET/sidekick procedural execution.
     if any(k in t for k in ("gpu", "vram", "cuda", "graphics", "nvidia-smi")):
         return "gpu"
+    if any(k in t for k in ("cpu", "processor", "what processor")):
+        return "cpu"
+    if any(k in t for k in ("motherboard", "mainboard", "baseboard")):
+        return "motherboard"
+    if any(k in t for k in ("ram", "memory usage", "system memory", "how much memory")):
+        return "ram"
+    if any(k in t for k in ("network adapter", "network adapters", "ethernet", "wi-fi", "wifi", "bluetooth network")):
+        return "network"
     if any(k in t for k in ("disk space", "free disk", "free space", "storage", "drive space")):
         return "disk"
-    if any(k in t for k in ("cpu", "ram", "memory usage", "system stats", "system status")):
+    if any(k in t for k in ("system stats", "system status", "hardware stats", "environment", "where are you running", "what are you running on")):
         return "system_stats"
     return None
 
@@ -1223,6 +1232,26 @@ def _quick_system_stats() -> Dict[str, Any]:
     except Exception:
         pass
     return out
+
+
+def _boot_environment_snapshot() -> Dict[str, Any]:
+    """Read the unified SarahMemory body map captured during boot."""
+    try:
+        import SarahMemoryHi as _SMHi  # type: ignore
+        fn = getattr(_SMHi, "get_boot_environment_snapshot", None)
+        if callable(fn):
+            snap = fn(force_refresh=False, refresh_reason="neuron_device_query")
+            if isinstance(snap, dict):
+                return snap
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": False, "error": "SarahMemoryHi unified environment snapshot unavailable"}
+
+
+def _environment_body() -> Dict[str, Any]:
+    snap = _boot_environment_snapshot()
+    body = snap.get("body") if isinstance(snap.get("body"), dict) else {}
+    return body if isinstance(body, dict) else {}
 
 
 def _run_quick_diagnostics() -> Dict[str, Any]:
@@ -2705,7 +2734,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             return res
         trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngress->Research", "ok": False})
 
-    if ingress_route.get("domain") in {"drivers", "system", "documents", "email", "network", "communication", "reminder", "avatar"} and float(ingress_route.get("confidence") or 0.0) >= 0.66:
+    if intent not in {"device_query", "diagnostics", "identity"} and ingress_route.get("domain") in {"drivers", "system", "documents", "email", "network", "communication", "reminder", "avatar"} and float(ingress_route.get("confidence") or 0.0) >= 0.66:
         _trace_primary_lane(trace, 'action', str(ingress_route.get("target_module") or 'executor'))
         trace["tiers"].append({"tier": "ingress", "engine": "SemanticIngressExecutor", "ok": True})
         res = _ingress_execution_ticket(ingress_route, trace, inp.text)
@@ -2805,30 +2834,77 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "gpu":
-            _trace_primary_lane(trace, 'system', 'GPUStats')
-            g = _gpu_stats_summary()
-            ok = bool(g.get("ok", False))
-            trace["tiers"].append({"tier": 0, "engine": "GPUStats", "ok": ok})
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            body = _environment_body()
+            g = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+            ok = bool(g)
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.GPU", "ok": ok})
             if ok:
-                # Prefer normalized fields when available
                 name = g.get("name") or "GPU"
-                if "free_vram_gb" in g and "total_vram_gb" in g:
-                    reply = f"{name}: {g.get('free_vram_gb')} GB free / {g.get('total_vram_gb')} GB total VRAM."
-                elif "free_vram_mb" in g and "total_vram_mb" in g:
-                    reply = f"{name}: {g.get('free_vram_mb')} MB free / {g.get('total_vram_mb')} MB total VRAM."
+                total = g.get("vram_total_mb")
+                free = g.get("vram_free_mb")
+                if total:
+                    reply = f"My GPU is {name}, with {free if free is not None else 'unknown'} MB free / {total} MB total VRAM."
                 else:
-                    reply = f"{name}: GPU stats captured."
+                    reply = f"My GPU is {name}."
             else:
-                reply = "GPU stats are not available on this system."
-            return NeuronResult(
-                ok=ok,
-                reply=reply,
-                intent="device_query",
-                source="gpu_stats",
-                confidence=0.9 if ok else 0.6,
-                artifacts={"gpu": g},
-                trace=trace,
-            )
+                reply = "GPU stats are not available in my unified environment snapshot."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"gpu": g}, trace=trace)
+
+        if system_kind == "cpu":
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            body = _environment_body()
+            c = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+            ok = bool(c)
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.CPU", "ok": ok})
+            if ok:
+                name = c.get("name") or "Unknown CPU"
+                phys = c.get("physical_cores")
+                logical = c.get("logical_threads")
+                mhz = c.get("max_clock_mhz") or c.get("current_clock_mhz")
+                detail = f"My CPU is {name}"
+                if phys is not None or logical is not None:
+                    detail += f" with {phys if phys is not None else '?'} physical cores and {logical if logical is not None else '?'} logical threads"
+                if mhz:
+                    try:
+                        detail += f" at up to {int(round(float(mhz)))} MHz"
+                    except Exception:
+                        pass
+                reply = detail + "."
+            else:
+                reply = "CPU details are not available in my unified environment snapshot."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.92 if ok else 0.6, artifacts={"cpu": c}, trace=trace)
+
+        if system_kind == "motherboard":
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            body = _environment_body()
+            motherboard = str(body.get("motherboard") or "").strip()
+            ok = bool(motherboard and motherboard.lower() != "unknown motherboard")
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.Motherboard", "ok": ok})
+            reply = f"My motherboard is {motherboard}." if ok else "Motherboard details are not available in my unified environment snapshot."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"motherboard": motherboard}, trace=trace)
+
+        if system_kind == "ram":
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            body = _environment_body()
+            r = body.get("ram") if isinstance(body.get("ram"), dict) else {}
+            ok = bool(r)
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.RAM", "ok": ok})
+            if ok:
+                reply = f"I have {r.get('total_gb', 'unknown')} GB RAM total, with {r.get('available_gb', 'unknown')} GB currently available ({r.get('usage_pct', 'unknown')}% used)."
+            else:
+                reply = "RAM details are not available in my unified environment snapshot."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"ram": r}, trace=trace)
+
+        if system_kind == "network":
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            body = _environment_body()
+            adapters = body.get("network_adapters") if isinstance(body.get("network_adapters"), list) else []
+            names = [str(a.get("name") or "") for a in adapters if isinstance(a, dict) and a.get("name")]
+            ok = bool(names)
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.Network", "ok": ok})
+            reply = f"I can see {len(names)} network adapters: {', '.join(names[:12])}." if ok else "Network adapter details are not available in my unified environment snapshot."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"network_adapters": adapters}, trace=trace)
 
         if system_kind == "disk":
             _trace_primary_lane(trace, 'system', 'DiskUsage')
@@ -2857,25 +2933,26 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             )
 
         if system_kind == "system_stats":
-            _trace_primary_lane(trace, 'system', 'SystemStats')
-            s = _quick_system_stats()
-            ok = bool(s.get("ok", False))
-            trace["tiers"].append({"tier": 0, "engine": "SystemStats", "ok": ok})
+            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
+            snap = _boot_environment_snapshot()
+            body = snap.get("body") if isinstance(snap.get("body"), dict) else {}
+            grade = snap.get("hardware_grade") if isinstance(snap.get("hardware_grade"), dict) else {}
+            ok = bool(snap.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.SystemStats", "ok": ok})
+            cpu = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+            gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+            ram = body.get("ram") if isinstance(body.get("ram"), dict) else {}
             parts = []
-            if "cpu_percent" in s:
-                parts.append(f"CPU: {s.get('cpu_percent')}%")
-            if "ram_available_gb" in s and "ram_total_gb" in s:
-                parts.append(f"RAM: {s.get('ram_available_gb')} GB free / {s.get('ram_total_gb')} GB total")
-            reply = " | ".join(parts) if parts else "System stats captured."
-            return NeuronResult(
-                ok=ok,
-                reply=reply,
-                intent="device_query",
-                source="system_stats",
-                confidence=0.85 if ok else 0.6,
-                artifacts={"system": s},
-                trace=trace,
-            )
+            if cpu.get("name"):
+                parts.append(f"CPU: {cpu.get('name')}")
+            if gpu.get("name"):
+                parts.append(f"GPU: {gpu.get('name')}")
+            if ram.get("total_gb"):
+                parts.append(f"RAM: {ram.get('available_gb')} GB free / {ram.get('total_gb')} GB total")
+            if grade.get("tier_rating"):
+                parts.append(f"Tier: {grade.get('tier_rating')} ({grade.get('score')})")
+            reply = " | ".join(parts) if parts else "System environment snapshot captured."
+            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"environment": snap}, trace=trace)
 
     # Vision lane: classify once, then either answer visually or hand off to Action lane.
     vision_request = None

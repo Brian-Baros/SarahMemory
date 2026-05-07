@@ -94,7 +94,6 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import textwrap
 import warnings
 warnings.filterwarnings("error", category=SyntaxWarning)
 
@@ -728,6 +727,24 @@ def _mark_processed(issue: DetectedIssue, patch_name: str) -> None:
         "kind": issue.kind,
         "source": issue.source,
         "patch_name": patch_name,
+        "status": "patch_ready",
+        "ts": _now_iso(),
+        "summary": (issue.summary or "")[:200],
+    }
+    _save_processed_index(idx)
+
+
+def _mark_issue_status(issue: DetectedIssue, status: str, reason: str, patch_name: Optional[str] = None) -> None:
+    """Record non-patch outcomes so Evolution does not regenerate junk weekly."""
+    idx = _load_processed_index()
+    processed = idx.setdefault("processed", {})
+    processed[issue.fingerprint] = {
+        "issue_id": issue.issue_id,
+        "kind": issue.kind,
+        "source": issue.source,
+        "patch_name": patch_name,
+        "status": str(status or "reviewed"),
+        "reason": str(reason or "")[:500],
         "ts": _now_iso(),
         "summary": (issue.summary or "")[:200],
     }
@@ -757,23 +774,27 @@ def _make_nonconflicting_patch_name(base_name: str) -> str:
 
 def _embed_error_context_as_comment(err_text: str, max_chars: int = 14000) -> str:
     """
-    Formats error context into safe comment lines for patch stub.
-    Ensures indentation safety inside generated patch files.
+    Formats error context into safe top-level comment lines for generated patch files.
+
+    IMPORTANT:
+    - Do not indent these comments. A prior template emitted indented top-level
+      code and created IndentationError garbage patch files.
+    - Keep this output comment-only so it can safely appear before function defs.
     """
     if not err_text:
-        return "    # (no error context captured)\n"
+        return "# (no error context captured)\n"
 
     clipped = (err_text or "")[:max_chars]
     lines = clipped.splitlines()
 
     out: List[str] = []
-    out.append("    # ==== ORIGINAL ERROR CONTEXT (copied by SarahMemoryEvolution) ====")
+    out.append("# ==== ORIGINAL ERROR CONTEXT (copied by SarahMemoryEvolution) ====")
 
     for ln in lines:
         safe_line = (ln or "").rstrip()
-        out.append(f"    # {safe_line}")
+        out.append(f"# {safe_line}")
 
-    out.append("    # ==== END ORIGINAL ERROR CONTEXT ====")
+    out.append("# ==== END ORIGINAL ERROR CONTEXT ====")
 
     return "\n".join(out) + "\n"
 
@@ -883,6 +904,69 @@ _ERROR_PATTERNS = [
 # Ignore marker used when we mark logs as handled
 _EVOLUTION_MARKER_PATTERN = re.compile(r"\[SARAHMEMORY_EVOLUTION\]", re.IGNORECASE)
 
+# Known non-actionable log signatures. These are not repair-worthy failures and
+# must not produce weekly placeholder monkey patches.
+_BENIGN_ISSUE_PATTERNS = [
+    re.compile(r"duplicate column name:\s*(context|source)", re.IGNORECASE),
+    re.compile(r"sql operation error:\s*duplicate column name", re.IGNORECASE),
+    re.compile(r"schema integrity verified", re.IGNORECASE),
+    re.compile(r"all database migrations completed successfully", re.IGNORECASE),
+    re.compile(r"database migrations completed successfully", re.IGNORECASE),
+    re.compile(r"dataset scan complete", re.IGNORECASE),
+    re.compile(r"dataset vectoring completed successfully", re.IGNORECASE),
+    re.compile(r"pydub not available.*advanced audio features disabled", re.IGNORECASE),
+    re.compile(r"canvasstudio not available.*visual effects limited", re.IGNORECASE),
+]
+
+
+def _is_known_benign_issue_text(text: str) -> bool:
+    """Return True for already-recovered warnings or optional-capability notices."""
+    if not text:
+        return False
+    t = str(text or "")
+    low = t.lower()
+
+    # Migration duplicate-column messages were caused by non-idempotent ALTER TABLE
+    # logic. They are noisy warnings, not module-specific repair targets.
+    if "duplicate column name" in low and ("context" in low or "source" in low):
+        return True
+
+    # Optional media dependencies are degraded-capability notices. They are not
+    # safe grounds for generating code patches or adding dependencies.
+    if "pydub not available" in low or "canvasstudio not available" in low:
+        return True
+
+    if any(p.search(t) for p in _BENIGN_ISSUE_PATTERNS):
+        # Only let this suppress the block when the block also shows recovery or
+        # when the issue is one of the explicitly known safe warning types above.
+        if (
+            "duplicate column name" in low
+            or "not available" in low
+            or "completed successfully" in low
+            or "schema integrity verified" in low
+        ):
+            return True
+
+    return False
+
+
+def _is_generated_patch_artifact_failure(text: str) -> bool:
+    """Detect failures inside data/mods patches so Evolution does not patch patches."""
+    low = str(text or "").lower().replace("\\", "/")
+    if "data/mods" not in low and "/mods/" not in low:
+        return False
+    return any(x in low for x in ("syntaxerror", "indentationerror", "compile_failed"))
+
+
+def _should_ignore_error_block(block: str) -> bool:
+    if not block:
+        return True
+    if _EVOLUTION_MARKER_PATTERN.search(block):
+        return True
+    if _is_known_benign_issue_text(block):
+        return True
+    return False
+
 
 def _collect_log_files() -> List[Path]:
     found: List[Path] = []
@@ -937,7 +1021,7 @@ def _extract_error_blocks(text: str, max_blocks: int = 6) -> List[str]:
             block = "\n".join(lines[start:end]).strip()
             if not block:
                 continue
-            if _EVOLUTION_MARKER_PATTERN.search(block):
+            if _should_ignore_error_block(block):
                 continue
             blocks.append(block)
             if len(blocks) >= max_blocks:
@@ -951,7 +1035,7 @@ def _extract_error_blocks(text: str, max_blocks: int = 6) -> List[str]:
             block = "\n".join(lines[start:end]).strip()
             if not block:
                 continue
-            if _EVOLUTION_MARKER_PATTERN.search(block):
+            if _should_ignore_error_block(block):
                 continue
             blocks.append(block)
             if len(blocks) >= max_blocks:
@@ -1103,6 +1187,8 @@ def scan_system_db_for_issues(limit_rows_per_table: int = 180) -> List[DetectedI
                     )
                     if not looks_bad:
                         continue
+                    if _should_ignore_error_block(msg):
+                        continue
 
                     norm_msg = _normalize_error_text(msg, max_len=50_000)
                     fp = _hash_text(f"{db_path}:{table}:{norm_msg[:2000]}")
@@ -1180,7 +1266,7 @@ def run_sarahmemory_diagnostics() -> Tuple[List[DetectedIssue], Dict[str, Any]]:
     # Convert report contents into issues (best-effort)
     try:
         blob = json.dumps(raw_report, indent=2)[:200000]
-        if any(p.search(blob) for p in _ERROR_PATTERNS):
+        if any(p.search(blob) for p in _ERROR_PATTERNS) and not _is_known_benign_issue_text(blob):
             fp = _hash_text(_normalize_error_text(blob[:8000]))
             issues.append(
                 DetectedIssue(
@@ -1365,6 +1451,51 @@ def build_patch_header(patch_file_rel: str, patch_title: str, goal_lines: List[s
     )
 
 
+def _validate_patch_source(content: str, patch_name: str) -> Tuple[bool, str]:
+    """Compile-gate generated patch content before it is written to disk."""
+    try:
+        compile(content or "", patch_name or "<generated_patch>", "exec")
+        return True, "compile_ok"
+    except Exception as e:
+        return False, f"compile_failed: {type(e).__name__}: {e}"
+
+
+def _issue_allows_patch_generation(issue: DetectedIssue) -> Tuple[bool, str]:
+    """Govern whether a detected issue is eligible for Python patch generation."""
+    text = f"{issue.summary or ''}\n{issue.details or ''}"
+    if _is_known_benign_issue_text(text):
+        return False, "known benign/recovered warning; no patch required"
+    if _is_generated_patch_artifact_failure(text):
+        return False, "invalid generated patch artifact must be quarantined, not patched by another patch"
+    return True, "eligible"
+
+
+def _extract_concrete_patch_apply_body(issue: DetectedIssue, target_file: str) -> Optional[str]:
+    """
+    Return concrete apply() body code when a verified patch implementation exists.
+
+    This intentionally does NOT fabricate code. The previous Evolution behavior
+    created placeholder monkey patches that compiled poorly or did nothing. From
+    this point forward, no .py patch is written unless this function returns real
+    implementation code and the whole generated file passes compile validation.
+    """
+    details = issue.details or ""
+
+    # Future-proof handoff: if a trusted repair outbox/LLM result embeds a bounded
+    # EVOLUTION_APPLY_BODY block in the issue details, Evolution may stage it after
+    # compile validation. Normal log errors will not contain this marker.
+    start = "# EVOLUTION_APPLY_BODY_START"
+    end = "# EVOLUTION_APPLY_BODY_END"
+    if start in details and end in details:
+        try:
+            body = details.split(start, 1)[1].split(end, 1)[0].strip("\n")
+            return body if body.strip() else None
+        except Exception:
+            return None
+
+    return None
+
+
 def build_patch_template(
     patch_path: Path,
     target_file: str,
@@ -1372,75 +1503,77 @@ def build_patch_template(
     goal_lines: List[str],
     apply_body_comment: str,
     error_context_comment: str,
+    apply_body_code: Optional[str] = None,
 ) -> str:
     """
-    Patch stub template:
-    - safe to import multiple times
-    - includes ORIGINAL ERROR CONTEXT as comments
+    Build a compile-safe monkey patch file.
+
+    Guardrails:
+    - no indented top-level imports;
+    - no self-apply on import;
+    - no placeholder/no-op patch content;
+    - generated source must pass compile() before write.
     """
     rel = str(patch_path).replace("\\", "/")
-    header = build_patch_header(rel, patch_title, goal_lines)
+    header = build_patch_header(rel, patch_title, goal_lines).rstrip("\n")
+    logger_name = Path(patch_path).stem
 
-    return header + textwrap.dedent(
-        f"""
-        \"\"\"Owner-only monkey patch for SarahMemory.
+    body = (apply_body_code or "").rstrip()
+    if not body.strip():
+        body = 'raise RuntimeError("Concrete patch implementation missing; do not enable this patch.")'
 
-        RULES:
-        - DO NOT modify core files directly.
-        - This patch should be safe to import multiple times.
-        - It may add wrappers / monkey-patch functions in-memory at runtime.
-        - No new dependencies.
-        \"\"\" 
-
-        from __future__ import annotations
-
-        import logging
-        import traceback
-
-        logger = logging.getLogger("{Path(patch_path).stem}")
-        if not logger.handlers:
-            logger.addHandler(logging.NullHandler())
-
-        _APPLIED = False
-
-        # Error context reference:
-        {error_context_comment}
-
-        def apply():
-            \"\"\"Apply the monkey patch (idempotent).\"\"\"
-            global _APPLIED
-            if _APPLIED:
-                return True
-
-            try:
-                # Target: {target_file}
-                # {apply_body_comment}
-
-                # IMPLEMENTATION NOTES:
-                # - Keep it minimal and safe.
-                # - Avoid hard-crashing in headless environments.
-                # - Prefer wrapper pattern:
-                #     import target_module
-                #     original = target_module.some_func
-                #     def wrapped(*a, **kw): ...
-                #     target_module.some_func = wrapped
-
-                _APPLIED = True
-                return True
-
-            except Exception as e:
-                logger.error("Patch apply failed: %s", e)
-                logger.debug(traceback.format_exc())
-                return False
-
-        # Self-apply on import (fallback)
-        try:
-            apply()
-        except Exception:
-            pass
-        """
-    ).lstrip()
-
+    lines: List[str] = []
+    lines.extend(header.splitlines())
+    lines.extend([
+        '',
+        '"""Owner-only monkey patch for SarahMemory.',
+        '',
+        'RULES:',
+        '- DO NOT modify core files directly.',
+        '- This patch should be safe to import multiple times.',
+        '- It may add wrappers / monkey-patch functions in-memory at runtime.',
+        '- No new dependencies.',
+        '- Do not self-apply on import; the approved loader must call apply().',
+        '"""',
+        '',
+        'from __future__ import annotations',
+        '',
+        'import logging',
+        'import traceback',
+        '',
+        f'logger = logging.getLogger({logger_name!r})',
+        'if not logger.handlers:',
+        '    logger.addHandler(logging.NullHandler())',
+        '',
+        '_APPLIED = False',
+        '',
+        '# Error context reference:',
+    ])
+    lines.extend((error_context_comment or '# (no error context captured)').rstrip("\n").splitlines())
+    lines.extend([
+        '',
+        'def apply():',
+        '    """Apply the monkey patch (idempotent)."""',
+        '    global _APPLIED',
+        '    if _APPLIED:',
+        '        return True',
+        '',
+        '    try:',
+        f'        # Target: {target_file}',
+        f'        # {apply_body_comment}',
+    ])
+    lines.extend(textwrap.indent(body, ' ' * 8).splitlines())
+    lines.extend([
+        '',
+        '        _APPLIED = True',
+        '        return True',
+        '',
+        '    except Exception as e:',
+        '        logger.error("Patch apply failed: %s", e)',
+        '        logger.debug(traceback.format_exc())',
+        '        return False',
+    ])
+    return "\n".join(lines) + "\n"
 
 def _guess_component_intent(text: str, advcu_intent: Optional[str] = None) -> Tuple[str, str]:
     t = (text or "").lower()
@@ -1490,6 +1623,20 @@ def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Opt
     if _already_processed(issue):
         return None
 
+    allowed, allow_reason = _issue_allows_patch_generation(issue)
+    if not allowed:
+        _mark_issue_status(issue, "no_patch_required", allow_reason)
+        return None
+
+    concrete_apply_body = _extract_concrete_patch_apply_body(issue, target_file_guess)
+    if not concrete_apply_body:
+        _mark_issue_status(
+            issue,
+            "skipped_no_concrete_patch",
+            "No verified concrete apply() body was available. Repair payload/report only; no garbage .py stub written.",
+        )
+        return None
+
     component, intent = _guess_component_intent(issue.summary + "\n" + issue.details, issue.advcu_intent)
 
     # Base (semantic) name then inject fingerprint to make it unique-per-issue deterministically
@@ -1499,9 +1646,15 @@ def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Opt
 
     patch_path = MODS_DIR / patch_name
 
-    # If the patch file already exists, we DO NOT rewrite it.
-    # We just mark the issue as processed and return a plan referencing the existing file.
+    # If a patch file already exists, only reference it if it still compiles.
+    # Invalid generated artifacts must not be treated as valid evolution output.
     if patch_path.exists():
+        existing_code = _read_text_safely(patch_path, max_chars=300_000)
+        ok_existing, why_existing = _validate_patch_source(existing_code, patch_name)
+        if not ok_existing:
+            _mark_issue_status(issue, "existing_patch_invalid", why_existing, patch_name=patch_name)
+            return None
+
         issue.suggested_patch_name = patch_name
         issue.suggested_patch_goal = f"{component.title()} {intent.replace('_',' ').title()}"
         issue.suggested_target_file = target_file_guess
@@ -1539,7 +1692,14 @@ def create_patch_from_issue(issue: DetectedIssue, target_file_guess: str) -> Opt
         goal_lines=goal_lines,
         apply_body_comment=apply_body_comment,
         error_context_comment=error_context_comment,
+        apply_body_code=concrete_apply_body,
     )
+
+    ok_compile, compile_status = _validate_patch_source(content, patch_name)
+    if not ok_compile:
+        _mark_issue_status(issue, "generated_patch_compile_failed", compile_status, patch_name=patch_name)
+        return None
+
     patch_path.write_text(content, encoding="utf-8")
 
     issue.suggested_patch_name = patch_name
@@ -2103,9 +2263,9 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
     else:
         print("Repair submission skipped.\n")
 
-    # 9) Patch generation (STUBS ONLY) + optional log marking
+    # 9) Patch generation (concrete compile-valid patches only) + optional log marking
     plans: List[PatchPlan] = []
-    if decide("Generate monkey patch STUBS for these issues in ../data/mods/v800/ ?", default_no=True, force=True if autonomous else None):
+    if decide("Generate concrete monkey patches for eligible issues in ../data/mods/v800/ ?", default_no=True, force=True if autonomous else None):
         for it in issues[:20]:
             # Skip if already processed (primary dedupe)
             if _already_processed(it):
@@ -2137,7 +2297,7 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
 
             plan = create_patch_from_issue(it, target_guess)
             if plan is None:
-                print(f"  ~ skipped (already processed): {it.issue_id}")
+                print(f"  ~ no patch generated: {it.issue_id} (non-actionable, already processed, or no verified concrete fix)")
                 continue
 
             plans.append(plan)
@@ -2176,8 +2336,8 @@ def evolve_once(autonomous: bool = False, weekly_gate: bool = False) -> None:
     else:
         print("Patch generation skipped.\n")
 
-    # 10) Sandbox test patch stubs
-    if plans and decide("Sandbox-test the generated patch stubs (compile + Synapes sandbox if available)?", default_no=False, force=True if autonomous else None):
+    # 10) Sandbox test concrete patch files
+    if plans and decide("Sandbox-test the generated patch files (compile + Synapes sandbox if available)?", default_no=False, force=True if autonomous else None):
         for p in plans:
             pp = Path(p.patch_path)
             ok, how = sandbox_test_patch_file(pp)

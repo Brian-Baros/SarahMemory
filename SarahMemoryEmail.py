@@ -1138,124 +1138,145 @@ if __name__ == "__main__":
 # =============================================================================
 # SARAH_REM_EMAIL_LANE_V1
 # REM email intelligence. Hard rule: attachments are not opened, staged, scanned,
-# replied to, or executed during REM. Messages with attachments are summarized by
-# header only unless the user later approves deeper review.
+# replied to, forwarded, or executed during REM. The REM lane performs header-only
+# intake unless a future owner-approved body-review mode is explicitly added.
 # =============================================================================
 
-def _rem_imap_extract_fetch_bytes(fetch_data: Any) -> bytes:
-    raw = b""
-    try:
-        for part in fetch_data or []:
-            if isinstance(part, tuple) and len(part) >= 2 and isinstance(part[1], (bytes, bytearray)):
-                raw += bytes(part[1])
-            elif isinstance(part, (bytes, bytearray)):
-                raw += bytes(part)
-    except Exception:
-        return b""
-    return raw
-
-
 def rem_email_intelligence_tick(limit: int = 5) -> Dict[str, Any]:
-    """Read/classify bounded inbox items during REM without opening attachments.
+    """Run a bounded, safe REM email review tick.
 
-    IMAP behavior:
-      - Fetches headers/bodystructure first.
-      - If attachment indicators exist, only header metadata is recorded.
-      - If no attachment indicators exist, body is parsed with attachment staging and auto-reply disabled.
-      - Uses BODY.PEEK so REM does not mark messages as read.
+    Safety contract:
+    - Header/metadata only.
+    - Does not fetch attachments.
+    - Does not open links.
+    - Does not mark messages read.
+    - Does not send replies.
+    - Does not stage files.
     """
     started = time.time()
     out: Dict[str, Any] = {
         "ok": True,
         "lane": "email",
-        "status": "disabled" if not EMAIL_ENABLED else "ok",
+        "status": "ok",
         "processed": 0,
         "items": [],
         "attachments_opened": False,
         "attachments_staged": False,
         "auto_replies_sent": False,
-        "duration_ms": 0,
+        "links_opened": False,
+        "mode": "rem_header_only",
     }
-    if not EMAIL_ENABLED:
-        out["reason"] = "EMAIL_ENABLED=false"
-        return out
-    if not (EMAIL_PROTOCOL == "imap" and EMAIL_IMAP_ENABLED):
-        out["status"] = "skipped"
-        out["reason"] = "REM email lane currently uses IMAP only to avoid POP3 side effects."
-        return out
 
-    service = get_email_service()
-    client = None
-    global EMAIL_ALLOW_ATTACHMENTS, EMAIL_AUTOREPLY_ENABLED, EMAIL_SMTP_ENABLED
-    old_attach = EMAIL_ALLOW_ATTACHMENTS
-    old_autoreply = EMAIL_AUTOREPLY_ENABLED
-    old_smtp = EMAIL_SMTP_ENABLED
-    EMAIL_ALLOW_ATTACHMENTS = False
-    EMAIL_AUTOREPLY_ENABLED = False
-    EMAIL_SMTP_ENABLED = False
     try:
-        client = service._connect_imap()
-        client.select(INBOX_FOLDER, readonly=True)
-        status, data = client.search(None, "UNSEEN")
-        if status != "OK":
-            out["status"] = "error"
-            out["error"] = f"IMAP search returned {status}"
+        if not EMAIL_ENABLED:
+            out.update({
+                "status": "disabled",
+                "reason": "EMAIL_ENABLED=false",
+                "ok": True,
+            })
             return out
-        ids = [x for x in (data[0] or b"").split() if x][-max(1, int(limit or 1)):]
-        for msg_id in ids:
-            header_status, header_data = client.fetch(msg_id, "(BODY.PEEK[HEADER] BODYSTRUCTURE)")
-            header_blob = _rem_imap_extract_fetch_bytes(header_data)
-            attachment_indicators = (b"ATTACHMENT" in header_blob.upper()) or (b"FILENAME" in header_blob.upper())
-            header_msg = email.message_from_bytes(header_blob.split(b")\r\n", 1)[0] if header_blob else b"", policy=policy.default)
-            subject = _decode_mime_header(header_msg.get("Subject", ""))
-            sender_name, sender_email = parseaddr(_decode_mime_header(header_msg.get("From", "")))
-            item: Dict[str, Any] = {
-                "message_id": _decode_mime_header(header_msg.get("Message-ID", "")),
-                "subject": subject,
-                "sender_name": sender_name,
-                "sender_email": sender_email,
-                "has_attachment": bool(attachment_indicators),
-                "attachment_policy": "header_only_no_open" if attachment_indicators else "no_attachment_detected",
-            }
-            if attachment_indicators:
-                item["status"] = "header_only"
-                item["classification"] = {
+
+        if not EMAIL_IMAP_ENABLED:
+            out.update({
+                "status": "disabled",
+                "reason": "EMAIL_IMAP_ENABLED=false",
+                "ok": True,
+            })
+            return out
+
+        if not IMAP_HOST or not IMAP_USER or not IMAP_PASSWORD:
+            out.update({
+                "status": "degraded",
+                "reason": "IMAP configuration incomplete",
+                "ok": True,
+            })
+            return out
+
+        client = None
+        try:
+            if IMAP_SSL:
+                client = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=10)
+            else:
+                client = imaplib.IMAP4(IMAP_HOST, IMAP_PORT, timeout=10)
+                try:
+                    client.starttls(ssl.create_default_context())
+                except Exception:
+                    pass
+            client.login(IMAP_USER, IMAP_PASSWORD)
+            client.select(INBOX_FOLDER, readonly=True)
+            status, data = client.search(None, "UNSEEN")
+            if status != "OK":
+                out.update({"status": "degraded", "reason": f"IMAP search returned {status}"})
+                return out
+
+            ids = [x for x in (data[0] or b"").split() if x][-max(1, int(limit or 5)):]
+            items: List[Dict[str, Any]] = []
+            for msg_id in ids:
+                f_status, msg_data = client.fetch(
+                    msg_id,
+                    "(BODY.PEEK[HEADER.FIELDS (FROM TO CC SUBJECT DATE MESSAGE-ID CONTENT-TYPE)] RFC822.SIZE)",
+                )
+                if f_status != "OK":
+                    continue
+                raw_header = b""
+                size_value = 0
+                for part in msg_data:
+                    if isinstance(part, tuple) and len(part) >= 2:
+                        raw_header = part[1] or b""
+                        meta = _decode_text(part[0])
+                        m = re.search(r"RFC822\.SIZE\s+(\d+)", meta, re.I)
+                        if m:
+                            try:
+                                size_value = int(m.group(1))
+                            except Exception:
+                                size_value = 0
+                        break
+                if not raw_header:
+                    continue
+
+                msg = email.message_from_bytes(raw_header, policy=policy.default)
+                subject = _decode_mime_header(msg.get("Subject", ""))
+                sender_name, sender_email = parseaddr(_decode_mime_header(msg.get("From", "")))
+                content_type = _decode_mime_header(msg.get("Content-Type", ""))
+                header_text = f"{subject} {sender_email} {content_type}"
+                has_attachment_hint = "multipart" in content_type.lower() or "attachment" in content_type.lower()
+                items.append({
+                    "message_id": _decode_mime_header(msg.get("Message-ID", "")),
+                    "subject": subject,
+                    "sender_name": sender_name,
+                    "sender_email": sender_email,
+                    "sent_at": _decode_mime_header(msg.get("Date", "")),
+                    "size_bytes": size_value,
+                    "has_attachment_hint": bool(has_attachment_hint),
                     "spam_candidate": _is_spam_candidate(subject, "", sender_email),
                     "no_reply": _is_no_reply_address(sender_email),
-                }
-            else:
-                full_status, full_data = client.fetch(msg_id, "(BODY.PEEK[])")
-                if full_status == "OK":
-                    raw = b""
-                    for part in full_data or []:
-                        if isinstance(part, tuple) and len(part) >= 2:
-                            raw = part[1]
-                            break
-                    if raw:
-                        parsed = service.process_message_bytes(raw, source_folder=f"{INBOX_FOLDER}/REM_PEEK")
-                        item.update(parsed)
-                        item["status"] = "processed_text_only"
-            out["items"].append(item)
-        out["processed"] = len(out["items"])
-        log_email_event("rem_email_tick", details=out)
+                    "reminder_candidate": _is_reminder_candidate(header_text),
+                    "system_command_language": _contains_system_command_language(header_text),
+                })
+
+            out["items"] = items
+            out["processed"] = len(items)
+            return out
+        finally:
+            try:
+                if client is not None:
+                    client.close()
+            except Exception:
+                pass
+            try:
+                if client is not None:
+                    client.logout()
+            except Exception:
+                pass
     except Exception as exc:
-        out["ok"] = False
-        out["status"] = "error"
-        out["error"] = str(exc)
-        log_email_event("rem_email_tick_error", details=str(exc))
+        # DNS/auth/mailbox failures should degrade the REM lane, not fail REM.
+        out.update({
+            "ok": True,
+            "status": "degraded",
+            "error": str(exc),
+            "processed": 0,
+            "items": [],
+        })
+        return out
     finally:
-        EMAIL_ALLOW_ATTACHMENTS = old_attach
-        EMAIL_AUTOREPLY_ENABLED = old_autoreply
-        EMAIL_SMTP_ENABLED = old_smtp
-        try:
-            if client is not None:
-                client.close()
-        except Exception:
-            pass
-        try:
-            if client is not None:
-                client.logout()
-        except Exception:
-            pass
         out["duration_ms"] = int((time.time() - started) * 1000)
-    return out

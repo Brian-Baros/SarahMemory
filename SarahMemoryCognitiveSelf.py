@@ -748,6 +748,17 @@ def _build_body_map() -> Dict[str, Any]:
     approved = [f for f in discovered["files"] if f.get("approved")]
     unapproved = [f for f in discovered["files"] if not f.get("approved")]
 
+    runtime_environment: Dict[str, Any] = {}
+    try:
+        import SarahMemoryHi as _SMHi  # type: ignore
+        fn = getattr(_SMHi, "get_boot_environment_snapshot", None)
+        if callable(fn):
+            env = fn(force_refresh=False, refresh_reason="cognitive_self_body_map")
+            if isinstance(env, dict):
+                runtime_environment = env
+    except Exception as env_exc:
+        runtime_environment = {"ok": False, "error": str(env_exc)}
+
     return {
         "discovery": {
             "files_present": discovered["count"],
@@ -755,6 +766,7 @@ def _build_body_map() -> Dict[str, Any]:
             "unapproved_files": len(unapproved),
             "role_counts": discovered["role_counts"],
         },
+        "runtime_environment": runtime_environment,
         "core_registry": registry,
         "governance_profile": governance,
         "files": discovered["files"],

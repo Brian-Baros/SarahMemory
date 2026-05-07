@@ -81,6 +81,25 @@ shutdown_requested = False
 _STARTUP_BACKGROUND_THREADS = {}
 _STARTUP_BACKGROUND_LOCK = threading.Lock()
 
+_SAFE_SHUTDOWN_STARTED = False
+_SAFE_SHUTDOWN_LOCK = threading.RLock()
+
+
+def _join_startup_background_threads(timeout_each: float = 1.0) -> None:
+    """Best-effort shutdown for startup background workers."""
+    try:
+        with _STARTUP_BACKGROUND_LOCK:
+            items = list(_STARTUP_BACKGROUND_THREADS.items())
+        for task_name, thread in items:
+            try:
+                if thread is not None and thread.is_alive():
+                    thread.join(timeout=timeout_each)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # =============================================================================
 # v8.0 ENHANCED NETWORK HUB STATUS CHECK
 # =============================================================================
@@ -463,9 +482,10 @@ def run_initial_checks():
         print_phase_banner(8, "B-LEVEL DRIVER READINESS SCAN")
 
         try:
-            from SarahMemoryHi import get_b_level_driver_readiness_snapshot
+            from SarahMemoryHi import get_boot_environment_snapshot
 
-            readiness = get_b_level_driver_readiness_snapshot()
+            env_snapshot = get_boot_environment_snapshot(force_refresh=False, refresh_reason="phase8_driver_readiness")
+            readiness = env_snapshot.get("driver_readiness", {}) if isinstance(env_snapshot, dict) else {}
             entries = readiness.get("entries", []) if isinstance(readiness, dict) else []
 
             if entries:
@@ -630,13 +650,31 @@ def run_sync_sequence():
 # =============================================================================
 def safe_shutdown():
     """
-    v8.0 Enhanced: Called when system is shutting down.
-    Ensures that advanced modules and AI subsystems are properly halted.
+    v8.0 Enhanced: Local module cleanup used by Integration/Main shutdown.
+
+    Responsibilities:
+    - Idempotent execution.
+    - Signal background boot workers to stop where possible.
+    - Release TTS, GUI shared-frame state, context, OpenCV windows, and logging.
+    - Never block indefinitely and never raise back into the shutdown path.
     """
+    global shutdown_requested, _SAFE_SHUTDOWN_STARTED
+
+    try:
+        with _SAFE_SHUTDOWN_LOCK:
+            if _SAFE_SHUTDOWN_STARTED:
+                return
+            _SAFE_SHUTDOWN_STARTED = True
+    except Exception:
+        if _SAFE_SHUTDOWN_STARTED:
+            return
+        _SAFE_SHUTDOWN_STARTED = True
+
+    shutdown_requested = True
     logger.info("[v8.0] Initiating safe shutdown procedures.")
     print("\n[v8.0] Shutting down SarahMemory AiOS...")
 
-    # Shutdown TTS
+    # Stop TTS first. Voice engines commonly leave COM/audio worker threads alive on Windows.
     try:
         from SarahMemoryVoice import shutdown_tts
         shutdown_tts()
@@ -644,30 +682,72 @@ def safe_shutdown():
     except Exception as e:
         logger.warning(f"[v8.0] TTS shutdown skipped or failed: {e}")
 
-    # Clear shared frame and context
+    # Tell deferred startup background workers to unwind; they are daemonized, so do not wait long.
     try:
-        from SarahMemoryGUI import shared_frame, shared_lock
-        from SarahMemoryAiFunctions import clear_context
-        
-        with shared_lock:
-            shared_frame = None
+        _join_startup_background_threads(timeout_each=0.5)
+        print("  ✓ Startup background workers released")
+    except Exception as e:
+        logger.debug(f"[v8.0] Startup background thread cleanup skipped: {e}")
+
+    # Clear shared frame and context. Assigning through the module object is required;
+    # importing shared_frame directly only changes a local name.
+    try:
+        import SarahMemoryGUI as gui_mod
+        try:
+            lock_obj = getattr(gui_mod, "shared_lock", None)
+            if lock_obj is not None:
+                with lock_obj:
+                    try:
+                        setattr(gui_mod, "shared_frame", None)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    setattr(gui_mod, "shared_frame", None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            from SarahMemoryAiFunctions import clear_context
             clear_context()
-        
+        except Exception:
+            pass
+
         print("  ✓ Cleared shared memory and context")
     except Exception as e:
         logger.warning(f"[v8.0] Shared frame cleanup skipped or failed: {e}")
 
-    # Cleanup OpenCV windows
+    # Cleanup OpenCV windows.
     try:
         import cv2
         cv2.destroyAllWindows()
         print("  ✓ Closed all OpenCV windows")
     except Exception as e:
-        logger.warning(f"[v8.0] OpenCV windows cleanup failed: {e}")
+        logger.debug(f"[v8.0] OpenCV windows cleanup skipped or failed: {e}")
+
+    # Best-effort database checkpointing for open WAL databases we know about.
+    try:
+        for db_name in ("system_logs.db", "migration_history.db", "personality1.db", "context_history.db"):
+            try:
+                db_path = os.path.join(SarahMemoryGlobals.DATASETS_DIR, db_name)
+                if os.path.exists(db_path):
+                    with sqlite3.connect(db_path, timeout=1.0) as con:
+                        try:
+                            con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        print("  ✓ Database checkpoint pass completed")
+    except Exception as e:
+        logger.debug(f"[v8.0] Database checkpoint cleanup skipped: {e}")
 
     print("\n[v8.0] Safe shutdown completed successfully.")
     print("═" * 78)
     logger.info("[v8.0] Safe shutdown completed successfully.")
+
 
 
 def signal_handler(sig, frame):
@@ -682,6 +762,95 @@ def signal_handler(sig, frame):
     safe_shutdown()
     sys.exit(0)
 
+
+
+# =============================================================================
+# UNIFIED BOOT ENVIRONMENT SUMMARY
+# =============================================================================
+def capture_and_print_boot_environment_summary(force_refresh: bool = False, detail: bool = True, phase_context: str = "boot") -> dict:
+    """Capture/print the single authoritative hardware environment snapshot.
+
+    This function is the only boot-facing place that should print CPU/GPU/RAM/
+    model-tier details. It delegates all hardware probing to SarahMemoryHi so
+    model grading, driver readiness, API status, and chat answers all consume
+    the same persisted body map.
+    """
+    try:
+        from SarahMemoryHi import get_boot_environment_snapshot
+        snap = get_boot_environment_snapshot(force_refresh=bool(force_refresh), refresh_reason=str(phase_context or "boot"))
+        if not isinstance(snap, dict) or not snap.get("ok"):
+            print_status_line("Boot Environment Snapshot", "⚠", str((snap or {}).get("error") or "Unavailable"))
+            return snap if isinstance(snap, dict) else {"ok": False, "error": "invalid_snapshot"}
+
+        body = snap.get("body") if isinstance(snap.get("body"), dict) else {}
+        grade = snap.get("hardware_grade") if isinstance(snap.get("hardware_grade"), dict) else {}
+        cpu = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+        gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+        ram = body.get("ram") if isinstance(body.get("ram"), dict) else {}
+        metrics = snap.get("model_metrics") if isinstance(snap.get("model_metrics"), dict) else {}
+
+        if not detail:
+            print_status_line("Boot Environment Snapshot", "✓", "Loaded from unified cached body map")
+            return snap
+
+        cpu_name = str(cpu.get("name") or "Unknown CPU")
+        phys = cpu.get("physical_cores")
+        logical = cpu.get("logical_threads")
+        mhz = cpu.get("max_clock_mhz") or cpu.get("current_clock_mhz")
+        cpu_detail = cpu_name
+        if phys is not None or logical is not None:
+            cpu_detail += f" | Cores: {phys if phys is not None else '?'} / Threads: {logical if logical is not None else '?'}"
+        if mhz:
+            try:
+                cpu_detail += f" @ {int(round(float(mhz)))} MHz"
+            except Exception:
+                pass
+        print_status_line("CPU", "✓", cpu_detail)
+
+        if cpu.get("usage_pct") is not None:
+            print_status_line("CPU Current usage", "✓", f"{float(cpu.get('usage_pct')):.1f}%")
+        else:
+            print_status_line("CPU Current usage", "✓", "N/A")
+
+        if ram:
+            print_status_line(
+                "RAM",
+                "✓",
+                f"{ram.get('total_gb', 'Unknown')} GB total, {ram.get('available_gb', 'Unknown')} GB available ({ram.get('usage_pct', 'Unknown')}% used)",
+            )
+
+        gpu_name = str(gpu.get("name") or metrics.get("gpu_name") or "No dedicated GPU detected")
+        vram_total = gpu.get("vram_total_mb") or metrics.get("gpu_vram_total_mb")
+        vram_free = gpu.get("vram_free_mb") or metrics.get("gpu_vram_free_mb")
+        if vram_total:
+            print_status_line("VRAM", "✓", f"{vram_total} MB (free {vram_free if vram_free is not None else 'N/A'} MB) GPU: {gpu_name}")
+        else:
+            print_status_line("GPU", "✓", gpu_name)
+
+        gpu_temp = gpu.get("temperature_c") or metrics.get("gpu_temp_c")
+        print_status_line("GPU Current Temp", "✓", "N/A" if gpu_temp is None else f"{gpu_temp} C")
+
+        disk_free = metrics.get("disk_free_gb")
+        if disk_free is not None:
+            try:
+                print_status_line("Disk free", "✓", f"{float(disk_free):.2f} GB")
+            except Exception:
+                print_status_line("Disk free", "✓", str(disk_free))
+
+        score = grade.get("score")
+        tier_rating = grade.get("tier_rating")
+        if score is not None:
+            try:
+                print_status_line("Tier Rating", "✓", f"{float(score):.1f} -> {tier_rating or 'Unknown'}")
+            except Exception:
+                print_status_line("Tier Rating", "✓", f"{score} -> {tier_rating or 'Unknown'}")
+
+        logger.info(f"[v8.0][ENV] Unified environment snapshot loaded: CPU={cpu_name}; GPU={gpu_name}; tier={tier_rating}; score={score}")
+        return snap
+    except Exception as e:
+        print_status_line("Boot Environment Snapshot", "⚠", "Unavailable; continuing with graceful degradation")
+        logger.warning(f"[v8.0][ENV] Unified boot environment summary failed: {e}")
+        return {"ok": False, "error": str(e)}
 
 # =============================================================================
 # STARTUP INFO DISPLAY
@@ -710,224 +879,12 @@ def startup_info():
     logger.info("[v8.0] Performing hardware environment check...")
     
     time.sleep(0.5)
+
+    capture_and_print_boot_environment_summary(force_refresh=False, detail=False, phase_context="startup_info")
+    print("  ✓ Awaiting SarahMemory Integration Menu...\n")
+    logger.info("[v8.0] Awaiting SarahMemory Integration Menu...")
     
-# ---------------------------------------------------------------------
-# v8.0 Patch: Provide real CPU/RAM details instead of generic "OK"
-# + Extended hardware summary (CPU%/Temps/VRAM/GPU Temp/Disk/Score)
-# (best-effort, cross-platform)
-# ---------------------------------------------------------------------
-try:
-    uname = platform.uname()
-    cpu_model = (platform.processor() or getattr(uname, "processor", "") or getattr(uname, "machine", "") or "Unknown CPU").strip()
-
-    phys_cores = None
-    log_cores = None
-    freq_str = ""
-    ram_str = ""
-
-    cpu_pct_now = None
-    try:
-        import psutil  # type: ignore
-
-        # cores
-        try:
-            phys_cores = psutil.cpu_count(logical=False)
-        except Exception:
-            phys_cores = None
-        try:
-            log_cores = psutil.cpu_count(logical=True)
-        except Exception:
-            log_cores = None
-
-        # freq
-        try:
-            freq = psutil.cpu_freq()
-            if freq:
-                mhz = freq.max or freq.current
-                if mhz:
-                    freq_str = f" @ {int(round(mhz))} MHz"
-        except Exception:
-            freq_str = ""
-
-        # cpu usage (instant-ish)
-        try:
-            cpu_pct_now = psutil.cpu_percent(interval=0.2)
-        except Exception:
-            cpu_pct_now = None
-
-        # RAM
-        try:
-            vm = psutil.virtual_memory()
-            if vm:
-                total_gb = vm.total / (1024**3)
-                avail_gb = vm.available / (1024**3)
-                ram_str = f"{total_gb:.1f} GB total, {avail_gb:.1f} GB available ({vm.percent:.1f}% used)"
-        except Exception:
-            ram_str = ""
-
-    except Exception:
-        psutil = None  # noqa: F841
-
-    core_str = ""
-    if phys_cores is not None or log_cores is not None:
-        core_str = f" | Cores: {phys_cores if phys_cores is not None else '?'} / Threads: {log_cores if log_cores is not None else '?'}"
-
-    cpu_details = f"{cpu_model}{core_str}{freq_str}".strip()
-
-    print_status_line("CPU", "✓", cpu_details if cpu_details else "OK")
-
-    # CPU current usage
-    if cpu_pct_now is not None:
-        print_status_line("CPU Current usage", "✓", f"{cpu_pct_now:.1f}%")
-    else:
-        print_status_line("CPU Current usage", "✓", "N/A")
-
-    # CPU temp
-    #if cpu_temp_c is not None:
-    #    cpu_temp_f = (cpu_temp_c * 9.0 / 5.0) + 32.0
-    #    print_status_line("CPU Temp", "✓", f"{cpu_temp_c:.1f} C / {cpu_temp_f:.1f} F")
-    #else:
-    #    print_status_line("CPU Temp", "✓", "N/A")
-
-    # RAM
-    if ram_str:
-        print_status_line("RAM", "✓", ram_str)
-    else:
-        print_status_line("RAM", "✓", "OK")
-
-    # -----------------------------------------------------------------
-    # Extended hardware summary:
-    # Prefer SarahMemoryGlobals.hardware_score() for GPU/VRAM/Disk/Score/Tier (+ optional GPU temp)
-    # -----------------------------------------------------------------
-    gpu_name = None
-    vram_total = None
-    vram_free = None
-    gpu_temp_c = None
-    disk_free_gb = None
-    score = None
-    tier = None
-
-    # 1) Prefer your centralized hardware scoring source
-    try:
-        import SarahMemoryGlobals as G  # local import to avoid hard dependency ordering
-        hs_fn = getattr(G, "hardware_score", None)
-        if callable(hs_fn):
-            hs = hs_fn() or {}
-            m = hs.get("metrics", {}) or {}
-
-            score = hs.get("score", None)
-            tier = hs.get("tier", None)
-
-            gpu_name = m.get("gpu_name", None)
-            vram_total = m.get("gpu_vram_total_mb", None)
-            vram_free = m.get("gpu_vram_free_mb", None)
-
-            disk_free_gb = m.get("disk_free_gb", None)
-
-            # optional (only if your hardware_score() provides it)
-            gpu_temp_c = m.get("gpu_temp_c", None) or m.get("gpu_temperature_c", None)
-    except Exception as _e:
-        logger.debug(f"[v8.0] hardware_score() unavailable or failed: {_e}")
-
-    # 2) If GPU temp missing, try NVML (NVIDIA) best-effort
-    if gpu_temp_c is None:
-        try:
-            import pynvml  # type: ignore
-            pynvml.nvmlInit()
-            h = pynvml.nvmlDeviceGetHandleByIndex(0)
-            gpu_temp_c = float(pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU))
-            # also fill name/vram if absent
-            if not gpu_name:
-                try:
-                    gpu_name = pynvml.nvmlDeviceGetName(h).decode("utf-8", "ignore")
-                except Exception:
-                    pass
-            if vram_total is None or vram_free is None:
-                try:
-                    mem = pynvml.nvmlDeviceGetMemoryInfo(h)
-                    # NVML uses bytes; convert to MB
-                    vram_total = int(mem.total / (1024**2))
-                    vram_free = int(mem.free / (1024**2))
-                except Exception:
-                    pass
-            try:
-                pynvml.nvmlShutdown()
-            except Exception:
-                pass
-        except Exception:
-            gpu_temp_c = None
-
-    # VRAM line
-    if gpu_name and vram_total is not None:
-        if vram_free is not None:
-            print_status_line("VRAM", "✓", f"{vram_total} MB (free {vram_free} MB) GPU: {gpu_name}")
-        else:
-            print_status_line("VRAM", "✓", f"{vram_total} MB GPU: {gpu_name}")
-
-    # GPU temp line
-    if gpu_temp_c is not None:
-        gpu_temp_f = (float(gpu_temp_c) * 9.0 / 5.0) + 32.0
-        print_status_line("GPU Current Temp", "✓", f"{float(gpu_temp_c):.1f} C / {gpu_temp_f:.1f} F")
-    else:
-        print_status_line("GPU Current Temp", "✓", "N/A")
-
-    # Disk free line (fallback to shutil if missing)
-    if disk_free_gb is None:
-        try:
-            disk_free_gb = shutil.disk_usage(os.getcwd()).free / (1024**3)
-        except Exception:
-            disk_free_gb = None
-
-    if disk_free_gb is not None:
-        print_status_line("Disk free", "✓", f"{float(disk_free_gb):.2f} GB")
-    # Tier Rating line (prefer Globals tier_rating; fallback derives from score)
-    tier_rating = None
-    try:
-        if isinstance(hs, dict):
-            tr = hs.get("tier_rating", None)
-            if isinstance(tr, str) and tr.strip():
-                tier_rating = tr.strip()
-    except Exception:
-        tier_rating = None
-
-    if tier_rating is None:
-        # Derive rating from score if needed
-        try:
-            s = float(score) if score is not None else None
-            if s is not None:
-                if s <= 69.9:
-                    tier_rating = "Poor" # No 3rd party model(s) used , unless USER Manually SET a particular model to 'True' in SarahMemoryGlobals.py (Edge Computering/Cloud)
-                elif 70.0 <= s <= 75.0:
-                    tier_rating = "Low" # May Use None and Low Model(s), unless USER Manually Turns  on/off 'True/False' a Particular model in SarahMemoryGlobals.py (Mobile Devices/Laptops)
-                elif 75.1 <= s <= 80.0:
-                    tier_rating = "Mid" # May Use None/Low/Mid Model(s) unless, USER Manually disables all and sets High range Model(s) to TRUE in SarahMemoryGlobals.py (Legency Hardware Old Systems)
-                elif 80.1 <= s <= 90.0:
-                    tier_rating = "High" # May Use None/Low/Mid and High Model(s) Only, Unless USER Manually enables some BEAST Model to True in SarahMemoryGlobals.py (High End Gamming PC's and Servers)
-                elif 90.1 <= s >= 100.0: 
-                    tier_rating = "BEAST" # May use NONE/Low/Mid/High and BEAST Model(s) most advanced 3rd party mega models, Unless ADMIN/USER sets certain Models to 'False' in SarahMemoryGlobals.py                     # BEAST MODE IS FOR LIKE DATACENTERS HARDWARE UNLESS YOU HAVE A MEGA SERVER AT TONS OF VRAM SOME NVIDIA H1000 AND HIGH NAS ARRAY OF STORAGE FOR MEGA MODELS. 
-            else:
-                tier_rating = "None" # NONE may be shown and Default to Poor Settings on certain Edge Devices, or Operating Systems where a score can't be registered.
-        except Exception:
-            tier_rating = None
-
-    if score is not None:
-        if tier_rating:
-            print_status_line("Tier Rating", "✓", f"{float(score):.1f} -> {tier_rating}")
-        else:
-            print_status_line("Tier Rating", "✓", f"{score}")
-
-    logger.info(f"[v8.0] CPU Details: {cpu_details}")
-
-    logger.info(f"[v8.0] RAM Details: {ram_str or 'OK'}")
-
-except Exception as e:
-    # Never block boot banner if hardware probing fails
-    print("  ✓ CPU/RAM Check: OK. AI subsystems online.")
-    logger.info("[v8.0] CPU/RAM Check: OK. AI subsystems online.")
-    logger.warning(f"[v8.0] Detailed CPU/RAM report failed: {e}")
-
-print("  ✓ Awaiting SarahMemory Integration Menu...\n")
-logger.info("[v8.0] Awaiting SarahMemory Integration Menu...")
+# Unified hardware details are now captured by capture_and_print_boot_environment_summary(); no top-level boot probe runs at import time.
 # =============================================================================
 # ASYNCHRONOUS INITIALIZATION WRAPPER
 # =============================================================================

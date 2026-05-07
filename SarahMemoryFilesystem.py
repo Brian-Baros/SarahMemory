@@ -2,7 +2,7 @@
 File: SarahMemoryFilesystem.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-03-01
+Date: 2025-05-04
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -75,7 +75,8 @@ from collections import defaultdict
 try:
     from SarahMemoryGlobals import (
         BASE_DIR, BACKUP_DIR, SETTINGS_DIR, MEMORY_DIR, LOGS_DIR,
-        DATASETS_DIR, VAULT_DIR, DIAGNOSTICS_DIR, DATA_DIR
+        DATASETS_DIR, VAULT_DIR, DIAGNOSTICS_DIR, DATA_DIR,
+        DOCUMENTS_DIR, DOWNLOADS_DIR, SANDBOX_DIR
     )
     GLOBALS_IMPORTED = True
 except ImportError:
@@ -89,7 +90,15 @@ except ImportError:
     VAULT_DIR = os.path.join(BASE_DIR, "data", "vault")
     DIAGNOSTICS_DIR = os.path.join(BASE_DIR, "data", "diagnostics")
     DATA_DIR = os.path.join(BASE_DIR, "data")
+    DOCUMENTS_DIR = os.path.join(BASE_DIR, "documents")
+    DOWNLOADS_DIR = os.path.join(BASE_DIR, "downloads")
+    SANDBOX_DIR = os.path.join(BASE_DIR, "sandbox")
     GLOBALS_IMPORTED = False
+# REM filesystem lane path fail-safes. These preserve SarahMemoryGlobals.py as read-only
+# while preventing idle REM scans from failing if a legacy runtime import omits a path.
+DOCUMENTS_DIR = globals().get("DOCUMENTS_DIR", os.path.join(BASE_DIR, "documents"))
+DOWNLOADS_DIR = globals().get("DOWNLOADS_DIR", os.path.join(BASE_DIR, "downloads"))
+SANDBOX_DIR = globals().get("SANDBOX_DIR", os.path.join(BASE_DIR, "sandbox"))
 
 # Setup logging
 logger = logging.getLogger("SarahMemoryFilesystem")
@@ -2110,10 +2119,6 @@ if __name__ == "__main__":
     else:
         parser.print_help()
 
-# ====================================================================
-# END OF SarahMemoryFilesystem.py v8.0.0
-# ====================================================================
-
 # =============================================================================
 # SARAH_REM_FILESYSTEM_LANE_V1
 # Read-only REM filesystem study. No deletes, moves, writes, uploads, executions,
@@ -2223,3 +2228,6 @@ def rem_filesystem_study_tick(root_paths: Optional[List[str]] = None, max_files:
         pass
     summary["duration_ms"] = int((time.time() - started) * 1000)
     return summary
+# ====================================================================
+# END OF SarahMemoryFilesystem.py v8.0.0
+# ====================================================================

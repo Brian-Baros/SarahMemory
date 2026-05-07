@@ -1686,68 +1686,96 @@ def research_patch_suggestions_from_payload(payload: Dict[str, Any], max_chars: 
 
 # =============================================================================
 # SARAH_REM_RESEARCH_LANE_V1
-# Bounded REM research helper. This is intentionally small, auditable, and
-# budget-limited so REM Sleep can learn without downloading the internet.
+# Bounded idle-time research lane for REM Sleep. Summary-only; no bulk download.
 # =============================================================================
 
-def rem_research_dream_tick(snapshot: Optional[Dict[str, Any]] = None, max_queries: int = 3, allow_web: Optional[bool] = None) -> Dict[str, Any]:
-    """Run a bounded REM research pass.
+def rem_research_dream_tick(snapshot: Optional[Dict[str, Any]] = None, max_queries: int = 2) -> Dict[str, Any]:
+    """Run a bounded REM research tick with hard timeout protection.
 
-    Rules:
-      - Uses a small query budget.
-      - Honors LOCAL_ONLY_MODE and configured research flags.
-      - Returns summaries only; it does not write code or execute external content.
+    This lane is intentionally narrow. It can produce short summaries for REM
+    dashboards, but it must not bulk-download data or block the dream loop.
     """
+    import concurrent.futures
+
     started = time.time()
-    snapshot = snapshot or {}
-    try:
-        local_only = bool(getattr(config, "LOCAL_ONLY_MODE", False) or (snapshot.get("policy") or {}).get("LOCAL_ONLY_MODE"))
-    except Exception:
-        local_only = True
-    if allow_web is None:
-        allow_web = bool((not local_only) and getattr(config, "WEB_RESEARCH_ENABLED", False))
-
-    base_queries = [
-        "SarahMemory self-study code map improvement strategy",
-        "safe bounded idle-time learning without database bloat",
-        "Python application mobile friendly React avatar panel layout",
-        "local-first email classification no attachments opened",
-        "safe autonomous sandbox testing rollback policy",
-    ]
-    try:
-        dreams = snapshot.get("dreams") or []
-        for d in dreams:
-            if isinstance(d, dict) and d.get("title"):
-                base_queries.insert(0, str(d.get("title")))
-    except Exception:
-        pass
-
-    results: List[Dict[str, Any]] = []
-    for query in base_queries[: max(1, int(max_queries or 1))]:
-        try:
-            intent = "research"
-            if allow_web:
-                data = get_research_data(query)
-                if isinstance(data, dict):
-                    snippet = str(data.get("data") or data.get("snippet") or data.get("answer") or data)[:1200]
-                    src = str(data.get("source") or "research_engine")
-                else:
-                    snippet = str(data)[:1200]
-                    src = "research_engine"
-            else:
-                local = LocalResearch.search(query, intent)
-                snippet = local.content[:1200] if local else "No local REM research match."
-                src = local.source.value if local else "local_only_no_match"
-            results.append({"query": query, "source": src, "summary": snippet, "web_allowed": bool(allow_web)})
-        except Exception as exc:
-            results.append({"query": query, "error": str(exc), "web_allowed": bool(allow_web)})
-
-    return {
+    timeout_seconds = max(3.0, float(os.getenv("SARAH_REM_RESEARCH_TIMEOUT_SECONDS", "20") or 20))
+    max_q = max(0, min(3, int(max_queries or 0)))
+    bloat_guard = {
+        "summary_only": True,
+        "no_bulk_download": True,
+        "max_queries": max_q,
+        "timeout_seconds": timeout_seconds,
+    }
+    out: Dict[str, Any] = {
         "ok": True,
         "lane": "research",
-        "web_allowed": bool(allow_web),
-        "queries_run": len(results),
-        "duration_ms": int((time.time() - started) * 1000),
-        "results": results,
-        "bloat_guard": {"max_queries": max_queries, "no_bulk_download": True, "summary_only": True},
+        "web_allowed": bool(getattr(config, "WEB_RESEARCH_ENABLED", False) or getattr(config, "API_RESEARCH_ENABLED", False)),
+        "queries_run": 0,
+        "results": [],
+        "bloat_guard": bloat_guard,
     }
+
+    if max_q <= 0:
+        out.update({"status": "skipped", "reason": "max_queries=0"})
+        out["duration_ms"] = int((time.time() - started) * 1000)
+        return out
+
+    if not out["web_allowed"]:
+        out.update({"status": "disabled", "reason": "Research disabled by governance flags"})
+        out["duration_ms"] = int((time.time() - started) * 1000)
+        return out
+
+    queries = [
+        "SarahMemory self-study code map improvement strategy",
+        "safe bounded idle-time learning without database bloat",
+        "governed autonomous agent sandbox rollback policy",
+    ][:max_q]
+
+    def _one_query(query: str) -> Dict[str, Any]:
+        try:
+            # Prefer the existing API research path because it respects provider flags.
+            api = send_to_api(
+                query,
+                provider="auto",
+                intent="research",
+                tone="technical",
+                complexity="adult",
+                max_tokens=300,
+                temperature=0.2,
+            )
+            data = str((api or {}).get("data") or "").strip()
+            if len(data) > 900:
+                data = data[:900].rstrip() + "..."
+            return {
+                "query": query,
+                "source": str((api or {}).get("source") or "api_auto"),
+                "summary": data or str((api or {}).get("error") or "No summary returned."),
+                "web_allowed": True,
+                "timed_out": False,
+            }
+        except Exception as exc:
+            return {"query": query, "source": "research_error", "summary": str(exc), "web_allowed": True, "timed_out": False}
+
+    for query in queries:
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_one_query, query)
+        try:
+            item = future.result(timeout=timeout_seconds)
+        except concurrent.futures.TimeoutError:
+            item = {
+                "query": query,
+                "source": "timeout_guard",
+                "summary": f"REM research query exceeded {timeout_seconds:.1f}s timeout and was skipped.",
+                "web_allowed": True,
+                "timed_out": True,
+            }
+        finally:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        out["results"].append(item)
+        out["queries_run"] = int(out.get("queries_run") or 0) + 1
+
+    out["duration_ms"] = int((time.time() - started) * 1000)
+    return out

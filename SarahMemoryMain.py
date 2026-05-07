@@ -72,6 +72,7 @@ except Exception as e:
     print(f"[WARN] python-dotenv unavailable or failed, .env not loaded: {e}")
 
 import os
+import atexit
 import logging
 import datetime
 import sys
@@ -81,6 +82,8 @@ import json
 import warnings
 import requests
 import platform
+import signal
+import threading
 import SarahMemoryGlobals as config
 
 # =============================================================================
@@ -192,6 +195,263 @@ root.addHandler(console_handler)
 logger = logging.getLogger("SarahMemoryMain")
 
 # =============================================================================
+# PROCESS LIFECYCLE / CLEAN SHUTDOWN CONTROL - v8.0
+# -----------------------------------------------------------------------------
+# SarahMemoryMain owns the local API child process and runtime PID/state files.
+# Integration/GUI shutdown calls back into these helpers so a closed GUI does not
+# leave python.exe / app.py running and does not require pytaskkill.bat.
+# =============================================================================
+_LOCAL_API_PROCESS = None
+_MAIN_CLEANUP_STARTED = False
+_MAIN_CLEANUP_LOCK = threading.RLock()
+
+
+def _sm_data_dir() -> str:
+    try:
+        data_dir = getattr(config, "DATA_DIR", None) or os.path.join(getattr(config, "BASE_DIR", os.getcwd()), "data")
+    except Exception:
+        data_dir = os.path.join(os.getcwd(), "data")
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+    except Exception:
+        pass
+    return data_dir
+
+
+def _sm_runtime_state_path() -> str:
+    return os.path.join(_sm_data_dir(), "server_state.json")
+
+
+def _sm_main_pid_path() -> str:
+    return os.path.join(_sm_data_dir(), "sarahmemory.pid")
+
+
+def _sm_api_pid_path() -> str:
+    return os.path.join(_sm_data_dir(), "local_api.pid")
+
+
+def _sm_write_runtime_state(*, main_running: bool, api_running: bool = False, reason: str = "") -> None:
+    """Best-effort persisted lifecycle state for WebUI/API health checks."""
+    try:
+        state_file = _sm_runtime_state_path()
+        state = {}
+        if os.path.exists(state_file):
+            try:
+                with open(state_file, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    state = loaded
+            except Exception:
+                state = {}
+
+        now_ts = float(time.time())
+        notes = state.get("notes") if isinstance(state.get("notes"), list) else []
+        if reason:
+            notes = (notes + [f"{time.strftime('%Y-%m-%d %H:%M:%S')} shutdown:{reason}"])[-20:]
+
+        api_pid = None
+        try:
+            proc = globals().get("_LOCAL_API_PROCESS")
+            if proc is not None and getattr(proc, "poll", lambda: 1)() is None:
+                api_pid = int(getattr(proc, "pid", 0) or 0) or None
+        except Exception:
+            api_pid = None
+
+        state.update({
+            "ok": True,
+            "ts": now_ts,
+            "source": "SarahMemoryMain",
+            "notes": notes,
+            "main_running": bool(main_running),
+            "main_pid": int(os.getpid()) if main_running else None,
+            "main_last_seen_ts": now_ts,
+            "api_running": bool(api_running),
+            "api_pid": api_pid if api_running else None,
+            "api_last_seen_ts": now_ts if api_running else state.get("api_last_seen_ts"),
+
+            "MAIN_RUNNING": bool(main_running),
+            "MAIN_PID": int(os.getpid()) if main_running else None,
+            "MAIN_LAST_SEEN_TS": now_ts,
+            "API_RUNNING": bool(api_running),
+            "API_PID": api_pid if api_running else None,
+        })
+
+        tmp = state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+        os.replace(tmp, state_file)
+    except Exception:
+        pass
+
+
+def _sm_remove_runtime_pid_files() -> None:
+    for path in (_sm_main_pid_path(), _sm_api_pid_path()):
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+def _sm_windows_kill_pid(pid: int) -> None:
+    try:
+        if pid <= 0 or pid == os.getpid():
+            return
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+        )
+    except Exception:
+        pass
+
+
+def _sm_posix_kill_pid(pid: int) -> None:
+    try:
+        if pid <= 0 or pid == os.getpid():
+            return
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except Exception:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def stop_local_api_server(timeout: float = 5.0) -> bool:
+    """Stop the child Flask/API process started by SarahMemoryMain."""
+    global _LOCAL_API_PROCESS
+
+    stopped_any = False
+    pids = set()
+
+    try:
+        proc = _LOCAL_API_PROCESS
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    pids.add(int(proc.pid))
+            except Exception:
+                pass
+    except Exception:
+        proc = None
+
+    for raw in (
+        os.environ.get("SARAHMEMORY_LOCAL_API_PID"),
+        os.environ.get("SARAHMEMORY_API_PID"),
+    ):
+        try:
+            if raw and str(raw).strip().isdigit():
+                pids.add(int(str(raw).strip()))
+        except Exception:
+            pass
+
+    try:
+        pid_file = _sm_api_pid_path()
+        if os.path.exists(pid_file):
+            raw = open(pid_file, "r", encoding="utf-8", errors="ignore").read().strip()
+            if raw.isdigit():
+                pids.add(int(raw))
+    except Exception:
+        pass
+
+    # Graceful stop when we still own the Popen object.
+    try:
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=max(0.5, float(timeout)))
+                stopped_any = True
+            except Exception:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2.0)
+                    stopped_any = True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # Hard fallback by PID for Windows/Linux.
+    try:
+        for pid in sorted(pids):
+            if pid <= 0 or pid == os.getpid():
+                continue
+            if platform.system() == "Windows":
+                _sm_windows_kill_pid(pid)
+            else:
+                _sm_posix_kill_pid(pid)
+            stopped_any = True
+    except Exception:
+        pass
+
+    try:
+        if os.path.exists(_sm_api_pid_path()):
+            os.remove(_sm_api_pid_path())
+    except Exception:
+        pass
+
+    try:
+        os.environ.pop("SARAHMEMORY_LOCAL_API_PID", None)
+        os.environ.pop("SARAHMEMORY_API_PID", None)
+    except Exception:
+        pass
+
+    _LOCAL_API_PROCESS = None
+    return stopped_any
+
+
+def main_process_cleanup(reason: str = "shutdown") -> None:
+    """Idempotent process cleanup for normal close, Ctrl+C, exceptions, and atexit."""
+    global _MAIN_CLEANUP_STARTED
+
+    try:
+        with _MAIN_CLEANUP_LOCK:
+            if _MAIN_CLEANUP_STARTED:
+                return
+            _MAIN_CLEANUP_STARTED = True
+    except Exception:
+        if _MAIN_CLEANUP_STARTED:
+            return
+        _MAIN_CLEANUP_STARTED = True
+
+    try:
+        logger.info("[v8.0][SHUTDOWN] Main cleanup started: %s", reason)
+    except Exception:
+        pass
+
+    try:
+        stop_local_api_server(timeout=4.0)
+    except Exception:
+        pass
+
+    try:
+        _sm_write_runtime_state(main_running=False, api_running=False, reason=reason)
+    except Exception:
+        pass
+
+    try:
+        _sm_remove_runtime_pid_files()
+    except Exception:
+        pass
+
+    try:
+        logging.shutdown()
+    except Exception:
+        pass
+
+
+try:
+    atexit.register(main_process_cleanup, reason="atexit")
+except Exception:
+    pass
+
+
+# =============================================================================
 # OPTIONAL AUTONOMOUS SERVICES - v8.0 (Synapses / SelfAware / Evolution)
 # -----------------------------------------------------------------------------
 # Objective: keep SarahMemoryMain as the boot orchestrator while allowing
@@ -257,6 +517,8 @@ def start_local_api_server():
       - Uses BASE_DIR/API_DIR from SarahMemoryGlobals to build an absolute path.
       - Sets cwd to BASE_DIR so static/UI paths resolve consistently.
     """
+    global _LOCAL_API_PROCESS
+
     try:
         # Resolve absolute app.py path under ../api/server/app.py
         base_dir = getattr(config, "BASE_DIR", os.getcwd())
@@ -290,8 +552,20 @@ def start_local_api_server():
             creationflags=creationflags,
             start_new_session=(platform.system() != "Windows")
         )
-        # Store PID for shutdown_sequence to terminate cleanly
-        os.environ["SARAHMEMORY_LOCAL_API_PID"] = str(getattr(proc, "pid", ""))
+        # Store PID/process handle for clean shutdown from GUI/Integration close.
+        _LOCAL_API_PROCESS = proc
+        _api_pid = str(getattr(proc, "pid", ""))
+        os.environ["SARAHMEMORY_LOCAL_API_PID"] = _api_pid
+        os.environ["SARAHMEMORY_API_PID"] = _api_pid
+        try:
+            with open(_sm_api_pid_path(), "w", encoding="utf-8") as _pid_f:
+                _pid_f.write(_api_pid)
+        except Exception:
+            pass
+        try:
+            _sm_write_runtime_state(main_running=True, api_running=True, reason="api_started")
+        except Exception:
+            pass
         logger.info("[BOOT][v8.0] Local API server process launched successfully (pid=%s).", getattr(proc, "pid", "?"))
     except Exception as e:
         logger.error(f"[BOOT ERROR][v8.0] Failed to launch local API server: {e}")
@@ -423,6 +697,19 @@ try:
         pass
     logger.info("[v8.0][PHASE 2] Core modules loaded successfully")
 
+    # Unified boot environment capture: this is the single authoritative scan
+    # for CPU/GPU/RAM/storage/network/driver readiness. Downstream boot phases,
+    # Globals.hardware_score(), API endpoints, and chat answers reuse this same
+    # persisted body map instead of probing hardware multiple times.
+    try:
+        initialization.capture_and_print_boot_environment_summary(
+            force_refresh=True,
+            detail=True,
+            phase_context="phase2_core_module_initialization",
+        )
+    except Exception as env_err:
+        logger.warning(f"[v8.0][PHASE 2][ENV] Unified environment capture failed: {env_err}")
+
     # ==========================================================================
     # PHASE 3: CONTEXT BUFFER INITIALIZATION (if enabled)
     # ==========================================================================
@@ -519,12 +806,20 @@ try:
     # Launch the main integration menu
     integration.integration_menu()
 
+    # If the integration layer ever returns instead of exiting, still clean up.
+    main_process_cleanup(reason="integration_menu_returned")
+
 except KeyboardInterrupt:
     logger.info("[v8.0] User interrupted startup sequence (Ctrl+C)")
     print("\n[v8.0] Shutdown initiated by user.")
+    main_process_cleanup(reason="keyboard_interrupt")
     sys.exit(0)
 
 except Exception as e:
+    try:
+        main_process_cleanup(reason="critical_error")
+    except Exception:
+        pass
     logger.error(f"[v8.0] Critical error in main execution: {e}")
     print(f"\n[v8.0] An unexpected error occurred:")
     print(f"Error: {e}")
