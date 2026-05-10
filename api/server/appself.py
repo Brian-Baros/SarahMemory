@@ -13,7 +13,7 @@
 # https://store.sarahmemory.com
 # ==============================================================================================
 """
-SarahMemory appself.py v8.0.0 EvidenceCourt V6 network presentation cleanup
+SarahMemory appself.py v8.0.0 EvidenceCourt V7 driver-aware body capability cleanup
 
 SelfAware / CognitiveSelf API bridge.
 
@@ -33,6 +33,7 @@ Design goals:
 - Reject double-jeopardy evidence stacking: one file/artifact family gets one vote.
 - Treat OS/vendor adapters as support/hearsay only; never as constitutional quorum.
 - Present network adapter facts without exposing IP/MAC details by default.
+- Read Class A boot-driver and Class B runtime-driver catalogs as support-only body capability evidence.
 
 Integration contract:
     import appself
@@ -69,6 +70,7 @@ from __future__ import annotations
 # NOTES = "SelfAware/CognitiveSelf API bridge under /api/self/* for fact tickets, 3-probe evidence quorum, body-map exposure, and REM MEDIUM interrogation. No execution or patching."
 # --- SARAHMETA END ---
 
+import hashlib
 import json
 import logging
 import os
@@ -586,18 +588,21 @@ def _list_selfaware_reports(limit: int = 10) -> List[Dict[str, Any]]:
 # - SarahMemoryDatabase.py is an evidence locker and is read-only here; multiple DB rows
 #   never count as multiple independent witnesses.
 
-_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "usb_label", "temperature", "fan_speed", "network", "motherboard", "general_system_fact"}
+_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "usb_label", "temperature", "fan_speed", "network", "motherboard", "usb", "ports", "port", "general_system_fact"}
 _SOFTWARE_KINDS = {"software", "application", "process", "window", "desktop_surface"}
 _BOOT_RUNTIME_KINDS = {"boot", "startup", "shutdown", "reboot", "runtime", "lifecycle", "server_state"}
 _NETWORK_KINDS = {"network", "sarahnet", "sync", "mesh", "rendezvous"}
 _REM_CODE_KINDS = {"rem", "rem_medium", "code", "patch", "self_evolution", "sandbox", "module_generation"}
 _VISION_KINDS = {"vision", "camera", "face", "object", "scene", "visual"}
 _ADAPTIVE_KINDS = {"adaptive", "emotion", "personality", "preference", "behavior"}
+_DRIVER_KINDS = {"driver", "drivers", "driver_stack", "device_driver", "body_capability", "body_capabilities", "hardware_capability"}
 
 
 def _fact_jurisdiction(kind: str, claim: str = "") -> str:
     k = _safe_str(kind, 80).lower()
     c = _safe_str(claim, MAX_CLAIM_CHARS).lower()
+    if k in _DRIVER_KINDS or any(x in c for x in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
+        return "driver_capability"
     if k in _SOFTWARE_KINDS or any(x in c for x in ("installed", "running", "focused", "window", "application", "program", "software")):
         return "software_desktop"
     if k in _BOOT_RUNTIME_KINDS or any(x in c for x in ("boot", "startup", "shutdown", "reboot", "server state", "runtime state")):
@@ -723,8 +728,19 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "ethernet": "network",
             "lan": "network",
             "bluetooth_network": "network",
+            "device_driver": "drivers",
+            "driver_stack": "drivers",
+            "body_capability": "drivers",
+            "body_capabilities": "drivers",
+            "hardware_capability": "drivers",
+            "ports": "ports",
+            "port": "ports",
+            "usbhost": "usb",
+            "usb_host": "usb",
         }
         return aliases.get(kind, kind)
+    if any(k in c for k in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
+        return "drivers"
     if any(k in c for k in ("motherboard", "mainboard", "baseboard", "system board")):
         return "motherboard"
     if any(k in c for k in ("cpu temp", "processor temp", "temperature", "thermal", "degrees c", "degrees fahrenheit")):
@@ -735,6 +751,10 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
         return "gpu"
     if any(k in c for k in ("cpu", "processor")):
         return "cpu"
+    if any(k in c for k in ("usb port", "usb controller", "usb host", "usbhost")):
+        return "usb"
+    if any(k in c for k in ("port", "ports", "pci", "serial port", "com port", "hdmi port")):
+        return "ports"
     if any(k in c for k in ("usb", "drive label", "volume label", "label on")):
         return "usb_label"
     if any(k in c for k in ("disk", "disc", "drive", "space", "storage", "free gb", "used gb")):
@@ -809,8 +829,17 @@ def _evidence_source_registry() -> Dict[str, Any]:
                     {"family": "runtime_environment_snapshot", "role": "persisted_boot_runtime_artifact"},
                     {"family": "SarahMemoryCognitiveSelf", "role": "canonical_body_map_case_file"},
                 ],
-                "support": ["SarahMemoryDiagnostics", "SarahMemoryOptimization", "psutil/platform adapters", "OS vendor adapters"],
+                "support": ["SarahMemoryDiagnostics", "SarahMemoryOptimization", "SarahMemoryDriverRegistry", "appdrivers.py", "psutil/platform adapters", "OS vendor adapters"],
                 "fact_kinds": sorted(_HARDWARE_KINDS),
+            },
+            "driver_capability": {
+                "quorum": [],
+                "support": [
+                    {"family": "SarahMemoryDriverRegistry", "role": "Class A boot-driver and Class B runtime-driver catalog witness"},
+                    {"family": "appdrivers.py", "role": "governed driver API contract witness"},
+                ],
+                "fact_kinds": sorted(_DRIVER_KINDS),
+                "rule": "Driver folders prove native capability only; physical hardware still requires normal SelfAware quorum.",
             },
             "software_desktop": {
                 "quorum": [
@@ -879,6 +908,424 @@ def _software_db_path() -> Path:
 def _system_logs_db_path() -> Path:
     return _datasets_dir() / "system_logs.db"
 
+
+# -----------------------------------------------------------------------------
+# Driver Registry / Body Capability Evidence helpers
+# -----------------------------------------------------------------------------
+# These helpers make SelfAware driver-aware without becoming a driver manager.
+# They only read manifests, defaults/config metadata, boot_driver registry data,
+# and folder presence. They never import driver.py, never start sessions, never
+# open ports, never scan networks, never pair devices, and never mutate configs.
+
+def _boot_dir() -> Path:
+    return (_data_dir() / "boot").resolve()
+
+
+def _boot_drivers_root() -> Path:
+    return (_boot_dir() / "drivers").resolve()
+
+
+def _runtime_drivers_root() -> Path:
+    return (_data_dir() / "drivers").resolve()
+
+
+def _driver_registry_path() -> Path:
+    return (_data_dir() / "registry" / "drivers.json").resolve()
+
+
+def _boot_registry_candidates() -> List[Path]:
+    # Historical layouts are both supported:
+    #   data/boot/boot_drivers.json        (appdrivers.py current contract)
+    #   data/boot/drivers/boot_drivers.json (observed development folder layout)
+    return [
+        (_boot_dir() / "boot_drivers.json").resolve(),
+        (_boot_drivers_root() / "boot_drivers.json").resolve(),
+    ]
+
+
+def _boot_registry_path() -> Path:
+    for p in _boot_registry_candidates():
+        try:
+            if p.exists() and p.is_file():
+                return p
+        except Exception:
+            continue
+    return _boot_registry_candidates()[0]
+
+
+def _sha256_file(path: Path, limit_bytes: int = 8 * 1024 * 1024) -> str:
+    try:
+        if not path.exists() or not path.is_file():
+            return ""
+        h = hashlib.sha256()
+        total = 0
+        with path.open("rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > limit_bytes:
+                    return ""
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _read_boot_driver_registry() -> Dict[str, Any]:
+    path = _boot_registry_path()
+    blob = _read_json_file(path)
+    entries = blob.get("drivers") if isinstance(blob, dict) else []
+    if not isinstance(entries, list):
+        entries = []
+    indexed: Dict[str, Dict[str, Any]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        driver_id = _safe_str(item.get("id"), 220)
+        if not driver_id:
+            continue
+        dpath_raw = _safe_str(item.get("path"), 500)
+        if dpath_raw:
+            dpath = (Path(dpath_raw) if Path(dpath_raw).is_absolute() else (_base_dir() / dpath_raw)).resolve()
+        else:
+            dpath = (_boot_drivers_root() / driver_id).resolve()
+        manifest_path = dpath / "manifest.json"
+        manifest = _read_json_file(manifest_path)
+        indexed[driver_id] = {
+            "id": driver_id,
+            "class": "A",
+            "driver_class": "boot_foundation",
+            "path": str(dpath),
+            "manifest_path": str(manifest_path),
+            "folder_exists": dpath.exists() and dpath.is_dir(),
+            "manifest_exists": manifest_path.exists() and manifest_path.is_file(),
+            "manifest": manifest if isinstance(manifest, dict) else {},
+            "manufacturer": item.get("manufacturer"),
+            "trust_level": item.get("trust_level"),
+            "signature_type": item.get("signature_type"),
+            "driver_signature": item.get("driver_signature"),
+            "declared_hash": item.get("hash"),
+            "manifest_sha256": _sha256_file(manifest_path),
+            "level": item.get("level"),
+            "load_priority": item.get("load_priority"),
+            "dependencies": item.get("dependencies") if isinstance(item.get("dependencies"), list) else [],
+            "enabled": bool(item.get("enabled", True)),
+        }
+    return {
+        "ok": bool(indexed),
+        "class": "A",
+        "registry_path": str(path),
+        "registry_exists": path.exists() and path.is_file(),
+        "count": len(indexed),
+        "drivers": indexed,
+        "action_taken": False,
+        "read_only": True,
+    }
+
+
+def _boot_driver_order(entries: Dict[str, Dict[str, Any]]) -> List[str]:
+    if not isinstance(entries, dict) or not entries:
+        return []
+    graph: Dict[str, set] = {}
+    indegree: Dict[str, int] = {}
+    levels: Dict[str, int] = {}
+    for driver_id, meta in entries.items():
+        deps = meta.get("dependencies") if isinstance(meta.get("dependencies"), list) else []
+        graph[driver_id] = set(str(x) for x in deps if str(x) in entries and str(x) != driver_id)
+        indegree.setdefault(driver_id, 0)
+        try:
+            levels[driver_id] = int(meta.get("level", meta.get("load_priority", 999)) or 999)
+        except Exception:
+            levels[driver_id] = 999
+    for driver_id, deps in graph.items():
+        for dep in deps:
+            indegree[driver_id] = indegree.get(driver_id, 0) + 1
+            indegree.setdefault(dep, 0)
+    ready = sorted([x for x, deg in indegree.items() if deg == 0], key=lambda x: (levels.get(x, 999), x))
+    ordered: List[str] = []
+    while ready:
+        driver_id = ready.pop(0)
+        ordered.append(driver_id)
+        for other, deps in graph.items():
+            if driver_id in deps:
+                deps.remove(driver_id)
+                indegree[other] -= 1
+                if indegree[other] == 0:
+                    ready.append(other)
+                    ready.sort(key=lambda x: (levels.get(x, 999), x))
+    for driver_id in sorted(entries.keys(), key=lambda x: (levels.get(x, 999), x)):
+        if driver_id not in ordered:
+            ordered.append(driver_id)
+    return ordered
+
+
+def _classify_driver_family(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> str:
+    did = _safe_str(driver_id, 240).lower().replace("_", ".").replace("-", ".")
+    text = did + " " + _safe_str((manifest or {}).get("name"), 240).lower() + " " + _safe_str((manifest or {}).get("description"), 600).lower()
+    if ".boot." in did:
+        return "boot_foundation"
+    if "motherboard" in text or "baseboard" in text or "mainboard" in text:
+        return "motherboard"
+    if "network" in text or "ethernet" in text or "wifi" in text or "wi.fi" in text or "wireless" in text or "utpsip" in text:
+        return "network"
+    if "bluetooth" in text:
+        return "bluetooth"
+    if "storage" in text or "filesystem" in text or "disk" in text or "drive" in text:
+        return "storage"
+    if "usb" in text or "usbhost" in text:
+        return "usb"
+    if "hid" in text or "keyboard" in text or "mouse" in text or "gamepad" in text or "input" in text:
+        return "input"
+    if "display" in text or "vga" in text or "hdmi" in text or "gpu" in text or "video" in text:
+        return "display"
+    if "audio" in text or "speaker" in text or "midi" in text:
+        return "audio"
+    if "printer" in text:
+        return "printer"
+    if "plc" in text or "modbus" in text or "opcua" in text:
+        return "industrial_plc"
+    if "rfid" in text or "zigbee" in text or "zwave" in text or "mqtt" in text or "sensor" in text or "lirc" in text:
+        return "iot_sensor"
+    if "vr" in text or "headset" in text:
+        return "vr"
+    return "generic_device"
+
+
+def _read_runtime_driver_catalog() -> Dict[str, Any]:
+    root = _runtime_drivers_root()
+    reg = _read_json_file(_driver_registry_path())
+    reg_entries = reg if isinstance(reg, dict) else {}
+    drivers: Dict[str, Dict[str, Any]] = {}
+    try:
+        if root.exists() and root.is_dir():
+            for p in sorted(root.iterdir(), key=lambda x: x.name.lower()):
+                if not p.is_dir():
+                    continue
+                driver_id = p.name
+                manifest_path = p / "manifest.json"
+                defaults_path = p / "defaults.json"
+                config_path = p / "config.json"
+                ui_path = p / "ui.json"
+                driver_py_path = p / "driver.py"
+                manifest = _read_json_file(manifest_path)
+                drivers[driver_id] = {
+                    "id": driver_id,
+                    "class": "B",
+                    "driver_class": "runtime_device_capability",
+                    "family": _classify_driver_family(driver_id, manifest),
+                    "path": str(p),
+                    "folder_exists": True,
+                    "manifest_exists": manifest_path.exists() and manifest_path.is_file(),
+                    "ui_schema_exists": ui_path.exists() and ui_path.is_file(),
+                    "defaults_exists": defaults_path.exists() and defaults_path.is_file(),
+                    "config_exists": config_path.exists() and config_path.is_file(),
+                    "driver_py_exists": driver_py_path.exists() and driver_py_path.is_file(),
+                    "manifest": manifest if isinstance(manifest, dict) else {},
+                    "manifest_sha256": _sha256_file(manifest_path),
+                    "enabled": bool((reg_entries.get(driver_id) if isinstance(reg_entries.get(driver_id), dict) else {}).get("enabled", (manifest or {}).get("enabled", True))),
+                    "autoload_requested": bool((manifest or {}).get("autoload", False)),
+                    "action_taken": False,
+                }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "class": "B",
+            "drivers_root": str(root),
+            "drivers_root_exists": root.exists(),
+            "error": f"{type(exc).__name__}:{exc}",
+            "drivers": drivers,
+            "count": len(drivers),
+            "action_taken": False,
+            "read_only": True,
+        }
+    return {
+        "ok": True,
+        "class": "B",
+        "drivers_root": str(root),
+        "drivers_root_exists": root.exists() and root.is_dir(),
+        "registry_path": str(_driver_registry_path()),
+        "registry_exists": _driver_registry_path().exists(),
+        "drivers": drivers,
+        "count": len(drivers),
+        "action_taken": False,
+        "read_only": True,
+    }
+
+
+def _driver_kind_profile(kind: str) -> Dict[str, Any]:
+    k = _safe_str(kind, 80).lower()
+    profiles: Dict[str, Dict[str, Any]] = {
+        "cpu": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
+        "gpu": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.displaycore"], "families": ["display"]},
+        "motherboard": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci", "com.softdev0.boot.usbhost"], "families": ["motherboard"]},
+        "memory": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
+        "disk_space": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage"]},
+        "usb_label": {"class_a": ["com.softdev0.boot.usbhost", "com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["usb", "storage"]},
+        "usb": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb", "input", "printer", "iot_sensor", "vr"]},
+        "ports": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore", "com.softdev0.boot.displaycore", "com.softdev0.boot.inputcore"], "families": ["network", "usb", "display", "input", "industrial_plc", "iot_sensor"]},
+        "network": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["network", "bluetooth"]},
+        "temperature": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci"], "families": ["motherboard", "display"]},
+        "fan_speed": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci"], "families": ["motherboard", "display"]},
+        "drivers": {"class_a": [], "families": []},
+        "general_system_fact": {"class_a": [], "families": []},
+    }
+    return profiles.get(k, {"class_a": [], "families": []})
+
+
+def _build_driver_capability_snapshot(kind: str = "") -> Dict[str, Any]:
+    kind = _infer_fact_kind(kind or "drivers", kind) if kind else "drivers"
+    boot = _read_boot_driver_registry()
+    runtime = _read_runtime_driver_catalog()
+    boot_entries = boot.get("drivers") if isinstance(boot.get("drivers"), dict) else {}
+    runtime_entries = runtime.get("drivers") if isinstance(runtime.get("drivers"), dict) else {}
+    profile = _driver_kind_profile(kind)
+    ordered_boot = _boot_driver_order(boot_entries if isinstance(boot_entries, dict) else {})
+
+    class_a_ids = profile.get("class_a") if isinstance(profile.get("class_a"), list) else []
+    families = profile.get("families") if isinstance(profile.get("families"), list) else []
+    if not class_a_ids and kind == "drivers":
+        class_a_ids = ordered_boot
+
+    class_a_stack: List[Dict[str, Any]] = []
+    for did in class_a_ids:
+        meta = boot_entries.get(did) if isinstance(boot_entries, dict) else None
+        if isinstance(meta, dict):
+            class_a_stack.append({
+                "id": did,
+                "present": bool(meta.get("folder_exists") or meta.get("manifest_exists")),
+                "manifest_exists": bool(meta.get("manifest_exists")),
+                "trust_level": meta.get("trust_level"),
+                "signature_type": meta.get("signature_type"),
+                "dependencies": meta.get("dependencies") if isinstance(meta.get("dependencies"), list) else [],
+                "level": meta.get("level"),
+                "load_priority": meta.get("load_priority"),
+            })
+        else:
+            class_a_stack.append({"id": did, "present": False, "missing": True})
+
+    class_b_matches: List[Dict[str, Any]] = []
+    for did, meta in (runtime_entries.items() if isinstance(runtime_entries, dict) else []):
+        if not isinstance(meta, dict):
+            continue
+        fam = _safe_str(meta.get("family"), 80)
+        if kind == "drivers" or not families or fam in families:
+            class_b_matches.append({
+                "id": did,
+                "family": fam,
+                "manifest_exists": bool(meta.get("manifest_exists")),
+                "ui_schema_exists": bool(meta.get("ui_schema_exists")),
+                "defaults_exists": bool(meta.get("defaults_exists")),
+                "config_exists": bool(meta.get("config_exists")),
+                "driver_py_exists": bool(meta.get("driver_py_exists")),
+                "enabled": bool(meta.get("enabled", True)),
+                "autoload_requested": bool(meta.get("autoload_requested", False)),
+            })
+
+    missing_class_a = [x.get("id") for x in class_a_stack if not x.get("present")]
+    missing_class_b = [] if (kind == "drivers" or class_b_matches or not families) else list(families)
+    return {
+        "kind": kind,
+        "class_a": {
+            "registry_path": boot.get("registry_path"),
+            "registry_exists": bool(boot.get("registry_exists")),
+            "drivers_root": str(_boot_drivers_root()),
+            "ordered_boot_ids": ordered_boot,
+            "required_stack": class_a_stack,
+            "missing_required": missing_class_a,
+            "count": boot.get("count", 0),
+        },
+        "class_b": {
+            "drivers_root": runtime.get("drivers_root"),
+            "drivers_root_exists": bool(runtime.get("drivers_root_exists")),
+            "matched_drivers": class_b_matches,
+            "matched_count": len(class_b_matches),
+            "catalog_count": runtime.get("count", 0),
+            "missing_family_matches": missing_class_b,
+        },
+        "dependency_status": "missing_required_driver" if missing_class_a or missing_class_b else "declared_or_available",
+        "capability_present": bool((class_a_stack and not missing_class_a) or class_b_matches or kind == "drivers"),
+        "read_only": True,
+        "action_taken": False,
+        "driver_code_imported": False,
+        "driver_session_started": False,
+        "security_boundary": "driver_registry_evidence_only_no_activation_no_ports_no_scans_no_pairing_no_config_mutation",
+    }
+
+
+def _driver_capability_support_fact(kind: str, target: str = "") -> Dict[str, Any]:
+    snapshot = _build_driver_capability_snapshot(kind or target or "drivers")
+    ok = bool(snapshot.get("capability_present"))
+    return _probe_result(
+        "SarahMemoryDriverRegistry.classA_classB_catalog",
+        snapshot,
+        ok=ok,
+        error="no_matching_driver_capability" if not ok else "",
+        kind=kind,
+        source_family="SarahMemoryDriverRegistry",
+        evidence_class="native_driver_capability_support",
+        support_only=True,
+        details={
+            "class_a_root": str(_boot_drivers_root()),
+            "class_b_root": str(_runtime_drivers_root()),
+            "read_only": True,
+            "driver_activation": False,
+        },
+    )
+
+
+def _appdrivers_contract_fact(kind: str = "drivers", target: str = "") -> Dict[str, Any]:
+    try:
+        import appdrivers as _AppDrivers  # type: ignore
+    except Exception as exc:
+        return _probe_result(
+            "appdrivers.module_contract",
+            None,
+            ok=False,
+            error=f"module_unavailable:{exc}",
+            kind=kind,
+            source_family="appdrivers",
+            evidence_class="api_domain_contract",
+            support_only=True,
+        )
+    value = {
+        "module_available": True,
+        "has_init_app": callable(getattr(_AppDrivers, "init_app", None)),
+        "has_driver_discovery": callable(getattr(_AppDrivers, "_discover_driver_ids", None)),
+        "has_boot_registry_reader": callable(getattr(_AppDrivers, "_boot_registry_entries", None)),
+        "has_boot_order": callable(getattr(_AppDrivers, "_boot_driver_order", None)),
+        "safe_mode_function_present": callable(getattr(_AppDrivers, "_safe_mode", None)),
+        "driver_activation_performed": False,
+        "read_only_contract_probe": True,
+    }
+    return _probe_result(
+        "appdrivers.module_contract",
+        value,
+        ok=True,
+        kind=kind,
+        source_family="appdrivers",
+        evidence_class="api_domain_contract",
+        support_only=True,
+    )
+
+
+def _body_capabilities_snapshot() -> Dict[str, Any]:
+    kinds = ["cpu", "gpu", "motherboard", "memory", "disk_space", "usb", "ports", "network", "temperature", "fan_speed"]
+    return {
+        "ok": True,
+        "module": "appself.py",
+        "capability_model": "Class A boot foundation + Class B runtime driver catalog + SelfAware evidence court",
+        "capabilities": {k: _build_driver_capability_snapshot(k) for k in kinds},
+        "doctrine": {
+            "driver_present_means_native_capability": True,
+            "driver_present_does_not_prove_physical_device": True,
+            "physical_device_still_requires_evidence_quorum": True,
+            "driver_control_is_not_performed_here": True,
+        },
+        "read_only": True,
+        "action_taken": False,
+    }
 
 def _select_from_storage(storage: Any, target: str = "") -> Any:
     if not isinstance(storage, list):
@@ -1539,12 +1986,24 @@ def _collect_fact_probes(kind: str, claim: str, target: str = "") -> List[Dict[s
         probes.extend([
             _diagnostics_fact(kind, target),
             _optimization_fact(kind, target),
+            _driver_capability_support_fact(kind, target),
+            _appdrivers_contract_fact(kind, target),
         ])
         if kind == "network":
             probes.append(_network_operation_support_fact(kind, target))
         probes.append(_direct_psutil_fact(kind, target))
         if platform.system().lower() == "windows":
             probes.append(_windows_fact(kind, target))
+        return probes
+
+
+    if jurisdiction == "driver_capability":
+        probes.extend([
+            _driver_capability_support_fact(kind, target),
+            _appdrivers_contract_fact(kind, target),
+        ])
+        # Driver-capability facts are support/capability records, not physical-hardware
+        # proof. They should not become a fake 3/3 hardware quorum.
         return probes
 
     if jurisdiction == "software_desktop":
@@ -1995,7 +2454,11 @@ def _presentation_value(kind: str, value: Any) -> Any:
         if value in (None, "", [], {}):
             return value
         if k == "network":
-            return _network_adapter_safe_summary(value)
+            safe_network = _network_adapter_safe_summary(value)
+            safe_network["driver_capability"] = _build_driver_capability_snapshot("network")
+            return safe_network
+        if k in {"drivers", "driver", "driver_stack", "body_capability", "body_capabilities", "hardware_capability"}:
+            return _build_driver_capability_snapshot("drivers")
         if k == "motherboard":
             if isinstance(value, str):
                 return _safe_str(value, 300)
@@ -2063,9 +2526,20 @@ def _presentation_text(kind: str, value: Any) -> str:
                     pieces.append("Interface types: " + ", ".join(cats))
             if virtual:
                 pieces.append("Virtual/auxiliary present: " + "; ".join(_safe_str(v.get("name"), 160) for v in virtual[:4]))
+            drv = pv.get("driver_capability") if isinstance(pv.get("driver_capability"), dict) else {}
+            class_a = (((drv.get("class_a") or {}).get("required_stack")) if isinstance(drv.get("class_a"), dict) else [])
+            class_b = (((drv.get("class_b") or {}).get("matched_drivers")) if isinstance(drv.get("class_b"), dict) else [])
+            if class_a or class_b:
+                a_ids = [_safe_str(x.get("id"), 120) for x in class_a if isinstance(x, dict) and x.get("id")]
+                b_ids = [_safe_str(x.get("id"), 120) for x in class_b if isinstance(x, dict) and x.get("id")]
+                pieces.append("SarahMemory driver capability: Class A " + (", ".join(a_ids[:4]) if a_ids else "none") + "; Class B " + (", ".join(b_ids[:4]) if b_ids else "none"))
             pieces.append("Sensitive IP/MAC details are redacted in chat presentation.")
             pieces.append("Fact-check only; no network action was executed.")
             return "Network adapters = " + " | ".join(pieces)
+        if k in {"drivers", "driver", "driver_stack", "body_capability", "body_capabilities", "hardware_capability"} and isinstance(pv, dict):
+            ca = pv.get("class_a") if isinstance(pv.get("class_a"), dict) else {}
+            cb = pv.get("class_b") if isinstance(pv.get("class_b"), dict) else {}
+            return "Driver capability = Class A boot drivers: " + str(ca.get("count", 0)) + "; Class B runtime drivers: " + str(cb.get("catalog_count", 0)) + "; read-only registry scan only; no driver activation executed"
         if k == "motherboard":
             return f"Motherboard = {_safe_str(pv, 300)}" if pv not in (None, "", [], {}) else "Motherboard = unavailable"
         if k == "cpu" and isinstance(pv, dict):
@@ -2115,6 +2589,8 @@ def _run_fact_ticket(
     probes = _collect_fact_probes(kind, claim, target)
     pass_count, majority_key, majority_value, quorum_debug = _extract_majority_value(probes, kind)
     decision, confidence, risk_tier = _decision_from_pass_count(pass_count)
+    driver_support = _build_driver_capability_snapshot(kind) if kind in _HARDWARE_KINDS or kind in _DRIVER_KINDS else {}
+    public_majority_value = _presentation_value(kind, majority_value) if kind == "network" else majority_value
 
     ticket_id = _new_ticket_id("self_fact")
     ts = _now()
@@ -2137,8 +2613,9 @@ def _run_fact_ticket(
         "risk_tier": risk_tier,
         "approved_fact": bool(decision == "APPROVED_FACT"),
         "escalate_high_review": bool(decision == "ESCALATE_HIGH_REVIEW"),
-        "majority_value": majority_value,
+        "majority_value": public_majority_value,
         "majority_key": majority_key,
+        "driver_capability": driver_support,
         "presentation_value": _presentation_value(kind, majority_value),
         "presentation_text": _presentation_text(kind, majority_value),
         "evidence": {
@@ -2147,7 +2624,8 @@ def _run_fact_ticket(
             "probes": probes,
             "quorum_debug": quorum_debug,
             "registry": _evidence_source_registry().get("jurisdictions", {}).get(jurisdiction, {}),
-            "rule": "0/3 denied, 1/3 denied, 2/3 high review, 3/3 approved fact; no double jeopardy; OS adapters support only",
+            "driver_capability_support": driver_support,
+            "rule": "0/3 denied, 1/3 denied, 2/3 high review, 3/3 approved fact; no double jeopardy; OS adapters support only; driver registry support only",
         },
         "limits": {
             "executes_actions": False,
@@ -2158,6 +2636,10 @@ def _run_fact_ticket(
             "database_read_only_for_evidence": True,
             "network_fact_checks_do_not_open_ports": True,
             "network_presentation_redacts_ip_mac": True,
+            "driver_registry_read_only": True,
+            "driver_code_imported": False,
+            "driver_session_started": False,
+            "driver_configs_mutated": False,
         },
         "rem_ticket_id": "",
         "rem_cycle_id": "",
@@ -2347,6 +2829,9 @@ def _governance_contract() -> Dict[str, Any]:
             "installs_dependencies": False,
             "replaces_cognitive_services": False,
             "frontend_ticket_queue": False,
+            "driver_activation": False,
+            "driver_config_mutation": False,
+            "network_scanning": False,
         },
         "evidence_doctrine": {
             "one_file_family_one_vote": True,
@@ -2355,6 +2840,8 @@ def _governance_contract() -> Dict[str, Any]:
             "globals_read_only": True,
             "database_rows_do_not_count_as_multiple_witnesses": True,
             "double_jeopardy_rejected": True,
+            "driver_folders_are_capability_not_hardware_proof": True,
+            "class_a_class_b_driver_registry_read_only": True,
         },
         "evidence_registry": _evidence_source_registry(),
         "modules": _module_matrix(),
@@ -2388,6 +2875,8 @@ def _module_matrix() -> Dict[str, Dict[str, Any]]:
         "SarahMemorySecurityGovernor": {"available": _SecurityGovernor is not None, "role": "trust boundary"},
         "SarahMemoryAssuranceGate": {"available": _AssuranceGate is not None, "role": "confidence/readiness gate"},
         "SarahMemoryTrustRegistry": {"available": _TrustRegistry is not None, "role": "witness trust registry"},
+        "SarahMemoryDriverRegistry": {"available": bool(_read_boot_driver_registry().get("ok") or _read_runtime_driver_catalog().get("drivers_root_exists")), "role": "read-only Class A/Class B driver capability witness"},
+        "appdrivers.py": {"available": _appdrivers_contract_fact("drivers").get("ok", False), "role": "governed driver API domain witness; not activated by SelfAware"},
     }
 
 def _policy_snapshot() -> Dict[str, Any]:
@@ -2685,6 +3174,63 @@ def self_evidence_registry():
     return _ok(_evidence_source_registry())
 
 
+@bp.route("/api/self/driver-registry", methods=["GET", "OPTIONS"])
+def self_driver_registry():
+    if request.method == "OPTIONS":
+        return _ok()
+    return _ok({
+        "module": "appself.py",
+        "mode": "read_only_driver_capability_registry",
+        "class_a": _read_boot_driver_registry(),
+        "class_b": _read_runtime_driver_catalog(),
+        "appdrivers_contract": _appdrivers_contract_fact("drivers").get("value"),
+        "limits": {
+            "driver_code_imported": False,
+            "driver_session_started": False,
+            "driver_config_mutated": False,
+            "network_action_taken": False,
+        },
+    })
+
+
+@bp.route("/api/self/driver-stack", methods=["GET", "OPTIONS"])
+def self_driver_stack():
+    if request.method == "OPTIONS":
+        return _ok()
+    kind = _safe_str(request.args.get("kind") or request.args.get("fact") or "drivers", 80)
+    return _ok(_build_driver_capability_snapshot(kind))
+
+
+@bp.route("/api/self/body-capabilities", methods=["GET", "OPTIONS"])
+def self_body_capabilities():
+    if request.method == "OPTIONS":
+        return _ok()
+    return _ok(_body_capabilities_snapshot())
+
+
+@bp.route("/api/self/driver-health", methods=["GET", "OPTIONS"])
+def self_driver_health():
+    if request.method == "OPTIONS":
+        return _ok()
+    body = _body_capabilities_snapshot()
+    caps = body.get("capabilities") if isinstance(body.get("capabilities"), dict) else {}
+    unhealthy = []
+    for kind, snap in caps.items():
+        if not isinstance(snap, dict):
+            continue
+        if snap.get("dependency_status") != "declared_or_available":
+            unhealthy.append({"kind": kind, "dependency_status": snap.get("dependency_status"), "snapshot": snap})
+    return _ok({
+        "ok": True,
+        "driver_health": "attention_required" if unhealthy else "declared_or_available",
+        "unhealthy": unhealthy,
+        "class_a_count": (_read_boot_driver_registry().get("count") or 0),
+        "class_b_count": (_read_runtime_driver_catalog().get("count") or 0),
+        "read_only": True,
+        "action_taken": False,
+    })
+
+
 @bp.route("/api/self/reports/latest", methods=["GET", "OPTIONS"])
 def self_reports_latest():
     if request.method == "OPTIONS":
@@ -2713,5 +3259,5 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
 
 
 # ============================================================================
-# END OF appself.py v8.0.0
+# END OF appself.py v8.0.0 EvidenceCourt V7 Driver-Aware
 # ============================================================================
