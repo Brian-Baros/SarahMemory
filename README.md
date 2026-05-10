@@ -1234,7 +1234,7 @@ Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_i
 ---
 # **🌐 Identity Statement**
 
-**SarahMemory AiOS is a sovereign, local‑first intelligence platform where every node is its own AGI centerpoint, the internet is a public library, and the shell UI remains consistent whether running as an app, portable environment, or a true bootable OS.**
+**SarahMemory AiOS is a sovereign, local-first AI operating platform built around user ownership, governed intelligence, modular capability routing, and evidence-based self-awareness. Each node is designed to operate as an independent AI centerpoint that treats the internet as a decentralized public library—not as a dependency—while preserving privacy, auditability, and user-controlled integrity across every deployment mode, from standard application and portable runtime to the long-term Version 10.0.0 target of a fully bootable AI operating system with a consistent Shell UI.**
 
 ---
 
