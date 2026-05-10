@@ -996,6 +996,28 @@ def media_job_manifest():
 
     return _send_file_compat(mp, as_attachment=False, download_name="manifest.json", mimetype="application/json")
 
+
+@bp.get("/api/media/governance")
+def media_governance():
+    """Read-only Creative Studio media broker governance status."""
+    export_root = _get_export_root()
+    return _ok(
+        api_domain="media",
+        route_base="/api/media",
+        export_root=export_root,
+        governance={
+            "path_contained": True,
+            "download_requires_auth_or_local": True,
+            "optional_engines_fail_soft": True,
+            "job_manifest_required": True,
+            "artifacts_must_reside_under_export_root": True,
+            "safety_notes": [
+                "Media jobs write manifests and artifacts under the configured export root.",
+                "Download/manifest routes sanitize job_id and filename and do not expose arbitrary filesystem paths.",
+            ],
+        },
+    )
+
 # ---------------------------
 # Initialization / Injection
 # ---------------------------

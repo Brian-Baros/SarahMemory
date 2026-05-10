@@ -752,6 +752,36 @@ def net2_tunnel_status():
         except Exception:
             pass
 
+
+@bp2.get("/api/net2/governance")
+def net2_governance():
+    """Read-only SarahNet identity/trust governance probe.
+
+    This reports the identity/trust contract without implying VPN, kernel,
+    tunnel-driver, or OS-level network execution.
+    """
+    return _ok(
+        api_domain="net2",
+        route_base="/api/net2",
+        governance={
+            "identity_model": "node_identity_and_trust_probe",
+            "os_vpn_execution": False,
+            "kernel_tunnel_execution": False,
+            "requires_auth_for_mutations": True,
+            "supports": [
+                "node_register",
+                "challenge",
+                "attestation",
+                "dns_directory",
+                "tunnel_session_metadata",
+            ],
+            "safety_notes": [
+                "net2 is a control-plane API, not an OS VPN driver.",
+                "Tunnel issue/status routes create governed metadata only unless a separate approved transport implements runtime data movement.",
+            ],
+        },
+    )
+
 # ---------------------------------------------------------------------
 # init_app (called by app.py ONCE)
 # ---------------------------------------------------------------------

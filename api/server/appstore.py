@@ -300,6 +300,70 @@ def _cors_ok(resp):
     return resp
 
 
+
+def _project_root() -> str:
+    try:
+        here = os.path.abspath(os.getcwd())
+        if os.path.basename(here).lower() == "server" and os.path.basename(os.path.dirname(here)).lower() == "api":
+            return os.path.abspath(os.path.join(here, "..", ".."))
+        return here
+    except Exception:
+        return os.path.abspath(".")
+
+def _read_json_file(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8-sig") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+def _addon_candidate_dirs() -> list[Tuple[str, str]]:
+    base = _project_root()
+    return [
+        ("addons", os.path.join(base, "data", "addons")),
+        ("sandbox_apps", os.path.join(base, "data", "devbridge", "sandbox", "apps")),
+        ("sandbox_panels", os.path.join(base, "data", "devbridge", "sandbox", "panels")),
+    ]
+
+def _scan_addon_candidates() -> list[Dict[str, Any]]:
+    items: list[Dict[str, Any]] = []
+    for zone, folder in _addon_candidate_dirs():
+        if not os.path.isdir(folder):
+            continue
+        try:
+            names = sorted(os.listdir(folder))[:500]
+        except Exception:
+            names = []
+        for name in names:
+            safe_name = os.path.basename(str(name or "")).strip()
+            if not safe_name:
+                continue
+            cand = os.path.abspath(os.path.join(folder, safe_name))
+            if not cand.startswith(os.path.abspath(folder)) or not os.path.isdir(cand):
+                continue
+            manifest_path = os.path.join(cand, "manifest.json")
+            ui_path = os.path.join(cand, "ui.json")
+            manifest = _read_json_file(manifest_path) if os.path.isfile(manifest_path) else {}
+            ui = _read_json_file(ui_path) if os.path.isfile(ui_path) else {}
+            items.append({
+                "zone": zone,
+                "id": str(manifest.get("id") or safe_name),
+                "name": str(manifest.get("name") or safe_name),
+                "path": cand,
+                "has_manifest": os.path.isfile(manifest_path),
+                "has_ui": os.path.isfile(ui_path),
+                "manifest": manifest,
+                "ui": ui,
+                "governance": {
+                    "auto_run_allowed": False,
+                    "promotion_required": zone.startswith("sandbox"),
+                    "registration_required": True,
+                    "explicit_approval_required": True,
+                },
+            })
+    return items
+
 # ----------------------------- lifecycle ---------------------------------
 
 def init_app(app, connect_sqlite, meta_db_path, api_key_auth_ok=None, sign_ok=None):
@@ -325,6 +389,34 @@ def init_app(app, connect_sqlite, meta_db_path, api_key_auth_ok=None, sign_ok=No
 
 
 # ----------------------------- endpoints ---------------------------------
+
+
+@bp2.route("/api/store/governance", methods=["GET", "OPTIONS"])
+def api_store_governance():
+    if request.method == "OPTIONS":
+        return _cors_ok(_jok({"preflight": True}))
+    return _cors_ok(_jok({
+        "api_domain": "store",
+        "route_base": "/api/store",
+        "governance": {
+            "generated_addons_auto_run": False,
+            "candidate_scan_is_read_only": True,
+            "sandbox_promotion_required": True,
+            "explicit_approval_required": True,
+            "runtime_activation_requires_registration": True,
+            "safety_notes": [
+                "Generated apps/addons are not activated because files exist.",
+                "Sandbox candidates must pass manifest review before promotion to data/addons.",
+            ],
+        },
+    }))
+
+@bp2.route("/api/store/addons/candidates", methods=["GET", "OPTIONS"])
+def api_store_addon_candidates():
+    if request.method == "OPTIONS":
+        return _cors_ok(_jok({"preflight": True}))
+    items = _scan_addon_candidates()
+    return _cors_ok(_jok({"count": len(items), "candidates": items, "auto_run_performed": False}))
 
 @bp2.route("/api/store/health", methods=["GET", "OPTIONS"])
 def api_store_health():

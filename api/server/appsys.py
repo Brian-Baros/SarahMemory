@@ -1223,6 +1223,82 @@ def _extract_readable_html_and_text(html_doc: str, base_url: str) -> Tuple[str, 
     return title, clean_html, plain_text, links
 
 
+def _browser_state_path() -> Path:
+    return (_get_data_dir() / "browser_state.json").resolve()
+
+def _read_browser_state() -> Dict[str, Any]:
+    try:
+        path = _browser_state_path()
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def _write_browser_state(data: Dict[str, Any]) -> None:
+    try:
+        path = _browser_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except Exception as exc:
+        logger.warning(f"Failed to write browser state: {exc}")
+
+
+@bp.route("/api/browser/governance", methods=["GET", "OPTIONS"])
+def browser_governance():
+    if request.method == "OPTIONS":
+        return _ok(preflight=True)
+    return _ok(
+        api_domain="browser",
+        route_base="/api/browser",
+        governance={
+            "research_browser_state_file": str(_get_data_dir() / "browser_state.json"),
+            "fetch_url_validation_required": True,
+            "local_request_required_for_sensitive_ops": True,
+            "rem_dl_observation_contract": "browser_state + reader packet + explicit frontend sync",
+            "manual_app_route_additions_required": False,
+            "safety_notes": [
+                "Browser state synchronization is data capture, not autonomous OS command execution.",
+                "REM/DL can consume browser observations only through governed state packets/routes.",
+            ],
+        },
+    )
+
+@bp.route("/api/browser/state", methods=["GET", "POST", "OPTIONS"])
+def browser_state():
+    """Store/read the Research Browser page state for Chat, REM, and DL lanes."""
+    if request.method == "OPTIONS":
+        return _ok()
+
+    if request.method == "GET":
+        state = _read_browser_state()
+        return _ok(state=state, has_page=bool(state.get("url")))
+
+    data = request.get_json(silent=True) or {}
+    now = time.time()
+    links = data.get("links") if isinstance(data.get("links"), list) else []
+    text = str(data.get("text") or "")
+    clean_html = str(data.get("clean_html") or "")
+
+    state = {
+        "ok": bool(data.get("ok", True)),
+        "url": str(data.get("url") or "").strip(),
+        "title": str(data.get("title") or data.get("url") or "").strip(),
+        "text": text[:250000],
+        "clean_html": clean_html[:250000],
+        "links": links[:100],
+        "content_type": str(data.get("content_type") or ""),
+        "surface": str(data.get("surface") or "research_panel"),
+        "source": str(data.get("source") or "research_panel"),
+        "updated_ts": now,
+        "updated_iso": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+    }
+    _write_browser_state(state)
+    return _ok(saved=True, state={k: v for k, v in state.items() if k not in ("clean_html", "text")}, text_chars=len(state.get("text") or ""))
+
 @bp.route("/api/browser/fetch", methods=["GET", "POST", "OPTIONS"])
 def browser_fetch():
     """
@@ -1314,6 +1390,7 @@ def browser_fetch():
 
 
 @bp.post("/api/browser/open")
+@bp.post("/api/browser/open_native")
 def browser_open_external():
     """Local-only: open URL in the system default browser."""
     if not _is_local_request():

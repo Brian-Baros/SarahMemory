@@ -968,6 +968,38 @@ def init_app(app, connect_sqlite, meta_db_path, api_key_auth_ok=None, sign_ok=No
 # Health / capabilities
 # -----------------------------------------------------------------------------
 
+
+@bp.route("/api/comm/governance", methods=["GET", "OPTIONS"])
+def comm_governance():
+    """Read-only communications lane governance status.
+
+    Communication content is data. It must never become executable command
+    input without a separately governed user/developer approval path.
+    """
+    if request.method == "OPTIONS":
+        return _ok(preflight=True)
+    return _ok(
+        {
+            "api_domain": "comm",
+            "route_base": "/api/comm",
+            "governance": {
+                "local_first": True,
+                "content_executes_commands": False,
+                "requires_auth_for_mutations": True,
+                "bounded_content_policy": {
+                    "email_body_is_data": True,
+                    "contacts_are_data": True,
+                    "reminders_are_data": True,
+                    "voip_calls_require_explicit_action": True,
+                },
+                "safety_notes": [
+                    "Email/contact/reminder content is not treated as executable instructions.",
+                    "Outbound actions require governed endpoints and configured credentials.",
+                ],
+            },
+        }
+    )
+
 @bp.route("/api/comm/health", methods=["GET", "OPTIONS"])
 def comm_health():
     if request.method == "OPTIONS":

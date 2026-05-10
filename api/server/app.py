@@ -23,7 +23,7 @@
 # - Safe fallbacks against missing core modules
 
 from __future__ import annotations
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util
 from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
@@ -48,6 +48,7 @@ from email.mime.multipart import MIMEMultipart
 from functools import wraps
 from datetime import datetime, timedelta
 import threading
+import importlib.util
 import logging # Explicitly import logging
 
 # ---------------------------------------------------------------------------
@@ -148,7 +149,274 @@ def _is_identity_question(text: str) -> bool:
         "who engineered you", "who built you",
         "brian lee baros", "softdev0",
     ]
+
     return any(k in t for k in keys)
+
+# ---------------------------------------------------------------------------
+# SelfAware factual system-question bridge
+# ---------------------------------------------------------------------------
+def _sm_is_selfaware_fact_question(text: str) -> bool:
+    """Detect factual questions about SarahMemory's local runtime/body map.
+
+    This is intentionally narrow. It should catch self/system telemetry requests
+    without stealing normal chat, research, weather, or creative prompts.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    system_scope = any(k in t for k in (
+        "my ", "your ", "you using", "am i using", "are you using", "system",
+        "machine", "computer", "pc", "runtime", "body map", "body-map", "hardware",
+        "drive", "disk", "disc", "usb", "motherboard", "cpu", "processor", "gpu",
+        "graphics", "ram", "memory", "fan", "rpm", "temperature", "temp", "network adapter",
+        "ethernet", "wifi", "wi-fi", "python version", "node name", "hostname",
+    ))
+    if not system_scope:
+        return False
+
+    fact_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "ram", "memory",
+        "disk", "disc", "drive", "storage", "free space", "used space", "usb",
+        "volume label", "drive label", "label", "fan", "rpm", "temperature", "temp",
+        "thermal", "network adapter", "ethernet", "wifi", "wi-fi", "ip address",
+        "hostname", "node name", "python version", "os version", "operating system",
+    )
+    if not any(k in t for k in fact_terms):
+        return False
+
+    # Avoid routing public/weather questions to the local hardware fact court.
+    weather_phrases = ("outside", "weather", "forecast", "rain", "humidity", "wind chill", "heat index")
+    if any(k in t for k in weather_phrases) and not any(k in t for k in ("cpu", "gpu", "fan", "drive", "disk", "usb", "system")):
+        return False
+
+    return True
+
+
+def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
+    t = (text or "").strip().lower()
+    target = ""
+    m = re.search(r"\b([a-zA-Z]):\\?\b", text or "")
+    if m:
+        target = m.group(1).upper() + ":"
+
+    if any(k in t for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature")):
+        return "temperature", target
+    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature")):
+        return "temperature", target
+    if any(k in t for k in ("fan", "rpm")):
+        return "fan_speed", target
+    if any(k in t for k in ("gpu", "graphics", "video card")):
+        return "gpu", target
+    if any(k in t for k in ("cpu", "processor")):
+        return "cpu", target
+    if any(k in t for k in ("usb", "drive label", "volume label", "label on")):
+        return "usb_label", target
+    if any(k in t for k in ("disk", "disc", "drive", "storage", "space", "free gb", "used gb")):
+        return "disk_space", target
+    if any(k in t for k in ("ram", "memory")):
+        return "memory", target
+    if any(k in t for k in ("network", "ethernet", "wifi", "wi-fi", "adapter", "ip address")):
+        return "network", target
+    return "general_system_fact", target
+
+
+def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
+    try:
+        if isinstance(value, str):
+            text = value.strip()
+        elif isinstance(value, (int, float, bool)) or value is None:
+            text = str(value)
+        else:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        text = str(value)
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + " ..."
+    return text
+
+
+def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
+    claim = str(ticket.get("claim") or "requested system fact").strip()
+    decision = str(ticket.get("decision") or "UNKNOWN").upper()
+    quorum = str(ticket.get("quorum") or "0/3")
+    confidence = str(ticket.get("confidence") or "NONE")
+    kind = str(ticket.get("requested_fact") or "system_fact").strip()
+    value = ticket.get("majority_value")
+
+    if decision == "APPROVED_FACT":
+        if kind == "cpu":
+            if isinstance(value, dict):
+                name = str(value.get("name") or value.get("Name") or "Unknown CPU").strip()
+                cores = value.get("physical_cores") or value.get("NumberOfCores")
+                threads = value.get("logical_threads") or value.get("NumberOfLogicalProcessors")
+                clock = value.get("max_clock_mhz") or value.get("MaxClockSpeed") or value.get("current_clock_mhz")
+                details = []
+                if cores not in (None, ""):
+                    details.append(f"{cores} physical cores")
+                if threads not in (None, ""):
+                    details.append(f"{threads} logical threads")
+                if clock not in (None, ""):
+                    details.append(f"max/current clock about {clock} MHz")
+                suffix = f" ({', '.join(details)})" if details else ""
+                return f"Verified SelfAware fact ({quorum}, confidence {confidence}): CPU = {name}{suffix}."
+            compact_cpu = _sm_compact_json_value(value)
+            return f"Verified SelfAware fact ({quorum}, confidence {confidence}): CPU = {compact_cpu}."
+
+        if kind == "gpu":
+            if isinstance(value, dict):
+                name = str(value.get("name") or value.get("Name") or "Unknown GPU").strip()
+                temp = value.get("temperature_c")
+                util = value.get("utilization_pct")
+                vram = value.get("vram_total_mb") or value.get("memory")
+                details = []
+                if temp not in (None, ""):
+                    details.append(f"{temp}°C")
+                if util not in (None, ""):
+                    details.append(f"{util}% utilization")
+                if vram not in (None, ""):
+                    details.append(f"VRAM {vram}")
+                suffix = f" ({', '.join(details)})" if details else ""
+                return f"Verified SelfAware fact ({quorum}, confidence {confidence}): GPU = {name}{suffix}."
+            compact_gpu = _sm_compact_json_value(value)
+            return f"Verified SelfAware fact ({quorum}, confidence {confidence}): GPU = {compact_gpu}."
+
+        compact = _sm_compact_json_value(value)
+        return f"Verified SelfAware fact ({quorum}, confidence {confidence}): {compact}."
+
+    if decision == "ESCALATE_HIGH_REVIEW":
+        compact = _sm_compact_json_value(value)
+        return f"SelfAware found partial evidence for '{claim}', but only {quorum} passed. Result is escalated to HIGH review, not approved as settled fact. Best current value: {compact}."
+
+    return f"SelfAware could not verify '{claim}'. Verdict: {decision} ({quorum}, confidence {confidence}). I will not guess."
+
+
+def _sm_import_appself_runtime():
+    """Load the exact api/server/appself.py beside this app.py.
+
+    This deliberately avoids sys.modules and normal import resolution because older
+    appself modules can remain loaded during local restart/build cycles. The HTTP
+    /api/self/fact-check endpoint already proves appself.py can produce the correct
+    quorum; Chat must use that same physical file, not a stale module object.
+    """
+    try:
+        server_dir = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        server_dir = os.getcwd()
+
+    appself_path = os.path.join(server_dir, "appself.py")
+    if not os.path.exists(appself_path):
+        raise RuntimeError(f"appself.py not found beside app.py: {appself_path}")
+
+    module_name = f"_sarahmemory_runtime_appself_{int(time.time() * 1000)}"
+    spec = importlib.util.spec_from_file_location(module_name, appself_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to create import spec for appself.py")
+
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+
+    if not callable(getattr(mod, "run_selfaware_fact_check", None)) and not callable(getattr(mod, "_run_fact_ticket", None)):
+        raise RuntimeError("runtime appself fact-ticket runner unavailable after direct load")
+    return mod
+
+def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict | None:
+    """Route local hardware/runtime fact questions into appself's fact-ticket engine.
+
+    This keeps ChatPanel factual system questions out of the sidekick/Neuron
+    fallback path and forces them through the same SelfAware 3-source evidence
+    court used by /api/self/fact-check.
+    """
+    if not _sm_is_selfaware_fact_question(text):
+        return None
+
+    kind, target = _sm_selfaware_fact_kind_and_target(text)
+    try:
+        _appself = _sm_import_appself_runtime()
+
+        run_public = getattr(_appself, "run_selfaware_fact_check", None)
+        run_private = getattr(_appself, "_run_fact_ticket", None)
+
+        if callable(run_public):
+            ticket = run_public(
+                claim=text,
+                kind=kind,
+                target=target,
+                source=source,
+                meta={"source": source, "route": "api_chat_selfaware_fact", "bridge": "runtime_appself_public"},
+            )
+        elif callable(run_private):
+            ticket = run_private(
+                claim=text,
+                kind=kind,
+                target=target,
+                source=source,
+                ticket_kind="SELF_FACT_TICKET",
+                meta={"source": source, "route": "api_chat_selfaware_fact", "bridge": "runtime_appself_private"},
+            )
+        else:
+            raise RuntimeError("appself fact-ticket runner unavailable")
+
+        if not isinstance(ticket, dict):
+            raise RuntimeError("appself returned non-dict ticket")
+
+        # Defensive: if a simple CPU/GPU/storage question weak-fails in chat while
+        # /api/self/fact-check succeeds, record the module path for diagnosis.
+        try:
+            ticket.setdefault("meta", {})
+            if isinstance(ticket.get("meta"), dict):
+                ticket["meta"]["appself_module_file"] = str(getattr(_appself, "__file__", ""))
+        except Exception:
+            pass
+
+        reply = _sm_format_selfaware_fact_reply(ticket)
+        bundle = _sm_make_outward_bundle(
+            _sm_present_text(reply, intent="system_status", meta={"source": "selfaware_fact_ticket"}),
+            meta={
+                "source": "selfaware_fact_ticket",
+                "engine": "appself.fact_ticket_runner",
+                "intent": "system_status",
+                "fact_kind": kind,
+                "target": target,
+                "ticket_id": ticket.get("ticket_id"),
+                "decision": ticket.get("decision"),
+                "quorum": ticket.get("quorum"),
+                "confidence": ticket.get("confidence"),
+                "approved_fact": bool(ticket.get("approved_fact")),
+                "appself_module_file": str(getattr(_appself, "__file__", "")),
+                "version": PROJECT_VERSION,
+            },
+            raw_answer=reply,
+        )
+        bundle["ok"] = True
+        bundle.setdefault("actions", [])
+        bundle["actions"].append({
+            "type": "selfaware_fact_ticket",
+            "ticket_id": ticket.get("ticket_id"),
+            "decision": ticket.get("decision"),
+            "quorum": ticket.get("quorum"),
+            "requested_fact": ticket.get("requested_fact"),
+        })
+        return bundle
+    except Exception as exc:
+        app_logger.warning("SelfAware fact route failed: %s", exc, exc_info=True)
+        bundle = _sm_make_outward_bundle(
+            "SelfAware fact route is available, but this fact check failed internally. I did not guess the answer.",
+            meta={
+                "source": "selfaware_fact_ticket_error",
+                "engine": "appself.fact_ticket_runner",
+                "intent": "system_status",
+                "fact_kind": kind,
+                "target": target,
+                "error": str(exc),
+                "version": PROJECT_VERSION,
+            },
+            errors=[str(exc)],
+        )
+        bundle["ok"] = False
+        return bundle
 
 # Prefer server/static as templates if the SPA build exists
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -403,6 +671,195 @@ def save_state(state_or_key, value=None) -> None:
     except Exception:
         pass
 
+
+# ---------------------------------------------------------------------------
+# UI ACTION QUEUE + RESEARCH BROWSER STATE BRIDGE
+# ---------------------------------------------------------------------------
+_UI_ACTION_QUEUE_LOCK = threading.RLock()
+_UI_ACTION_QUEUE: list[dict] = []
+_UI_ACTION_SEQ = 0
+_UI_ACTION_MAX = int(os.getenv("SM_UI_ACTION_QUEUE_MAX", "300") or 300)
+
+def _browser_state_path() -> str:
+    try:
+        return os.path.join(DATA_DIR, "browser_state.json")
+    except Exception:
+        return os.path.join(os.getcwd(), "data", "browser_state.json")
+
+def _read_browser_state() -> dict:
+    try:
+        p = _browser_state_path()
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+    except Exception:
+        pass
+    return {}
+
+def _write_browser_state(state: dict) -> None:
+    try:
+        p = _browser_state_path()
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        tmp = p + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state or {}, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
+def _queue_ui_actions(actions, *, source: str = "backend", target: str = "webui") -> list[dict]:
+    global _UI_ACTION_SEQ
+    if not isinstance(actions, list):
+        actions = [actions]
+    out = []
+    with _UI_ACTION_QUEUE_LOCK:
+        for action in actions:
+            if not isinstance(action, dict) or not action.get("type"):
+                continue
+            _UI_ACTION_SEQ += 1
+            item = {
+                "id": f"uia_{int(time.time()*1000)}_{_UI_ACTION_SEQ}",
+                "ts": time.time(),
+                "source": str(source or "backend"),
+                "target": str(target or "webui"),
+                "type": str(action.get("type")),
+                "payload": action.get("payload") if isinstance(action.get("payload"), dict) else {},
+            }
+            _UI_ACTION_QUEUE.append(item)
+            out.append(item)
+        if len(_UI_ACTION_QUEUE) > _UI_ACTION_MAX:
+            del _UI_ACTION_QUEUE[:-_UI_ACTION_MAX]
+    return out
+
+def _normalize_panel_url(value: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if v.startswith(("http://", "https://")):
+        return v
+    if re.match(r"^[a-z0-9.-]+\.[a-z]{2,}([/:].*)?$", v, re.I):
+        return "https://" + v
+    return v
+
+def _extract_url_candidate(text: str) -> str:
+    t = text or ""
+    m = re.search(r"https?://[^\s)]+", t, re.I)
+    if m:
+        return m.group(0).rstrip(".,;\"\')")
+    m = re.search(r"\b([a-z0-9][a-z0-9.-]+\.[a-z]{2,}(?:/[^\s)]*)?)", t, re.I)
+    if m:
+        return _normalize_panel_url(m.group(1).rstrip(".,;\"\')"))
+    return ""
+
+def _extract_research_query(text: str) -> str:
+    t = (text or "").strip()
+    cleaned = re.sub(r"\b(open|launch|go to|load|use|search|research|browse|look up|find|in|with|using|the|research panel|research browser|browser panel)\b", " ", t, flags=re.I)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" :,-")
+    return cleaned or t
+
+def _panel_actions_for_text(text: str) -> list[dict]:
+    t = (text or "").strip()
+    low = t.lower()
+    if not t:
+        return []
+
+    actions: list[dict] = []
+
+    wants_history = any(k in low for k in ("chat history", "history panel", "conversation history", "open history", "show history"))
+    if wants_history:
+        actions.extend([
+            {"type": "navigate", "payload": {"screen": "history", "app": "chat"}},
+            {"type": "desktop.set_app", "payload": {"app": "chat"}},
+            {"type": "history_refresh", "payload": {"reason": "chat_command"}},
+        ])
+        return actions
+
+    wants_research_panel = any(k in low for k in ("research browser", "research panel", "browser panel", "open website", "load website", "go to website", "browse to", "open url"))
+    wants_search = any(k in low for k in ("search for", "research this", "research ", "look up", "find information", "web search"))
+    wants_read_current = any(k in low for k in ("read current page", "read this page", "summarize this page", "summarize current page", "what website", "current website", "what page"))
+
+    if wants_read_current:
+        actions.extend([
+            {"type": "navigate", "payload": {"screen": "research", "app": "research"}},
+            {"type": "desktop.set_app", "payload": {"app": "research"}},
+            {"type": "research_read_current", "payload": {"reason": "chat_command"}},
+        ])
+        return actions
+
+    if wants_research_panel or ("research" in low and ("panel" in low or "browser" in low)):
+        actions.append({"type": "navigate", "payload": {"screen": "research", "app": "research"}})
+        actions.append({"type": "desktop.set_app", "payload": {"app": "research"}})
+        url = _extract_url_candidate(t)
+        if url:
+            actions.append({"type": "research_open", "payload": {"url": url, "reason": "chat_command"}})
+        elif wants_search:
+            actions.append({"type": "research_search", "payload": {"query": _extract_research_query(t), "reason": "chat_command"}})
+        return actions
+
+    return []
+
+def _attach_panel_actions_to_bundle(bundle: dict, text: str | None = None) -> dict:
+    try:
+        if not isinstance(bundle, dict):
+            return bundle
+        req_text = text
+        if req_text is None:
+            try:
+                payload = request.get_json(silent=True) or {}
+                req_text = str(payload.get("text") or "")
+            except Exception:
+                req_text = ""
+        actions = _panel_actions_for_text(req_text or "")
+        if not actions:
+            return bundle
+        existing = bundle.get("actions") if isinstance(bundle.get("actions"), list) else []
+        # Avoid duplicate action types/payloads.
+        serial_seen = set()
+        merged = []
+        for a in list(existing) + actions:
+            try:
+                key = json.dumps(a, sort_keys=True, default=str)
+            except Exception:
+                key = str(a)
+            if key in serial_seen:
+                continue
+            serial_seen.add(key)
+            merged.append(a)
+        bundle["actions"] = merged
+        # Chat responses already carry actions directly to the UI.
+        # Keep the backend queue reserved for REM/background callers that POST /api/ui/actions.
+    except Exception:
+        pass
+    return bundle
+
+def _browser_state_answer_for_text(text: str) -> dict | None:
+    low = (text or "").lower()
+    if not any(k in low for k in ("read current page", "read this page", "summarize this page", "summarize current page", "what website", "current website", "what page")):
+        return None
+    state = _read_browser_state()
+    if not state.get("url"):
+        return _sm_make_outward_bundle(
+            "The Research Browser has not reported an active page yet. Open a page in the Research panel first, then ask me to read it.",
+            meta={"source": "browser_state", "engine": "research_browser_state", "intent": "research_browser", "version": PROJECT_VERSION},
+            actions=[{"type": "navigate", "payload": {"screen": "research", "app": "research"}}, {"type": "desktop.set_app", "payload": {"app": "research"}}],
+        )
+    title = str(state.get("title") or state.get("url") or "Research Browser page")
+    url = str(state.get("url") or "")
+    page_text = str(state.get("text") or "").strip()
+    if any(k in low for k in ("what website", "current website", "what page")):
+        reply = f"The Research Browser is currently on: {title}\n{url}"
+    else:
+        excerpt = page_text[:1800].strip() if page_text else "No readable text was captured from the page yet."
+        reply = f"Research Browser page: {title}\nURL: {url}\n\nReadable page excerpt:\n{excerpt}"
+        if len(page_text) > len(excerpt):
+            reply += "\n\n[Page text is longer; ask for a deeper summary or specific extraction.]"
+    return _sm_make_outward_bundle(
+        reply,
+        meta={"source": "browser_state", "engine": "research_browser_state", "intent": "research_browser", "version": PROJECT_VERSION, "browser_url": url},
+        actions=[{"type": "navigate", "payload": {"screen": "research", "app": "research"}}, {"type": "desktop.set_app", "payload": {"app": "research"}}],
+    )
+
 # Load persisted toggles at boot
 _boot_state = load_state()
 if isinstance(_boot_state, dict):
@@ -494,6 +951,37 @@ if _CORS_AVAILABLE:
         app_logger.error(f"CORS config failed: {e}")
 else:
     app_logger.warning("Flask-CORS not installed; CORS disabled (same-origin still works).")
+
+@app.route("/api/ui/actions", methods=["POST"])
+def api_ui_actions_enqueue():
+    try:
+        data = request.get_json(silent=True) or {}
+        actions = data.get("actions") if isinstance(data.get("actions"), list) else data.get("action")
+        queued = _queue_ui_actions(actions, source=str(data.get("source") or "api"), target=str(data.get("target") or "webui"))
+        return jsonify({"ok": True, "queued": len(queued), "items": queued}), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/ui/actions/poll", methods=["GET"])
+def api_ui_actions_poll():
+    try:
+        limit = max(1, min(100, int(request.args.get("limit") or 25)))
+    except Exception:
+        limit = 25
+    surface = str(request.args.get("surface") or "webui")
+    with _UI_ACTION_QUEUE_LOCK:
+        picked = []
+        keep = []
+        for item in _UI_ACTION_QUEUE:
+            target = str(item.get("target") or "webui")
+            if len(picked) < limit and target in ("webui", surface, "all", "*"):
+                picked.append(item)
+            else:
+                keep.append(item)
+        _UI_ACTION_QUEUE[:] = keep
+    actions = [{"type": i.get("type"), "payload": i.get("payload") or {}} for i in picked]
+    return jsonify({"ok": True, "count": len(actions), "actions": actions, "items": picked}), 200
+
 
 # --- SarahMemoryGITtalk (TEMP ADMIN TOOL) ---
 try:
@@ -774,11 +1262,11 @@ def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None,
             if isinstance(bundle, dict):
                 bundle["ok"] = True
                 bundle["reply"] = bundle.get("presentation_reply") or bundle.get("response") or presentation_text
-                return bundle
+                return _attach_panel_actions_to_bundle(bundle)
     except Exception:
         pass
 
-    return {
+    return _attach_panel_actions_to_bundle({
         "ok": True,
         "presentation_reply": presentation_text,
         "reply": presentation_text,
@@ -787,7 +1275,7 @@ def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None,
         "artifacts": list(artifacts or []),
         "actions": list(actions or []),
         "errors": list(errors or []),
-    }
+    })
 
 
 
@@ -2243,6 +2731,14 @@ def api_chat():
             )
             bundle["identity"] = ident
             return jsonify(bundle), 200
+
+        selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
+        if isinstance(selfaware_fact_bundle, dict):
+            return jsonify(selfaware_fact_bundle), 200
+
+        browser_state_bundle = _browser_state_answer_for_text(text)
+        if browser_state_bundle is not None:
+            return jsonify(browser_state_bundle), 200
 
         gov = {"allow": True}
 
@@ -4569,31 +5065,6 @@ def _avatar_update_state(**updates) -> dict:
                 clean["emotion"] = "pondering"
                 clean["life_state"] = "busy"
                 lock_seconds = max(lock_seconds, 3.0)
-            elif event in {"rem", "rem_sleep", "rem_dreaming", "dreaming"}:
-                clean["busy"] = True
-                clean["thinking"] = True
-                clean["diagnostics"] = False
-                clean["current_action"] = "rem_dreaming"
-                clean["expression"] = "rem_dreaming"
-                clean["emotion"] = "sleepy"
-                clean["life_state"] = "rem_dreaming"
-                lock_seconds = max(lock_seconds, 5.0)
-            elif event in {"rem_sandbox", "dream_sandbox", "sandbox_testing"}:
-                clean["busy"] = True
-                clean["thinking"] = True
-                clean["current_action"] = "rem_sandbox"
-                clean["expression"] = "rem_sandbox"
-                clean["emotion"] = "pondering"
-                clean["life_state"] = "rem_sandbox"
-                lock_seconds = max(lock_seconds, 5.0)
-            elif event in {"rem_complete", "dream_report_ready"}:
-                clean["busy"] = False
-                clean["thinking"] = False
-                clean["current_action"] = "dream_report_ready"
-                clean["expression"] = "dream_report_ready"
-                clean["emotion"] = "success"
-                clean["life_state"] = "dream_report_ready"
-                lock_seconds = max(lock_seconds, 4.0)
             elif event in {"idle", "ready", "reset"}:
                 clean["busy"] = False
                 clean["diagnostics"] = False
@@ -4705,86 +5176,6 @@ def avatar_live_event():
     extra = {k: data.get(k) for k in ("mode", "expression", "emotion", "current_action") if k in data}
     extra["event"] = event
     return jsonify(_avatar_update_state(**extra)), 200
-
-# ---------------------------------------------------------------------------
-# REM Sleep / Idle Evolution API bridge (backend-only orchestration)
-# ---------------------------------------------------------------------------
-def _rem_controller_bridge():
-    try:
-        import UnifiedAvatarController as UAC  # type: ignore
-        return UAC
-    except Exception as e:
-        app_logger.warning(f"REM controller bridge unavailable: {e}")
-        return None
-
-@app.route("/api/avatar/rem/status", methods=["GET"])
-def avatar_rem_status():
-    mod = _rem_controller_bridge()
-    if not mod or not hasattr(mod, "get_rem_status"):
-        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
-    return jsonify({"ok": True, "rem": mod.get_rem_status()}), 200
-
-@app.route("/api/avatar/rem/start", methods=["POST"])
-def avatar_rem_start():
-    data = request.get_json(silent=True) or {}
-    mod = _rem_controller_bridge()
-    if not mod or not hasattr(mod, "start_rem_sleep"):
-        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
-    reason = str(data.get("reason") or "api_idle_trigger")
-    out = mod.start_rem_sleep(reason=reason)
-    try: _avatar_update_state(event="rem_dreaming", expression="sleepy", emotion="sleepy", current_action="rem_dreaming")
-    except Exception: pass
-    return jsonify(out), 200 if out.get("ok") else 409
-
-@app.route("/api/avatar/rem/stop", methods=["POST"])
-def avatar_rem_stop():
-    data = request.get_json(silent=True) or {}
-    mod = _rem_controller_bridge()
-    if not mod or not hasattr(mod, "stop_rem_sleep"):
-        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
-    reason = str(data.get("reason") or "api_stop")
-    out = mod.stop_rem_sleep(reason=reason)
-    try: _avatar_update_state(event="ready")
-    except Exception: pass
-    return jsonify(out), 200
-
-@app.route("/api/avatar/rem/report", methods=["GET"])
-def avatar_rem_report():
-    mod = _rem_controller_bridge()
-    if not mod or not hasattr(mod, "get_rem_report"):
-        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
-    try: limit = int(request.args.get("limit") or 5)
-    except Exception: limit = 5
-    return jsonify(mod.get_rem_report(limit=limit)), 200
-
-
-@app.route("/api/avatar/rem/briefing", methods=["GET"])
-def avatar_rem_briefing():
-    """Compact user-return REM briefing for chat/UI."""
-    mod = _rem_controller_bridge()
-    if not mod or not hasattr(mod, "get_rem_report"):
-        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
-    report = mod.get_rem_report(limit=3)
-    last = report.get("last_report") or {}
-    cycles = last.get("cycles") or []
-    cycle_count = len(cycles)
-    dreams = sum(len((c or {}).get("dreams") or []) for c in cycles)
-    results = sum(len((c or {}).get("results") or []) for c in cycles)
-    subprocesses = {}
-    if cycles:
-        subprocesses = (cycles[-1] or {}).get("subprocesses") or {}
-    briefing = {
-        "ok": True,
-        "summary": f"REM completed {cycle_count} cycle(s), generated {dreams} dream candidate(s), and evaluated {results} sandbox/governance result(s).",
-        "cycle_count": cycle_count,
-        "dream_count": dreams,
-        "result_count": results,
-        "subprocess_lanes": list(subprocesses.keys()) if isinstance(subprocesses, dict) else [],
-        "attachments_opened": False,
-        "globals_file_touched": False,
-        "report": report,
-    }
-    return jsonify(briefing), 200
 
 # ===========================================================================
 # AVATAR PANEL / MULTIMEDIA / VIDEO CONFERENCE API ROUTES
@@ -5580,6 +5971,56 @@ except Exception as _e:
         app_logger.error(f"appdrivers init failed: {_e}", exc_info=True)
     except Exception:
         pass
+
+# --- v8 appdevbridge endpoints (Developer Bridge / ChatGPT-assisted packet lane) ---
+try:
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appdevbridge as _appdevbridge  # type: ignore
+    except Exception:
+        import appdevbridge as _appdevbridge  # type: ignore
+
+    _appdevbridge.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appdevbridge mounted: /api/devbridge/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appdevbridge init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
+
+
+# --- v8 appself endpoints (SelfAware / CognitiveSelf fact-ticket API) ---
+try:
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appself as _appself  # type: ignore
+    except Exception:
+        import appself as _appself  # type: ignore
+
+    _appself.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appself mounted: /api/self/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appself init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
+
 # ============================================================================
 # UI Event Speech Support (Opt-in)
 # ============================================================================
@@ -5609,6 +6050,419 @@ def api_ui_event():
     except Exception as e:
         app_logger.error(f"UI event failed: {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+
+
+# =============================================================================
+# SARAH_REM_BRIDGE_ROUTES_V2
+# Robust REM + DL Engine visibility bridge for WebUI/DLEngineScreen.tsx.
+# =============================================================================
+_REM_BRIDGE_CACHE = None
+_REM_BRIDGE_LOCK = threading.RLock()
+
+
+class _REMBridgeAdapter:
+    """Adapter around either the UAC module bridge or a controller instance."""
+    def __init__(self, target):
+        self._target = target
+
+    def get_rem_status(self):
+        return self._target.get_rem_status()
+
+    def get_rem_report(self, limit: int = 5):
+        return self._target.get_rem_report(limit=limit)
+
+    def start_rem_sleep(self, reason: str = "idle", force: bool = False):
+        try:
+            return self._target.start_rem_sleep(reason=reason, force=force)
+        except TypeError:
+            # Legacy controller/module signature did not accept force.
+            if force and "manual" not in str(reason).lower():
+                reason = f"manual_force:{reason}"
+            return self._target.start_rem_sleep(reason=reason)
+
+    def stop_rem_sleep(self, reason: str = "manual"):
+        return self._target.stop_rem_sleep(reason=reason)
+
+
+def _get_rem_bridge():
+    """Return UnifiedAvatarController REM bridge. Never raises to Flask.
+
+    Accepts either:
+    - module-level functions, or
+    - get_unified_avatar_controller(), or
+    - UnifiedAvatarController() class instance.
+    """
+    global _REM_BRIDGE_CACHE
+    with _REM_BRIDGE_LOCK:
+        if _REM_BRIDGE_CACHE is not None:
+            return _REM_BRIDGE_CACHE
+        try:
+            import UnifiedAvatarController as _uac  # type: ignore
+            required = ("get_rem_status", "get_rem_report", "start_rem_sleep", "stop_rem_sleep")
+            if all(hasattr(_uac, name) for name in required):
+                _REM_BRIDGE_CACHE = _REMBridgeAdapter(_uac)
+                return _REM_BRIDGE_CACHE
+
+            get_ctrl = getattr(_uac, "get_unified_avatar_controller", None)
+            if callable(get_ctrl):
+                ctrl = get_ctrl()
+                if all(hasattr(ctrl, name) for name in required):
+                    _REM_BRIDGE_CACHE = _REMBridgeAdapter(ctrl)
+                    return _REM_BRIDGE_CACHE
+
+            cls = getattr(_uac, "UnifiedAvatarController", None)
+            if callable(cls):
+                ctrl = cls()
+                if all(hasattr(ctrl, name) for name in required):
+                    _REM_BRIDGE_CACHE = _REMBridgeAdapter(ctrl)
+                    return _REM_BRIDGE_CACHE
+
+            app_logger.error("UnifiedAvatarController imported but no usable REM bridge surface was found.")
+            return None
+        except Exception as exc:
+            app_logger.error(f"UnifiedAvatarController REM bridge import failed: {exc}", exc_info=True)
+            _REM_BRIDGE_CACHE = None
+            return None
+
+
+@app.route("/api/avatar/rem/status", methods=["GET"])
+def api_avatar_rem_status():
+    bridge = _get_rem_bridge()
+    if not bridge:
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    try:
+        return jsonify({"ok": True, "rem": bridge.get_rem_status()}), 200
+    except Exception as exc:
+        app_logger.error(f"REM status failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/avatar/rem/report", methods=["GET"])
+def api_avatar_rem_report():
+    bridge = _get_rem_bridge()
+    if not bridge:
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    try:
+        limit = int(request.args.get("limit", "5") or 5)
+        return jsonify(bridge.get_rem_report(limit=limit)), 200
+    except Exception as exc:
+        app_logger.error(f"REM report failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/avatar/rem/start", methods=["POST"])
+def api_avatar_rem_start():
+    bridge = _get_rem_bridge()
+    if not bridge:
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    try:
+        data = request.get_json(silent=True) or {}
+        reason = str(data.get("reason") or "manual_force_sleep")
+        force = bool(data.get("force", True))
+        result = bridge.start_rem_sleep(reason=reason, force=force)
+        return jsonify(result), (200 if result.get("ok") else 409)
+    except Exception as exc:
+        app_logger.error(f"REM start failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/avatar/rem/stop", methods=["POST"])
+def api_avatar_rem_stop():
+    bridge = _get_rem_bridge()
+    if not bridge:
+        return jsonify({"ok": False, "error": "UnifiedAvatarController REM bridge unavailable."}), 503
+    try:
+        data = request.get_json(silent=True) or {}
+        reason = str(data.get("reason") or "manual_wake")
+        return jsonify(bridge.stop_rem_sleep(reason=reason)), 200
+    except Exception as exc:
+        app_logger.error(f"REM stop failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+def _rem_dlengine_derive_from_report(report_payload: dict | None = None) -> tuple[list, list]:
+    report_payload = report_payload or {}
+
+    def _is_cycle_like(obj) -> bool:
+        return isinstance(obj, dict) and (
+            bool(obj.get("dreams"))
+            or bool(obj.get("results"))
+            or bool(obj.get("subprocesses"))
+            or "cycle_number" in obj
+        )
+
+    reports = []
+    if isinstance(report_payload.get("reports"), list):
+        reports = list(report_payload.get("reports") or [])
+    if isinstance(report_payload.get("last_report"), dict):
+        last_report = report_payload.get("last_report")
+        if last_report not in reports:
+            reports.append(last_report)
+    status_last = ((report_payload.get("status") or {}) if isinstance(report_payload.get("status"), dict) else {}).get("last_report")
+    if isinstance(status_last, dict) and status_last not in reports:
+        reports.append(status_last)
+
+    thoughts = []
+    subjects = []
+    for rep in reports[-10:]:
+        cycles = rep.get("cycles") if isinstance(rep, dict) else []
+        if not isinstance(cycles, list) or not cycles:
+            cycles = [rep] if _is_cycle_like(rep) else []
+        for cycle in cycles:
+            cycle_no = cycle.get("cycle_number", "?")
+            subprocesses = cycle.get("subprocesses") or {}
+            for lane_name, lane in subprocesses.items():
+                lane = lane if isinstance(lane, dict) else {"value": lane}
+                ok = bool(lane.get("ok"))
+                level = "success" if ok else ("warning" if lane.get("degraded") or lane.get("skipped") else "error")
+                thoughts.append({
+                    "id": f"rem-lane-{cycle_no}-{lane_name}",
+                    "ts": lane.get("ts") or rep.get("finished_at") or rep.get("started_at") or datetime.now().isoformat(),
+                    "title": f"REM lane: {lane_name}",
+                    "content": str(lane.get("summary") or lane.get("reason") or lane.get("error") or f"{lane_name} lane observed."),
+                    "source": f"rem.{lane_name}",
+                    "level": level,
+                    "tags": ["rem", "lane", lane_name],
+                })
+            for idx, dream in enumerate(cycle.get("dreams") or []):
+                subject_id = str(dream.get("dream_id") or f"dream-{cycle_no}-{idx}")
+                subjects.append({
+                    "id": subject_id,
+                    "title": str(dream.get("title") or "REM dream candidate"),
+                    "summary": str((dream.get("proposed_action") or {}).get("description") or dream.get("rationale") or dream.get("category") or "REM candidate generated."),
+                    "source": "rem.cognitive_thinker",
+                    "stage": "observed",
+                    "confidence": 64,
+                    "risk": 28 if str(dream.get("risk_tier", "low")).lower() == "low" else 65,
+                    "sandboxRecommended": True,
+                    "tags": ["rem", "dream", str(dream.get("category") or "self_study")],
+                    "updatedAt": rep.get("finished_at") or datetime.now().isoformat(),
+                })
+            for idx, result in enumerate(cycle.get("results") or []):
+                dream = result.get("dream") or {}
+                decision = str(result.get("decision") or "review")
+                level = "success" if "AUTO" in decision.upper() or "ALLOW" in decision.upper() else "warning" if "STAGE" in decision.upper() else "error" if "REJECT" in decision.upper() or "DENY" in decision.upper() else "thinking"
+                thoughts.append({
+                    "id": f"rem-result-{cycle_no}-{idx}",
+                    "ts": rep.get("finished_at") or datetime.now().isoformat(),
+                    "title": f"REM result: {dream.get('title') or 'candidate'}",
+                    "content": f"Decision: {decision}. Sandbox: {(result.get('sandbox') or {}).get('passed', 'n/a')}. Assurance: {(result.get('assurance') or {}).get('decision', 'n/a')}.",
+                    "source": "rem.assurance",
+                    "level": level,
+                    "tags": ["rem", "decision", decision.lower()],
+                })
+    return thoughts[:200], subjects[:200]
+
+
+@app.route("/api/dlengine/status", methods=["GET"])
+def api_dlengine_status():
+    try:
+        dl_status = None
+        try:
+            import SarahMemoryDL as _dl  # type: ignore
+            fn = getattr(_dl, "get_dlengine_status", None)
+            if callable(fn):
+                dl_status = fn()
+        except Exception as exc:
+            app_logger.debug(f"SarahMemoryDL status unavailable: {exc}")
+        if not isinstance(dl_status, dict):
+            dl_status = {"ok": False, "stats": {}, "jobs": [], "model": {}}
+        bridge = _get_rem_bridge()
+        rem_status = bridge.get_rem_status() if bridge else {"enabled": False, "phase": "unavailable"}
+        rem_report = bridge.get_rem_report(limit=5) if bridge else {"reports": [], "summary": {}}
+        stats = dict(dl_status.get("stats") or {})
+        model = dict(dl_status.get("model") or {})
+        summary = dict(rem_report.get("summary") or {})
+        stats.setdefault("thinkingLoad", 100 if rem_status.get("running") else 0)
+        stats.setdefault("thinking_load", stats.get("thinkingLoad", 0))
+        stats.setdefault("subjectsOpen", int(summary.get("dreams") or 0))
+        stats.setdefault("subjects_open", int(summary.get("dreams") or 0))
+        return jsonify({
+            "ok": True,
+            "stats": stats,
+            "jobs": dl_status.get("jobs") or [],
+            "model": model,
+            "rem": rem_status,
+            "rem_summary": summary,
+            "runtime": dl_status.get("runtime") or {},
+            "controls": dl_status.get("controls") or {},
+            "weights": dl_status.get("weights") or {},
+            "state": dl_status.get("state") or {},
+        }), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine status failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/thoughts", methods=["GET"])
+def api_dlengine_thoughts():
+    try:
+        bridge = _get_rem_bridge()
+        report = bridge.get_rem_report(limit=10) if bridge else {"reports": []}
+        thoughts, _subjects = _rem_dlengine_derive_from_report(report)
+        return jsonify({"ok": True, "thoughts": thoughts}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "thoughts": []}), 500
+
+
+@app.route("/api/dlengine/subjects", methods=["GET"])
+def api_dlengine_subjects():
+    try:
+        bridge = _get_rem_bridge()
+        report = bridge.get_rem_report(limit=10) if bridge else {"reports": []}
+        _thoughts, subjects = _rem_dlengine_derive_from_report(report)
+        return jsonify({"ok": True, "subjects": subjects}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "subjects": []}), 500
+
+
+@app.route("/api/dlengine/subject_action", methods=["POST"])
+@app.route("/api/dlengine/ticket_action", methods=["POST"])
+def api_dlengine_subject_action():
+    data = request.get_json(silent=True) or {}
+    return jsonify({"ok": True, "accepted": True, "subject": data, "ts": datetime.now().isoformat()}), 200
+
+
+def _dlengine_module():
+    try:
+        import SarahMemoryDL as _dl  # type: ignore
+        return _dl
+    except Exception as exc:
+        app_logger.error(f"SarahMemoryDL bridge import failed: {exc}", exc_info=True)
+        return None
+
+
+@app.route("/api/dlengine/controls", methods=["GET", "POST"])
+@app.route("/api/dlengine/finetune/config", methods=["POST"])
+def api_dlengine_controls():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    if request.method == "GET":
+        try:
+            if dl and hasattr(dl, "get_dlengine_runtime_state"):
+                return jsonify({"ok": True, "state": dl.get_dlengine_runtime_state()}), 200
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        return jsonify({"ok": True, "state": load_state().get("DLENGINE_CONTROLS", {})}), 200
+    try:
+        result = None
+        if dl and hasattr(dl, "set_dlengine_controls"):
+            controls_payload = data.get("controls") if isinstance(data.get("controls"), dict) else data
+            result = dl.set_dlengine_controls(controls_payload, source="flask:/api/dlengine/controls")
+        try:
+            save_state("DLENGINE_CONTROLS", data)
+        except Exception:
+            pass
+        return jsonify(result or {"ok": True, "saved": True, "controls": data, "ts": datetime.now().isoformat()}), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine controls failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/mode", methods=["GET", "POST"])
+@app.route("/api/dlengine/control", methods=["GET", "POST"])
+def api_dlengine_mode():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    if request.method == "GET":
+        try:
+            runtime_state = {}
+            status_payload = {}
+            if dl and hasattr(dl, "get_dlengine_runtime_state"):
+                runtime_state = dl.get_dlengine_runtime_state() or {}
+            if dl and hasattr(dl, "get_dlengine_status"):
+                status_payload = dl.get_dlengine_status() or {}
+            bridge = _get_rem_bridge()
+            rem_status = bridge.get_rem_status() if bridge else {"enabled": False, "phase": "unavailable", "running": False}
+            mode = str(
+                runtime_state.get("mode")
+                or (status_payload.get("runtime") or {}).get("mode")
+                or load_state().get("DLENGINE_MODE")
+                or "auto"
+            )
+            return jsonify({
+                "ok": True,
+                "mode": mode,
+                "manual": mode == "manual",
+                "paused": mode == "paused",
+                "runtime_mode": mode,
+                "deep_learning_enabled": mode != "paused",
+                "controls": runtime_state.get("controls") or status_payload.get("controls") or {},
+                "weights": runtime_state.get("weights") or status_payload.get("weights") or {},
+                "rem_sleep_running": bool(rem_status.get("running")),
+                "rem_phase": rem_status.get("phase"),
+                "rem": rem_status,
+                "state": runtime_state,
+                "status": status_payload,
+                "ts": datetime.now().isoformat(),
+            }), 200
+        except Exception as exc:
+            app_logger.error(f"DL Engine mode GET failed: {exc}", exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    mode = data.get("mode") or data.get("state") or "auto"
+    try:
+        if dl and hasattr(dl, "set_dlengine_mode"):
+            return jsonify(dl.set_dlengine_mode(mode, source="flask:/api/dlengine/mode", payload=data)), 200
+        save_state("DLENGINE_MODE", str(mode))
+        return jsonify({"ok": True, "saved": True, "mode": str(mode)}), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine mode failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/start", methods=["POST"])
+def api_dlengine_start():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    try:
+        if dl and hasattr(dl, "start_dlengine_manual"):
+            return jsonify(dl.start_dlengine_manual(data)), 200
+        return jsonify({"ok": True, "mode": "manual", "saved": True}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/stop", methods=["POST"])
+def api_dlengine_stop():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    try:
+        if dl and hasattr(dl, "pause_dlengine"):
+            return jsonify(dl.pause_dlengine(data)), 200
+        return jsonify({"ok": True, "mode": "paused", "saved": True}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/auto", methods=["POST"])
+def api_dlengine_auto():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    try:
+        if dl and hasattr(dl, "set_dlengine_auto"):
+            return jsonify(dl.set_dlengine_auto(data)), 200
+        return jsonify({"ok": True, "mode": "auto", "saved": True}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/weights", methods=["POST"])
+@app.route("/api/dlengine/tuning_weights", methods=["POST"])
+def api_dlengine_weights():
+    data = request.get_json(silent=True) or {}
+    weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
+    dl = _dlengine_module()
+    try:
+        if dl and hasattr(dl, "set_dlengine_weights"):
+            return jsonify(dl.set_dlengine_weights(weights, source="flask:/api/dlengine/weights")), 200
+        save_state("DLENGINE_WEIGHTS", weights)
+        return jsonify({"ok": True, "saved": True, "weights": weights, "raw_tensor_edit": False}), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine weights failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # --- Terminal API (DEVELOPERSMODE gated by SarahMemoryTerminal) ---

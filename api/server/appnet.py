@@ -2081,6 +2081,34 @@ def net_diagnostics():
         results["tests"].append({"name": "file_transfers", "status": "fail", "detail": str(e)})
 
     return jsonify(results), 200
+
+@bp.get("/api/net/governance")
+def net_governance():
+    """Read-only SarahNet governance contract for DeveloperMode/UI audit panels.
+
+    This endpoint intentionally reports policy. It does not start transfers,
+    execute remote commands, or mutate broker state.
+    """
+    return _ok(
+        api_domain="net",
+        route_base="/api/net",
+        governance={
+            "broker_model": "store_and_forward",
+            "executes_remote_commands": False,
+            "requires_auth_for_mutations": True,
+            "file_transfer_policy": {
+                "mode": "brokered",
+                "chunked_transfer_supported": True,
+                "direct_execution_allowed": False,
+                "receiver_must_verify_crc_sha": True,
+            },
+            "safety_notes": [
+                "SarahNet broker stores messages/files only; endpoints do not execute payloads.",
+                "Nodes must authenticate, verify, and locally decide whether to act on received commands.",
+            ],
+        },
+    )
+
 def init_app(app, connect_sqlite, meta_db_path: str, api_key_auth_ok=None, sign_ok=None) -> None:
     """
     app.py should call:

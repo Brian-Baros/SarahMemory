@@ -413,6 +413,44 @@ def _reset_config(driver_id: str) -> Dict[str, Any]:
     return defaults
 
 
+
+def _validate_driver_manifest_shape(driver_id: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate generated driver manifest contract without importing driver.py."""
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not isinstance(manifest, dict):
+        return {"ok": False, "errors": ["manifest_not_object"], "warnings": warnings}
+
+    declared_id = str(manifest.get("id") or driver_id or "").strip()
+    if not declared_id:
+        errors.append("missing_id")
+    elif declared_id != driver_id:
+        warnings.append("manifest_id_differs_from_folder")
+
+    dangerous_autoload = bool(manifest.get("autoload", False))
+    if dangerous_autoload:
+        warnings.append("autoload_requested_requires_registry_and_user_consent")
+
+    for key in ("name", "version", "description"):
+        if not str(manifest.get(key) or "").strip():
+            warnings.append(f"missing_optional_{key}")
+
+    if manifest.get("permissions") is not None and not isinstance(manifest.get("permissions"), (list, dict)):
+        errors.append("permissions_must_be_list_or_object")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "driver_id": driver_id,
+        "declared_id": declared_id,
+        "autoload_requested": dangerous_autoload,
+        "lazy_load_required": True,
+        "safe_reset_supported": True,
+        "direct_boot_activation_allowed": False,
+    }
+
 # ------------------------------ Lazy Import Driver Module ------------------------------
 
 def _load_driver_module(driver_id: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -702,6 +740,48 @@ def apply(app):
     def drivers_registry_get():
         return jsonify({"ok": True, "registry": _load_registry()})
 
+
+
+    @app.route("/api/drivers/governance", methods=["GET"])
+    def drivers_governance():
+        return _ok(
+            api_domain="drivers",
+            route_base="/api/drivers",
+            governance={
+                "lazy_load_only": True,
+                "direct_boot_activation_allowed": False,
+                "safe_mode": _safe_mode(),
+                "local_only_mode": _local_only_mode(),
+                "driver_code_imported_on_list": False,
+                "connect_requires_auth": True,
+                "registry_required_for_autoload": True,
+                "generated_driver_policy": {
+                    "manifest_required": True,
+                    "validate_before_connect": True,
+                    "explicit_user_or_developer_approval_required": True,
+                    "safe_stop_required": True,
+                },
+            },
+            active_sessions=len(_SESSIONS),
+        )
+
+    @app.route("/api/drivers/manifest/audit", methods=["GET"])
+    def drivers_manifest_audit():
+        reg = _load_registry()
+        items = []
+        for did in _discover_driver_ids():
+            mf = _load_manifest(did)
+            entry = _get_reg_entry(reg, did)
+            audit = _validate_driver_manifest_shape(did, mf)
+            items.append({
+                "driver_id": did,
+                "manifest": mf,
+                "registry": entry,
+                "audit": audit,
+                "connected": bool(_session_get(did)),
+            })
+        return jsonify({"ok": True, "count": len(items), "drivers": items})
+
     @app.route("/api/drivers/<driver_id>/registry", methods=["POST"])
     def drivers_registry_set(driver_id: str):
         if driver_id not in _discover_driver_ids():
@@ -736,18 +816,36 @@ def apply(app):
         if not isinstance(cfg, dict):
             return _err("config must be an object", 400)
 
+        manifest = _load_manifest(driver_id)
+        manifest_audit = _validate_driver_manifest_shape(driver_id, manifest)
+        dry_run = bool(body.get("dry_run", body.get("dryRun", False)))
+
+        if dry_run:
+            return jsonify({
+                "ok": bool(manifest_audit.get("ok", False)),
+                "dry_run": True,
+                "driver_id": driver_id,
+                "manifest_audit": manifest_audit,
+                "config_keys": sorted(list(cfg.keys()))[:100],
+                "would_import_driver_module": False,
+                "would_connect": False,
+            })
+
         mod, err = _load_driver_module(driver_id)
         if err:
-            return _err(err, 500)
+            return _err(err, 500, details={"manifest_audit": manifest_audit})
 
         try:
-            context = _build_driver_context(driver_id, instance_id=_session_get(driver_id).get("instance_id"), extra={"validate_payload": body})
+            context = _build_driver_context(driver_id, instance_id=_session_get(driver_id).get("instance_id"), extra={"validate_payload": body, "manifest_audit": manifest_audit})
             if hasattr(mod, "driver_validate"):
                 res = mod.driver_validate(context=context, config=cfg, payload=body)  # type: ignore[attr-defined]
-                return jsonify(res if isinstance(res, dict) else {"ok": True, "result": res})
-            return jsonify({"ok": True, "warnings": ["driver_validate not implemented"]})
+                if isinstance(res, dict):
+                    res.setdefault("manifest_audit", manifest_audit)
+                    return jsonify(res)
+                return jsonify({"ok": True, "result": res, "manifest_audit": manifest_audit})
+            return jsonify({"ok": bool(manifest_audit.get("ok", False)), "warnings": ["driver_validate not implemented"], "manifest_audit": manifest_audit})
         except Exception as e:
-            return _err(f"validate failed: {e}", 500, details=traceback.format_exc())
+            return _err(f"validate failed: {e}", 500, details={"traceback": traceback.format_exc(), "manifest_audit": manifest_audit})
 
     @app.route("/api/drivers/<driver_id>/discover", methods=["GET", "POST"])
     def drivers_discover(driver_id: str):
