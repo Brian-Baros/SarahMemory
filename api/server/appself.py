@@ -13,7 +13,7 @@
 # https://store.sarahmemory.com
 # ==============================================================================================
 """
-SarahMemory appself.py v8.0.0 EvidenceCourt V7 driver-aware body capability cleanup
+SarahMemory appself.py v8.0.0 EvidenceCourt V8 topology-aware body capability cleanup
 
 SelfAware / CognitiveSelf API bridge.
 
@@ -34,6 +34,7 @@ Design goals:
 - Treat OS/vendor adapters as support/hearsay only; never as constitutional quorum.
 - Present network adapter facts without exposing IP/MAC details by default.
 - Read Class A boot-driver and Class B runtime-driver catalogs as support-only body capability evidence.
+- Build safe hardware topology briefs that separate device class, connection bus, protocol, physical location, mount surface, and ownership scope.
 
 Integration contract:
     import appself
@@ -588,7 +589,7 @@ def _list_selfaware_reports(limit: int = 10) -> List[Dict[str, Any]]:
 # - SarahMemoryDatabase.py is an evidence locker and is read-only here; multiple DB rows
 #   never count as multiple independent witnesses.
 
-_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "usb_label", "temperature", "fan_speed", "network", "motherboard", "usb", "ports", "port", "general_system_fact"}
+_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "drive", "drives", "drive_label", "usb_label", "temperature", "fan_speed", "network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan", "motherboard", "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers", "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci", "ports", "port", "operating_system", "platform", "general_system_fact"}
 _SOFTWARE_KINDS = {"software", "application", "process", "window", "desktop_surface"}
 _BOOT_RUNTIME_KINDS = {"boot", "startup", "shutdown", "reboot", "runtime", "lifecycle", "server_state"}
 _NETWORK_KINDS = {"network", "sarahnet", "sync", "mesh", "rendezvous"}
@@ -687,12 +688,16 @@ def _normalize_value(value: Any, kind: str = "") -> str:
 
 
 def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
-    """Classify the requested SelfAware fact kind without touching Globals."""
-    kind = _safe_str(explicit_kind, 80).lower()
+    """Classify the requested SelfAware fact kind without touching Globals.
+
+    V8 keeps body questions separated by topology axis. A storage device may be
+    SATA, NVMe-over-PCIe, NVMe-behind-USB, or remote NAS. A drive letter is not
+    a bus. A bus is not a device class. This classifier only chooses the court
+    question; it does not prove the answer.
+    """
+    kind = _safe_str(explicit_kind, 80).lower().replace("-", "_").replace(" ", "_")
     c = _safe_str(claim, MAX_CLAIM_CHARS).lower()
 
-    # Generic callers may submit kind=general_system_fact. Do not let that broad
-    # label block a more precise fact classification from the claim text.
     generic_explicit_kinds = {"", "general", "general_system", "general_system_fact", "hardware", "system", "self", "body"}
     if kind and kind not in generic_explicit_kinds:
         aliases = {
@@ -703,11 +708,15 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "ram": "memory",
             "mem": "memory",
             "drive": "disk_space",
-            "storage": "disk_space",
+            "drives": "storage_topology",
+            "storage": "storage_topology",
+            "storage_devices": "storage_devices",
+            "storage_topology": "storage_topology",
             "disk": "disk_space",
             "disc": "disk_space",
-            "volume_label": "usb_label",
-            "drive_label": "usb_label",
+            "volume_label": "drive_label",
+            "drive_label": "drive_label",
+            "usb_label": "usb_label",
             "thermal": "temperature",
             "temp": "temperature",
             "fan": "fan_speed",
@@ -719,15 +728,16 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "app": "software",
             "application": "software",
             "program": "software",
-            "network_card": "network",
-            "network_adapter": "network",
-            "nic": "network",
-            "wifi": "network",
-            "wi-fi": "network",
-            "wireless": "network",
-            "ethernet": "network",
-            "lan": "network",
-            "bluetooth_network": "network",
+            "network_card": "network_card",
+            "network_adapter": "network_card",
+            "nic": "network_card",
+            "wifi": "wifi_card",
+            "wi_fi": "wifi_card",
+            "wireless": "wifi_card",
+            "ethernet": "ethernet_card",
+            "lan": "lan",
+            "bluetooth": "bluetooth_card",
+            "bluetooth_network": "bluetooth_card",
             "device_driver": "drivers",
             "driver_stack": "drivers",
             "body_capability": "drivers",
@@ -735,10 +745,20 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "hardware_capability": "drivers",
             "ports": "ports",
             "port": "ports",
-            "usbhost": "usb",
-            "usb_host": "usb",
+            "usbhost": "usb_host_controllers",
+            "usb_host": "usb_host_controllers",
+            "usb_ports": "usb_ports",
+            "sata": "sata_ports",
+            "sata_ports": "sata_ports",
+            "nvme": "nvme",
+            "pcie": "pcie",
+            "pci": "pci",
+            "os": "operating_system",
+            "operating_system": "operating_system",
+            "platform": "platform",
         }
         return aliases.get(kind, kind)
+
     if any(k in c for k in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
         return "drivers"
     if any(k in c for k in ("motherboard", "mainboard", "baseboard", "system board")):
@@ -751,20 +771,47 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
         return "gpu"
     if any(k in c for k in ("cpu", "processor")):
         return "cpu"
-    if any(k in c for k in ("usb port", "usb controller", "usb host", "usbhost")):
-        return "usb"
-    if any(k in c for k in ("port", "ports", "pci", "serial port", "com port", "hdmi port")):
+
+    if any(k in c for k in ("network card", "network adapter", "nic", "network interface", "ethernet card", "ethernet adapter", "lan adapter")):
+        return "network_card"
+    if any(k in c for k in ("wifi card", "wi-fi card", "wireless card", "wifi adapter", "wi-fi adapter", "wireless adapter")):
+        return "wifi_card"
+    if any(k in c for k in ("bluetooth card", "bluetooth adapter", "bluetooth network")):
+        return "bluetooth_card"
+    if any(k in c for k in ("ip address", "mac address", "lan address")):
+        return "network_card"
+    if any(k in c for k in ("network", "wifi", "wi-fi", "wireless", "ethernet")):
+        return "network_card"
+
+    if any(k in c for k in ("usb port", "usb ports", "how many usb", "usb host", "usb controller", "usb root hub")):
+        return "usb_ports"
+    if any(k in c for k in ("usb device", "usb devices", "connected usb", "what usb")):
+        return "usb_devices"
+    if any(k in c for k in ("usb storage", "usb drive", "external usb", "usb hdd", "usb hard drive", "usb ssd")):
+        return "usb_storage"
+    if any(k in c for k in ("sata port", "sata ports", "how many sata")):
+        return "sata_ports"
+    if any(k in c for k in ("nvme", "m.2", "m2 drive", "m.2 drive")):
+        return "nvme"
+    if any(k in c for k in ("pcie", "pci-e", "pci express")):
+        return "pcie"
+    if re.search(r"\bpci\b", c):
+        return "pci"
+    if any(k in c for k in ("what drives", "which drives", "storage topology", "storage devices", "drive topology", "hardware topology")):
+        return "storage_topology"
+    if any(k in c for k in ("operating system", "what os", "which os", "os are you", "os on top of", "platform are you")):
+        return "operating_system"
+    if any(k in c for k in ("port", "ports", "serial port", "com port", "hdmi port", "displayport")):
         return "ports"
+
     if any(k in c for k in ("usb", "drive label", "volume label", "label on")):
         return "usb_label"
     if any(k in c for k in ("disk", "disc", "drive", "space", "storage", "free gb", "used gb")):
         return "disk_space"
-    if any(k in c for k in ("memory", "ram")):
+    if re.search(r"\b(ram|memory)\b", c) and "sarahmemory" not in c.replace(" ", ""):
         return "memory"
     if any(k in c for k in ("sarahnet", "mesh", "rendezvous", "sync")):
         return "sarahnet"
-    if any(k in c for k in ("network", "network card", "network adapter", "nic", "wifi", "wi-fi", "wireless", "ethernet", "lan adapter", "adapter", "ip address", "mac address", "bluetooth network")):
-        return "network"
     if any(k in c for k in ("boot", "startup", "shutdown", "reboot", "server state", "runtime state")):
         return "runtime"
     if any(k in c for k in ("core file", "module", ".py", "importable", "approved")):
@@ -778,7 +825,6 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
     if any(k in c for k in ("emotion", "personality", "preference", "behavior", "adaptive")):
         return "adaptive"
     return "general_system_fact"
-
 
 def _extract_target_from_claim(claim: str, kind: str) -> str:
     """Best-effort target extraction; safe and non-authoritative."""
@@ -1061,37 +1107,82 @@ def _boot_driver_order(entries: Dict[str, Dict[str, Any]]) -> List[str]:
     return ordered
 
 
-def _classify_driver_family(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> str:
-    did = _safe_str(driver_id, 240).lower().replace("_", ".").replace("-", ".")
-    text = did + " " + _safe_str((manifest or {}).get("name"), 240).lower() + " " + _safe_str((manifest or {}).get("description"), 600).lower()
-    if ".boot." in did:
-        return "boot_foundation"
-    if "motherboard" in text or "baseboard" in text or "mainboard" in text:
-        return "motherboard"
-    if "network" in text or "ethernet" in text or "wifi" in text or "wi.fi" in text or "wireless" in text or "utpsip" in text:
-        return "network"
-    if "bluetooth" in text:
-        return "bluetooth"
-    if "storage" in text or "filesystem" in text or "disk" in text or "drive" in text:
-        return "storage"
-    if "usb" in text or "usbhost" in text:
-        return "usb"
-    if "hid" in text or "keyboard" in text or "mouse" in text or "gamepad" in text or "input" in text:
-        return "input"
-    if "display" in text or "vga" in text or "hdmi" in text or "gpu" in text or "video" in text:
-        return "display"
-    if "audio" in text or "speaker" in text or "midi" in text:
-        return "audio"
-    if "printer" in text:
-        return "printer"
-    if "plc" in text or "modbus" in text or "opcua" in text:
-        return "industrial_plc"
-    if "rfid" in text or "zigbee" in text or "zwave" in text or "mqtt" in text or "sensor" in text or "lirc" in text:
-        return "iot_sensor"
-    if "vr" in text or "headset" in text:
-        return "vr"
-    return "generic_device"
+def _flatten_driver_manifest_text(manifest: Optional[Dict[str, Any]]) -> str:
+    try:
+        return json.dumps(_json_safe(manifest or {}), ensure_ascii=False, sort_keys=True).lower()
+    except Exception:
+        return _safe_str(manifest, 4000).lower()
 
+
+def _classify_driver_families(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Return multi-axis driver families for capability matching.
+
+    A Class B driver can be both a device class and a transport. Example:
+    a network printer is printer + network; a Bluetooth gamepad is input +
+    bluetooth; an NVMe device may be storage + pcie. This prevents V7-style
+    over-broad storage matches.
+    """
+    did = _safe_str(driver_id, 240).lower().replace("_", ".").replace("-", ".")
+    text = did + " " + _flatten_driver_manifest_text(manifest)
+    families: List[str] = []
+
+    def add(name: str) -> None:
+        if name and name not in families:
+            families.append(name)
+
+    if ".boot." in did:
+        add("boot_foundation")
+        return families
+
+    # Specific device classes first.
+    if any(x in text for x in ("motherboard", "baseboard", "mainboard", "bios", "uefi", "acpi")):
+        add("motherboard")
+    if any(x in text for x in ("camera", "uvc", "webcam", "vision")):
+        add("camera_vision")
+    if any(x in text for x in ("plc", "modbus", "opcua")):
+        add("industrial_plc")
+    if any(x in text for x in ("cnc", "grbl")):
+        add("cnc_serial")
+    if any(x in text for x in ("arduino", "microcontroller")):
+        add("microcontroller")
+    if any(x in text for x in ("printer", "esc/pos", "escpos", "receipt")):
+        add("printer")
+    if any(x in text for x in ("rfid", "zigbee", "z-wave", "zwave", "mqtt", "smartdevice", "smart-device", "sensor", "lirc", "infrared", "ir ")):
+        add("iot_sensor")
+    if any(x in text for x in ("vr", "xr", "headset")):
+        add("vr")
+    if any(x in text for x in ("midi", "audio", "speaker", "soundbar", "microphone", "ac97")):
+        add("audio")
+    if any(x in text for x in ("keyboard", "mouse", "gamepad", "controller", "joystick", "barcode", "hid", "input")):
+        add("input")
+    if any(x in text for x in ("display", "vga", "hdmi", "displayport", "monitor", "framebuffer", "gpu", "video")):
+        add("display")
+    if any(x in text for x in ("storage", "filesystem", "disk", "drive", "nvme", "smart", "vault_mount", "block-device", "partition")):
+        add("storage")
+
+    # Transport/protocol axes.
+    if any(x in text for x in ("network", "ethernet", "wifi", "wi-fi", "wireless", "tcp", "http", "mqtt", "sip", "utpsip", "opc.tcp", "network.outbound")):
+        add("network")
+    if "bluetooth" in text or "ble" in text:
+        add("bluetooth")
+    if any(x in text for x in ("usb", "usb_serial", "usb/serial", "uasp")):
+        add("usb")
+    if any(x in text for x in ("serial", "com port", "rs232", "uart")):
+        add("serial")
+    if any(x in text for x in ("pci", "pcie", "pci express", "pci-e")):
+        add("pcie")
+    if "nvme" in text:
+        add("nvme")
+    if "sata" in text:
+        add("sata")
+
+    if not families:
+        add("generic_device")
+    return families
+
+
+def _classify_driver_family(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> str:
+    return _classify_driver_families(driver_id, manifest)[0]
 
 def _read_runtime_driver_catalog() -> Dict[str, Any]:
     root = _runtime_drivers_root()
@@ -1110,11 +1201,13 @@ def _read_runtime_driver_catalog() -> Dict[str, Any]:
                 ui_path = p / "ui.json"
                 driver_py_path = p / "driver.py"
                 manifest = _read_json_file(manifest_path)
+                families = _classify_driver_families(driver_id, manifest)
                 drivers[driver_id] = {
                     "id": driver_id,
                     "class": "B",
                     "driver_class": "runtime_device_capability",
-                    "family": _classify_driver_family(driver_id, manifest),
+                    "family": families[0] if families else "generic_device",
+                    "families": families,
                     "path": str(p),
                     "folder_exists": True,
                     "manifest_exists": manifest_path.exists() and manifest_path.is_file(),
@@ -1158,21 +1251,41 @@ def _driver_kind_profile(kind: str) -> Dict[str, Any]:
     k = _safe_str(kind, 80).lower()
     profiles: Dict[str, Dict[str, Any]] = {
         "cpu": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
-        "gpu": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.displaycore"], "families": ["display"]},
+        "gpu": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.displaycore"], "families": ["display", "pcie"]},
         "motherboard": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci", "com.softdev0.boot.usbhost"], "families": ["motherboard"]},
         "memory": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
         "disk_space": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage"]},
+        "drive": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage"]},
+        "drives": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage"]},
+        "storage_devices": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage"]},
+        "storage_topology": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems", "com.softdev0.boot.pci", "com.softdev0.boot.usbhost"], "families": ["storage", "usb", "pcie", "sata", "nvme", "network"]},
         "usb_label": {"class_a": ["com.softdev0.boot.usbhost", "com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["usb", "storage"]},
-        "usb": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb", "input", "printer", "iot_sensor", "vr"]},
-        "ports": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore", "com.softdev0.boot.displaycore", "com.softdev0.boot.inputcore"], "families": ["network", "usb", "display", "input", "industrial_plc", "iot_sensor"]},
-        "network": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["network", "bluetooth"]},
+        "drive_label": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["storage", "usb"]},
+        "usb": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb", "input", "printer", "iot_sensor", "vr", "camera_vision", "microcontroller"]},
+        "usb_ports": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb"]},
+        "usb_devices": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb", "input", "printer", "iot_sensor", "vr", "camera_vision", "microcontroller", "storage"]},
+        "usb_storage": {"class_a": ["com.softdev0.boot.usbhost", "com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["usb", "storage"]},
+        "usb_host_controllers": {"class_a": ["com.softdev0.boot.usbhost"], "families": ["usb"]},
+        "sata": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["sata", "storage"]},
+        "sata_ports": {"class_a": ["com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["sata", "storage"]},
+        "nvme": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.storagecore", "com.softdev0.boot.filesystems"], "families": ["nvme", "pcie", "storage", "usb"]},
+        "pcie": {"class_a": ["com.softdev0.boot.pci"], "families": ["pcie", "display", "storage", "network"]},
+        "pci": {"class_a": ["com.softdev0.boot.pci"], "families": ["pcie", "display", "storage", "network"]},
+        "ports": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore", "com.softdev0.boot.displaycore", "com.softdev0.boot.inputcore"], "families": ["network", "usb", "display", "input", "industrial_plc", "iot_sensor", "printer", "serial"]},
+        "network": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["network", "bluetooth", "usb", "pcie"]},
+        "network_card": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["network", "bluetooth", "usb", "pcie"]},
+        "wifi_card": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["network", "wifi", "usb", "pcie"]},
+        "bluetooth_card": {"class_a": ["com.softdev0.boot.usbhost", "com.softdev0.boot.networkcore"], "families": ["bluetooth", "usb", "network"]},
+        "ethernet_card": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.networkcore"], "families": ["network", "pcie"]},
+        "lan": {"class_a": ["com.softdev0.boot.pci", "com.softdev0.boot.networkcore"], "families": ["network", "pcie"]},
+        "operating_system": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
+        "platform": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.cpuarch"], "families": ["boot_foundation"]},
         "temperature": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci"], "families": ["motherboard", "display"]},
         "fan_speed": {"class_a": ["com.softdev0.boot.firmware", "com.softdev0.boot.pci"], "families": ["motherboard", "display"]},
         "drivers": {"class_a": [], "families": []},
         "general_system_fact": {"class_a": [], "families": []},
     }
     return profiles.get(k, {"class_a": [], "families": []})
-
 
 def _build_driver_capability_snapshot(kind: str = "") -> Dict[str, Any]:
     kind = _infer_fact_kind(kind or "drivers", kind) if kind else "drivers"
@@ -1210,10 +1323,13 @@ def _build_driver_capability_snapshot(kind: str = "") -> Dict[str, Any]:
         if not isinstance(meta, dict):
             continue
         fam = _safe_str(meta.get("family"), 80)
-        if kind == "drivers" or not families or fam in families:
+        fams = meta.get("families") if isinstance(meta.get("families"), list) else ([fam] if fam else [])
+        fams = [_safe_str(x, 80) for x in fams if _safe_str(x, 80)]
+        if kind == "drivers" or not families or any(f in families for f in fams):
             class_b_matches.append({
                 "id": did,
                 "family": fam,
+                "families": fams,
                 "manifest_exists": bool(meta.get("manifest_exists")),
                 "ui_schema_exists": bool(meta.get("ui_schema_exists")),
                 "defaults_exists": bool(meta.get("defaults_exists")),
@@ -1311,7 +1427,7 @@ def _appdrivers_contract_fact(kind: str = "drivers", target: str = "") -> Dict[s
 
 
 def _body_capabilities_snapshot() -> Dict[str, Any]:
-    kinds = ["cpu", "gpu", "motherboard", "memory", "disk_space", "usb", "ports", "network", "temperature", "fan_speed"]
+    kinds = ["cpu", "gpu", "motherboard", "memory", "disk_space", "storage_topology", "usb_ports", "usb_devices", "sata_ports", "nvme", "pcie", "ports", "network_card", "wifi_card", "bluetooth_card", "operating_system", "temperature", "fan_speed"]
     return {
         "ok": True,
         "module": "appself.py",
@@ -1326,6 +1442,266 @@ def _body_capabilities_snapshot() -> Dict[str, Any]:
         "read_only": True,
         "action_taken": False,
     }
+
+# -----------------------------------------------------------------------------
+# V8 Hardware Topology helpers
+# -----------------------------------------------------------------------------
+# These helpers keep facts multi-axis instead of flattening everything into
+# "storage", "USB", or "network". A drive letter is not a hardware identity;
+# a bus is not a device class; a protocol is not a physical location.
+
+_TOPOLOGY_FACT_KINDS = {
+    "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers",
+    "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci",
+    "ports", "operating_system", "platform", "drive", "drives", "drive_label",
+}
+
+
+def _listify(value: Any) -> List[Any]:
+    if value in (None, "", {}, []):
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return [value]
+
+
+def _storage_row_mount(row: Dict[str, Any]) -> str:
+    return _safe_str(row.get("mountpoint") or row.get("device") or row.get("DeviceID") or row.get("path") or "", 80).rstrip("\\")
+
+
+def _infer_volume_connection(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Infer a conservative connection path from storage/mount metadata.
+
+    This never claims a bus unless the current evidence clearly says it. Mounted
+    drive letters and psutil partitions are mount surfaces, not physical proof.
+    """
+    opts = _safe_str(row.get("opts"), 300).lower()
+    device = _safe_str(row.get("device") or row.get("DeviceID") or row.get("mountpoint"), 160).lower()
+    fstype = _safe_str(row.get("fstype") or row.get("FileSystem"), 80)
+    mount = _storage_row_mount(row)
+    if "cdrom" in opts or "cdrom" in device:
+        return {
+            "device_class": "storage",
+            "storage_subclass": "optical_or_cdrom",
+            "connection_bus": "unknown_optical_path",
+            "bus_confidence": "LOW",
+            "physical_location": "local_or_virtual_optical_device",
+            "mount_surface": mount,
+            "filesystem": fstype,
+            "ownership_scope": "local_or_virtual",
+            "note": "CD/DVD mount detected; physical bus path is not proven by mount data alone.",
+        }
+    if "removable" in opts or "removable" in device:
+        return {
+            "device_class": "storage",
+            "storage_subclass": "removable_or_external_volume",
+            "connection_bus": "usb_or_removable_candidate",
+            "bus_confidence": "MEDIUM_LOW",
+            "physical_location": "external_or_removable_media",
+            "mount_surface": mount,
+            "filesystem": fstype,
+            "ownership_scope": "local_external_candidate",
+            "note": "Removable storage is often USB, but the exact bus still requires USB/device topology evidence.",
+        }
+    if "fixed" in opts or (mount and re.match(r"^[a-zA-Z]:$", mount)):
+        return {
+            "device_class": "storage",
+            "storage_subclass": "fixed_volume",
+            "connection_bus": "local_fixed_bus_unverified",
+            "bus_confidence": "LOW",
+            "physical_location": "local_internal_or_expansion_candidate",
+            "mount_surface": mount,
+            "filesystem": fstype,
+            "ownership_scope": "local_fixed_candidate",
+            "note": "A fixed drive letter does not prove SATA, NVMe, PCIe, or USB bridge by itself.",
+        }
+    return {
+        "device_class": "storage",
+        "storage_subclass": "unknown_volume",
+        "connection_bus": "unknown",
+        "bus_confidence": "LOW",
+        "physical_location": "unknown",
+        "mount_surface": mount,
+        "filesystem": fstype,
+        "ownership_scope": "unknown",
+        "note": "Mount data alone cannot prove physical connection path.",
+    }
+
+
+def _storage_rows_from_snapshot(snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    body = snapshot.get("body") if isinstance(snapshot.get("body"), dict) else {}
+    rows = body.get("storage") if isinstance(body.get("storage"), list) else []
+    out: List[Dict[str, Any]] = []
+    for item in rows:
+        if isinstance(item, dict):
+            mount = _storage_row_mount(item)
+            if not mount:
+                continue
+            safe = {
+                "device": _safe_str(item.get("device"), 120),
+                "mountpoint": _safe_str(item.get("mountpoint"), 120),
+                "fstype": _safe_str(item.get("fstype"), 80),
+                "opts": _safe_str(item.get("opts"), 160),
+            }
+            for key in ("total_gb", "used_gb", "free_gb", "usage_pct"):
+                if item.get(key) not in (None, "", [], {}):
+                    safe[key] = item.get(key)
+            safe["topology"] = _infer_volume_connection(item)
+            out.append(safe)
+    return out
+
+
+def _storage_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    rows = _storage_rows_from_snapshot(snapshot)
+    if target:
+        t = _safe_str(target, 40).upper().rstrip("\\")
+        rows = [r for r in rows if _safe_str(r.get("mountpoint") or r.get("device"), 80).upper().rstrip("\\").startswith(t)]
+    removable = [r for r in rows if "removable" in _safe_str(r.get("opts"), 160).lower()]
+    fixed = [r for r in rows if "fixed" in _safe_str(r.get("opts"), 160).lower()]
+    cdrom = [r for r in rows if "cdrom" in _safe_str(r.get("opts"), 160).lower()]
+    return {
+        "topology_kind": "storage_topology",
+        "device_class": "storage",
+        "volumes": rows,
+        "counts": {
+            "volume_count": len(rows),
+            "fixed_volume_count": len(fixed),
+            "removable_or_external_candidate_count": len(removable),
+            "cdrom_or_optical_count": len(cdrom),
+        },
+        "classification_rule": {
+            "drive_letter_is_mount_surface_not_hardware_identity": True,
+            "fixed_volume_does_not_prove_sata_or_nvme": True,
+            "removable_volume_does_not_prove_usb_without_device_topology": True,
+            "nas_or_mapped_network_drive_requires_network_protocol_evidence": True,
+        },
+        "action_taken": False,
+    }
+
+
+def _usb_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    storage = _storage_topology_from_snapshot(snapshot, target)
+    rows = storage.get("volumes") if isinstance(storage.get("volumes"), list) else []
+    removable = [r for r in rows if "removable" in _safe_str(r.get("opts"), 160).lower()]
+    driver_stack = _build_driver_capability_snapshot("usb_ports")
+    return {
+        "topology_kind": "usb_topology",
+        "device_class": "bus_or_external_device_path",
+        "connection_bus": "USB",
+        "usb_host_capability_present": bool(driver_stack.get("capability_present")),
+        "physical_usb_port_count": None,
+        "physical_usb_port_count_verified": False,
+        "physical_count_confidence": "NONE",
+        "connected_usb_storage_candidates": removable,
+        "connected_usb_storage_candidate_count": len(removable),
+        "class_a_driver_stack": (driver_stack.get("class_a") or {}).get("required_stack") if isinstance(driver_stack.get("class_a"), dict) else [],
+        "class_b_driver_matches": (driver_stack.get("class_b") or {}).get("matched_drivers") if isinstance(driver_stack.get("class_b"), dict) else [],
+        "note": "USB host capability can be proven from SarahMemory drivers, but physical USB port count requires USB controller/root-hub topology evidence that is not derived from drive letters.",
+        "action_taken": False,
+    }
+
+
+def _sata_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    storage = _storage_topology_from_snapshot(snapshot, target)
+    rows = storage.get("volumes") if isinstance(storage.get("volumes"), list) else []
+    fixed = [r for r in rows if "fixed" in _safe_str(r.get("opts"), 160).lower()]
+    return {
+        "topology_kind": "sata_topology",
+        "device_class": "storage_bus_question",
+        "connection_bus": "SATA",
+        "sata_port_count": None,
+        "sata_port_count_verified": False,
+        "sata_confidence": "NONE",
+        "local_fixed_storage_candidates": fixed,
+        "local_fixed_storage_candidate_count": len(fixed),
+        "note": "Fixed local volumes may be SATA, NVMe/PCIe, hardware RAID, virtual, or another local path. SATA port count requires controller/topology evidence, not drive letters.",
+        "action_taken": False,
+    }
+
+
+def _nvme_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    storage = _storage_topology_from_snapshot(snapshot, target)
+    return {
+        "topology_kind": "nvme_topology",
+        "device_class": "storage",
+        "storage_protocol": "NVMe_candidate",
+        "connection_bus": "PCIe_or_USB_bridge_unverified",
+        "physical_location": "motherboard_m2_or_pcie_adapter_or_external_bridge_unverified",
+        "mount_surface": "see volumes",
+        "volumes": storage.get("volumes", []),
+        "nvme_device_count": None,
+        "nvme_device_count_verified": False,
+        "note": "NVMe is a storage protocol usually exposed through PCIe, but can appear through adapter cards, motherboard M.2 slots, USB enclosures, NAS, or virtualization. Current mount data alone cannot prove the path.",
+        "action_taken": False,
+    }
+
+
+def _pci_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    driver_stack = _build_driver_capability_snapshot("pcie")
+    body = snapshot.get("body") if isinstance(snapshot.get("body"), dict) else {}
+    return {
+        "topology_kind": "pci_pcie_topology",
+        "device_class": "system_bus",
+        "connection_bus": "PCI/PCIe",
+        "pci_pcie_capability_present": bool(driver_stack.get("capability_present")),
+        "visible_pcie_related_devices": {
+            "gpu": body.get("gpu") if isinstance(body.get("gpu"), dict) else None,
+            "motherboard": body.get("motherboard"),
+        },
+        "class_a_driver_stack": (driver_stack.get("class_a") or {}).get("required_stack") if isinstance(driver_stack.get("class_a"), dict) else [],
+        "note": "PCI/PCIe bus capability is available through the Class A driver stack, but exact slot/device topology requires deeper bus enumeration.",
+        "action_taken": False,
+    }
+
+
+def _ports_topology_from_snapshot(snapshot: Dict[str, Any], target: str = "") -> Dict[str, Any]:
+    return {
+        "topology_kind": "ports_topology",
+        "usb": _usb_topology_from_snapshot(snapshot, target),
+        "sata": _sata_topology_from_snapshot(snapshot, target),
+        "pci_pcie": _pci_topology_from_snapshot(snapshot, target),
+        "network": _network_adapter_safe_summary(_select_snapshot_fact(snapshot, "network", target)),
+        "rule": "Ports are connection surfaces. Mounted drives, network adapters, and display devices are not port counts by themselves.",
+        "action_taken": False,
+    }
+
+
+def _operating_system_safe_summary(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    plat = snapshot.get("platform") if isinstance(snapshot.get("platform"), dict) else {}
+    return {
+        "topology_kind": "operating_system_platform",
+        "system": plat.get("system") or platform.system(),
+        "release": plat.get("release") or platform.release(),
+        "version": plat.get("version") or platform.version(),
+        "machine": plat.get("machine") or platform.machine(),
+        "python": plat.get("python") or platform.python_version(),
+        "os_boot_time": snapshot.get("os_boot_time"),
+        "schema_version": snapshot.get("schema_version"),
+        "source": snapshot.get("source"),
+        "privacy_note": "Network addressing, adapter IPs, MACs, and full body-map details are excluded from OS presentation.",
+        "action_taken": False,
+    }
+
+
+def _topology_fact_from_snapshot(snapshot: Dict[str, Any], kind: str, target: str = "") -> Any:
+    k = _safe_str(kind, 80).lower()
+    if k in {"storage_topology", "storage_devices", "drive", "drives"}:
+        return _storage_topology_from_snapshot(snapshot, target)
+    if k in {"usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers"}:
+        return _usb_topology_from_snapshot(snapshot, target)
+    if k in {"sata", "sata_ports"}:
+        return _sata_topology_from_snapshot(snapshot, target)
+    if k == "nvme":
+        return _nvme_topology_from_snapshot(snapshot, target)
+    if k in {"pci", "pcie"}:
+        return _pci_topology_from_snapshot(snapshot, target)
+    if k in {"ports", "port"}:
+        return _ports_topology_from_snapshot(snapshot, target)
+    if k in {"operating_system", "platform"}:
+        return _operating_system_safe_summary(snapshot)
+    return None
 
 def _select_from_storage(storage: Any, target: str = "") -> Any:
     if not isinstance(storage, list):
@@ -1349,6 +1725,10 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
     chat_facts = snapshot.get("chat_facts") if isinstance(snapshot.get("chat_facts"), dict) else {}
     model_metrics = snapshot.get("model_metrics") if isinstance(snapshot.get("model_metrics"), dict) else {}
 
+    topology_fact = _topology_fact_from_snapshot(snapshot, kind, target)
+    if topology_fact not in (None, {}, []):
+        return topology_fact
+
     if kind == "cpu":
         return body.get("cpu") or chat_facts.get("cpu") or model_metrics.get("cpu_count")
     if kind == "gpu":
@@ -1365,8 +1745,15 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
         return body.get("ram") or chat_facts.get("ram") or {"ram_total_mb": model_metrics.get("ram_total_mb"), "ram_avail_mb": model_metrics.get("ram_avail_mb")}
     if kind in {"disk_space", "usb_label"}:
         return _select_from_storage(body.get("storage"), target)
-    if kind == "network":
-        return body.get("network_adapters") or chat_facts.get("network_adapters")
+    if kind in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
+        adapters = body.get("network_adapters") or chat_facts.get("network_adapters")
+        if kind == "wifi_card" and isinstance(adapters, list):
+            return [a for a in adapters if "wi" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower() or "wireless" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower()]
+        if kind == "bluetooth_card" and isinstance(adapters, list):
+            return [a for a in adapters if "bluetooth" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower()]
+        if kind in {"ethernet_card", "lan"} and isinstance(adapters, list):
+            return [a for a in adapters if "ethernet" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower() or "lan" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower()]
+        return adapters
     if kind == "temperature":
         gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
         return {
@@ -1375,7 +1762,7 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
         }
     if kind == "fan_speed":
         return body.get("fans") or snapshot.get("fans")
-    return snapshot
+    return None
 
 
 def _canonical_fact_value(value: Any, kind: str = "") -> str:
@@ -1385,6 +1772,25 @@ def _canonical_fact_value(value: Any, kind: str = "") -> str:
     k = _safe_str(kind, 80).lower()
     try:
         if isinstance(value, dict):
+            if k in _TOPOLOGY_FACT_KINDS or value.get("topology_kind"):
+                counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+                stable = {
+                    "topology_kind": value.get("topology_kind"),
+                    "device_class": value.get("device_class"),
+                    "connection_bus": value.get("connection_bus"),
+                    "physical_usb_port_count_verified": value.get("physical_usb_port_count_verified"),
+                    "sata_port_count_verified": value.get("sata_port_count_verified"),
+                    "nvme_device_count_verified": value.get("nvme_device_count_verified"),
+                    "volume_count": counts.get("volume_count"),
+                    "fixed_volume_count": counts.get("fixed_volume_count"),
+                    "removable_or_external_candidate_count": counts.get("removable_or_external_candidate_count"),
+                    "connected_usb_storage_candidate_count": value.get("connected_usb_storage_candidate_count"),
+                    "local_fixed_storage_candidate_count": value.get("local_fixed_storage_candidate_count"),
+                    "system": value.get("system"),
+                    "release": value.get("release"),
+                    "machine": value.get("machine"),
+                }
+                return _normalize_value({kk: vv for kk, vv in stable.items() if vv not in (None, "", [], {})}, k)
             if k == "cpu":
                 for key in ("name", "Name", "processor", "Processor"):
                     if value.get(key):
@@ -1410,7 +1816,7 @@ def _canonical_fact_value(value: Any, kind: str = "") -> str:
                 free = value.get("free_gb") or value.get("FreeSpace") or value.get("free")
                 label = value.get("label") or value.get("VolumeName") or value.get("name")
                 return _normalize_value({"mountpoint": mount, "label": label, "total": total, "free": free}, k)
-            if k == "network":
+            if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
                 name = value.get("name") or value.get("adapter") or value.get("interface")
                 if name:
                     return _normalize_value(name, k)
@@ -1422,7 +1828,7 @@ def _canonical_fact_value(value: Any, kind: str = "") -> str:
             if "value" in value:
                 return _canonical_fact_value(value.get("value"), k)
         if isinstance(value, list):
-            if k == "network":
+            if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
                 names = []
                 for item in value:
                     if isinstance(item, dict):
@@ -1546,7 +1952,7 @@ def _direct_psutil_fact(kind: str, target: str = "") -> Dict[str, Any]:
             except Exception:
                 fans = {}
             return _probe_result("direct_psutil.sensors_fans", fans if fans else None, ok=bool(fans), error="fan_sensors_unavailable" if not fans else "", kind=kind, source_family="os_adapter", evidence_class="adapter_hearsay", support_only=True, hearsay=True)
-        if kind == "network":
+        if kind in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
             addrs = psutil.net_if_addrs()
             stats = psutil.net_if_stats()
             out: Dict[str, Any] = {}
@@ -1579,7 +1985,7 @@ def _hi_fact(kind: str, target: str = "") -> Dict[str, Any]:
     if _Hi is None:
         return _probe_result("SarahMemoryHi", None, ok=False, error="module_unavailable", kind=kind, source_family="SarahMemoryHi", evidence_class="witness")
     try:
-        if kind in {"cpu", "gpu", "memory", "disk_space", "network", "usb_label", "temperature", "fan_speed", "motherboard", "general_system_fact"}:
+        if kind in _HARDWARE_KINDS:
             snap = {}
             fn = getattr(_Hi, "get_boot_environment_snapshot", None)
             if callable(fn):
@@ -1989,7 +2395,7 @@ def _collect_fact_probes(kind: str, claim: str, target: str = "") -> List[Dict[s
             _driver_capability_support_fact(kind, target),
             _appdrivers_contract_fact(kind, target),
         ])
-        if kind == "network":
+        if kind in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
             probes.append(_network_operation_support_fact(kind, target))
         probes.append(_direct_psutil_fact(kind, target))
         if platform.system().lower() == "windows":
@@ -2453,12 +2859,14 @@ def _presentation_value(kind: str, value: Any) -> Any:
     try:
         if value in (None, "", [], {}):
             return value
-        if k == "network":
+        if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
             safe_network = _network_adapter_safe_summary(value)
-            safe_network["driver_capability"] = _build_driver_capability_snapshot("network")
+            safe_network["driver_capability"] = _build_driver_capability_snapshot("network_card")
             return safe_network
         if k in {"drivers", "driver", "driver_stack", "body_capability", "body_capabilities", "hardware_capability"}:
             return _build_driver_capability_snapshot("drivers")
+        if k in _TOPOLOGY_FACT_KINDS and isinstance(value, dict):
+            return value
         if k == "motherboard":
             if isinstance(value, str):
                 return _safe_str(value, 300)
@@ -2500,7 +2908,7 @@ def _presentation_text(kind: str, value: Any) -> str:
     pv = _presentation_value(kind, value)
     k = _safe_str(kind, 80).lower()
     try:
-        if k == "network" and isinstance(pv, dict):
+        if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"} and isinstance(pv, dict):
             active = pv.get("active_adapters") if isinstance(pv.get("active_adapters"), list) else []
             inactive = pv.get("inactive_adapters") if isinstance(pv.get("inactive_adapters"), list) else []
             physical = pv.get("physical_or_local_interfaces") if isinstance(pv.get("physical_or_local_interfaces"), list) else []
@@ -2536,6 +2944,30 @@ def _presentation_text(kind: str, value: Any) -> str:
             pieces.append("Sensitive IP/MAC details are redacted in chat presentation.")
             pieces.append("Fact-check only; no network action was executed.")
             return "Network adapters = " + " | ".join(pieces)
+        if k in {"usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers"} and isinstance(pv, dict):
+            count = pv.get("physical_usb_port_count")
+            verified = bool(pv.get("physical_usb_port_count_verified"))
+            candidates = pv.get("connected_usb_storage_candidate_count")
+            cap = "present" if pv.get("usb_host_capability_present") else "not proven"
+            if verified and count is not None:
+                return f"USB topology = USB host capability {cap}; physical USB port count verified: {count}; connected USB storage candidates: {candidates}; no USB action executed"
+            return f"USB topology = USB host capability {cap}; physical USB port count is not yet proven 3/3; connected USB storage candidates: {candidates}; drive letters are not treated as USB port proof; no USB action executed"
+        if k in {"sata", "sata_ports"} and isinstance(pv, dict):
+            fixed = pv.get("local_fixed_storage_candidate_count")
+            if pv.get("sata_port_count_verified") and pv.get("sata_port_count") is not None:
+                return f"SATA topology = SATA port count verified: {pv.get('sata_port_count')}; local fixed storage candidates: {fixed}; no storage action executed"
+            return f"SATA topology = SATA port count is not yet proven 3/3; local fixed storage candidates: {fixed}; fixed drive letters may be SATA, NVMe/PCIe, RAID, virtual, or another local path; no storage action executed"
+        if k == "nvme" and isinstance(pv, dict):
+            return "NVMe topology = NVMe is treated as a storage protocol, not a mount letter. Current evidence does not yet prove whether an NVMe device is on motherboard M.2, PCIe adapter card, USB bridge, NAS, or virtual path; no storage action executed"
+        if k in {"storage_topology", "storage_devices", "drive", "drives"} and isinstance(pv, dict):
+            counts = pv.get("counts") if isinstance(pv.get("counts"), dict) else {}
+            return "Storage topology = volumes: " + str(counts.get("volume_count", 0)) + "; fixed candidates: " + str(counts.get("fixed_volume_count", 0)) + "; removable/external candidates: " + str(counts.get("removable_or_external_candidate_count", 0)) + "; drive letters are mount surfaces, not bus proof"
+        if k in {"pci", "pcie"} and isinstance(pv, dict):
+            return "PCI/PCIe topology = Class A PCI/PCIe capability present; exact slot/device map requires deeper bus enumeration; no PCI action executed"
+        if k in {"ports", "port"} and isinstance(pv, dict):
+            return "Ports topology = USB/SATA/PCIe/network ports are separate connection surfaces. Current evidence can describe capability and candidates, but mounted drives are not treated as physical port counts; no port or device action executed"
+        if k in {"operating_system", "platform"} and isinstance(pv, dict):
+            return "Operating platform = " + _safe_str(pv.get("system"), 80) + " " + _safe_str(pv.get("release"), 80) + " (" + _safe_str(pv.get("version"), 160) + "), machine " + _safe_str(pv.get("machine"), 80) + ", Python " + _safe_str(pv.get("python"), 80) + "; network/IP/MAC details redacted"
         if k in {"drivers", "driver", "driver_stack", "body_capability", "body_capabilities", "hardware_capability"} and isinstance(pv, dict):
             ca = pv.get("class_a") if isinstance(pv.get("class_a"), dict) else {}
             cb = pv.get("class_b") if isinstance(pv.get("class_b"), dict) else {}
@@ -2590,7 +3022,7 @@ def _run_fact_ticket(
     pass_count, majority_key, majority_value, quorum_debug = _extract_majority_value(probes, kind)
     decision, confidence, risk_tier = _decision_from_pass_count(pass_count)
     driver_support = _build_driver_capability_snapshot(kind) if kind in _HARDWARE_KINDS or kind in _DRIVER_KINDS else {}
-    public_majority_value = _presentation_value(kind, majority_value) if kind == "network" else majority_value
+    public_majority_value = _presentation_value(kind, majority_value) if kind in ({"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"} | _TOPOLOGY_FACT_KINDS) else majority_value
 
     ticket_id = _new_ticket_id("self_fact")
     ts = _now()
@@ -3231,6 +3663,42 @@ def self_driver_health():
     })
 
 
+@bp.route("/api/self/hardware-topology", methods=["GET", "OPTIONS"])
+def self_hardware_topology():
+    if request.method == "OPTIONS":
+        return _ok()
+    kind = _safe_str(request.args.get("kind") or request.args.get("fact") or "storage_topology", 80)
+    kind = _infer_fact_kind(kind, kind)
+    target = _safe_str(request.args.get("target") or request.args.get("drive") or "", 255)
+    snap: Dict[str, Any] = {}
+    if _Hi is not None:
+        try:
+            fn = getattr(_Hi, "get_boot_environment_snapshot", None)
+            if callable(fn):
+                snap = fn(force_refresh=False, refresh_reason="appself_hardware_topology", persist=True) or {}
+        except Exception:
+            snap = {}
+    if not snap:
+        snap = _read_json_file(_runtime_environment_snapshot_path())
+    topo = _topology_fact_from_snapshot(snap if isinstance(snap, dict) else {}, kind, target)
+    if topo in (None, {}, []):
+        topo = {
+            "topology_kind": kind,
+            "available": False,
+            "reason": "No topology builder available for requested kind.",
+            "action_taken": False,
+        }
+    return _ok({
+        "kind": kind,
+        "target": target,
+        "topology": topo,
+        "presentation_text": _presentation_text(kind, topo),
+        "read_only": True,
+        "action_taken": False,
+        "rule": "Topology separates device class, connection bus, protocol, physical location, mount surface, and ownership scope.",
+    })
+
+
 @bp.route("/api/self/reports/latest", methods=["GET", "OPTIONS"])
 def self_reports_latest():
     if request.method == "OPTIONS":
@@ -3259,5 +3727,5 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
 
 
 # ============================================================================
-# END OF appself.py v8.0.0 EvidenceCourt V7 Driver-Aware
+# END OF appself.py v8.0.0 EvidenceCourt V8 Topology-Aware
 # ============================================================================
