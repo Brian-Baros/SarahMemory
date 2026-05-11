@@ -1077,9 +1077,11 @@ The BackEnd Route is:
 ```
 POST /api/avatar/rem/start
 ```
-To Check Status:
+To Check Status: For REM SLEEP
 ```
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/avatar/rem/status" -Method GET
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/avatar/rem/report" -Method GET
+
 ```
 To FORCE the AIOS to WakeUp from REM SLEEP
 Powershell
