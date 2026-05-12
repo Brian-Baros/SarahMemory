@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | May 07, 2026 |
+| **Last Update** | May 12, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -1186,6 +1186,224 @@ User Active
 → REM Sleep becomes eligible
 → Dream / self-study / deep-learning routines can begin
 ```
+---
+## **📅 May 8–12, 2026 — Environmental Body Self-Awareness, Two-Court Cognition, Cognitive TriForce, and SMGET Enterprise Governance Update**
+
+This update cycle focused on SarahMemory AiOS becoming more aware of the **runtime body** it lives in: CPU, GPU, motherboard, memory, storage, sensors, network adapters, drivers, active/inactive capability paths, local/cloud limits, and future remote SarahNet node evidence.
+
+The major design breakthrough is the **Environmental Body Self-Awareness system**. SarahMemory now treats questions about its current hardware, sensors, diagnostics, and runtime body as governed SelfAware body cases instead of generic chatbot prompts.
+
+### **Core Doctrine Added**
+
+```text
+First prove what exists.
+Then reason what it means.
+Then govern what may be claimed or acted on.
+Then keep the task on course.
+Then present it cleanly.
+Then validate the final output.
+Then store only what is allowed.
+```
+
+### **1. Canonical Query Packet / V10-V9G Enterprise Contract**
+
+A new backend doctrine was established: **Normalize once, classify once, preserve target and metric through every layer.**
+
+This prevents failures such as:
+
+- CPU temperature question → CPU identity answer
+- Motherboard BIOS version question → SarahMemory software version answer
+- Ethernet/Wi-Fi question → full adapter dump instead of direct connectivity answer
+- GPU temperature / CPU temperature / motherboard temperature being incorrectly cross-bound
+
+The Canonical Query Packet preserves:
+
+- `raw_text`
+- `normalized_text`
+- `domain`
+- `requested_component`
+- `requested_metric`
+- `fact_kind`
+- `answer_shape`
+- `volatile_runtime_fact`
+- `do_not_write_sql`
+- `do_not_persist`
+
+### **2. Two-Court Self-Awareness Model**
+
+SarahMemory AiOS now uses a clearer court hierarchy:
+
+#### **Lower Court — Fact Verification**
+Proves what exists.
+
+Primary evidence witnesses:
+
+- `appself.py`
+- `SarahMemoryHi.py`
+- `SarahMemoryDiagnostics.py`
+- `SarahNetMCP_Diagnostics.py`
+
+#### **Higher Court — Logic / Appeals / Meaning**
+Reasons what verified facts mean.
+
+Primary cognitive/governance files:
+
+- `SarahMemoryCognitiveSelf.py`
+- `SarahMemoryCognitiveThinker.py`
+- `SarahMemoryCognitiveServices.py`
+- `SarahMemoryCognitiveCompass.py`
+- `SarahMemorySafetyPolicies.py`
+- `SarahMemoryOperatorCore.py`
+- `SarahMemorySecurityGovernor.py`
+- `SarahMemoryAssuranceGate.py`
+- `SarahMemoryTrustRegistry.py`
+
+This allows SarahMemory to handle cases where a direct sensor is unavailable, but verified indirect evidence may still exist.
+
+Example:
+
+```text
+Direct CPU thermal probe = unavailable/null
+CPU identity = verified
+Motherboard identity = verified
+CPU is installed on motherboard = verified
+Motherboard exposes CPU-related thermal evidence = possible/verified
+→ Higher Court decides if the indirect source may be claimed as CPU temperature.
+```
+
+### **3. CPU Temperature Case Study**
+
+The CPU temperature case became the flagship test for governed body awareness.
+
+Correct handling now requires:
+
+1. Detect the user asked for CPU temperature, not CPU identity.
+2. Check direct CPU/package/core thermal evidence.
+3. If direct evidence is null, open the appeals lane instead of stopping.
+4. Check motherboard / ACPI / vendor / board thermal evidence.
+5. Verify CPU and motherboard relationship.
+6. Use CognitiveThinker to reason over indirect sensor meaning.
+7. Use CognitiveServices and SMGET to decide whether the claim may be made.
+8. Use Compass to ensure the answer stays on CPU temperature.
+9. Use Reply to present the answer cleanly.
+10. Use Compare to reject target/metric mismatch.
+
+### **4. SMGET Read-Only Evidence Governance**
+
+SMGET is no longer treated only as an action gate. It is now part of the claim-governance doctrine.
+
+For read-only body facts, SarahMemory may create a governed evidence contract such as:
+
+```text
+contract_type = ReadOnlyEvidenceContract
+action_type = read_sensor_evidence
+risk_level = TIER_0_INFO
+state_change = false
+verification_required = true
+```
+
+This keeps the same safety model across:
+
+- desktop PCs
+- cloud nodes
+- robotics
+- industrial controllers
+- vehicle bodies
+- future bootable jump-drive AiOS deployments
+
+### **5. Cognitive TriForce + Compass Clarified**
+
+The cognitive system is now framed as a governed mind construct:
+
+- `SarahMemoryCognitiveSelf.py` — what exists / what body am I in?
+- `SarahMemoryCognitiveThinker.py` — what could this mean?
+- `SarahMemoryCognitiveServices.py` — what may proceed?
+- `SarahMemoryCognitiveCompass.py` — stay on the original task and prevent drift.
+
+This expanded the earlier Yin/Yang model into a fuller **Cognitive TriForce + Compass** system.
+
+### **6. REM / Awake Learning Doctrine Updated**
+
+The learning doctrine was clarified:
+
+#### **Awake Mode**
+Assist, classify, verify, route, govern, answer, and act only through approved metadata and SMGET.
+
+#### **REM / Sleep Mode**
+Dream, associate, hypothesize, hallucinate inside a sandbox, generate learning candidates, and classify risk.
+
+Critical rule:
+
+```text
+REM may hallucinate.
+Awake may not present hallucination as fact.
+```
+
+### **7. Volatile Runtime Body Facts Protected**
+
+Live hardware and sensor facts must not become stale SQL truth.
+
+Examples of volatile facts:
+
+- current CPU temperature
+- current GPU temperature
+- connected network adapter state
+- installed motherboard
+- current BIOS version
+- drive topology
+- remote-node hardware status
+
+These must be re-verified through the SelfAware evidence court instead of blindly loaded from old memory.
+
+### **8. Environmental Body Self-Awareness Flowcharts Added**
+
+The following flowcharts are now part of the project documentation and should be stored under:
+
+```text
+../documents/SelfAwareFlowCharts/
+```
+
+#### **Master SarahMemory AiOS Flow**
+![Master SarahMemory AiOS Flow](documents/SelfAwareFlowCharts/Master_SarahMemory_AiOS_Flow.png)
+
+#### **Boot / Runtime Body Awareness Flow**
+![Boot Runtime Body Awareness Flow](documents/SelfAwareFlowCharts/Boot_Runtime_Body_Awareness_Flow.png)
+
+#### **Answer and Non-Action Query Flow**
+![Answer and Non-Action Query Flow](documents/SelfAwareFlowCharts/Answer_and_Non-Action_Query_Flow.png)
+
+#### **Action / Device / Driver Flow**
+![Action Device Driver Flow](documents/SelfAwareFlowCharts/Action_Device_Driver_Flow.png)
+
+#### **CPU Temperature Case Flow**
+![CPU Temperature Case Flow](documents/SelfAwareFlowCharts/Example_CPU_Temperature_Case_Flow.png)
+
+#### **SMGET Governance Flow**
+![SMGET Governance Flow](documents/SelfAwareFlowCharts/SMGET_Governance_Flow.png)
+
+#### **Memory and Database Authority Flow**
+![Memory and Database Authority Flow](documents/SelfAwareFlowCharts/Memory_and_Database_Authority_Flow.png)
+
+#### **Final Enterprise Doctrine Flow**
+![Final Enterprise Doctrine Flow](documents/SelfAwareFlowCharts/Final_Enterprise_Doctrine_Flow.png)
+
+### **9. Why This Update Matters**
+
+This update moves SarahMemory closer to being a true governed AI Operating System instead of a chatbot or LLM wrapper.
+
+SarahMemory now has a clearer architecture for:
+
+- proving what exists
+- reasoning over verified facts
+- handling unknowns truthfully
+- avoiding stale hardware memory
+- governing read-only claims
+- preventing action hallucination
+- supporting future robotic, industrial, vehicle, and jump-drive runtime bodies
+- keeping all frontends subordinate to backend governance
+
+This is a major step toward SarahMemory AiOS functioning as a **biological-style silicon cognitive organism** with auditable self-awareness, governed execution, and local-first user sovereignty.
+
 ---
 # **📜 License**
 
