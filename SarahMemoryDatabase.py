@@ -337,6 +337,32 @@ def _resolve_system_log_db_path():
     return os.path.join(dd, "system_logs.db")
 
 
+def _sm_is_volatile_body_fact_query(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    hardware_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
+        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    )
+    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
+
+
+def _sm_meta_blocks_persistence(meta=None, text: str = "") -> bool:
+    meta = meta if isinstance(meta, dict) else {}
+    if bool(meta.get("do_not_write_sql") or meta.get("do_not_persist") or meta.get("do_not_learn") or meta.get("volatile_runtime_fact")):
+        return True
+    pkg = meta.get("verified_artifact_package") if isinstance(meta.get("verified_artifact_package"), dict) else {}
+    if pkg and bool(pkg.get("volatile") or pkg.get("do_not_write_sql") or pkg.get("volatile_runtime_fact")):
+        return True
+    cp = meta.get("chat_classification_packet") if isinstance(meta.get("chat_classification_packet"), dict) else {}
+    if cp and str(cp.get("domain") or "") == "selfaware_body":
+        return True
+    return _sm_is_volatile_body_fact_query(text)
+
+
 def _json_dumps_safe(value, limit: int = 100000) -> str:
     try:
         raw = json.dumps(value if value is not None else {}, ensure_ascii=False)
@@ -673,6 +699,9 @@ def init_database():
 # --- QA Cache Helpers ---
 def search_answers(query):
     """Unified search over local QA cache and (optionally) cloud QA cache."""
+    if _sm_is_volatile_body_fact_query(query):
+        logger.info("[V10/V9C] QA cache recall blocked for volatile SelfAware body fact query.")
+        return []
     results = []
 
     # 1) Local sqlite first (fast, offline-safe)
@@ -716,6 +745,9 @@ def search_answers(query):
 
 def store_answer(query, answer):
     """Store answer locally and push to cloud hub if available."""
+    if _sm_is_volatile_body_fact_query(query) or _sm_is_volatile_body_fact_query(answer):
+        logger.info("[V10/V9C] QA cache store blocked for volatile SelfAware body fact.")
+        return False
     timestamp = datetime.datetime.now().isoformat()
 
     # 1) Local sqlite
@@ -815,6 +847,9 @@ def connect_user_profile_db():
 
 # --- Diagnostics Export ---
 def record_qa_feedback(query, score, feedback, timestamp=None):
+    if _sm_is_volatile_body_fact_query(query):
+        logger.info("[V10/V9C] QA feedback update blocked for volatile SelfAware body fact query.")
+        return False
     try:
         if not timestamp:
            timestamp = datetime.datetime.now().isoformat()
@@ -1326,6 +1361,9 @@ def store_response_history(*args, **kwargs):
             meta = {}
         if not isinstance(meta, dict):
             meta = {"_meta": str(meta)}
+        if _sm_meta_blocks_persistence(meta, text=str(user_text or response_text or "")):
+            logger.info("[V10/V9C] response_history store blocked for volatile SelfAware body fact.")
+            return False
 
         intent = str(kwargs.get("intent") or meta.get("intent") or meta.get("Intent") or "")
         session_id = str(kwargs.get("session_id") or meta.get("session_id") or meta.get("sid") or "")
@@ -1454,6 +1492,9 @@ def store_response_history(*args, **kwargs):
         return None
 
 def store_comparison_outcome(query, reply, intent, source, confidence, meta=None):
+    if _sm_meta_blocks_persistence(meta, text=str(query or reply or "")):
+        logger.info("[V10/V9C] comparison outcome store blocked for volatile SelfAware body fact.")
+        return False
     try:
         import sqlite3, os, datetime as _dt
         db_path = getattr(config, "SYSTEM_LOG_DB", None) if "config" in globals() else None

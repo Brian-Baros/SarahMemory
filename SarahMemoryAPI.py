@@ -1905,6 +1905,19 @@ def _call_mesh(prompt: str, provider: Optional[str] = None, model: Optional[str]
     except Exception as e:
         return None, str(e)
 
+def _sm_is_selfaware_body_query(text: str) -> bool:
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    hardware_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
+        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    )
+    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
+
+
 def send_to_api(
     user_input: str,
     provider: str = "auto",
@@ -1948,6 +1961,25 @@ def send_to_api(
         }
     """
     start_time = time.time()
+
+    # V10/V9C: live body-map questions must never be answered by a helper model.
+    # They require appself/SelfAware Evidence Court so the model cannot invent CPU/GPU/etc.
+    classification_packet = kwargs.get("chat_classification_packet") or kwargs.get("classification_packet") or {}
+    if (isinstance(classification_packet, dict) and str(classification_packet.get("domain") or "") == "selfaware_body") or _sm_is_selfaware_body_query(user_input):
+        return {
+            "source": "api_blocked_selfaware_body",
+            "data": None,
+            "model_used": None,
+            "prompt": user_input,
+            "intent": "selfaware_body",
+            "tone": tone,
+            "emotion": {},
+            "cached": False,
+            "error": "Live hardware/body-map facts require SelfAware Evidence Court, not model generation.",
+            "do_not_write_sql": True,
+            "do_not_persist": True,
+            "volatile_runtime_fact": True,
+        }
 
     # Detect run mode and offline status
     try:

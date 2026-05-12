@@ -2971,3 +2971,55 @@ __all__ = [
 # ====================================================================
 # END OF SarahMemoryAdvCU.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# V10/V9C Chat Domain Classifier Helper
+# =============================================================================
+def classify_chat_domain(text: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a governed chat-domain classification helper result.
+
+    This augments classify_intent without replacing it. It is used to separate
+    bot addressing from identity intent and to mark live body-map facts for the
+    SelfAware Evidence Court lane.
+    """
+    raw = str(text or "")
+    norm = re.sub(r"\s+", " ", raw.strip()).lower()
+    try:
+        advcu_intent = str(classify_intent(raw) or "")
+    except Exception:
+        advcu_intent = "question"
+    addressed = bool(re.search(r"(?<![a-z0-9])(sarahmemory|sarah ai|sarah)(?![a-z0-9])", norm))
+    hardware_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard", "ram",
+        "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi", "ethernet",
+        "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    )
+    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    is_selfaware = any(k in norm for k in hardware_terms) and any(k in norm for k in self_scope_terms)
+    is_identity = (not is_selfaware) and bool(re.search(r"\b(what\s+(?:is|'s)\s+your\s+name|who\s+are\s+you|your\s+name|what\s+version|who\s+(?:made|created|built|designed|engineered|developed)\s+you|creator)\b", norm))
+    fact_kind = ""
+    if is_selfaware:
+        if "gpu" in norm or "graphics" in norm:
+            fact_kind = "gpu"
+        elif "cpu" in norm or "processor" in norm:
+            fact_kind = "temperature" if "temp" in norm or "temperature" in norm else "cpu"
+        elif "motherboard" in norm or "mainboard" in norm or "baseboard" in norm:
+            fact_kind = "motherboard"
+        elif "ram" in norm or "memory" in norm:
+            fact_kind = "memory"
+        elif "network" in norm or "wifi" in norm or "wi-fi" in norm or "ethernet" in norm:
+            fact_kind = "network_card"
+        elif "drive" in norm or "disk" in norm or "storage" in norm:
+            fact_kind = "storage_topology"
+        else:
+            fact_kind = "general_system_fact"
+    domain = "selfaware_body" if is_selfaware else ("identity" if is_identity else advcu_intent or "general")
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "domain": domain,
+        "intent": "hardware_fact" if is_selfaware else ("identity_query" if is_identity else advcu_intent),
+        "fact_kind": fact_kind,
+        "addressed_bot": addressed,
+        "requires_evidence_court": bool(is_selfaware),
+        "source": "SarahMemoryAdvCU.classify_chat_domain",
+    }

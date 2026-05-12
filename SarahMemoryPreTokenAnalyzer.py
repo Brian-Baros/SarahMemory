@@ -1576,3 +1576,62 @@ if __name__ == "__main__":
             if analysis.get("ambiguities"):
                 merged = merge_clarification_answer(analysis, "Louisiana")
                 print("MERGED:", json.dumps(merged.get("resolved_packet"), indent=2, ensure_ascii=False))
+
+# =============================================================================
+# V10/V9C Chat Classification Skeleton
+# =============================================================================
+def build_chat_classification_skeleton(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a deterministic pre-token skeleton for /api/chat.
+
+    This does not execute actions and does not answer. It separates addressing
+    SarahMemory from identity intent, and marks live hardware/body-map questions
+    for SelfAware Evidence Court routing.
+    """
+    raw = _coerce_text(text)
+    normalized = _normalize_text(raw).lower()
+    addressed = bool(re.search(r"(?<![a-z0-9])(sarahmemory|sarah ai|sarah)(?![a-z0-9])", normalized))
+    hardware_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
+        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    )
+    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    is_selfaware = any(k in normalized for k in hardware_terms) and any(k in normalized for k in self_scope_terms)
+    identity_patterns = (
+        r"\bwhat\s+(?:is|'s)\s+your\s+name\b",
+        r"\bwho\s+are\s+you\b",
+        r"\byour\s+name\b",
+        r"\bwhat\s+version\b",
+        r"\bwho\s+(?:made|created|built|designed|engineered|developed)\s+you\b",
+    )
+    is_identity = (not is_selfaware) and any(re.search(p, normalized) for p in identity_patterns)
+    fact_kind = ""
+    if is_selfaware:
+        if "gpu" in normalized or "graphics" in normalized:
+            fact_kind = "gpu"
+        elif "cpu" in normalized or "processor" in normalized:
+            fact_kind = "temperature" if "temp" in normalized or "temperature" in normalized else "cpu"
+        elif "motherboard" in normalized or "mainboard" in normalized or "baseboard" in normalized:
+            fact_kind = "motherboard"
+        elif "ram" in normalized or "memory" in normalized:
+            fact_kind = "memory"
+        elif "network" in normalized or "wifi" in normalized or "wi-fi" in normalized or "ethernet" in normalized:
+            fact_kind = "network_card"
+        elif "drive" in normalized or "disk" in normalized or "storage" in normalized:
+            fact_kind = "storage_topology"
+        else:
+            fact_kind = "general_system_fact"
+    domain = "selfaware_body" if is_selfaware else ("identity" if is_identity else "general")
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "module": MODULE_NAME,
+        "raw_text": raw,
+        "normalized_text": normalized,
+        "addressed_bot": addressed,
+        "addressed_name": "SarahMemory" if addressed else "",
+        "domain_hint": domain,
+        "intent_hint": "hardware_fact" if is_selfaware else ("identity_query" if is_identity else "general"),
+        "fact_kind_hint": fact_kind,
+        "requires_evidence_court": bool(is_selfaware),
+        "context_packet_seen": bool(isinstance(context_packet, dict)),
+    }

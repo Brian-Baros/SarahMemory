@@ -174,6 +174,65 @@ def _normalize_text(value: Any) -> str:
     return text
 
 
+def _is_volatile_body_fact_query(text: Any) -> bool:
+    t = _normalize_text(text).lower()
+    if not t:
+        return False
+    hardware_terms = (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
+        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    )
+    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
+
+
+def _artifact_text_from_package(package: Dict[str, Any]) -> str:
+    text = _normalize_text((package or {}).get("artifact_text") or "")
+    kind = str((package or {}).get("artifact_kind") or "")
+    try:
+        text = re.sub(r"^\s*Verified\s+SelfAware\s+fact\s*\([^)]*\)\s*:\s*", "", text, flags=re.I).strip()
+        labels = {"cpu": "CPU", "gpu": "GPU", "motherboard": "Motherboard", "memory": "Memory", "network": "Network adapters", "network_card": "Network adapters"}
+        candidates = [labels.get(kind.lower(), ""), "CPU", "GPU", "Motherboard", "Memory", "Network adapters"]
+        for label in candidates:
+            if label and text.lower().startswith((label + " =").lower()):
+                text = text[len(label) + 2:].strip()
+                break
+    except Exception:
+        pass
+    return text
+
+
+def compare_verified_artifact_package(user_text: str, generated_response: str, package: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Integrity/security-only Compare path for volatile SelfAware artifacts.
+
+    This intentionally does not record QA feedback, does not fetch local/cloud
+    sources, and does not send the artifact back to Evidence Court.
+    """
+    response_text = _normalize_text(generated_response)
+    artifact_text = _artifact_text_from_package(package if isinstance(package, dict) else {})
+    low_user = _normalize_text(user_text).lower()
+    wants_court = any(k in low_user for k in ("evidence court", "court result", "quorum", "confidence", "proof", "show evidence"))
+    courtroom_leak = bool(re.search(r"\bVerified\s+SelfAware\s+fact\b", response_text, re.I)) and not wants_court
+    privacy_leak = bool(re.search(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", response_text, re.I))
+    artifact_preserved = bool(artifact_text and artifact_text.lower() in response_text.lower())
+    accepted = bool(artifact_preserved and not courtroom_leak and not privacy_leak)
+    return {
+        "ok": True,
+        "accepted": accepted,
+        "decision": "ACCEPT_INTEGRITY_SECURITY_ONLY" if accepted else "REPAIR_REQUIRED",
+        "compare_mode": "integrity_security_only",
+        "artifact_preserved": artifact_preserved,
+        "courtroom_leak": courtroom_leak,
+        "privacy_leak": privacy_leak,
+        "sql_recorded": False,
+        "do_not_reverify": True,
+        "do_not_write_sql": True,
+        "source": "SarahMemoryCompare.compare_verified_artifact_package",
+        "version": "V10_V9C",
+    }
+
+
 def _looks_like_placeholder(text: str) -> bool:
     t = _normalize_text(text).lower()
     if not t:
@@ -740,7 +799,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
                 decision = "FALLBACK_TO_LOWER_TIER"
                 recommended_next = "fallback_to_lower_deterministic_tier"
 
-        if record_qa_feedback:
+        if record_qa_feedback and not _is_volatile_body_fact_query(user_text):
             try:
                 record_qa_feedback(
                     user_text,
@@ -966,6 +1025,9 @@ def _maybe_store_compare_hit(
     dbmod=None,
 ) -> None:
     if confidence is None:
+        return
+    if _is_volatile_body_fact_query(query) or _is_volatile_body_fact_query(reply):
+        logger.debug("[V10/V9C] Skipped comparison store for volatile SelfAware body fact.")
         return
     threshold = float(threshold if threshold is not None else COMPARE_THRESHOLD_VALUE)
 

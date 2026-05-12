@@ -5672,3 +5672,138 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryGlobals.py v8.0.0
 # ====================================================================
+
+# =============================================================================
+# V10/V9C Universal Runtime Body + Memory Authority Contract
+# =============================================================================
+# Development-mode contract layer. These flags intentionally coexist with older
+# scattered model/provider flags. The setup mechanism can consolidate them later.
+SARAH_AI_DEFAULT_NAME = os.getenv("SARAH_AI_DEFAULT_NAME", "SarahMemory").strip() or "SarahMemory"
+SARAH_AI_ACTIVE_NAME = os.getenv("SARAH_AI_ACTIVE_NAME", os.getenv("SARAH_ACTIVE_NAME", "Sarah")).strip() or "Sarah"
+SARAH_AI_NAME_SOURCE = os.getenv("SARAH_AI_NAME_SOURCE", "default").strip() or "default"
+SARAH_AI_PLATFORM_NAME = os.getenv("SARAH_AI_PLATFORM_NAME", "SarahMemory AiOS").strip() or "SarahMemory AiOS"
+SARAH_AI_NAME_USER_OVERRIDE_ALLOWED = _env_flag("SARAH_AI_NAME_USER_OVERRIDE_ALLOWED", "true")
+SARAH_STATIC_ROUTER_FALLBACK_ENABLED = _env_flag("SARAH_STATIC_ROUTER_FALLBACK_ENABLED", "true")
+SARAH_MODEL_ASSISTED_CLASSIFICATION = _env_flag("SARAH_MODEL_ASSISTED_CLASSIFICATION", "true")
+
+
+def get_identity_contract() -> dict:
+    """Return governed identity defaults without forcing a permanent DB profile."""
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "default_name": SARAH_AI_DEFAULT_NAME,
+        "active_name": SARAH_AI_ACTIVE_NAME,
+        "name_source": SARAH_AI_NAME_SOURCE,
+        "platform": SARAH_AI_PLATFORM_NAME,
+        "creator": globals().get("AUTHOR", "Brian Lee Baros"),
+        "organization": os.getenv("SARAH_ORG_NAME", "SOFTDEV0 LLC"),
+        "user_override_allowed": bool(SARAH_AI_NAME_USER_OVERRIDE_ALLOWED),
+        "static_fallback_allowed": True,
+    }
+
+
+def get_model_availability_contract(category: str = "reasoning") -> dict:
+    """Summarize model availability from current scattered development flags."""
+    selected = None
+    fallbacks = []
+    tier = "POOR"
+    source = "none"
+    try:
+        if "resolve_model" in globals() and callable(globals().get("resolve_model")):
+            res = resolve_model(category, text="", meta=None, models_dir=globals().get("MODELS_DIR", None)) or {}
+            if isinstance(res, dict):
+                selected = res.get("selected")
+                fallbacks = list(res.get("fallbacks") or [])
+                tier = str(res.get("tier_rating") or res.get("tier") or tier).upper()
+                source = str(res.get("source") or "resolver")
+    except Exception:
+        selected = None
+        fallbacks = []
+    enabled = []
+    try:
+        cfg = globals().get("MODEL_CONFIG", {}) or {}
+        if isinstance(cfg, dict):
+            enabled = [str(k) for k, v in cfg.items() if bool(v)]
+    except Exception:
+        enabled = []
+    lm_present = bool(selected or fallbacks or enabled)
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "category": str(category or "reasoning"),
+        "lm_present": lm_present,
+        "local_llm_available": lm_present,
+        "selected_model": selected,
+        "fallback_models": fallbacks,
+        "enabled_model_count": len(enabled),
+        "tier_rating": tier,
+        "source": source,
+        "model_assisted_classification": bool(SARAH_MODEL_ASSISTED_CLASSIFICATION and lm_present),
+        "static_router_fallback_enabled": bool(SARAH_STATIC_ROUTER_FALLBACK_ENABLED),
+    }
+
+
+def get_runtime_body_contract() -> dict:
+    """Describe the currently inhabited runtime body without asserting hardware facts."""
+    try:
+        rm = get_runtime_meta() if "get_runtime_meta" in globals() else {}
+    except Exception:
+        rm = {}
+    run_mode = str(globals().get("RUN_MODE", rm.get("run_mode", "local")) or "local").lower()
+    device_mode = str(globals().get("DEVICE_MODE", rm.get("device_mode", "local_agent")) or "local_agent")
+    if run_mode == "cloud":
+        body_type = "cloud_demo_server" if device_mode == "public_web" else "cloud_server"
+    elif device_mode == "headless":
+        body_type = "edge_or_headless_node"
+    elif "robot" in os.getenv("SARAH_BODY_TYPE", "").lower():
+        body_type = "robot"
+    else:
+        body_type = os.getenv("SARAH_BODY_TYPE", "local_agent_body").strip() or "local_agent_body"
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "body_type": body_type,
+        "run_mode": run_mode,
+        "device_mode": device_mode,
+        "device_profile": str(globals().get("DEVICE_PROFILE", rm.get("device_profile", "Standard")) or "Standard"),
+        "body_authority": "local_selfaware_evidence_court",
+        "memory_authority": "runtime_memory_policy",
+        "action_authority": "SMGET_governed",
+        "network_role": str(globals().get("NODE_NAME", "SarahMemoryNode")),
+        "body_map_required": True,
+    }
+
+
+def get_memory_authority_contract() -> dict:
+    """Return memory-write policy for this runtime body/deployment surface."""
+    run_mode = str(globals().get("RUN_MODE", "local") or "local").lower()
+    device_mode = str(globals().get("DEVICE_MODE", "local_agent") or "local_agent")
+    local_only = bool(globals().get("LOCAL_ONLY_MODE", False))
+    cloud_enabled = bool(globals().get("CLOUD_DB_ENABLED", False)) and not local_only
+    if run_mode == "cloud" and cloud_enabled:
+        primary = "remote_sql"
+    else:
+        primary = "sqlite"
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "run_mode": run_mode,
+        "device_mode": device_mode,
+        "primary_memory_backend": primary,
+        "cloud_memory_backend_allowed": bool(cloud_enabled),
+        "cloud_sync_allowed": bool(cloud_enabled and run_mode != "test"),
+        "private_memory_mode": bool(local_only or run_mode == "local"),
+        "demo_memory_mode": bool(run_mode == "cloud" or device_mode == "public_web"),
+        "hardware_fact_persistence": "blocked",
+        "volatile_body_fact_policy": "redacted_audit_only",
+        "identity_profile_persistence": "allowed_local" if primary == "sqlite" else "allowed_demo_scope",
+        "chat_history_persistence": "allowed_local" if primary == "sqlite" else "allowed_demo_scope",
+        "redacted_audit_allowed": True,
+    }
+
+
+def get_chat_runtime_contract() -> dict:
+    return {
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "identity": get_identity_contract(),
+        "runtime_body": get_runtime_body_contract(),
+        "memory_policy": get_memory_authority_contract(),
+        "model_state": get_model_availability_contract("reasoning"),
+    }

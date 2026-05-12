@@ -2675,6 +2675,29 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     trace["policy"] = {"allowed_tiers": allowed_tiers, "approved_modules": approved_modules}
     trace["core_governance"] = _core_governance_trace()
 
+    # V10/V9C: preserve /api/chat classification packet and refuse to let a model
+    # invent live body-map facts if the SelfAware route somehow failed upstream.
+    classification_packet = meta.get("chat_classification_packet") if isinstance(meta.get("chat_classification_packet"), dict) else {}
+    if not classification_packet:
+        cp2 = (meta.get("context_packet") or {}).get("chat_classification_packet") if isinstance(meta.get("context_packet"), dict) else {}
+        classification_packet = cp2 if isinstance(cp2, dict) else {}
+    if classification_packet:
+        trace["chat_classification_packet"] = classification_packet
+        inp.meta["chat_classification_packet"] = classification_packet
+        if str(classification_packet.get("domain") or "") == "selfaware_body":
+            kind = str(classification_packet.get("fact_kind") or "hardware fact")
+            reply = f"This {kind.replace('_', ' ')} question requires the SelfAware Evidence Court. I will not generate an unverified model answer for live body hardware."
+            return NeuronResult(
+                ok=False,
+                reply=reply,
+                confidence=0.0,
+                intent="selfaware_body",
+                source="neuron:selfaware_route_required",
+                artifacts={"chat_classification_packet": classification_packet},
+                trace=trace,
+                actions=[],
+            )
+
     # Tier-0: Fast deterministic math (bypass heavy routing/QA gates)
     if allowed_tiers.get('tier0', True):
         det = _try_logiccalc(inp.text)
