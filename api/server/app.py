@@ -166,12 +166,10 @@ def _sm_is_selfaware_fact_question(text: str) -> bool:
         return False
 
     system_scope = any(k in t for k in (
-        "my ", "your ", "you using", "you have", "do you have", "are you running", "you running", "currently running",
-        "am i using", "are you using", "system",
+        "my ", "your ", "you using", "am i using", "are you using", "system",
         "machine", "computer", "pc", "runtime", "body map", "body-map", "hardware",
         "drive", "disk", "disc", "usb", "motherboard", "cpu", "processor", "gpu",
         "graphics", "ram", "memory", "fan", "rpm", "temperature", "temp", "network adapter",
-        "sata", "nvme", "pcie", "pci-e", "port", "ports",
         "ethernet", "wifi", "wi-fi", "python version", "node name", "hostname",
     ))
     if not system_scope:
@@ -183,7 +181,6 @@ def _sm_is_selfaware_fact_question(text: str) -> bool:
         "volume label", "drive label", "label", "fan", "rpm", "temperature", "temp",
         "thermal", "network adapter", "ethernet", "wifi", "wi-fi", "ip address",
         "hostname", "node name", "python version", "os version", "operating system",
-        "sata", "sata ports", "usb ports", "nvme", "pcie", "pci-e", "ports",
     )
     if not any(k in t for k in fact_terms):
         return False
@@ -196,36 +193,6 @@ def _sm_is_selfaware_fact_question(text: str) -> bool:
     return True
 
 
-def _sm_selfaware_thermal_target_component(text: str, kind: str = "", target: str = "") -> str:
-    """Classify the physical component for SelfAware thermal questions.
-
-    Backend-only question targeting: proof still belongs to appself.py and the
-    Cognitive-Triforce/SMGET appeals lane.
-    """
-    t = (text or "").strip().lower()
-    tg = (target or "").strip().lower()
-    k = (kind or "").strip().lower()
-    if k != "temperature" and not any(x in t for x in ("temp", "temperature", "thermal", "overheat", "heat")):
-        return ""
-    if tg in {"cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard", "ambient", "battery", "drive", "storage", "motor", "controller", "body_thermal"}:
-        return {"processor": "cpu", "graphics": "gpu", "mainboard": "motherboard", "baseboard": "motherboard", "controller": "motor_controller"}.get(tg, tg)
-    if any(x in t for x in ("cpu", "processor")):
-        return "cpu"
-    if any(x in t for x in ("gpu", "graphics", "video card", "nvidia", "radeon")):
-        return "gpu"
-    if any(x in t for x in ("motherboard", "mainboard", "baseboard", "system board", "board temp", "chipset", "vrm")):
-        return "motherboard"
-    if any(x in t for x in ("drive", "disk", "ssd", "hdd", "nvme", "storage")):
-        return "drive"
-    if any(x in t for x in ("battery", "battery pack")):
-        return "battery"
-    if any(x in t for x in ("motor", "servo", "actuator", "controller")):
-        return "motor_controller"
-    if any(x in t for x in ("ambient", "room", "environment")):
-        return "ambient"
-    return "body_thermal"
-
-
 def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     t = (text or "").strip().lower()
     target = ""
@@ -233,37 +200,19 @@ def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     if m:
         target = m.group(1).upper() + ":"
 
-    # V10/V9E: thermal requests stay generalized by kind but preserve component.
-    if any(k in t for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature")):
+    # V10/V9F: thermal requests stay generalized by kind but must preserve the requested component.
+    # This keeps SelfAware thermal cases target-aware across CPU, GPU, motherboard, drive,
+    # battery, motor/controller, and generic body thermal questions.
+    if any(k in t for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature", "cpu thermal", "processor thermal", "cpu heat", "processor heat")):
         return "temperature", "cpu"
-    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature")):
+    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature", "gpu thermal", "graphics thermal")):
         return "temperature", "gpu"
-    if any(k in t for k in ("motherboard temp", "motherboard temperature", "mainboard temp", "baseboard temp", "board temp", "vrm temp", "chipset temp")):
-        return "temperature", "motherboard"
-    if any(k in t for k in ("drive temp", "disk temp", "ssd temp", "hdd temp", "nvme temp", "storage temp")):
-        return "temperature", target or "drive"
-    if any(k in t for k in ("battery temp", "battery temperature")):
-        return "temperature", "battery"
-    if any(k in t for k in ("motor temp", "servo temp", "controller temp", "actuator temp")):
-        return "temperature", "motor_controller"
-    if any(k in t for k in ("temperature", "temp", "thermal", "overheating", "overheat")):
-        return "temperature", target or _sm_selfaware_thermal_target_component(text, "temperature", target)
     if any(k in t for k in ("fan", "rpm")):
         return "fan_speed", target
     if any(k in t for k in ("gpu", "graphics", "video card")):
         return "gpu", target
     if any(k in t for k in ("cpu", "processor")):
         return "cpu", target
-    if any(k in t for k in ("motherboard", "mainboard", "baseboard", "system board")):
-        return "motherboard", target
-    if any(k in t for k in ("sata port", "sata ports", "how many sata")):
-        return "sata_ports", target
-    if any(k in t for k in ("usb port", "usb ports", "how many usb", "usb host", "usb controller")):
-        return "usb_ports", target
-    if any(k in t for k in ("nvme", "m.2", "m2 drive", "pcie", "pci-e", "pci express", "storage topology", "storage devices", "drive topology", "hardware topology")):
-        return "storage_topology", target
-    if any(k in t for k in ("operating system", "what os", "which os", "os version", "platform")):
-        return "operating_system", target
     if any(k in t for k in ("usb", "drive label", "volume label", "label on")):
         return "usb_label", target
     if any(k in t for k in ("disk", "disc", "drive", "storage", "space", "free gb", "used gb")):
@@ -271,9 +220,8 @@ def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     if any(k in t for k in ("ram", "memory")):
         return "memory", target
     if any(k in t for k in ("network", "ethernet", "wifi", "wi-fi", "adapter", "ip address")):
-        return "network_card", target
+        return "network", target
     return "general_system_fact", target
-
 
 
 def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
@@ -292,428 +240,6 @@ def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
     return text
 
 
-# ---------------------------------------------------------------------------
-# V10/V9C Unified Chat Classification + Runtime Body/Memory Authority Contract
-# ---------------------------------------------------------------------------
-_SM_V9C_CONTRACT = "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY"
-_SM_HARDWARE_FACT_KINDS = {
-    "cpu", "gpu", "motherboard", "memory", "network", "network_card",
-    "temperature", "fan_speed", "disk_space", "storage_topology", "usb_label",
-    "usb_ports", "sata_ports", "operating_system", "general_system_fact",
-}
-
-
-def _sm_identity_contract() -> dict:
-    try:
-        fn = getattr(config, "get_identity_contract", None)
-        if callable(fn):
-            data = fn()
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    return {
-        "default_name": str(getattr(config, "SARAH_AI_DEFAULT_NAME", "SarahMemory")),
-        "active_name": str(getattr(config, "SARAH_AI_ACTIVE_NAME", BRAND_NAME)),
-        "name_source": str(getattr(config, "SARAH_AI_NAME_SOURCE", "hardcoded_fallback")),
-        "platform": str(getattr(config, "SARAH_AI_PLATFORM_NAME", PLATFORM_NAME)),
-        "creator": CREATOR_NAME,
-        "organization": ORG_NAME,
-        "user_override_allowed": bool(getattr(config, "SARAH_AI_NAME_USER_OVERRIDE_ALLOWED", True)),
-    }
-
-
-def _identity_payload():
-    ident = _sm_identity_contract()
-    return {
-        "name": str(ident.get("active_name") or ident.get("default_name") or BRAND_NAME),
-        "default_name": str(ident.get("default_name") or "SarahMemory"),
-        "name_source": str(ident.get("name_source") or "fallback"),
-        "platform": str(ident.get("platform") or PLATFORM_NAME),
-        "version": PROJECT_VERSION,
-        "creator": str(ident.get("creator") or CREATOR_NAME),
-        "organization": str(ident.get("organization") or ORG_NAME),
-        "build": "webui-server",
-        "user_override_allowed": bool(ident.get("user_override_allowed", True)),
-    }
-
-
-def _sm_runtime_body_contract() -> dict:
-    try:
-        fn = getattr(config, "get_runtime_body_contract", None)
-        if callable(fn):
-            data = fn()
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    try:
-        meta = config.get_runtime_meta() if hasattr(config, "get_runtime_meta") else {}
-    except Exception:
-        meta = {}
-    run_mode = str(getattr(config, "RUN_MODE", (meta or {}).get("run_mode", "local")) or "local")
-    device_mode = str(getattr(config, "DEVICE_MODE", (meta or {}).get("device_mode", "local_agent")) or "local_agent")
-    if run_mode == "cloud":
-        body_type = "cloud_demo_server" if device_mode == "public_web" else "cloud_server"
-    elif device_mode == "headless":
-        body_type = "edge_or_headless_node"
-    else:
-        body_type = "local_agent_body"
-    return {
-        "contract": _SM_V9C_CONTRACT,
-        "body_type": body_type,
-        "run_mode": run_mode,
-        "device_mode": device_mode,
-        "device_profile": str(getattr(config, "DEVICE_PROFILE", (meta or {}).get("device_profile", "Standard")) or "Standard"),
-        "body_authority": "local_selfaware_evidence_court",
-        "action_authority": "SMGET_governed",
-        "network_role": str(getattr(config, "NODE_NAME", "SarahMemoryNode")),
-    }
-
-
-def _sm_model_state_contract() -> dict:
-    try:
-        fn = getattr(config, "get_model_availability_contract", None)
-        if callable(fn):
-            data = fn()
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    selected = ""
-    tier = "POOR"
-    try:
-        res = config.resolve_model("reasoning", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) if hasattr(config, "resolve_model") else {}
-        if isinstance(res, dict):
-            selected = str(res.get("selected") or "")
-            tier = str(res.get("tier_rating") or res.get("tier") or tier).upper()
-    except Exception:
-        pass
-    enabled_models = []
-    try:
-        mc = getattr(config, "MODEL_CONFIG", {}) or {}
-        if isinstance(mc, dict):
-            enabled_models = [str(k) for k, v in mc.items() if bool(v)]
-    except Exception:
-        enabled_models = []
-    return {
-        "lm_present": bool(selected or enabled_models),
-        "selected_reasoning_model": selected,
-        "enabled_model_count": len(enabled_models),
-        "tier_rating": tier,
-        "model_assisted_classification": bool(selected or enabled_models),
-        "static_router_fallback_enabled": True,
-    }
-
-
-def _sm_memory_authority_contract() -> dict:
-    try:
-        fn = getattr(config, "get_memory_authority_contract", None)
-        if callable(fn):
-            data = fn()
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
-    run_mode = str(getattr(config, "RUN_MODE", "local") or "local").lower()
-    local_only = bool(getattr(config, "LOCAL_ONLY_MODE", False))
-    cloud_enabled = bool(getattr(config, "CLOUD_DB_ENABLED", False)) and not local_only
-    primary = "remote_sql" if run_mode == "cloud" and cloud_enabled else "sqlite"
-    return {
-        "contract": _SM_V9C_CONTRACT,
-        "primary_memory_backend": primary,
-        "cloud_memory_backend_allowed": bool(cloud_enabled),
-        "cloud_sync_allowed": bool(cloud_enabled and run_mode != "test"),
-        "private_memory_mode": bool(run_mode == "local" or local_only),
-        "demo_memory_mode": bool(run_mode == "cloud"),
-        "hardware_fact_persistence": "blocked",
-        "identity_profile_persistence": "allowed_local" if primary == "sqlite" else "allowed_demo_scope",
-        "chat_history_persistence": "allowed_local" if primary == "sqlite" else "allowed_demo_scope",
-        "redacted_audit_allowed": True,
-    }
-
-
-def _sm_addressed_bot(text: str) -> tuple[bool, str]:
-    t = (text or "").strip().lower()
-    names = []
-    ident = _identity_payload()
-    for val in (ident.get("name"), ident.get("default_name"), BRAND_NAME, "sarah ai", "sarahmemory"):
-        v = str(val or "").strip().lower()
-        if v and v not in names:
-            names.append(v)
-    for name in sorted(names, key=len, reverse=True):
-        if re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", t):
-            return True, name
-    return False, ""
-
-
-def _sm_is_identity_intent(text: str) -> bool:
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-    # Addressing SarahMemory does not equal an identity question.
-    if _sm_is_selfaware_fact_question(text):
-        return False
-    identity_patterns = (
-        r"\bwhat\s+(?:is|'s)\s+your\s+name\b",
-        r"\bwho\s+are\s+you\b",
-        r"\byour\s+name\b",
-        r"\bwhat\s+version\b",
-        r"\bversion\s+number\b",
-        r"\bwho\s+(?:made|created|built|designed|engineered|developed)\s+you\b",
-        r"\bcreator\b",
-        r"\bsoftdev0\b",
-        r"\bbrian\s+lee\s+baros\b",
-    )
-    return any(re.search(p, t, re.I) for p in identity_patterns)
-
-
-def _sm_build_chat_classification_packet(text: str, payload: dict | None = None, context_packet: dict | None = None, ingress_route: dict | None = None, intent_hint: str = "") -> dict:
-    payload = payload or {}
-    context_packet = context_packet or {}
-    ingress_route = ingress_route or {}
-    normalized = re.sub(r"\s+", " ", str(text or "").strip()).lower()
-    addressed, addressed_name = _sm_addressed_bot(text)
-    selfaware = _sm_is_selfaware_fact_question(text)
-    kind, target = _sm_selfaware_fact_kind_and_target(text) if selfaware else ("", "")
-    target_component = _sm_selfaware_thermal_target_component(text, kind, target) if kind == "temperature" else ""
-    identity_intent = _sm_is_identity_intent(text)
-    advcu_intent = ""
-    try:
-        import SarahMemoryAdvCU as _AdvCU  # type: ignore
-        fn = getattr(_AdvCU, "classify_intent", None)
-        if callable(fn):
-            advcu_intent = str(fn(text) or "")
-    except Exception:
-        advcu_intent = ""
-    if selfaware:
-        domain = "selfaware_body"
-        intent = "hardware_temperature" if kind == "temperature" else ("hardware_status" if kind in {"fan_speed", "disk_space"} else "hardware_fact")
-        route = "appself.verified_artifact"
-        reason = "Live hardware/body-map fact requires SelfAware Evidence Court verification."
-    elif identity_intent:
-        domain = "identity"
-        intent = "identity_query"
-        route = "identity.profile"
-        reason = "User asked for SarahMemory identity/profile information."
-    else:
-        domain = str(ingress_route.get("domain") or "chat")
-        intent = str(intent_hint or ingress_route.get("intent_hint") or advcu_intent or "chat")
-        route = str(ingress_route.get("route_id") or "neuron.reply")
-        reason = "General request continues through governed chat lane."
-    packet = {
-        "contract": _SM_V9C_CONTRACT,
-        "raw_text": str(text or ""),
-        "normalized_text": normalized,
-        "addressed_bot": addressed,
-        "addressed_name": addressed_name,
-        "domain": domain,
-        "intent": intent,
-        "fact_kind": kind,
-        "fact_target": target,
-        "fact_target_component": target_component,
-        "requested_metric": "temperature" if kind == "temperature" else "",
-        "requires_sensor_binding": bool(kind == "temperature"),
-        "requires_evidence_court": bool(domain == "selfaware_body"),
-        "requires_identity_profile": bool(domain == "identity"),
-        "requires_device_manager": False,
-        "requires_model_assist": bool(domain not in {"selfaware_body"}),
-        "classification_sources": {
-            "app_static": {"identity_intent": identity_intent, "selfaware_body": selfaware, "fact_kind": kind, "fact_target_component": target_component},
-            "advcu": {"intent": advcu_intent},
-            "ingress": ingress_route,
-        },
-        "runtime_body": _sm_runtime_body_contract(),
-        "model_state": _sm_model_state_contract(),
-        "memory_policy": _sm_memory_authority_contract(),
-        "route_decision": {"route": route, "reason": reason},
-        "volatile_runtime_fact": bool(domain == "selfaware_body"),
-    }
-    return packet
-
-
-def _sm_strip_selfaware_courtroom_prefix(text: str, *, kind: str = "") -> str:
-    value = str(text or "").strip()
-    if not value:
-        return ""
-    try:
-        value = re.sub(r"^\s*Verified\s+SelfAware\s+fact\s*\([^)]*\)\s*:\s*", "", value, flags=re.I).strip()
-        label_map = {
-            "cpu": "CPU",
-            "gpu": "GPU",
-            "motherboard": "Motherboard",
-            "memory": "Memory",
-            "network": "Network adapters",
-            "network_card": "Network adapters",
-            "operating_system": "Operating platform",
-            "platform": "Operating platform",
-        }
-        labels = [label_map.get(str(kind or "").lower(), "")]
-        labels.extend(["CPU", "GPU", "Motherboard", "Memory", "Network adapters", "Operating platform"])
-        for label in labels:
-            if label and value.lower().startswith((label + " =").lower()):
-                value = value[len(label) + 2:].strip()
-                break
-    except Exception:
-        pass
-    return value.strip()
-
-
-def _sm_compose_verified_artifact_fallback_reply(claim: str, kind: str, artifact_text: str, ticket: dict | None = None) -> str:
-    low = (claim or "").lower()
-    kind = (kind or "hardware_fact").lower()
-    artifact_text = _sm_strip_selfaware_courtroom_prefix(str(artifact_text or "").strip(), kind=kind)
-    ticket = ticket if isinstance(ticket, dict) else {}
-    wants_court = any(k in low for k in ("evidence court", "court result", "quorum", "confidence", "verified fact", "show evidence", "proof"))
-    if wants_court:
-        return f"SelfAware verified this {kind.replace('_', ' ')} at {ticket.get('quorum') or 'unknown quorum'} quorum with {ticket.get('confidence') or 'unknown'} confidence: {artifact_text}."
-    if kind == "temperature":
-        try:
-            pv = ticket.get("presentation_value") if isinstance(ticket, dict) else None
-            if isinstance(pv, dict):
-                selected = pv.get("selected_reading") if isinstance(pv.get("selected_reading"), dict) else {}
-                component = str(pv.get("requested_component") or selected.get("component") or "body").replace("_", " ")
-                temp = selected.get("temperature_c")
-                source_label = str(selected.get("source_label") or selected.get("source_type") or "verified sensor").replace("_", " ")
-                if temp not in (None, ""):
-                    if component == "cpu" and "motherboard" in source_label:
-                        return f"I do not currently have a direct CPU thermal-probe reading. The CPU is verified on this motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
-                    return f"My currently verified {component} temperature is {temp}°C via {source_label}."
-                status = str(pv.get("sensor_binding_status") or "unavailable").replace("_", " ")
-                return f"I do not currently have a verified {component} temperature reading. Sensor binding status: {status}."
-        except Exception:
-            pass
-        return f"My currently verified thermal result is: {artifact_text}."
-    if kind == "cpu":
-        article = "an" if artifact_text[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
-        return f"I currently have {article} {artifact_text}."
-    if kind == "gpu":
-        return f"My currently verified graphics hardware is {artifact_text}."
-    if kind == "motherboard":
-        return f"My currently verified motherboard is {artifact_text}."
-    if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
-        return f"My currently verified network adapter summary is: {artifact_text}. Sensitive IP and MAC details are not exposed."
-    return f"My currently verified {kind.replace('_', ' ')} result is: {artifact_text}."
-
-
-def _sm_make_fallback_verified_artifact_package(ticket: dict, claim: str, kind: str, cycle_id: str) -> dict | None:
-    if not isinstance(ticket, dict) or not bool(ticket.get("approved_fact")):
-        return None
-    value = ticket.get("presentation_value") if ticket.get("presentation_value") not in (None, "", [], {}) else ticket.get("majority_value")
-    artifact_text = _sm_strip_selfaware_courtroom_prefix(str(ticket.get("presentation_text") or "").strip(), kind=kind)
-    if not artifact_text:
-        artifact_text = _sm_strip_selfaware_courtroom_prefix(_sm_compact_json_value(value, max_chars=1600), kind=kind)
-    artifact_id = f"self_artifact_{secrets.token_hex(16)}"
-    return {
-        "ok": True,
-        "package_type": "SELF_AWARE_LIVE_HARDWARE_FACT",
-        "package_version": "V10_V9C",
-        "artifact_id": artifact_id,
-        "cycle_id": cycle_id,
-        "hardware_epoch": f"bootenv_chat_{secrets.token_hex(8)}",
-        "source_authority": "appself.evidence_court",
-        "origin_route": "/api/self/fact-check",
-        "artifact_kind": kind,
-        "artifact_value": value,
-        "artifact_text": artifact_text,
-        "artifact_hash": hashlib.sha256(artifact_text.encode("utf-8", errors="replace")).hexdigest(),
-        "claim": claim,
-        "source_ticket_id": ticket.get("ticket_id"),
-        "approved_fact": True,
-        "evidence_court": {"decision": ticket.get("decision"), "quorum": ticket.get("quorum"), "confidence": ticket.get("confidence"), "pass_count": ticket.get("pass_count")},
-        "single_use": True,
-        "volatile": True,
-        "live_only": True,
-        "immutable_artifact": True,
-        "consumed": False,
-        "compare_mode": "integrity_security_only",
-        "do_not_reverify": True,
-        "do_not_persist": True,
-        "do_not_learn": True,
-        "do_not_write_sql": True,
-        "do_not_promote_to_memory": True,
-        "volatile_runtime_fact": True,
-        "redacted_audit_allowed": True,
-        "raw_evidence_exposure_allowed": False,
-        "privacy_contract": {"raw_evidence_exposed": False, "ip_addresses_exposed": False, "mac_addresses_exposed": False, "full_environment_dump_exposed": False},
-        "read_only": True,
-        "action_taken": False,
-    }
-
-
-def _sm_compare_verified_artifact_response(user_text: str, response_text: str, package: dict) -> dict:
-    try:
-        import SarahMemoryCompare as _SMCompare  # type: ignore
-        fn = getattr(_SMCompare, "compare_verified_artifact_package", None)
-        if callable(fn):
-            return fn(user_text, response_text, package)
-    except Exception:
-        pass
-    artifact_text = _sm_strip_selfaware_courtroom_prefix(str((package or {}).get("artifact_text") or ""), kind=str((package or {}).get("artifact_kind") or ""))
-    response = str(response_text or "")
-    accepted = bool(artifact_text and artifact_text.lower() in response.lower())
-    courtroom_leak = bool(re.search(r"\bVerified\s+SelfAware\s+fact\b", response, re.I)) and not any(k in (user_text or "").lower() for k in ("evidence court", "quorum", "confidence", "proof"))
-    return {"accepted": accepted and not courtroom_leak, "decision": "ACCEPT" if accepted and not courtroom_leak else "REPAIR_REQUIRED", "courtroom_leak": courtroom_leak, "sql_recorded": False}
-
-
-def _sm_present_verified_artifact_bundle(text: str, package: dict, *, ticket: dict, kind: str, target: str, appself_module_file: str, classification_packet: dict | None = None) -> dict:
-    meta = {
-        "source": "selfaware_verified_artifact",
-        "engine": "appself.verified_artifact_runner",
-        "intent": "system_status",
-        "fact_kind": kind,
-        "target": target,
-        "ticket_id": ticket.get("ticket_id") if isinstance(ticket, dict) else None,
-        "decision": ticket.get("decision") if isinstance(ticket, dict) else None,
-        "quorum": ticket.get("quorum") if isinstance(ticket, dict) else None,
-        "confidence": ticket.get("confidence") if isinstance(ticket, dict) else None,
-        "approved_fact": bool(ticket.get("approved_fact")) if isinstance(ticket, dict) else False,
-        "appself_module_file": appself_module_file,
-        "version": PROJECT_VERSION,
-        "contract": _SM_V9C_CONTRACT,
-        "chat_classification_packet": classification_packet or {},
-        "verified_artifact_package": package,
-        "compare_mode": "integrity_security_only",
-        "do_not_reverify": True,
-        "do_not_persist": True,
-        "do_not_learn": True,
-        "do_not_write_sql": True,
-        "do_not_promote_to_memory": True,
-        "volatile_runtime_fact": True,
-    }
-    try:
-        import SarahMemoryReply as _SMReply  # type: ignore
-        present_fn = _safe_getattr(_SMReply, "present_verified_artifact_answer")
-        if callable(present_fn):
-            bundle = present_fn(text, package, meta=meta)
-        else:
-            raise RuntimeError("present_verified_artifact_answer unavailable")
-    except Exception:
-        safe_reply = _sm_compose_verified_artifact_fallback_reply(text, kind, str(package.get("artifact_text") or ""), ticket)
-        bundle = _sm_make_outward_bundle(
-            safe_reply,
-            meta=meta,
-            artifacts=[{"name": "verified_artifact_package", "type": "volatile_verified_hardware_fact", "verified_artifact_package": package, "display_ready": False, "download_ready": False}],
-            raw_answer=safe_reply,
-        )
-    response_text = str(bundle.get("presentation_reply") or bundle.get("response") or bundle.get("reply") or "")
-    compare_result = _sm_compare_verified_artifact_response(text, response_text, package)
-    if isinstance(compare_result, dict) and not bool(compare_result.get("accepted", False)):
-        safe_reply = _sm_compose_verified_artifact_fallback_reply(text, kind, str(package.get("artifact_text") or ""), ticket)
-        bundle = _sm_make_outward_bundle(
-            safe_reply,
-            meta={**meta, "compare_result": compare_result, "compare_repaired": True},
-            artifacts=[{"name": "verified_artifact_package", "type": "volatile_verified_hardware_fact", "verified_artifact_package": package, "display_ready": False, "download_ready": False}],
-            raw_answer=safe_reply,
-        )
-    bundle.setdefault("meta", {}).update(meta)
-    bundle["ok"] = True
-    for key in ("response", "reply", "presentation_reply", "content"):
-        bundle[key] = str(bundle.get("presentation_reply") or bundle.get("response") or bundle.get("reply") or "")
-    bundle.setdefault("actions", []).append({"type": "selfaware_verified_artifact", "artifact_id": package.get("artifact_id"), "ticket_id": ticket.get("ticket_id"), "sql_recorded": False})
-    return bundle
-
-
 def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
     claim = str(ticket.get("claim") or "requested system fact").strip()
     decision = str(ticket.get("decision") or "UNKNOWN").upper()
@@ -722,7 +248,26 @@ def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
     kind = str(ticket.get("requested_fact") or "system_fact").strip()
     value = ticket.get("majority_value")
 
+    # V10/V9F: backend owns presentation. If appself/Supreme Appeals already
+    # produced source-aware presentation text, do not re-wrap it with courtroom
+    # phrasing in /api/chat.
+    presentation_text = str(ticket.get("presentation_text") or "").strip()
+    if presentation_text and not presentation_text.lower().startswith("verified selfaware fact"):
+        return presentation_text
+
     if decision == "APPROVED_FACT":
+        if kind == "temperature":
+            pv = ticket.get("presentation_value") if isinstance(ticket.get("presentation_value"), dict) else value
+            if isinstance(pv, dict):
+                selected = pv.get("selected_reading") if isinstance(pv.get("selected_reading"), dict) else {}
+                component = str(pv.get("requested_component") or selected.get("component") or "thermal").replace("_", " ")
+                temp = selected.get("temperature_c")
+                source_type = str(selected.get("source_type") or "thermal_sensor").replace("_", " ")
+                if temp not in (None, ""):
+                    if component.lower() == "cpu" and "motherboard" in source_type.lower():
+                        return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. The CPU is verified on the motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
+                    return f"My currently verified {component} temperature is {temp}°C."
+            return "I do not currently have a verified temperature reading for that component."
         if kind == "cpu":
             if isinstance(value, dict):
                 name = str(value.get("name") or value.get("Name") or "Unknown CPU").strip()
@@ -799,129 +344,101 @@ def _sm_import_appself_runtime():
         raise RuntimeError("runtime appself fact-ticket runner unavailable after direct load")
     return mod
 
-def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat", classification_packet: dict | None = None) -> dict | None:
-    """Resolve live body/runtime fact questions through SelfAware Evidence Court.
+def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict | None:
+    """Route local hardware/runtime fact questions into appself's fact-ticket engine.
 
-    V10/V9C uses the unified chat classification packet as the route authority.
-    The old static detector remains only as a fallback when no packet exists.
+    This keeps ChatPanel factual system questions out of the sidekick/Neuron
+    fallback path and forces them through the same SelfAware 3-source evidence
+    court used by /api/self/fact-check.
     """
-    cp = classification_packet if isinstance(classification_packet, dict) else {}
-    if cp:
-        if str(cp.get("domain") or "") != "selfaware_body":
-            return None
-        kind = str(cp.get("fact_kind") or "").strip() or _sm_selfaware_fact_kind_and_target(text)[0]
-        target = str(cp.get("fact_target") or "").strip() or _sm_selfaware_fact_kind_and_target(text)[1]
-        if kind == "temperature" and not target:
-            target = str(cp.get("fact_target_component") or "").strip()
-    else:
-        if not _sm_is_selfaware_fact_question(text):
-            return None
-        kind, target = _sm_selfaware_fact_kind_and_target(text)
-    cycle_id = f"chat_cycle_{secrets.token_hex(8)}"
+    if not _sm_is_selfaware_fact_question(text):
+        return None
+
+    kind, target = _sm_selfaware_fact_kind_and_target(text)
     try:
         _appself = _sm_import_appself_runtime()
-        appself_file = str(getattr(_appself, "__file__", ""))
-        meta = {
-            "source": source,
-            "route": "api_chat_verified_artifact",
-            "cycle_id": cycle_id,
-            "bridge": "runtime_appself_artifact",
-            "chat_classification_packet": cp,
-            "target_component": str(cp.get("fact_target_component") or (target if kind == "temperature" else "")),
-            "contract": _SM_V9C_CONTRACT,
-            "do_not_write_sql": True,
-            "do_not_persist": True,
-            "do_not_learn": True,
-        }
-        run_artifact = getattr(_appself, "run_selfaware_verified_artifact", None)
+
         run_public = getattr(_appself, "run_selfaware_fact_check", None)
         run_private = getattr(_appself, "_run_fact_ticket", None)
-        build_package = getattr(_appself, "build_verified_artifact_package", None)
 
-        if callable(run_artifact):
-            result = run_artifact(claim=text, kind=kind, target=target, source=source, meta=meta)
-            ticket = result.get("ticket") if isinstance(result, dict) else None
-            package = result.get("verified_artifact_package") if isinstance(result, dict) else None
+        if callable(run_public):
+            ticket = run_public(
+                claim=text,
+                kind=kind,
+                target=target,
+                source=source,
+                meta={"source": source, "route": "api_chat_selfaware_fact", "bridge": "runtime_appself_public", "do_not_write_sql": True, "do_not_persist": True, "do_not_learn": True},
+            )
+        elif callable(run_private):
+            ticket = run_private(
+                claim=text,
+                kind=kind,
+                target=target,
+                source=source,
+                ticket_kind="SELF_FACT_TICKET",
+                meta={"source": source, "route": "api_chat_selfaware_fact", "bridge": "runtime_appself_private", "do_not_write_sql": True, "do_not_persist": True, "do_not_learn": True},
+            )
         else:
-            if callable(run_public):
-                ticket = run_public(claim=text, kind=kind, target=target, source=source, meta=meta)
-            elif callable(run_private):
-                ticket = run_private(claim=text, kind=kind, target=target, source=source, ticket_kind="SELF_FACT_TICKET", meta=meta)
-            else:
-                raise RuntimeError("appself fact-ticket runner unavailable")
-            package = build_package(ticket, claim=text, cycle_id=cycle_id) if callable(build_package) else _sm_make_fallback_verified_artifact_package(ticket, text, kind, cycle_id)
+            raise RuntimeError("appself fact-ticket runner unavailable")
 
         if not isinstance(ticket, dict):
             raise RuntimeError("appself returned non-dict ticket")
+
+        # Defensive: if a simple CPU/GPU/storage question weak-fails in chat while
+        # /api/self/fact-check succeeds, record the module path for diagnosis.
         try:
             ticket.setdefault("meta", {})
             if isinstance(ticket.get("meta"), dict):
-                ticket["meta"].update({"appself_module_file": appself_file, "chat_classification_packet": cp, "contract": _SM_V9C_CONTRACT})
+                ticket["meta"]["appself_module_file"] = str(getattr(_appself, "__file__", ""))
         except Exception:
             pass
 
-        if not isinstance(package, dict) or not bool(package.get("approved_fact")):
-            claim = str(ticket.get("claim") or text or "requested system fact").strip()
-            decision = str(ticket.get("decision") or "UNKNOWN").upper()
-            quorum = str(ticket.get("quorum") or "0/3")
-            confidence = str(ticket.get("confidence") or "NONE")
-            if decision == "ESCALATE_HIGH_REVIEW":
-                reply = f"I found partial live evidence for that {kind.replace('_', ' ')} request, but only {quorum} passed. I will not treat it as a settled SelfAware fact without full court approval."
-            else:
-                reply = f"I could not verify that live {kind.replace('_', ' ')} fact. Verdict: {decision} ({quorum}, confidence {confidence}). I will not guess."
-            bundle = _sm_make_outward_bundle(
-                _sm_present_text(reply, intent="system_status", meta={"source": "selfaware_fact_ticket_unapproved"}),
-                meta={
-                    "source": "selfaware_fact_ticket_unapproved",
-                    "engine": "appself.fact_ticket_runner",
-                    "intent": "system_status",
-                    "fact_kind": kind,
-                    "target": target,
-                    "ticket_id": ticket.get("ticket_id"),
-                    "decision": ticket.get("decision"),
-                    "quorum": ticket.get("quorum"),
-                    "confidence": ticket.get("confidence"),
-                    "approved_fact": bool(ticket.get("approved_fact")),
-                    "appself_module_file": appself_file,
-                    "version": PROJECT_VERSION,
-                    "contract": _SM_V9C_CONTRACT,
-                    "chat_classification_packet": cp,
-                    "do_not_write_sql": True,
-                    "do_not_persist": True,
-                    "do_not_learn": True,
-                    "volatile_runtime_fact": True,
-                },
-                raw_answer=reply,
-            )
-            bundle["ok"] = True
-            bundle.setdefault("actions", []).append({"type": "selfaware_fact_ticket", "ticket_id": ticket.get("ticket_id"), "decision": ticket.get("decision"), "quorum": ticket.get("quorum"), "requested_fact": ticket.get("requested_fact"), "sql_recorded": False})
-            return bundle
-
-        return _sm_present_verified_artifact_bundle(text, package, ticket=ticket, kind=kind, target=target, appself_module_file=appself_file, classification_packet=cp)
-    except Exception as exc:
-        app_logger.warning("SelfAware verified-artifact route failed: %s", exc, exc_info=True)
+        reply = _sm_format_selfaware_fact_reply(ticket)
         bundle = _sm_make_outward_bundle(
-            "SelfAware fact route is available, but this verified-artifact pass failed internally. I did not guess the answer.",
+            _sm_present_text(reply, intent="system_status", meta={"source": "selfaware_fact_ticket"}),
             meta={
-                "source": "selfaware_verified_artifact_error",
-                "engine": "appself.verified_artifact_runner",
+                "source": "selfaware_fact_ticket",
+                "engine": "appself.fact_ticket_runner",
+                "intent": "system_status",
+                "fact_kind": kind,
+                "target": target,
+                "ticket_id": ticket.get("ticket_id"),
+                "decision": ticket.get("decision"),
+                "quorum": ticket.get("quorum"),
+                "confidence": ticket.get("confidence"),
+                "approved_fact": bool(ticket.get("approved_fact")),
+                "appself_module_file": str(getattr(_appself, "__file__", "")),
+                "version": PROJECT_VERSION,
+            },
+            raw_answer=reply,
+        )
+        bundle["ok"] = True
+        bundle.setdefault("actions", [])
+        bundle["actions"].append({
+            "type": "selfaware_fact_ticket",
+            "ticket_id": ticket.get("ticket_id"),
+            "decision": ticket.get("decision"),
+            "quorum": ticket.get("quorum"),
+            "requested_fact": ticket.get("requested_fact"),
+        })
+        return bundle
+    except Exception as exc:
+        app_logger.warning("SelfAware fact route failed: %s", exc, exc_info=True)
+        bundle = _sm_make_outward_bundle(
+            "SelfAware fact route is available, but this fact check failed internally. I did not guess the answer.",
+            meta={
+                "source": "selfaware_fact_ticket_error",
+                "engine": "appself.fact_ticket_runner",
                 "intent": "system_status",
                 "fact_kind": kind,
                 "target": target,
                 "error": str(exc),
                 "version": PROJECT_VERSION,
-                "contract": _SM_V9C_CONTRACT,
-                "chat_classification_packet": cp,
-                "do_not_write_sql": True,
-                "do_not_persist": True,
-                "do_not_learn": True,
-                "volatile_runtime_fact": True,
             },
             errors=[str(exc)],
         )
         bundle["ok"] = False
         return bundle
-
 
 # Prefer server/static as templates if the SPA build exists
 SERVER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -3210,28 +2727,11 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
-        classification_packet = _sm_build_chat_classification_packet(
-            text,
-            payload=payload,
-            context_packet=context_packet,
-            ingress_route=ingress_route,
-            intent_hint=intent,
-        )
-        context_packet.setdefault("meta", {})["chat_classification_packet"] = classification_packet
-        context_packet["chat_classification_packet"] = classification_packet
-        context_packet["meta"]["memory_policy"] = classification_packet.get("memory_policy", {})
-        context_packet["meta"]["runtime_body"] = classification_packet.get("runtime_body", {})
-        context_packet["meta"]["model_state"] = classification_packet.get("model_state", {})
-
         handled, quick_bundle = _sm_execute_quick_route(text)
         if handled and quick_bundle is not None:
-            try:
-                quick_bundle.setdefault("meta", {})["chat_classification_packet"] = classification_packet
-            except Exception:
-                pass
             return jsonify(quick_bundle), 200
 
-        if str(classification_packet.get("domain") or "") == "identity":
+        if _is_identity_question(text):
             ident = _identity_payload()
             low = text.strip().lower()
             if "version" in low:
@@ -3249,23 +2749,14 @@ def api_chat():
                 raw_reply = f"I'm {ident['name']} — your {ident['platform']} companion."
             bundle = _sm_make_outward_bundle(
                 _sm_present_text(raw_reply, intent="identity"),
-                meta={
-                    "source": "identity_guard",
-                    "engine": "identity_guard",
-                    "intent": "identity",
-                    "version": ident["version"],
-                    "contract": _SM_V9C_CONTRACT,
-                    "chat_classification_packet": classification_packet,
-                    "memory_policy": classification_packet.get("memory_policy", {}),
-                },
+                meta={"source": "identity_guard", "engine": "identity_guard", "intent": "identity", "version": ident["version"]},
             )
             bundle["identity"] = ident
             return jsonify(bundle), 200
 
-        if str(classification_packet.get("domain") or "") == "selfaware_body":
-            selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat", classification_packet=classification_packet)
-            if isinstance(selfaware_fact_bundle, dict):
-                return jsonify(selfaware_fact_bundle), 200
+        selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
+        if isinstance(selfaware_fact_bundle, dict):
+            return jsonify(selfaware_fact_bundle), 200
 
         browser_state_bundle = _browser_state_answer_for_text(text)
         if browser_state_bundle is not None:
@@ -3371,9 +2862,6 @@ def api_chat():
                     "mode_flags": context_packet.get("meta", {}).get("mode_flags", {}),
                     "governor": {"decision": gov_decision, "reasons": gov_reasons},
                     "ingress_route": ingress_route,
-                    "chat_classification_packet": classification_packet,
-                    "memory_policy": classification_packet.get("memory_policy", {}),
-                    "runtime_body": classification_packet.get("runtime_body", {}),
                 }, policy=routing_policy)
 
                 nres_dict = nres.to_dict() if hasattr(nres, "to_dict") else {
@@ -3400,9 +2888,6 @@ def api_chat():
                     "session_id": context_packet.get("session_id"),
                     "vision_frame_attached": bool(frame_rec),
                     "neuron_trace": nres_dict.get("trace") or {},
-                    "contract": _SM_V9C_CONTRACT,
-                    "chat_classification_packet": classification_packet,
-                    "memory_policy": classification_packet.get("memory_policy", {}),
                 }
                 artifacts = []
                 actions = []

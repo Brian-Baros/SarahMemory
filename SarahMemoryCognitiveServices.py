@@ -2234,3 +2234,11 @@ def govern_rem_candidate(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
     try: log_cognitive_event("REM_GOVERNANCE", str(candidate.get("title") or candidate.get("dream_id") or "candidate"), meta=out)
     except Exception: pass
     return out
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F read-only evidence governance helper
+# -----------------------------------------------------------------------------
+def govern_read_only_evidence_claim(claim: str = "", evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, caller: str = "cognitive_services.read_only_evidence") -> Dict[str, Any]:
+    proposed = {'action_type': 'read_sensor_evidence', 'capability_name': 'selfaware_evidence_claim', 'read_only': True, 'touches_filesystem': False, 'touches_network': False, 'physical_actuation': False, 'risk_level': 'TIER_0_INFO', 'rollback_plan': 'No state change; no rollback required.', 'truthfulness_evidence': bool(evidence_packet)}
+    return govern_request('Read-only evidence claim: ' + str(claim or ''), caller=caller, caller_context={'read_only': True, 'evidence_packet': evidence_packet or {}, 'appeal_packet': appeal_packet or {}, 'skip_cognitive_thinker_consult': True}, user_present=True, user_consented=False, proposed_action=proposed)

@@ -1490,3 +1490,30 @@ def generate_rem_dreams(*, snapshot: Optional[Dict[str, Any]] = None, max_dreams
         try: log_thinker_event("REM_DREAM_PROPOSED", dream.get("title", ""), cycle_id=cycle_id, ticket_id=ticket_id, meta=dream)
         except Exception: pass
     return dreams
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F Supreme Appeals helper: thermal sensor appeal review
+# -----------------------------------------------------------------------------
+def review_thermal_sensor_appeal(claim: str = "", hard_evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, cognitive_self_packet: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None, **legacy_kwargs) -> Dict[str, Any]:
+    """Meaning/possibility review for thermal evidence appeals."""
+    hard = dict(hard_evidence_packet or legacy_kwargs.get('thermal_case') or {})
+    selected = hard.get('selected_reading') if isinstance(hard.get('selected_reading'), dict) else {}
+    requested = str(hard.get('requested_component') or 'body_thermal')
+    decision = 'DEFER_NO_EVIDENCE'; reasons = []
+    if selected and selected.get('temperature_c') not in (None, ''):
+        if selected.get('direct'):
+            decision = 'DIRECT_SENSOR_LOGIC_VALID'; reasons.append('Direct sensor evidence can answer the requested thermal question if governance allows presentation.')
+        elif requested == 'cpu' and str(selected.get('source_type') or '') == 'motherboard_cpu_sensor':
+            decision = 'INDIRECT_SENSOR_LOGIC_VALID_PENDING_GOVERNANCE'; reasons.append('A motherboard CPU/socket sensor can logically answer CPU thermal status when CPU and motherboard identity are separately verified.')
+        else:
+            decision = 'INDIRECT_SENSOR_NEEDS_STRONGER_BINDING'; reasons.append('A thermal sensor exists, but its component binding is not strong enough to become a settled fact.')
+    else:
+        reasons.append('No selected thermal reading exists; truthful unknown is required unless more hard evidence is discovered.')
+    return {
+        'ok': True, 'module': 'SarahMemoryCognitiveThinker', 'version': '8.0.0',
+        'appeal_role': 'meaning_possibility_review', 'requested_component': requested,
+        'thinker_decision': decision, 'allow_as_possibility': decision != 'DEFER_NO_EVIDENCE',
+        'allow_as_fact': decision in {'DIRECT_SENSOR_LOGIC_VALID', 'INDIRECT_SENSOR_LOGIC_VALID_PENDING_GOVERNANCE'},
+        'reasons': reasons, 'theory_is_not_truth': True, 'read_only': True, 'action_taken': False,
+    }

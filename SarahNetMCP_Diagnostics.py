@@ -325,3 +325,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# V10/V9F SarahNet hard-evidence witness packet
+# ---------------------------------------------------------------------------
+def build_sarahnet_hard_evidence_packet(base: str = "", node_id: str = "", requested_fact: str = "", timeout: float = 8.0) -> dict:
+    """Read-only SarahNet/MCP hard-evidence packet for Supreme Appeals."""
+    base = (base or os.environ.get("SARAHNET_BASE") or "https://api.sarahmemory.com").strip()
+    node_id = (node_id or "").strip()
+    out = {
+        "packet_type": "SarahNetMCPHardEvidencePacket", "version": "V10_V9F",
+        "evidence_domain": "sarahnet_remote_node", "requested_fact": requested_fact or "network_status",
+        "base": base, "node_id": node_id, "read_only": True, "action_taken": False,
+        "direct_evidence": [], "indirect_evidence": [], "related_evidence": [], "errors": [], "confidence": "NONE",
+    }
+    try:
+        s = requests.Session()
+        r, dt = _req(s, "GET", base, "/api/net/ping", timeout=timeout)
+        ok = 200 <= int(r.status_code) < 300
+        out["direct_evidence"].append({"source": "SarahNetMCP.ping", "ok": ok, "status_code": r.status_code, "latency_ms": round(dt, 2)})
+        if node_id:
+            r2, dt2 = _req(s, "GET", base, "/api/net/rendezvous/lookup", timeout=timeout, params={"node_id": node_id})
+            ok2 = 200 <= int(r2.status_code) < 300
+            try: payload = r2.json()
+            except Exception: payload = {"text": r2.text[:500]}
+            out["direct_evidence"].append({"source": "SarahNetMCP.rendezvous.lookup", "ok": ok2, "status_code": r2.status_code, "latency_ms": round(dt2, 2), "payload": payload})
+        out["confidence"] = "HIGH" if all(bool(x.get("ok")) for x in out["direct_evidence"]) and out["direct_evidence"] else "LOW"
+    except Exception as exc:
+        out["errors"].append(f"{type(exc).__name__}:{exc}")
+    return out

@@ -1500,3 +1500,19 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F SelfAware evidence case compass helper
+# -----------------------------------------------------------------------------
+def compass_review_selfaware_evidence_case(original_goal: str = "", evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, proposed_reply: str = "") -> Dict[str, Any]:
+    """Keep SelfAware evidence answers anchored to the original requested component."""
+    evidence = dict(evidence_packet or {})
+    requested = str(evidence.get('requested_component') or (appeal_packet or {}).get('requested_component') or '')
+    drift = False; reasons = []
+    low_reply = str(proposed_reply or '').lower()
+    if requested == 'cpu' and 'gpu temperature' in low_reply and 'cpu temperature' not in low_reply:
+        drift = True; reasons.append('Reply drifted from CPU temperature to GPU-only thermal status.')
+    if requested and requested.replace('_',' ') not in low_reply and evidence.get('selected_reading'):
+        reasons.append('Reply should explicitly mention requested component and sensor source.')
+    return {'ok': True, 'module': MODULE_NAME, 'status': STATUS_MINOR_DRIFT if drift else STATUS_ON_COURSE, 'directive': DIRECTIVE_REANCHOR_ORIGINAL if drift else DIRECTIVE_ALLOW_REPLY, 'requested_component': requested, 'original_goal': original_goal, 'hold_reply': bool(drift), 'reasons': reasons or ['SelfAware evidence answer remains anchored to the original requested component.'], 'read_only': True, 'action_taken': False}

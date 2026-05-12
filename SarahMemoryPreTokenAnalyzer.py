@@ -1352,9 +1352,21 @@ def _extract_doc_app(lowered: str) -> str:
 
 
 
+def _extract_thermal_target_component(lowered: str, subject: str = "") -> str:
+    low = (lowered or "").lower()
+    if "cpu" in low or "processor" in low: return "cpu"
+    if "gpu" in low or "graphics" in low or "video card" in low: return "gpu"
+    if "motherboard" in low or "mainboard" in low or "board" in low: return "motherboard"
+    if "drive" in low or "disk" in low or "ssd" in low or "hdd" in low or "nvme" in low: return "drive"
+    if "battery" in low: return "battery"
+    if "motor" in low or "servo" in low or "controller" in low: return "motor_controller"
+    if "ambient" in low or "room" in low or "environment" in low: return "ambient"
+    return subject or "body_thermal"
+
+
 def _extract_system_metric(lowered: str, subject: str, attributes: Sequence[str]) -> str:
-    if "thermal" in lowered or "overheating" in lowered or "temperature" in lowered:
-        return "thermal_status"
+    if "thermal" in lowered or "overheating" in lowered or "temperature" in lowered or "temp" in lowered:
+        return "thermal_status:" + _symbol_safe(_extract_thermal_target_component(lowered, subject))
     if "status" in lowered:
         return "status"
     if subject and subject != "request":
@@ -1576,85 +1588,3 @@ if __name__ == "__main__":
             if analysis.get("ambiguities"):
                 merged = merge_clarification_answer(analysis, "Louisiana")
                 print("MERGED:", json.dumps(merged.get("resolved_packet"), indent=2, ensure_ascii=False))
-
-# =============================================================================
-# V10/V9C Chat Classification Skeleton
-# =============================================================================
-def build_chat_classification_skeleton(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Return a deterministic pre-token skeleton for /api/chat.
-
-    This does not execute actions and does not answer. It separates addressing
-    SarahMemory from identity intent, and marks live hardware/body-map questions
-    for SelfAware Evidence Court routing.
-    """
-    raw = _coerce_text(text)
-    normalized = _normalize_text(raw).lower()
-    addressed = bool(re.search(r"(?<![a-z0-9])(sarahmemory|sarah ai|sarah)(?![a-z0-9])", normalized))
-    hardware_terms = (
-        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
-        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
-        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
-    )
-    self_scope_terms = ("my", "your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
-    hardware_self_implied = any(k in normalized for k in (
-        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
-        "ram", "memory", "drive", "disk", "storage", "fan", "rpm", "sata", "usb", "nvme", "pcie",
-    ))
-    is_selfaware = any(k in normalized for k in hardware_terms) and (any(k in normalized for k in self_scope_terms) or hardware_self_implied)
-    identity_patterns = (
-        r"\bwhat\s+(?:is|'s)\s+your\s+name\b",
-        r"\bwho\s+are\s+you\b",
-        r"\byour\s+name\b",
-        r"\bwhat\s+version\b",
-        r"\bwho\s+(?:made|created|built|designed|engineered|developed)\s+you\b",
-    )
-    is_identity = (not is_selfaware) and any(re.search(p, normalized) for p in identity_patterns)
-    fact_kind = ""
-    fact_target_component = ""
-    if is_selfaware:
-        thermal = "temp" in normalized or "temperature" in normalized or "thermal" in normalized or "hot" in normalized
-        if thermal and ("cpu" in normalized or "processor" in normalized):
-            fact_kind = "temperature"; fact_target_component = "cpu"
-        elif thermal and ("gpu" in normalized or "graphics" in normalized):
-            fact_kind = "temperature"; fact_target_component = "gpu"
-        elif thermal and ("motherboard" in normalized or "mainboard" in normalized or "baseboard" in normalized or "board" in normalized):
-            fact_kind = "temperature"; fact_target_component = "motherboard"
-        elif thermal and ("drive" in normalized or "disk" in normalized or "storage" in normalized or "ssd" in normalized or "hdd" in normalized or "nvme" in normalized):
-            fact_kind = "temperature"; fact_target_component = "drive"
-        elif thermal and ("battery" in normalized):
-            fact_kind = "temperature"; fact_target_component = "battery"
-        elif thermal and ("motor" in normalized or "servo" in normalized or "actuator" in normalized or "controller" in normalized):
-            fact_kind = "temperature"; fact_target_component = "motor_controller"
-        elif thermal and ("ambient" in normalized or "room" in normalized or "environment" in normalized):
-            fact_kind = "temperature"; fact_target_component = "ambient"
-        elif "gpu" in normalized or "graphics" in normalized:
-            fact_kind = "gpu"; fact_target_component = "gpu"
-        elif "cpu" in normalized or "processor" in normalized:
-            fact_kind = "cpu"; fact_target_component = "cpu"
-        elif "motherboard" in normalized or "mainboard" in normalized or "baseboard" in normalized:
-            fact_kind = "motherboard"
-        elif "ram" in normalized or "memory" in normalized:
-            fact_kind = "memory"
-        elif "network" in normalized or "wifi" in normalized or "wi-fi" in normalized or "ethernet" in normalized:
-            fact_kind = "network_card"
-        elif "drive" in normalized or "disk" in normalized or "storage" in normalized:
-            fact_kind = "storage_topology"
-        else:
-            fact_kind = "general_system_fact"
-    domain = "selfaware_body" if is_selfaware else ("identity" if is_identity else "general")
-    return {
-        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
-        "module": MODULE_NAME,
-        "raw_text": raw,
-        "normalized_text": normalized,
-        "addressed_bot": addressed,
-        "addressed_name": "SarahMemory" if addressed else "",
-        "domain_hint": domain,
-        "intent_hint": "hardware_fact" if is_selfaware else ("identity_query" if is_identity else "general"),
-        "fact_kind_hint": fact_kind,
-        "fact_target_component": fact_target_component,
-        "requested_metric": "temperature" if fact_kind == "temperature" else "",
-        "requires_sensor_binding": bool(fact_kind == "temperature"),
-        "requires_evidence_court": bool(is_selfaware),
-        "context_packet_seen": bool(isinstance(context_packet, dict)),
-    }

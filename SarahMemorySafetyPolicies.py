@@ -866,3 +866,25 @@ def get_constitutional_doctrine() -> Dict[str, Any]:
 if __name__ == "__main__":
     snap = build_runtime_policy_snapshot()
     print(json.dumps(snap, indent=2, ensure_ascii=False))
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F read-only evidence claim policy
+# -----------------------------------------------------------------------------
+def review_read_only_evidence_policy(evidence_contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Policy review for non-mutating evidence/claim validation."""
+    contract = dict(evidence_contract or {})
+    hard = contract.get('hard_evidence_packet') if isinstance(contract.get('hard_evidence_packet'), dict) else {}
+    read_only = bool(contract.get('read_only', True) and hard.get('read_only', True))
+    action_taken = bool(contract.get('action_taken', False) or hard.get('action_taken', False))
+    risk = str(contract.get('risk_level') or RISK_TIER_0)
+    reasons = []; allow = True; decision = POLICY_DECISION_ALLOW
+    if not read_only or action_taken:
+        allow = False; decision = POLICY_DECISION_DENY; reasons.append('Evidence contract attempted state change or action execution.')
+    if risk in HIGH_RISK_TIERS:
+        allow = False; decision = POLICY_DECISION_REQUIRE_USER; reasons.append('Evidence contract used high-risk tier for a claim path.')
+    if not hard and not contract.get('appeal_packet'):
+        allow = False; decision = POLICY_DECISION_SIMULATE_ONLY; reasons.append('No hard evidence packet supplied; simulate/deny settled claim.')
+    if allow:
+        reasons.append('Read-only TIER_0 evidence claim is policy-allowed; presentation must still be source-aware and Compare-validated.')
+    return {'ok': True, 'module': MODULE_NAME, 'decision': decision, 'allow': bool(allow), 'risk_level': risk, 'read_only': read_only, 'action_taken': action_taken, 'reasons': reasons, 'doctrine': 'No hallucinated actuation; read-only evidence claims may proceed only when bounded and source-aware.'}

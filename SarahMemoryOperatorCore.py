@@ -1372,3 +1372,31 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F SMGET read-only evidence contract review
+# -----------------------------------------------------------------------------
+def review_read_only_evidence_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate read-only evidence/claim contracts without executing actions."""
+    c = dict(contract or {})
+    read_only = bool(c.get('read_only', True)); state_change = bool(c.get('state_change', False))
+    mode = str(c.get('execution_mode') or MODE_SIMULATE).lower(); risk = str(c.get('risk_level') or RISK_TIER_0)
+    reasons = []; allow = True; decision = 'ALLOW'
+    if not read_only or state_change:
+        allow = False; decision = 'DENY'; reasons.append('SMGET read-only evidence contract cannot change state.')
+    if mode not in {MODE_SIMULATE, MODE_DRAFT}:
+        allow = False; decision = 'DENY'; reasons.append('Read-only evidence contract must use simulate or draft mode.')
+    if risk not in {RISK_TIER_0, RISK_TIER_1}:
+        allow = False; decision = 'REQUIRE_USER'; reasons.append('Read-only evidence claim used non-trivial risk tier.')
+    hard = c.get('hard_evidence_packet') if isinstance(c.get('hard_evidence_packet'), dict) else {}
+    if not hard:
+        allow = False; decision = 'SIMULATE_ONLY'; reasons.append('No hard evidence packet supplied.')
+    if allow:
+        reasons.append('SMGET validated read-only evidence contract; no actuator, file, network, driver, or OS mutation authorized.')
+    review = {'ok': True, 'module': MODULE_NAME, 'decision': decision, 'allow': bool(allow), 'execution_mode': mode, 'risk_level': risk, 'read_only': read_only, 'state_change': state_change, 'contract': c, 'reasons': reasons}
+    try:
+        log_operator_event(str(c.get('contract_id') or 'readonly-evidence'), STATE_VERIFIED if allow else STATE_FAILED, 'ReadOnlyEvidenceReview', '; '.join(reasons), meta=review)
+    except Exception:
+        pass
+    return review

@@ -3443,3 +3443,292 @@ def rem_diagnostics_snapshot(snapshot: dict | None = None) -> dict:
         pass
     report["duration_ms"] = int((time.time() - started) * 1000)
     return report
+
+
+# ---------------------------------------------------------------------------
+# V10/V9F SelfAware hard-evidence thermal witness
+# ---------------------------------------------------------------------------
+def _sm_v9f_diag_safe_float(value):
+    try:
+        if value in (None, "", [], {}, "N/A", "n/a"):
+            return None
+        if isinstance(value, str):
+            m = re.search(r"-?\d+(?:\.\d+)?", value.replace("°", ""))
+            if not m:
+                return None
+            f = float(m.group(0))
+            if "f" in value.lower() and "c" not in value.lower():
+                f = (f - 32.0) * 5.0 / 9.0
+        else:
+            f = float(value)
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        # ACPI often reports tenths Kelvin.
+        if f > 1000.0:
+            f = (f / 10.0) - 273.15
+        if f < -100.0 or f > 250.0:
+            return None
+        return round(f, 2)
+    except Exception:
+        return None
+
+
+def _sm_v9f_diag_component(name="", label="", requested=""):
+    text = f"{name} {label}".lower()
+    if any(x in text for x in ("gpu", "nvidia", "radeon", "amdgpu", "graphics", "video")):
+        return "gpu", "direct_gpu_sensor", "HIGH", True
+    if any(x in text for x in ("cpu package", "package id", "coretemp", "k10temp", "zenpower", "tctl", "tdie", "cpu core", "core #", "core 0", "core 1", "core 2", "core 3", "core 4", "core 5", "core 6", "core 7")):
+        return "cpu", "direct_cpu_sensor", "HIGH", True
+    if any(x in text for x in ("cpu", "processor", "socket", "cputin")):
+        return "cpu", "motherboard_cpu_sensor", "MEDIUM_HIGH", False
+    if any(x in text for x in ("motherboard", "mainboard", "baseboard", "asus", "sabertooth", "nct", "it87", "systin", "vrm", "chipset", "pch", "acpi", "acpitz", "thermalzone", "thermal zone")):
+        return "motherboard", "motherboard_thermal_sensor", "MEDIUM", False
+    if any(x in text for x in ("nvme", "ssd", "hdd", "disk", "drive", "smart")):
+        return "drive", "drive_thermal_sensor", "MEDIUM_HIGH", True
+    if "battery" in text:
+        return "battery", "battery_thermal_sensor", "MEDIUM", True
+    if any(x in text for x in ("motor", "servo", "actuator", "controller")):
+        return "motor_controller", "motor_controller_sensor", "MEDIUM", True
+    if any(x in text for x in ("ambient", "room", "inlet", "exhaust", "environment")):
+        return "ambient", "ambient_sensor", "MEDIUM", True
+    return "unknown", "unmapped_thermal_zone", "LOW", False
+
+
+def _sm_v9f_diag_candidate(component, temp_c, *, label, source_type, source_family, confidence="MEDIUM", direct=False, raw=None):
+    return {
+        "component": str(component or "unknown"),
+        "temperature_c": _sm_v9f_diag_safe_float(temp_c),
+        "label": str(label or "")[:240],
+        "source_type": str(source_type or "thermal_sensor"),
+        "source_family": str(source_family or "SarahMemoryDiagnostics"),
+        "confidence": str(confidence or "MEDIUM"),
+        "direct": bool(direct),
+        "raw": raw if raw is not None else None,
+    }
+
+
+def _sm_v9f_diag_item_temp(item):
+    if not isinstance(item, dict):
+        return item
+    for key in ("temperature_c", "temp_c", "current", "Current", "value", "Value", "SensorValue", "CurrentTemperature"):
+        if key in item and item.get(key) not in (None, "", [], {}):
+            return item.get(key)
+    return None
+
+
+def _sm_v9f_diag_candidates_from_any(raw, *, source_family="diagnostics", source_name="", requested=""):
+    out = []
+    try:
+        if isinstance(raw, dict):
+            for key, comp, stype, conf, direct in (
+                ("cpu_temp_c", "cpu", "direct_cpu_sensor", "HIGH", True),
+                ("gpu_temp_c", "gpu", "direct_gpu_sensor", "HIGH", True),
+                ("motherboard_temp_c", "motherboard", "motherboard_thermal_sensor", "MEDIUM", False),
+                ("board_temp_c", "motherboard", "motherboard_thermal_sensor", "MEDIUM", False),
+            ):
+                if raw.get(key) not in (None, "", [], {}):
+                    out.append(_sm_v9f_diag_candidate(comp, raw.get(key), label=key, source_type=stype, source_family=source_family, confidence=conf, direct=direct, raw=raw))
+            # Single sensor object.
+            if any(k in raw for k in ("CurrentTemperature", "InstanceName", "SensorType", "Name", "Identifier", "Value")):
+                st = str(raw.get("SensorType") or raw.get("sensor_type") or "").lower()
+                if not st or "temp" in st or "temperature" in st:
+                    label = str(raw.get("Name") or raw.get("Identifier") or raw.get("InstanceName") or raw.get("label") or source_name or "sensor")
+                    comp, source_type, conf, direct = _sm_v9f_diag_component(source_name, label, requested)
+                    temp = _sm_v9f_diag_item_temp(raw)
+                    if temp not in (None, "", [], {}):
+                        out.append(_sm_v9f_diag_candidate(comp, temp, label=label, source_type=source_type, source_family=source_family, confidence=conf, direct=direct, raw=raw))
+            for group, entries in raw.items():
+                if isinstance(entries, list):
+                    for idx, item in enumerate(entries):
+                        if isinstance(item, dict):
+                            label = str(item.get("label") or item.get("name") or item.get("Name") or item.get("Identifier") or f"sensor_{idx}")
+                            comp, source_type, conf, direct = _sm_v9f_diag_component(str(group), label, requested)
+                            temp = _sm_v9f_diag_item_temp(item)
+                            if temp not in (None, "", [], {}):
+                                out.append(_sm_v9f_diag_candidate(comp, temp, label=f"{group}:{label}", source_type=source_type, source_family=source_family, confidence=conf, direct=direct, raw=item))
+                        else:
+                            temp = _sm_v9f_diag_safe_float(item)
+                            if temp is not None:
+                                comp, source_type, conf, direct = _sm_v9f_diag_component(str(group), "", requested)
+                                out.append(_sm_v9f_diag_candidate(comp, temp, label=str(group), source_type=source_type, source_family=source_family, confidence=conf, direct=direct, raw=item))
+                elif isinstance(entries, dict):
+                    out.extend(_sm_v9f_diag_candidates_from_any(entries, source_family=f"{source_family}.{group}", source_name=str(group), requested=requested))
+        elif isinstance(raw, list):
+            for idx, item in enumerate(raw):
+                out.extend(_sm_v9f_diag_candidates_from_any(item, source_family=f"{source_family}[{idx}]", source_name=source_name, requested=requested))
+    except Exception:
+        pass
+    clean=[]; seen=set()
+    for c in out:
+        if c.get("temperature_c") is None:
+            continue
+        key=(c.get("component"), c.get("temperature_c"), c.get("source_type"), c.get("label"), c.get("source_family"))
+        if key in seen:
+            continue
+        seen.add(key); clean.append(c)
+    return clean
+
+
+def _sm_v9f_diag_run_json_command(cmd, timeout=8):
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if res.returncode == 0 and (res.stdout or "").strip():
+            return json.loads(res.stdout)
+    except Exception:
+        pass
+    return None
+
+
+def _sm_v9f_diag_powershell_json(script, timeout=8):
+    try:
+        if platform.system().lower() != "windows":
+            return None
+        ps = shutil.which("powershell") or shutil.which("pwsh")
+        if not ps:
+            return None
+        return _sm_v9f_diag_run_json_command([ps, "-NoProfile", "-Command", script], timeout=timeout)
+    except Exception:
+        return None
+
+
+def _sm_v9f_diag_requested_component(claim="", requested_component=""):
+    low = str(requested_component or claim or "").lower()
+    if "cpu" in low or "processor" in low:
+        return "cpu"
+    if "gpu" in low or "graphics" in low or "video card" in low:
+        return "gpu"
+    if "motherboard" in low or "mainboard" in low or "board" in low or "chipset" in low or "vrm" in low:
+        return "motherboard"
+    if "drive" in low or "disk" in low or "ssd" in low or "hdd" in low or "nvme" in low:
+        return "drive"
+    if "battery" in low:
+        return "battery"
+    if "motor" in low or "servo" in low or "controller" in low:
+        return "motor_controller"
+    if "ambient" in low or "room" in low or "environment" in low:
+        return "ambient"
+    return "body_thermal"
+
+
+def _sm_v9f_diag_select(candidates, requested):
+    def score(c):
+        comp=str(c.get("component") or "").lower(); st=str(c.get("source_type") or "").lower(); conf=str(c.get("confidence") or "").upper(); s=0
+        if comp == requested: s += 120
+        if requested == "cpu" and st == "direct_cpu_sensor": s += 90
+        if requested == "cpu" and st == "motherboard_cpu_sensor": s += 75
+        if requested == "gpu" and st == "direct_gpu_sensor": s += 90
+        if requested == "body_thermal" and comp != "unknown": s += 40
+        if c.get("direct"): s += 25
+        if conf == "HIGH": s += 20
+        elif conf == "MEDIUM_HIGH": s += 15
+        elif conf == "MEDIUM": s += 8
+        return s
+    valid=[c for c in candidates if c.get("temperature_c") not in (None, "")]
+    if not valid:
+        return None
+    best=sorted(valid,key=score,reverse=True)[0]
+    if score(best) <= 0:
+        return None
+    if requested != "body_thermal" and str(best.get("component") or "").lower() != requested:
+        if not (requested == "cpu" and str(best.get("source_type") or "") == "motherboard_cpu_sensor"):
+            return None
+    return best
+
+
+def collect_thermal_hard_evidence(requested_component="body_thermal", claim="", include_raw=False):
+    """Read-only hard-evidence thermal witness for SelfAware Supreme Appeals.
+
+    Cross-platform and fail-soft. This function never changes system state; it only
+    gathers sensor candidates from available telemetry providers and labels their
+    confidence/source so appself/CognitiveTriforce/SMGET can decide what may be claimed.
+    """
+    requested = _sm_v9f_diag_requested_component(claim, requested_component)
+    candidates=[]; sources_checked=[]; errors=[]
+    try:
+        import SarahMemoryHi as _Hi
+        fn=getattr(_Hi,"get_boot_environment_snapshot",None)
+        if callable(fn):
+            try:
+                snap=fn(force_refresh=False, refresh_reason="diagnostics_thermal_hard_evidence", persist=True) or {}
+            except TypeError:
+                snap=fn(force_refresh=False, refresh_reason="diagnostics_thermal_hard_evidence") or {}
+            sources_checked.append("SarahMemoryHi.get_boot_environment_snapshot")
+            candidates.extend(_sm_v9f_diag_candidates_from_any(snap, source_family="SarahMemoryHi.boot_environment", requested=requested))
+        fn=getattr(_Hi,"get_thermal_info",None)
+        if callable(fn):
+            val=fn()
+            sources_checked.append("SarahMemoryHi.get_thermal_info")
+            candidates.extend(_sm_v9f_diag_candidates_from_any(val, source_family="SarahMemoryHi.get_thermal_info", requested=requested))
+    except Exception as exc:
+        errors.append(f"SarahMemoryHi:{type(exc).__name__}:{exc}")
+    try:
+        import psutil
+        temps=psutil.sensors_temperatures(fahrenheit=False) or {}
+        sources_checked.append("psutil.sensors_temperatures")
+        candidates.extend(_sm_v9f_diag_candidates_from_any(temps, source_family="psutil.sensors_temperatures", requested=requested))
+    except Exception as exc:
+        errors.append(f"psutil:{type(exc).__name__}:{exc}")
+    if platform.system().lower() == "windows":
+        for ns in ("root/LibreHardwareMonitor", "root/OpenHardwareMonitor"):
+            data = _sm_v9f_diag_powershell_json(f"Get-CimInstance -Namespace {ns} -ClassName Sensor | Where-Object {{$_.SensorType -eq 'Temperature'}} | Select-Object Name,Identifier,SensorType,Value | ConvertTo-Json -Depth 6", timeout=8)
+            sources_checked.append(f"windows.{ns}.Sensor")
+            if data not in (None, {}, []):
+                candidates.extend(_sm_v9f_diag_candidates_from_any(data, source_family=f"windows.{ns}.Sensor", requested=requested))
+        data = _sm_v9f_diag_powershell_json("Get-CimInstance -Namespace root/wmi MSAcpi_ThermalZoneTemperature | Select-Object CurrentTemperature,InstanceName | ConvertTo-Json -Depth 4", timeout=8)
+        sources_checked.append("windows.MSAcpi_ThermalZoneTemperature")
+        if data not in (None, {}, []):
+            candidates.extend(_sm_v9f_diag_candidates_from_any(data, source_family="windows.MSAcpi_ThermalZoneTemperature", requested=requested))
+    if platform.system().lower() == "linux":
+        if shutil.which("sensors"):
+            data=_sm_v9f_diag_run_json_command(["sensors","-j"], timeout=8)
+            sources_checked.append("linux.sensors -j")
+            if data not in (None, {}, []):
+                candidates.extend(_sm_v9f_diag_candidates_from_any(data, source_family="linux.sensors_json", requested=requested))
+        try:
+            from pathlib import Path as _Path
+            zones=[]
+            for z in sorted(_Path('/sys/class/thermal').glob('thermal_zone*'))[:80]:
+                try:
+                    label=(z/'type').read_text(errors='ignore').strip()
+                    temp=(z/'temp').read_text(errors='ignore').strip()
+                    zones.append({'Name':label,'Value':float(temp)/1000.0,'SensorType':'Temperature','Identifier':str(z)})
+                except Exception:
+                    pass
+            sources_checked.append("linux.sysfs_thermal_zones")
+            candidates.extend(_sm_v9f_diag_candidates_from_any(zones, source_family="linux.sysfs_thermal_zones", requested=requested))
+        except Exception as exc:
+            errors.append(f"linux_sysfs:{type(exc).__name__}:{exc}")
+    selected=_sm_v9f_diag_select(candidates, requested)
+    direct=[]; indirect=[]; related=[]
+    for c in candidates:
+        comp=str(c.get('component') or '').lower()
+        row={k:v for k,v in c.items() if include_raw or k!='raw'}
+        if comp == requested or (requested=='cpu' and str(c.get('source_type'))=='motherboard_cpu_sensor'):
+            if c.get('direct'): direct.append(row)
+            else: indirect.append(row)
+        else:
+            related.append(row)
+    missing=[]
+    if requested=='cpu' and not direct: missing.append('direct_cpu_thermal_probe_or_package_sensor')
+    if requested=='cpu' and not selected: missing.append('mapped_motherboard_cpu_related_sensor')
+    return {
+        'packet_type':'SelfAwareHardEvidencePacket',
+        'version':'V10_V9F',
+        'witness':'SarahMemoryDiagnostics.collect_thermal_hard_evidence',
+        'evidence_domain':'thermal',
+        'requested_component':requested,
+        'requested_metric':'temperature',
+        'selected_reading': ({k:v for k,v in selected.items() if include_raw or k!='raw'} if isinstance(selected, dict) else {}),
+        'direct_evidence':direct[:16],
+        'indirect_evidence':indirect[:16],
+        'related_evidence':related[:16],
+        'missing_evidence':missing,
+        'sensor_candidates':[({k:v for k,v in c.items() if include_raw or k!='raw'}) for c in candidates[:36]],
+        'sources_checked':sources_checked,
+        'errors':errors[:12],
+        'sensor_binding_status':('direct_confirmed' if selected and selected.get('direct') else ('indirect_candidate' if selected else 'unmapped_or_unavailable')),
+        'confidence': (selected.get('confidence') if isinstance(selected, dict) else 'NONE'),
+        'null_is_evidence':True,
+        'read_only':True,
+        'action_taken':False,
+    }

@@ -1065,45 +1065,6 @@ def get_self_summary(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     }
 
 
-def build_thermal_body_authority_packet(
-    *, claim: str = "", thermal_case: Optional[Dict[str, Any]] = None,
-    cpu_ticket: Optional[Dict[str, Any]] = None, motherboard_ticket: Optional[Dict[str, Any]] = None,
-    gpu_ticket: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Supreme Appeals body-authority packet for thermal sensor binding."""
-    case = dict(thermal_case or {})
-    selected = case.get("selected_reading") if isinstance(case.get("selected_reading"), dict) else {}
-    requested = str(case.get("requested_component") or selected.get("component") or "body_thermal")
-    model = get_latest_cognitive_self_model(context={"source": "thermal_body_authority", **dict(context or {})}, refresh_if_stale=True, max_age_sec=30)
-    body_map = model.get("body_map") if isinstance(model.get("body_map"), dict) else {}
-    runtime_env = body_map.get("runtime_environment") if isinstance(body_map.get("runtime_environment"), dict) else {}
-    body = runtime_env.get("body") if isinstance(runtime_env.get("body"), dict) else {}
-    cpu_present = bool(body.get("cpu")) or bool(isinstance(cpu_ticket, dict) and cpu_ticket.get("approved_fact"))
-    motherboard_present = bool(body.get("motherboard") or body.get("motherboard_items")) or bool(isinstance(motherboard_ticket, dict) and motherboard_ticket.get("approved_fact"))
-    gpu_present = bool(body.get("gpu")) or bool(isinstance(gpu_ticket, dict) and gpu_ticket.get("approved_fact"))
-    relation_ok = False; relation_basis = []
-    if requested == "cpu":
-        relation_ok = bool(cpu_present and motherboard_present); relation_basis = ["cpu_verified_or_present", "motherboard_verified_or_present"] if relation_ok else []
-    elif requested == "gpu":
-        relation_ok = bool(gpu_present); relation_basis = ["gpu_verified_or_present"] if relation_ok else []
-    elif requested == "motherboard":
-        relation_ok = bool(motherboard_present); relation_basis = ["motherboard_verified_or_present"] if relation_ok else []
-    else:
-        relation_ok = bool(selected.get("temperature_c") not in (None, "")); relation_basis = ["mapped_runtime_sensor"] if relation_ok else []
-    return {
-        "ok": True, "module": MODULE_NAME, "court_role": "supreme_appeals_body_authority",
-        "claim": _safe_text(claim, 500), "requested_component": requested, "selected_sensor": selected,
-        "body_relationship_verified": bool(relation_ok), "relationship_basis": relation_basis,
-        "cpu_ticket_approved": bool(isinstance(cpu_ticket, dict) and cpu_ticket.get("approved_fact")),
-        "motherboard_ticket_approved": bool(isinstance(motherboard_ticket, dict) and motherboard_ticket.get("approved_fact")),
-        "gpu_ticket_approved": bool(isinstance(gpu_ticket, dict) and gpu_ticket.get("approved_fact")),
-        "runtime_body_has_cpu": bool(body.get("cpu")), "runtime_body_has_motherboard": bool(body.get("motherboard") or body.get("motherboard_items")),
-        "runtime_body_has_gpu": bool(body.get("gpu")),
-        "truth_rule": "Mapped thermal sensors may be presented only with source distinction; null direct sensor is evidence, not failure.",
-        "action_authority": "none_read_only_fact_case",
-    }
-
-
 def describe_identity(context: Optional[Dict[str, Any]] = None) -> str:
     summary = get_self_summary(context=context)
     return (
@@ -1149,45 +1110,6 @@ def describe_capabilities(context: Optional[Dict[str, Any]] = None) -> str:
     if not parts:
         parts.append("I can assist through governed answer, action, creative, system, and network capabilities depending on the current runtime.")
     return " ".join(parts)
-
-
-def build_thermal_body_authority_packet(
-    *, claim: str = "", thermal_case: Optional[Dict[str, Any]] = None,
-    cpu_ticket: Optional[Dict[str, Any]] = None, motherboard_ticket: Optional[Dict[str, Any]] = None,
-    gpu_ticket: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """Supreme Appeals body-authority packet for thermal sensor binding."""
-    case = dict(thermal_case or {})
-    selected = case.get("selected_reading") if isinstance(case.get("selected_reading"), dict) else {}
-    requested = str(case.get("requested_component") or selected.get("component") or "body_thermal")
-    model = get_latest_cognitive_self_model(context={"source": "thermal_body_authority", **dict(context or {})}, refresh_if_stale=True, max_age_sec=30)
-    body_map = model.get("body_map") if isinstance(model.get("body_map"), dict) else {}
-    runtime_env = body_map.get("runtime_environment") if isinstance(body_map.get("runtime_environment"), dict) else {}
-    body = runtime_env.get("body") if isinstance(runtime_env.get("body"), dict) else {}
-    cpu_present = bool(body.get("cpu")) or bool(isinstance(cpu_ticket, dict) and cpu_ticket.get("approved_fact"))
-    motherboard_present = bool(body.get("motherboard") or body.get("motherboard_items")) or bool(isinstance(motherboard_ticket, dict) and motherboard_ticket.get("approved_fact"))
-    gpu_present = bool(body.get("gpu")) or bool(isinstance(gpu_ticket, dict) and gpu_ticket.get("approved_fact"))
-    relation_ok = False; relation_basis = []
-    if requested == "cpu":
-        relation_ok = bool(cpu_present and motherboard_present); relation_basis = ["cpu_verified_or_present", "motherboard_verified_or_present"] if relation_ok else []
-    elif requested == "gpu":
-        relation_ok = bool(gpu_present); relation_basis = ["gpu_verified_or_present"] if relation_ok else []
-    elif requested == "motherboard":
-        relation_ok = bool(motherboard_present); relation_basis = ["motherboard_verified_or_present"] if relation_ok else []
-    else:
-        relation_ok = bool(selected.get("temperature_c") not in (None, "")); relation_basis = ["mapped_runtime_sensor"] if relation_ok else []
-    return {
-        "ok": True, "module": MODULE_NAME, "court_role": "supreme_appeals_body_authority",
-        "claim": _safe_text(claim, 500), "requested_component": requested, "selected_sensor": selected,
-        "body_relationship_verified": bool(relation_ok), "relationship_basis": relation_basis,
-        "cpu_ticket_approved": bool(isinstance(cpu_ticket, dict) and cpu_ticket.get("approved_fact")),
-        "motherboard_ticket_approved": bool(isinstance(motherboard_ticket, dict) and motherboard_ticket.get("approved_fact")),
-        "gpu_ticket_approved": bool(isinstance(gpu_ticket, dict) and gpu_ticket.get("approved_fact")),
-        "runtime_body_has_cpu": bool(body.get("cpu")), "runtime_body_has_motherboard": bool(body.get("motherboard") or body.get("motherboard_items")),
-        "runtime_body_has_gpu": bool(body.get("gpu")),
-        "truth_rule": "Mapped thermal sensors may be presented only with source distinction; null direct sensor is evidence, not failure.",
-        "action_authority": "none_read_only_fact_case",
-    }
 
 
 def describe_identity_and_capabilities(context: Optional[Dict[str, Any]] = None) -> str:
@@ -1246,3 +1168,39 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryCognitiveSelf.py v8.0.0
 # ====================================================================
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F Supreme Appeals helper: thermal body authority
+# -----------------------------------------------------------------------------
+def build_thermal_body_authority_packet(claim: str = "", hard_evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None, **legacy_kwargs) -> Dict[str, Any]:
+    """Build CognitiveSelf body authority for SelfAware thermal appeals."""
+    hard = dict(hard_evidence_packet or legacy_kwargs.get('thermal_case') or {})
+    requested = str(hard.get('requested_component') or (appeal_packet or {}).get('requested_component') or 'body_thermal')
+    selected = hard.get('selected_reading') if isinstance(hard.get('selected_reading'), dict) else {}
+    model = get_latest_cognitive_self_model(context={**dict(context or {}), 'request_text': claim}, refresh_if_stale=True, max_age_sec=30)
+    body_map = model.get('body_map') if isinstance(model.get('body_map'), dict) else {}
+    env = body_map.get('runtime_environment') if isinstance(body_map.get('runtime_environment'), dict) else {}
+    body = env.get('body') if isinstance(env.get('body'), dict) else {}
+    chat_facts = env.get('chat_facts') if isinstance(env.get('chat_facts'), dict) else {}
+    component_present = False
+    if requested == 'cpu': component_present = bool(body.get('cpu') or chat_facts.get('cpu'))
+    elif requested == 'gpu': component_present = bool(body.get('gpu') or chat_facts.get('gpu'))
+    elif requested == 'motherboard': component_present = bool(body.get('motherboard') or body.get('motherboard_items') or chat_facts.get('motherboard'))
+    elif requested in {'drive','storage'}: component_present = bool(body.get('storage') or chat_facts.get('storage_devices'))
+    else: component_present = True
+    return {
+        'ok': True, 'module': MODULE_NAME, 'version': MODULE_VERSION,
+        'appeal_role': 'CognitiveSelf_body_authority', 'requested_component': requested,
+        'component_present_in_body_map': bool(component_present),
+        'selected_reading_present': bool(selected and selected.get('temperature_c') not in (None, '')),
+        'selected_source_type': selected.get('source_type') if isinstance(selected, dict) else '',
+        'runtime_summary': {
+            'run_mode': ((model.get('status') or {}).get('run_mode')),
+            'device_mode': ((model.get('status') or {}).get('device_mode')),
+            'continuity_state': ((model.get('status') or {}).get('continuity_state')),
+            'node_name': ((model.get('identity') or {}).get('node_name')),
+        },
+        'rule': 'CognitiveSelf supplies body authority and capability context; it does not override CognitiveServices, SafetyPolicies, or SMGET.',
+        'read_only': True, 'action_taken': False,
+    }

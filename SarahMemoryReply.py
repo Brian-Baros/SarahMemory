@@ -591,54 +591,6 @@ except Exception as _e:
     def load_quick_facts() -> Dict[str, str]:
         return {}
 
-# V10/V9C persistence guard for volatile SelfAware body facts.
-def _sm_is_volatile_body_fact_query(text: str) -> bool:
-    t = str(text or "").strip().lower()
-    if not t:
-        return False
-    hardware_terms = (
-        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
-        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
-        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
-    )
-    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
-    return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
-
-
-def _sm_meta_blocks_persistence(meta: Optional[Dict[str, Any]] = None, text: str = "") -> bool:
-    meta = meta if isinstance(meta, dict) else {}
-    if bool(meta.get("do_not_write_sql") or meta.get("do_not_persist") or meta.get("do_not_learn") or meta.get("volatile_runtime_fact")):
-        return True
-    pkg = meta.get("verified_artifact_package") if isinstance(meta.get("verified_artifact_package"), dict) else {}
-    if pkg and bool(pkg.get("volatile") or pkg.get("do_not_write_sql") or pkg.get("volatile_runtime_fact")):
-        return True
-    cp = meta.get("chat_classification_packet") if isinstance(meta.get("chat_classification_packet"), dict) else {}
-    if cp and str(cp.get("domain") or "") == "selfaware_body":
-        return True
-    return _sm_is_volatile_body_fact_query(text)
-
-
-try:
-    _sm_raw_store_answer = store_answer  # type: ignore[name-defined]
-    def store_answer(query, answer):  # type: ignore[no-redef]
-        if _sm_meta_blocks_persistence(text=str(query or "")):
-            logger.info("[V10/V9C] Skipped QA cache store for volatile SelfAware body fact query.")
-            return False
-        return _sm_raw_store_answer(query, answer)
-except Exception:
-    pass
-
-try:
-    _sm_raw_search_answers = search_answers  # type: ignore[name-defined]
-    def search_answers(query):  # type: ignore[no-redef]
-        if _sm_is_volatile_body_fact_query(str(query or "")):
-            logger.info("[V10/V9C] Skipped QA cache recall for volatile SelfAware body fact query.")
-            return []
-        return _sm_raw_search_answers(query)
-except Exception:
-    pass
-
-
 # Personality and adaptive layers
 try:
     from SarahMemoryPersonality import (
@@ -796,110 +748,6 @@ def _sm_make_outward_bundle(
             "source": meta.get("source") or "image",
         })
     return _stamp_bundle(bundle)
-
-def _sm_strip_selfaware_artifact_text(text: str, kind: str = "") -> str:
-    value = str(text or "").strip()
-    if not value:
-        return ""
-    try:
-        value = re.sub(r"^\s*Verified\s+SelfAware\s+fact\s*\([^)]*\)\s*:\s*", "", value, flags=re.I).strip()
-        labels = {
-            "cpu": "CPU",
-            "gpu": "GPU",
-            "motherboard": "Motherboard",
-            "memory": "Memory",
-            "network": "Network adapters",
-            "network_card": "Network adapters",
-            "operating_system": "Operating platform",
-        }
-        for label in [labels.get(str(kind or "").lower(), ""), "CPU", "GPU", "Motherboard", "Memory", "Network adapters", "Operating platform"]:
-            if label and value.lower().startswith((label + " =").lower()):
-                value = value[len(label) + 2:].strip()
-                break
-    except Exception:
-        pass
-    return value.strip()
-
-
-def _sm_format_thermal_artifact_response(user_text: str, package: Dict[str, Any], artifact_text: str) -> Optional[str]:
-    try:
-        pkg = package if isinstance(package, dict) else {}
-        value = pkg.get("artifact_value") if isinstance(pkg.get("artifact_value"), dict) else {}
-        binding = pkg.get("thermal_sensor_binding") if isinstance(pkg.get("thermal_sensor_binding"), dict) else {}
-        if not value and binding:
-            value = binding
-        if not isinstance(value, dict) or not value.get("thermal_case"):
-            return None
-        selected = value.get("selected_reading") if isinstance(value.get("selected_reading"), dict) else {}
-        component = str(value.get("requested_component") or selected.get("component") or "body_thermal").replace("_", " ")
-        temp = selected.get("temperature_c")
-        source_type = str(selected.get("source_type") or "").replace("_", " ")
-        status = str(value.get("sensor_binding_status") or "unavailable").replace("_", " ")
-        if temp not in (None, ""):
-            if component == "cpu" and "motherboard" in source_type:
-                return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. This CPU is verified on my motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
-            if component == "gpu":
-                return f"My GPU temperature is currently {temp}°C."
-            if component == "motherboard":
-                return f"My motherboard-related temperature reading is currently {temp}°C."
-            return f"My currently verified {component} temperature is {temp}°C."
-        if component == "cpu":
-            related = value.get("related_readings") if isinstance(value.get("related_readings"), dict) else {}
-            gpu_temp = related.get("gpu_temp_c")
-            if gpu_temp not in (None, ""):
-                return f"I do not currently have a verified CPU temperature reading. The related live thermal reading I can verify is GPU temperature at {gpu_temp}°C."
-            return "I do not currently have a verified CPU temperature reading. Direct CPU sensor visibility is unavailable, and no mapped motherboard CPU-related thermal sensor has been approved yet."
-        return f"I do not currently have a verified {component} temperature reading. Sensor binding status: {status}."
-    except Exception:
-        return None
-
-
-def present_verified_artifact_answer(user_text: str, package: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Presentation boundary for volatile SelfAware hardware/body artifacts."""
-    meta = dict(meta or {})
-    pkg = package if isinstance(package, dict) else {}
-    kind = str(pkg.get("artifact_kind") or meta.get("fact_kind") or "hardware_fact").strip().lower()
-    artifact_text = _sm_strip_selfaware_artifact_text(str(pkg.get("artifact_text") or ""), kind=kind)
-    if not artifact_text:
-        artifact_text = _sm_strip_selfaware_artifact_text(str(pkg.get("artifact_value") or ""), kind=kind)
-    low = str(user_text or "").lower()
-    wants_court = any(k in low for k in ("evidence court", "court result", "quorum", "confidence", "proof", "show evidence"))
-    court = pkg.get("evidence_court") if isinstance(pkg.get("evidence_court"), dict) else {}
-    if wants_court:
-        response = f"SelfAware verified this {kind.replace('_', ' ')} at {court.get('quorum') or 'unknown quorum'} quorum with {court.get('confidence') or 'unknown'} confidence: {artifact_text}."
-    elif kind == "temperature":
-        response = _sm_format_thermal_artifact_response(user_text, pkg, artifact_text) or f"My currently verified thermal result is: {artifact_text}."
-    elif kind == "cpu":
-        article = "an" if artifact_text[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
-        response = f"I currently have {article} {artifact_text}."
-    elif kind == "gpu":
-        response = f"My currently verified graphics hardware is {artifact_text}."
-    elif kind == "motherboard":
-        response = f"My currently verified motherboard is {artifact_text}."
-    elif kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
-        response = f"My currently verified network adapter summary is: {artifact_text}. Sensitive IP and MAC details are not exposed."
-    else:
-        response = f"My currently verified {kind.replace('_', ' ')} result is: {artifact_text}."
-    meta.update({
-        "source": meta.get("source") or "selfaware_verified_artifact",
-        "engine": meta.get("engine") or "SarahMemoryReply.present_verified_artifact_answer",
-        "intent": meta.get("intent") or "system_status",
-        "verified_artifact_package": pkg,
-        "compare_mode": "integrity_security_only",
-        "do_not_reverify": True,
-        "do_not_write_sql": True,
-        "do_not_persist": True,
-        "do_not_learn": True,
-        "do_not_promote_to_memory": True,
-        "volatile_runtime_fact": True,
-    })
-    return _sm_make_outward_bundle(
-        response,
-        meta=meta,
-        artifacts=[{"name": "verified_artifact_package", "type": "volatile_verified_hardware_fact", "verified_artifact_package": pkg, "display_ready": False, "download_ready": False}],
-        raw_answer=response,
-    )
-
 
 def _sm_creative_artifacts_from_meta(meta: Dict[str, Any]) -> List[Dict[str, Any]]:
     artifacts: List[Dict[str, Any]] = []
@@ -1319,8 +1167,6 @@ def _extract_links(s: str) -> List[str]:
 # =============================================================================
 def _try_local_db(text: str) -> Optional[str]:
     """Query local fast facts/answers first (offline friendly) with vector fallback."""
-    if _sm_is_volatile_body_fact_query(text):
-        return None
     try:
         facts = load_quick_facts()
         key = (text or "").strip().lower()
@@ -1992,9 +1838,6 @@ def _store_history_safe(bundle: Dict[str, Any]) -> None:
     try:
         safe_bundle = dict(bundle or {})
         safe_meta = safe_bundle.get("meta") if isinstance(safe_bundle.get("meta"), dict) else {}
-        if _sm_meta_blocks_persistence(safe_meta, text=str(safe_meta.get("_prompt_text") or safe_bundle.get("user_input") or safe_bundle.get("query") or "")):
-            logger.info("[V10/V9C] Skipped response history store for volatile SelfAware body fact.")
-            return
         safe_bundle["response"] = _sm_sanitize_user_text(
             safe_bundle.get("presentation_reply") or safe_bundle.get("response") or "",
             user_text=safe_meta.get("_prompt_text"),
@@ -2175,3 +2018,25 @@ def _log_emotion_safe(emotion: str, intensity: float = 0.5):
 # ====================================================================
 # END OF SarahMemoryReply.py v8.0.0
 # ====================================================================
+
+
+# -----------------------------------------------------------------------------
+# V10/V9F presentation helper for SelfAware thermal evidence packets
+# -----------------------------------------------------------------------------
+def format_selfaware_thermal_reply(packet: Dict[str, Any]) -> str:
+    pkt = dict(packet or {})
+    selected = pkt.get('selected_reading') if isinstance(pkt.get('selected_reading'), dict) else {}
+    component = str(pkt.get('requested_component') or selected.get('component') or 'body_thermal').replace('_',' ')
+    temp = selected.get('temperature_c')
+    source_type = str(selected.get('source_type') or '').replace('_',' ')
+    if temp not in (None, ''):
+        if component == 'cpu' and 'motherboard' in source_type:
+            return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. This CPU is verified on my motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
+        return f"My currently verified {component} temperature is {temp}°C."
+    related = pkt.get('related_evidence') if isinstance(pkt.get('related_evidence'), list) else []
+    bits=[]
+    for row in related[:4]:
+        if isinstance(row, dict) and row.get('temperature_c') not in (None, ''):
+            bits.append(f"{str(row.get('component') or 'related').replace('_',' ')} {row.get('temperature_c')}°C")
+    suffix = (" The related live thermal reading I can verify is " + ", ".join(bits) + ".") if bits else ""
+    return f"I do not currently have a verified {component} temperature reading from a direct or mapped sensor." + suffix
