@@ -1516,3 +1516,29 @@ def compass_review_selfaware_evidence_case(original_goal: str = "", evidence_pac
     if requested and requested.replace('_',' ') not in low_reply and evidence.get('selected_reading'):
         reasons.append('Reply should explicitly mention requested component and sensor source.')
     return {'ok': True, 'module': MODULE_NAME, 'status': STATUS_MINOR_DRIFT if drift else STATUS_ON_COURSE, 'directive': DIRECTIVE_REANCHOR_ORIGINAL if drift else DIRECTIVE_ALLOW_REPLY, 'requested_component': requested, 'original_goal': original_goal, 'hold_reply': bool(drift), 'reasons': reasons or ['SelfAware evidence answer remains anchored to the original requested component.'], 'read_only': True, 'action_taken': False}
+
+# -----------------------------------------------------------------------------
+# V10/V9G SelfAware answer-shape compass review
+# -----------------------------------------------------------------------------
+def review_selfaware_answer_bearing(original_goal: str = "", evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, proposed_reply: str = "", canonical_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Keep SelfAware body answers anchored to the user's requested component/metric."""
+    pkt = dict(canonical_packet or {})
+    if not pkt and isinstance(appeal_packet, dict):
+        pkt = {
+            'requested_component': appeal_packet.get('requested_component'),
+            'requested_metric': appeal_packet.get('requested_metric'),
+        }
+    metric = str(pkt.get('requested_metric') or '').lower()
+    component = str(pkt.get('requested_component') or pkt.get('target') or '').lower()
+    reply = str(proposed_reply or '').lower()
+    directives = []
+    hold = False
+    status = STATUS_ON_COURSE if 'STATUS_ON_COURSE' in globals() else 'ON_COURSE'
+    if metric == 'temperature':
+        if component == 'cpu' and ('physical cores' in reply or 'logical threads' in reply) and 'temperature' not in reply and '°c' not in reply:
+            hold = True; status = STATUS_PROCEDURAL_GAP if 'STATUS_PROCEDURAL_GAP' in globals() else 'PROCEDURAL_GAP'; directives.append('REANCHOR_TO_CPU_TEMPERATURE')
+        if component and component != 'gpu' and 'gpu temperature' in reply and f'{component} temperature' not in reply:
+            hold = True; status = STATUS_MINOR_DRIFT if 'STATUS_MINOR_DRIFT' in globals() else 'MINOR_DRIFT'; directives.append('DO_NOT_SUBSTITUTE_RELATED_THERMAL_SENSOR')
+    if metric == 'bios_version' and ('server version' in reply or 'my name is' in reply):
+        hold = True; status = STATUS_PROCEDURAL_GAP if 'STATUS_PROCEDURAL_GAP' in globals() else 'PROCEDURAL_GAP'; directives.append('REANCHOR_TO_HARDWARE_BIOS_VERSION')
+    return {'ok': True, 'module': 'SarahMemoryCognitiveCompass', 'status': status, 'hold_reply': bool(hold), 'directives': directives, 'original_goal': original_goal, 'requested_metric': metric, 'requested_component': component}

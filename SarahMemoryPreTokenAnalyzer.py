@@ -1588,3 +1588,55 @@ if __name__ == "__main__":
             if analysis.get("ambiguities"):
                 merged = merge_clarification_answer(analysis, "Louisiana")
                 print("MERGED:", json.dumps(merged.get("resolved_packet"), indent=2, ensure_ascii=False))
+
+# -----------------------------------------------------------------------------
+# V10/V9G Canonical SelfAware Query Packet helper
+# -----------------------------------------------------------------------------
+def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a deterministic SelfAware body-fact case frame without executing anything."""
+    raw = _coerce_text(text) if '_coerce_text' in globals() else str(text or '')
+    norm = _normalize_text(raw).lower() if '_normalize_text' in globals() else str(raw).strip().lower()
+    corrections = {}
+    for bad, good in (("temperture", "temperature"), ("tempertrue", "temperature"), ("tempature", "temperature"), ("wi fi", "wi-fi"), ("hardrive", "hard drive"), ("harddrive", "hard drive")):
+        if bad in norm:
+            norm = norm.replace(bad, good)
+            corrections[bad] = good
+    component = ''
+    if any(x in norm for x in ('cpu', 'processor')): component = 'cpu'
+    elif any(x in norm for x in ('gpu', 'graphics', 'video card')): component = 'gpu'
+    elif any(x in norm for x in ('motherboard', 'mainboard', 'baseboard', 'system board', 'board')): component = 'motherboard'
+    elif any(x in norm for x in ('drive', 'disk', 'ssd', 'hdd', 'nvme', 'storage')): component = 'drive'
+    metric = 'identity'
+    kind = 'general_system_fact'
+    if any(x in norm for x in ('temperature', 'temp', 'thermal', 'heat', 'degrees c', 'degrees f')):
+        metric = 'temperature'; kind = 'temperature'
+    elif any(x in norm for x in ('fan', 'rpm')):
+        metric = 'fan_speed'; kind = 'fan_speed'
+    elif any(x in norm for x in ('bios', 'uefi', 'firmware')) and any(x in norm for x in ('version', 'revision', 'release')):
+        metric = 'bios_version'; kind = 'bios_version'; component = component or 'motherboard'
+    elif any(x in norm for x in ('body map', 'body-map', 'runtime body', 'aios body')):
+        metric = 'body_map'; kind = 'body_map'
+    elif component == 'cpu': kind = 'cpu'
+    elif component == 'gpu': kind = 'gpu'
+    elif component == 'motherboard': kind = 'motherboard'
+    elif component == 'drive': kind = 'disk_space'
+    elif any(x in norm for x in ('network', 'ethernet', 'wi-fi', 'wifi', 'adapter')):
+        component = 'network'; metric = 'connectivity' if 'connected' in norm else 'network_adapters'; kind = 'network'
+    domain = 'selfaware_body' if kind != 'general_system_fact' else 'chat'
+    return {
+        'packet_type': 'CanonicalQueryPacket',
+        'version': 'V10_V9G_CANONICAL_QUERY_PACKET',
+        'raw_text': raw,
+        'normalized_text': norm,
+        'corrections': corrections,
+        'domain': domain,
+        'intent': 'body_fact_query' if domain == 'selfaware_body' else 'general_chat',
+        'requested_component': component,
+        'requested_metric': metric,
+        'fact_kind': kind,
+        'target': component if metric == 'temperature' else '',
+        'answer_shape': 'direct_answer' if metric in ('temperature', 'fan_speed', 'bios_version', 'connectivity') else 'summary',
+        'volatile_runtime_fact': domain == 'selfaware_body',
+        'read_only': True,
+        'action_taken': False,
+    }

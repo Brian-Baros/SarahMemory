@@ -597,7 +597,7 @@ def _list_selfaware_reports(limit: int = 10) -> List[Dict[str, Any]]:
 # - SarahMemoryDatabase.py is an evidence locker and is read-only here; multiple DB rows
 #   never count as multiple independent witnesses.
 
-_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "drive", "drives", "drive_label", "usb_label", "temperature", "fan_speed", "network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan", "motherboard", "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers", "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci", "ports", "port", "operating_system", "platform", "battery", "motor_controller", "ambient", "body_thermal", "general_system_fact"}
+_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "drive", "drives", "drive_label", "usb_label", "temperature", "fan_speed", "network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan", "motherboard", "bios_version", "body_map", "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers", "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci", "ports", "port", "operating_system", "platform", "battery", "motor_controller", "ambient", "body_thermal", "general_system_fact"}
 _SOFTWARE_KINDS = {"software", "application", "process", "window", "desktop_surface"}
 _BOOT_RUNTIME_KINDS = {"boot", "startup", "shutdown", "reboot", "runtime", "lifecycle", "server_state"}
 _NETWORK_KINDS = {"network", "sarahnet", "sync", "mesh", "rendezvous"}
@@ -709,6 +709,8 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
     """
     kind = _safe_str(explicit_kind, 80).lower().replace("-", "_").replace(" ", "_")
     c = _safe_str(claim, MAX_CLAIM_CHARS).lower()
+    for _bad, _good in (("temperture", "temperature"), ("tempertrue", "temperature"), ("tempature", "temperature"), ("wi fi", "wi-fi"), ("hardrive", "hard drive"), ("harddrive", "hard drive")):
+        c = c.replace(_bad, _good)
 
     generic_explicit_kinds = {"", "general", "general_system", "general_system_fact", "hardware", "system", "self", "body"}
     if kind and kind not in generic_explicit_kinds:
@@ -737,6 +739,11 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "baseboard": "motherboard",
             "system_board": "motherboard",
             "board": "motherboard",
+            "bios": "bios_version",
+            "bios_version": "bios_version",
+            "uefi": "bios_version",
+            "firmware": "bios_version",
+            "body_map": "body_map",
             "app": "software",
             "application": "software",
             "program": "software",
@@ -773,8 +780,13 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
 
     if any(k in c for k in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
         return "drivers"
-    if any(k in c for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature", "gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature", "motherboard temp", "motherboard temperature", "board temp", "drive temp", "disk temp", "ssd temp", "hdd temp", "nvme temp", "battery temp", "motor temp", "servo temp", "controller temp", "temperature", "thermal", "degrees c", "degrees fahrenheit")):
+    # V10/V9G: metric-first classification. Temperature/version/body-map requests outrank component identity.
+    if any(k in c for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature", "gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature", "motherboard temp", "motherboard temperature", "board temp", "drive temp", "disk temp", "ssd temp", "hdd temp", "nvme temp", "battery temp", "motor temp", "servo temp", "controller temp", "temperature", "temp", "thermal", "heat", "degrees c", "degrees fahrenheit", "celsius", "fahrenheit")):
         return "temperature"
+    if any(k in c for k in ("bios", "uefi", "firmware")) and any(k in c for k in ("version", "revision", "release")):
+        return "bios_version"
+    if any(k in c for k in ("body map", "body-map", "runtime body", "aios body")):
+        return "body_map"
     if any(k in c for k in ("motherboard", "mainboard", "baseboard", "system board")):
         return "motherboard"
     if any(k in c for k in ("fan", "rpm")):
@@ -1773,6 +1785,18 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
         if isinstance(items, list) and items:
             return items[0]
         return chat_facts.get("motherboard") or model_metrics.get("motherboard")
+    if kind == "bios_version":
+        bios = body.get("bios") or body.get("uefi") or body.get("firmware") or chat_facts.get("bios") or model_metrics.get("bios_version")
+        if bios not in (None, "", [], {}):
+            return bios
+        mb = body.get("motherboard") or body.get("baseboard") or body.get("mainboard")
+        if isinstance(mb, dict):
+            for key in ("BIOSVersion", "BiosVersion", "bios_version", "SMBIOSBIOSVersion", "Version", "version"):
+                if mb.get(key) not in (None, "", [], {}):
+                    return {"bios_version": mb.get(key), "source": "motherboard_snapshot"}
+        return None
+    if kind == "body_map":
+        return {"body": body, "chat_facts": chat_facts, "model_metrics": model_metrics}
     if kind == "memory":
         return body.get("ram") or chat_facts.get("ram") or {"ram_total_mb": model_metrics.get("ram_total_mb"), "ram_avail_mb": model_metrics.get("ram_avail_mb")}
     if kind in {"disk_space", "usb_label"}:
@@ -2639,6 +2663,12 @@ def _windows_fact(kind: str, target: str = "") -> Dict[str, Any]:
                 timeout=8,
             )
             return _probe_result("windows.Win32_BaseBoard", data, ok=data not in (None, {}, []), error="wmi_baseboard_unavailable" if not data else "", kind=kind, source_family="os_adapter", evidence_class="adapter_hearsay", support_only=True, hearsay=True)
+        if kind == "bios_version":
+            data = _powershell_json(
+                "Get-CimInstance Win32_BIOS | Select-Object Manufacturer,Name,SMBIOSBIOSVersion,Version,ReleaseDate,SerialNumber | ConvertTo-Json -Depth 4",
+                timeout=8,
+            )
+            return _probe_result("windows.Win32_BIOS", data, ok=data not in (None, {}, []), error="wmi_bios_unavailable" if not data else "", kind=kind, source_family="os_adapter", evidence_class="adapter_hearsay", support_only=True, hearsay=True)
         if kind in {"usb_label", "disk_space"}:
             drive_filter = ""
             if target and re.match(r"^[A-Z]:$", target.upper()):
@@ -3308,6 +3338,42 @@ def _presentation_text(kind: str, value: Any) -> str:
             if pv.get("vram_total_mb") not in (None, ""):
                 extras.append(f"VRAM {pv.get('vram_total_mb')} MB")
             return "GPU = " + name + (" (" + ", ".join(extras) + ")" if extras else "")
+        if k == "bios_version":
+            if isinstance(pv, dict):
+                bios = pv.get("SMBIOSBIOSVersion") or pv.get("Version") or pv.get("version") or pv.get("bios_version") or pv.get("Name")
+                if bios not in (None, "", [], {}):
+                    return "BIOS/UEFI version = " + _safe_str(bios, 240)
+            if pv not in (None, "", [], {}):
+                return "BIOS/UEFI version = " + _safe_str(pv, 240)
+            return "BIOS/UEFI version = unavailable"
+        if k == "body_map" and isinstance(pv, dict):
+            body = pv.get("body") if isinstance(pv.get("body"), dict) else pv
+            keys = []
+            for key in ("cpu", "gpu", "motherboard", "ram", "storage", "network_adapters", "thermal_sensors", "drivers"):
+                if isinstance(body, dict) and body.get(key) not in (None, "", [], {}):
+                    keys.append(key.replace("_", " "))
+            return "AiOS body map = verified runtime-body sections: " + (", ".join(keys) if keys else "no detailed body sections exposed") + "; live body facts remain volatile and are re-verified on request"
+        if k == "memory" and isinstance(pv, dict):
+            total = pv.get("total_gb") or pv.get("ram_total_gb") or pv.get("ram_total_mb") or pv.get("total")
+            avail = pv.get("available_gb") or pv.get("ram_avail_gb") or pv.get("ram_avail_mb") or pv.get("available")
+            used = pv.get("used_gb") or pv.get("used")
+            bits = []
+            if total not in (None, ""): bits.append(f"total {total}")
+            if used not in (None, ""): bits.append(f"used {used}")
+            if avail not in (None, ""): bits.append(f"available {avail}")
+            return "Memory = " + ("; ".join(bits) if bits else _safe_str(json.dumps(_json_safe(pv), ensure_ascii=False, sort_keys=True), 400))
+        if k in {"disk_space", "storage_topology", "storage_devices"}:
+            rows = pv if isinstance(pv, list) else [pv] if isinstance(pv, dict) else []
+            pieces = []
+            for row in rows[:6]:
+                if isinstance(row, dict):
+                    mount = row.get("mountpoint") or row.get("device") or row.get("DeviceID") or "drive"
+                    free = row.get("free_gb") or row.get("FreeSpace") or row.get("free")
+                    total = row.get("total_gb") or row.get("Size") or row.get("total")
+                    if free not in (None, "") or total not in (None, ""):
+                        pieces.append(f"{mount}: free {free}, total {total}")
+            if pieces:
+                return "Storage = " + "; ".join(pieces)
         if isinstance(pv, (dict, list)):
             return _safe_str(json.dumps(_json_safe(pv), ensure_ascii=False, sort_keys=True), 1000)
         return _safe_str(pv, 1000)
@@ -3411,7 +3477,9 @@ def _run_fact_ticket(
 
     ticket = _json_safe(ticket)
     _store_ticket(ticket)
-    _write_selfaware_report(f"{ticket_id}", ticket)
+    _meta = ticket.get("meta") if isinstance(ticket.get("meta"), dict) else {}
+    if not bool(_meta.get("do_not_write_sql") or _meta.get("do_not_persist") or _meta.get("volatile_runtime_fact")):
+        _write_selfaware_report(f"{ticket_id}", ticket)
     return ticket
 
 
@@ -3468,7 +3536,9 @@ def _factcheck_error_ticket(*, claim: str, kind: str = "", target: str = "", sou
     }
     ticket = _json_safe(ticket)
     _store_ticket(ticket)
-    _write_selfaware_report(str(ticket.get("ticket_id") or "self_fact_error"), ticket)
+    _meta = ticket.get("meta") if isinstance(ticket.get("meta"), dict) else {}
+    if not bool(_meta.get("do_not_write_sql") or _meta.get("do_not_persist") or _meta.get("volatile_runtime_fact")):
+        _write_selfaware_report(str(ticket.get("ticket_id") or "self_fact_error"), ticket)
     return ticket
 
 

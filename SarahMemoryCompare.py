@@ -174,77 +174,6 @@ def _normalize_text(value: Any) -> str:
     return text
 
 
-def _is_volatile_body_fact_query(text: Any) -> bool:
-    t = _normalize_text(text).lower()
-    if not t:
-        return False
-    hardware_terms = (
-        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
-        "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
-        "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
-    )
-    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
-    return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
-
-
-def _artifact_text_from_package(package: Dict[str, Any]) -> str:
-    text = _normalize_text((package or {}).get("artifact_text") or "")
-    kind = str((package or {}).get("artifact_kind") or "")
-    try:
-        text = re.sub(r"^\s*Verified\s+SelfAware\s+fact\s*\([^)]*\)\s*:\s*", "", text, flags=re.I).strip()
-        labels = {"cpu": "CPU", "gpu": "GPU", "motherboard": "Motherboard", "memory": "Memory", "network": "Network adapters", "network_card": "Network adapters"}
-        candidates = [labels.get(kind.lower(), ""), "CPU", "GPU", "Motherboard", "Memory", "Network adapters"]
-        for label in candidates:
-            if label and text.lower().startswith((label + " =").lower()):
-                text = text[len(label) + 2:].strip()
-                break
-    except Exception:
-        pass
-    return text
-
-
-def compare_verified_artifact_package(user_text: str, generated_response: str, package: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Integrity/security-only Compare path for volatile SelfAware artifacts.
-
-    This intentionally does not record QA feedback, does not fetch local/cloud
-    sources, and does not send the artifact back to Evidence Court.
-    """
-    response_text = _normalize_text(generated_response)
-    artifact_text = _artifact_text_from_package(package if isinstance(package, dict) else {})
-    low_user = _normalize_text(user_text).lower()
-    wants_court = any(k in low_user for k in ("evidence court", "court result", "quorum", "confidence", "proof", "show evidence"))
-    courtroom_leak = bool(re.search(r"\bVerified\s+SelfAware\s+fact\b", response_text, re.I)) and not wants_court
-    privacy_leak = bool(re.search(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", response_text, re.I))
-    artifact_preserved = bool(artifact_text and artifact_text.lower() in response_text.lower())
-    try:
-        if not artifact_preserved and str((package or {}).get("artifact_kind") or "").lower() == "temperature":
-            av = (package or {}).get("artifact_value") if isinstance((package or {}).get("artifact_value"), dict) else {}
-            selected = av.get("selected_reading") if isinstance(av.get("selected_reading"), dict) else {}
-            temp = selected.get("temperature_c")
-            comp = str(av.get("requested_component") or selected.get("component") or "").lower().replace("_", " ")
-            if temp not in (None, "") and str(temp).lower() in response_text.lower() and (not comp or comp in response_text.lower()):
-                artifact_preserved = True
-            elif temp in (None, "") and comp and comp in response_text.lower() and any(x in response_text.lower() for x in ("not currently", "unavailable", "not have", "no verified")):
-                artifact_preserved = True
-    except Exception:
-        pass
-    accepted = bool(artifact_preserved and not courtroom_leak and not privacy_leak)
-    return {
-        "ok": True,
-        "accepted": accepted,
-        "decision": "ACCEPT_INTEGRITY_SECURITY_ONLY" if accepted else "REPAIR_REQUIRED",
-        "compare_mode": "integrity_security_only",
-        "artifact_preserved": artifact_preserved,
-        "courtroom_leak": courtroom_leak,
-        "privacy_leak": privacy_leak,
-        "sql_recorded": False,
-        "do_not_reverify": True,
-        "do_not_write_sql": True,
-        "source": "SarahMemoryCompare.compare_verified_artifact_package",
-        "version": "V10_V9C",
-    }
-
-
 def _looks_like_placeholder(text: str) -> bool:
     t = _normalize_text(text).lower()
     if not t:
@@ -811,7 +740,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
                 decision = "FALLBACK_TO_LOWER_TIER"
                 recommended_next = "fallback_to_lower_deterministic_tier"
 
-        if record_qa_feedback and not _is_volatile_body_fact_query(user_text):
+        if record_qa_feedback:
             try:
                 record_qa_feedback(
                     user_text,
@@ -1038,9 +967,6 @@ def _maybe_store_compare_hit(
 ) -> None:
     if confidence is None:
         return
-    if _is_volatile_body_fact_query(query) or _is_volatile_body_fact_query(reply):
-        logger.debug("[V10/V9C] Skipped comparison store for volatile SelfAware body fact.")
-        return
     threshold = float(threshold if threshold is not None else COMPARE_THRESHOLD_VALUE)
 
     if float(confidence) >= threshold:
@@ -1221,3 +1147,32 @@ logger.info("[v8.0] SarahMemoryCompare module loaded successfully")
 # ====================================================================
 # END OF SarahMemoryCompare.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# V10/V9G SelfAware answer-shape guard
+# -----------------------------------------------------------------------------
+def compare_selfaware_answer_contract(user_text: str, response_text: str, canonical_packet: Optional[Dict[str, Any]] = None, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Reject SelfAware replies that answer the wrong metric/component.
+
+    Example: CPU-temperature question answered with CPU identity is rejected.
+    This is deterministic and does not call external models.
+    """
+    pkt = dict(canonical_packet or {})
+    raw = _normalize_text(user_text).lower() if '_normalize_text' in globals() else str(user_text or '').lower()
+    reply = _normalize_text(response_text).lower() if '_normalize_text' in globals() else str(response_text or '').lower()
+    metric = str(pkt.get('requested_metric') or '').lower()
+    comp = str(pkt.get('requested_component') or pkt.get('target') or '').lower()
+    reasons = []
+    accepted = True
+    if metric == 'temperature':
+        has_temp = any(x in reply for x in ('°c', ' c', 'temperature', 'thermal', 'temp'))
+        identity_only = any(x in reply for x in ('physical cores', 'logical threads', 'processor')) and not has_temp
+        if identity_only or not has_temp:
+            accepted = False; reasons.append('temperature_query_not_answered_as_temperature')
+        if comp == 'cpu' and 'gpu temperature' in reply and 'cpu temperature' not in reply and 'cpu thermal' not in reply:
+            accepted = False; reasons.append('gpu_temperature_substituted_for_cpu_temperature')
+    if metric == 'bios_version' and ('server version' in reply or 'my name is' in reply):
+        accepted = False; reasons.append('hardware_bios_version_hijacked_by_identity_version')
+    if metric == 'connectivity' and 'network adapters =' in reply and ('ethernet' in raw or 'wi-fi' in raw or 'wifi' in raw):
+        accepted = False; reasons.append('connectivity_question_received_adapter_dump')
+    return {'accepted': bool(accepted), 'decision': 'ACCEPT' if accepted else 'REJECT_INTENT_ALIGNMENT', 'reasons': reasons, 'compare_mode': 'selfaware_answer_contract', 'sql_recorded': False}

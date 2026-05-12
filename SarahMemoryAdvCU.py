@@ -2979,3 +2979,22 @@ __all__ = [
 # ====================================================================
 # END OF SarahMemoryAdvCU.py v8.0.0
 # ====================================================================
+
+# -----------------------------------------------------------------------------
+# V10/V9G Canonical SelfAware Query Packet bridge
+# -----------------------------------------------------------------------------
+def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """AdvCU bridge to the deterministic PreToken SelfAware case frame."""
+    try:
+        import SarahMemoryPreTokenAnalyzer as _PTA  # type: ignore
+        fn = getattr(_PTA, 'build_selfaware_canonical_query_packet', None)
+        if callable(fn):
+            return fn(text, context_packet=context_packet)
+    except Exception:
+        pass
+    raw = str(text or '')
+    norm = re.sub(r'\s+', ' ', raw.strip().lower().replace('temperture', 'temperature'))
+    component = 'cpu' if any(x in norm for x in ('cpu','processor')) else 'gpu' if any(x in norm for x in ('gpu','graphics','video card')) else 'motherboard' if any(x in norm for x in ('motherboard','mainboard','baseboard','system board')) else ''
+    metric = 'temperature' if any(x in norm for x in ('temperature','temp','thermal','heat')) else 'fan_speed' if any(x in norm for x in ('fan','rpm')) else 'identity'
+    kind = 'temperature' if metric == 'temperature' else 'fan_speed' if metric == 'fan_speed' else component if component in ('cpu','gpu','motherboard') else 'network' if 'network' in norm or 'ethernet' in norm or 'wi-fi' in norm or 'wifi' in norm else 'general_system_fact'
+    return {'packet_type':'CanonicalQueryPacket','version':'V10_V9G_CANONICAL_QUERY_PACKET','raw_text':raw,'normalized_text':norm,'domain':'selfaware_body' if kind!='general_system_fact' else 'chat','intent':'body_fact_query','requested_component':component,'requested_metric':metric,'fact_kind':kind,'target':component if metric=='temperature' else '', 'read_only':True, 'action_taken':False}

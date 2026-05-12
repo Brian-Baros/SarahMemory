@@ -155,73 +155,166 @@ def _is_identity_question(text: str) -> bool:
 # ---------------------------------------------------------------------------
 # SelfAware factual system-question bridge
 # ---------------------------------------------------------------------------
-def _sm_is_selfaware_fact_question(text: str) -> bool:
-    """Detect factual questions about SarahMemory's local runtime/body map.
-
-    This is intentionally narrow. It should catch self/system telemetry requests
-    without stealing normal chat, research, weather, or creative prompts.
-    """
-    t = (text or "").strip().lower()
-    if not t:
-        return False
-
-    system_scope = any(k in t for k in (
-        "my ", "your ", "you using", "am i using", "are you using", "system",
-        "machine", "computer", "pc", "runtime", "body map", "body-map", "hardware",
-        "drive", "disk", "disc", "usb", "motherboard", "cpu", "processor", "gpu",
-        "graphics", "ram", "memory", "fan", "rpm", "temperature", "temp", "network adapter",
-        "ethernet", "wifi", "wi-fi", "python version", "node name", "hostname",
-    ))
-    if not system_scope:
-        return False
-
-    fact_terms = (
-        "cpu", "processor", "gpu", "graphics", "motherboard", "ram", "memory",
-        "disk", "disc", "drive", "storage", "free space", "used space", "usb",
-        "volume label", "drive label", "label", "fan", "rpm", "temperature", "temp",
-        "thermal", "network adapter", "ethernet", "wifi", "wi-fi", "ip address",
-        "hostname", "node name", "python version", "os version", "operating system",
-    )
-    if not any(k in t for k in fact_terms):
-        return False
-
-    # Avoid routing public/weather questions to the local hardware fact court.
-    weather_phrases = ("outside", "weather", "forecast", "rain", "humidity", "wind chill", "heat index")
-    if any(k in t for k in weather_phrases) and not any(k in t for k in ("cpu", "gpu", "fan", "drive", "disk", "usb", "system")):
-        return False
-
-    return True
+_SM_V9G_QUERY_PACKET_VERSION = "V10_V9G_CANONICAL_QUERY_PACKET"
+_SM_V9G_CORRECTIONS = {
+    "temperture": "temperature",
+    "tempertrue": "temperature",
+    "tempature": "temperature",
+    "thermo": "thermal",
+    "wether": "weather",
+    "wi fi": "wi-fi",
+    "wifi": "wi-fi",
+    "hardrive": "hard drive",
+    "harddrive": "hard drive",
+    "moter": "motor",
+}
 
 
-def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
-    t = (text or "").strip().lower()
+def _sm_v9g_normalize_text(text: str) -> tuple[str, dict]:
+    raw = str(text or "")
+    lower = raw.strip().lower()
+    corrections: dict[str, str] = {}
+    for bad, good in _SM_V9G_CORRECTIONS.items():
+        if bad in lower:
+            lower = lower.replace(bad, good)
+            corrections[bad] = good
+    lower = re.sub(r"\s+", " ", lower).strip()
+    return lower, corrections
+
+
+def _sm_v9g_contains_any(text: str, words: tuple[str, ...] | list[str]) -> bool:
+    return any(w in text for w in words)
+
+
+def _sm_v9g_component_from_text(norm: str) -> str:
+    if _sm_v9g_contains_any(norm, ("cpu", "processor")):
+        return "cpu"
+    if _sm_v9g_contains_any(norm, ("gpu", "graphics", "video card", "nvidia", "radeon")):
+        return "gpu"
+    if _sm_v9g_contains_any(norm, ("motherboard", "mainboard", "baseboard", "system board", "board", "chipset", "vrm")):
+        return "motherboard"
+    if _sm_v9g_contains_any(norm, ("drive", "disk", "disc", "storage", "ssd", "hdd", "nvme")):
+        return "drive"
+    if "battery" in norm:
+        return "battery"
+    if _sm_v9g_contains_any(norm, ("motor", "servo", "actuator", "controller")):
+        return "motor_controller"
+    if _sm_v9g_contains_any(norm, ("ambient", "room", "environment")):
+        return "ambient"
+    return ""
+
+
+def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    raw = str(text or "")
+    norm, corrections = _sm_v9g_normalize_text(raw)
+    payload = payload or {}
     target = ""
-    m = re.search(r"\b([a-zA-Z]):\\?\b", text or "")
+    m = re.search(r"\b([a-zA-Z]):\\?\b", raw)
     if m:
         target = m.group(1).upper() + ":"
 
-    # V10/V9F: thermal requests stay generalized by kind but must preserve the requested component.
-    # This keeps SelfAware thermal cases target-aware across CPU, GPU, motherboard, drive,
-    # battery, motor/controller, and generic body thermal questions.
-    if any(k in t for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature", "cpu thermal", "processor thermal", "cpu heat", "processor heat")):
-        return "temperature", "cpu"
-    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature", "gpu thermal", "graphics thermal")):
-        return "temperature", "gpu"
-    if any(k in t for k in ("fan", "rpm")):
-        return "fan_speed", target
-    if any(k in t for k in ("gpu", "graphics", "video card")):
-        return "gpu", target
-    if any(k in t for k in ("cpu", "processor")):
-        return "cpu", target
-    if any(k in t for k in ("usb", "drive label", "volume label", "label on")):
-        return "usb_label", target
-    if any(k in t for k in ("disk", "disc", "drive", "storage", "space", "free gb", "used gb")):
-        return "disk_space", target
-    if any(k in t for k in ("ram", "memory")):
-        return "memory", target
-    if any(k in t for k in ("network", "ethernet", "wifi", "wi-fi", "adapter", "ip address")):
-        return "network", target
-    return "general_system_fact", target
+    component = _sm_v9g_component_from_text(norm)
+    requested_metric = "identity"
+    fact_kind = "general_system_fact"
+    answer_shape = "summary"
+    evidence_visibility = "normal"
+
+    # Metric-first classification.  Metric words outrank component identity words.
+    thermal_terms = ("temperature", "temp", "thermal", "heat", "hot", "degrees c", "degrees f", "celsius", "fahrenheit")
+    if _sm_v9g_contains_any(norm, thermal_terms):
+        requested_metric = "temperature"
+        fact_kind = "temperature"
+        target = component or target or "body_thermal"
+        answer_shape = "direct_answer"
+    elif _sm_v9g_contains_any(norm, ("fan", "rpm")):
+        requested_metric = "fan_speed"
+        fact_kind = "fan_speed"
+        answer_shape = "direct_answer"
+    elif _sm_v9g_contains_any(norm, ("bios", "uefi", "firmware")) and _sm_v9g_contains_any(norm, ("version", "revision", "release")):
+        requested_metric = "bios_version"
+        fact_kind = "bios_version"
+        target = component or "motherboard"
+        answer_shape = "direct_answer"
+    elif _sm_v9g_contains_any(norm, ("body map", "body-map", "runtime body", "aios body")):
+        requested_metric = "body_map"
+        fact_kind = "body_map"
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("network adapter", "network card", "ethernet", "wi-fi", "wifi", "lan", "bluetooth network")):
+        requested_metric = "connectivity" if ("ethernet" in norm or "wi-fi" in norm or "wifi" in norm) and re.search(r"\bare\s+you\s+connected|\bconnected\b", norm) else "network_adapters"
+        fact_kind = "network"
+        answer_shape = "direct_answer" if requested_metric == "connectivity" else "summary"
+    elif _sm_v9g_contains_any(norm, ("gpu", "graphics", "video card")):
+        requested_metric = "identity"
+        fact_kind = "gpu"
+        target = target or component
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("cpu", "processor")):
+        requested_metric = "identity"
+        fact_kind = "cpu"
+        target = target or component
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("motherboard", "mainboard", "baseboard", "system board")):
+        requested_metric = "identity"
+        fact_kind = "motherboard"
+        target = target or component
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("ram", "memory")):
+        requested_metric = "memory_status"
+        fact_kind = "memory"
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("disk", "disc", "drive", "storage", "space", "free gb", "used gb")):
+        requested_metric = "storage_status"
+        fact_kind = "disk_space"
+        answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("usb", "drive label", "volume label", "label on")):
+        requested_metric = "label"
+        fact_kind = "usb_label"
+        answer_shape = "summary"
+
+    self_scope = bool(
+        _sm_v9g_contains_any(norm, (
+            "my ", "your ", "you using", "am i using", "are you using", "system", "machine", "computer", "pc",
+            "runtime", "body map", "body-map", "hardware", "motherboard", "cpu", "processor", "gpu", "graphics",
+            "ram", "memory", "fan", "rpm", "temperature", "temp", "thermal", "network adapter", "ethernet", "wi-fi",
+            "python version", "node name", "hostname", "bios", "uefi", "firmware",
+        ))
+    )
+    fact_scope = fact_kind != "general_system_fact" or self_scope
+    weather_phrases = ("outside", "weather", "forecast", "rain", "humidity", "wind chill", "heat index")
+    if _sm_v9g_contains_any(norm, weather_phrases) and not _sm_v9g_contains_any(norm, ("cpu", "gpu", "fan", "drive", "disk", "usb", "system", "motherboard")):
+        fact_scope = False
+
+    return {
+        "packet_type": "CanonicalQueryPacket",
+        "version": _SM_V9G_QUERY_PACKET_VERSION,
+        "raw_text": raw,
+        "normalized_text": norm,
+        "corrections": corrections,
+        "domain": "selfaware_body" if fact_scope else "chat",
+        "intent": "body_fact_query" if fact_scope else "general_chat",
+        "requested_component": component or target,
+        "requested_metric": requested_metric,
+        "fact_kind": fact_kind,
+        "target": target,
+        "answer_shape": answer_shape,
+        "evidence_visibility": evidence_visibility,
+        "volatile_runtime_fact": bool(fact_scope),
+        "do_not_write_sql": bool(fact_scope),
+        "do_not_persist": bool(fact_scope),
+        "do_not_learn": bool(fact_scope),
+        "read_only": True,
+        "action_taken": False,
+    }
+
+
+def _sm_is_selfaware_fact_question(text: str) -> bool:
+    pkt = _sm_build_canonical_query_packet(text)
+    return pkt.get("domain") == "selfaware_body"
+
+
+def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
+    pkt = _sm_build_canonical_query_packet(text)
+    return str(pkt.get("fact_kind") or "general_system_fact"), str(pkt.get("target") or "")
 
 
 def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
@@ -240,34 +333,87 @@ def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
     return text
 
 
+def _sm_v9g_component_label(value: str) -> str:
+    v = str(value or "").strip().lower().replace("_", " ")
+    labels = {
+        "cpu": "CPU",
+        "gpu": "GPU",
+        "motherboard": "motherboard",
+        "body thermal": "body thermal",
+        "drive": "drive",
+        "battery": "battery",
+        "motor controller": "motor-controller",
+        "ambient": "ambient",
+    }
+    return labels.get(v, v or "component")
+
+
+def _sm_v9g_clean_denial(kind: str, claim: str, ticket: dict) -> str:
+    kind = str(kind or "system_fact").lower()
+    low = str(claim or "").lower()
+    if kind == "fan_speed":
+        return "I cannot verify fan RPM from the currently exposed sensors. No mapped fan-speed sensor is available in this runtime."
+    if kind == "temperature":
+        comp = str((ticket.get("target") or "") or "component").replace("_", " ")
+        if "cpu" in low or comp == "cpu":
+            return "I cannot verify CPU temperature from the currently exposed direct or mapped motherboard CPU-related sensors. I will not substitute GPU or generic thermal readings as CPU temperature."
+        return f"I cannot verify a mapped {_sm_v9g_component_label(comp)} temperature sensor from the currently exposed evidence."
+    if kind == "bios_version":
+        return "I can identify the motherboard only if evidence is available, but I do not currently have a verified BIOS/UEFI version witness."
+    if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
+        return "I cannot verify the requested network hardware state from the current evidence packet."
+    return f"I cannot verify that {kind.replace('_', ' ')} fact from the current evidence packet. I will not guess."
+
+
+def _sm_v9g_network_direct_answer(text: str, value: object) -> str | None:
+    low = str(text or "").lower()
+    if not ("connected" in low and ("ethernet" in low or "wi-fi" in low or "wifi" in low)):
+        return None
+    if not isinstance(value, dict):
+        return None
+    active = value.get("active_adapters") if isinstance(value.get("active_adapters"), list) else []
+    inactive = value.get("inactive_adapters") if isinstance(value.get("inactive_adapters"), list) else []
+    active_names = [str(a.get("name") or "") for a in active if isinstance(a, dict)]
+    inactive_names = [str(a.get("name") or "") for a in inactive if isinstance(a, dict)]
+    ethernet_active = any("ethernet" in n.lower() or "lan" in n.lower() for n in active_names)
+    wifi_active = any("wi" in n.lower() or "wireless" in n.lower() for n in active_names)
+    wifi_present = wifi_active or any("wi" in n.lower() or "wireless" in n.lower() for n in inactive_names)
+    if ethernet_active and wifi_active:
+        return "I currently have both Ethernet and Wi-Fi active. Sensitive IP and MAC details are redacted."
+    if ethernet_active:
+        return "I am currently connected through Ethernet. Wi-Fi is present but inactive." if wifi_present else "I am currently connected through Ethernet. I do not see an active Wi-Fi connection."
+    if wifi_active:
+        return "I am currently connected through Wi-Fi. I do not see an active Ethernet connection."
+    return "I do not currently see an active Ethernet or Wi-Fi connection in the verified adapter summary."
+
+
 def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
     claim = str(ticket.get("claim") or "requested system fact").strip()
     decision = str(ticket.get("decision") or "UNKNOWN").upper()
-    quorum = str(ticket.get("quorum") or "0/3")
-    confidence = str(ticket.get("confidence") or "NONE")
-    kind = str(ticket.get("requested_fact") or "system_fact").strip()
+    kind = str(ticket.get("requested_fact") or "system_fact").strip().lower()
     value = ticket.get("majority_value")
+    pv = ticket.get("presentation_value")
 
-    # V10/V9F: backend owns presentation. If appself/Supreme Appeals already
-    # produced source-aware presentation text, do not re-wrap it with courtroom
-    # phrasing in /api/chat.
     presentation_text = str(ticket.get("presentation_text") or "").strip()
-    if presentation_text and not presentation_text.lower().startswith("verified selfaware fact"):
-        return presentation_text
+    if presentation_text:
+        blocked = ("verified selfaware fact", "selfaware could not verify", "verdict:", "quorum", "denied_no_evidence", "deniednoevidence", "cpu =", "gpu =", "motherboard =")
+        if not any(b in presentation_text.lower() for b in blocked):
+            return presentation_text
 
     if decision == "APPROVED_FACT":
         if kind == "temperature":
-            pv = ticket.get("presentation_value") if isinstance(ticket.get("presentation_value"), dict) else value
-            if isinstance(pv, dict):
-                selected = pv.get("selected_reading") if isinstance(pv.get("selected_reading"), dict) else {}
-                component = str(pv.get("requested_component") or selected.get("component") or "thermal").replace("_", " ")
+            tv = pv if isinstance(pv, dict) else value
+            if isinstance(tv, dict):
+                selected = tv.get("selected_reading") if isinstance(tv.get("selected_reading"), dict) else {}
+                component = str(tv.get("requested_component") or selected.get("component") or ticket.get("target") or "thermal").replace("_", " ")
                 temp = selected.get("temperature_c")
-                source_type = str(selected.get("source_type") or "thermal_sensor").replace("_", " ")
+                source_type = str(selected.get("source_type") or "thermal_sensor").replace("_", " ").lower()
                 if temp not in (None, ""):
-                    if component.lower() == "cpu" and "motherboard" in source_type.lower():
-                        return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. The CPU is verified on the motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
-                    return f"My currently verified {component} temperature is {temp}°C."
-            return "I do not currently have a verified temperature reading for that component."
+                    if component.lower() == "cpu" and "motherboard" in source_type:
+                        return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. This CPU is verified on my motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
+                    return f"My currently verified {_sm_v9g_component_label(component)} temperature is {temp}°C."
+            return _sm_v9g_clean_denial(kind, claim, ticket)
+
         if kind == "cpu":
             if isinstance(value, dict):
                 name = str(value.get("name") or value.get("Name") or "Unknown CPU").strip()
@@ -275,16 +421,11 @@ def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
                 threads = value.get("logical_threads") or value.get("NumberOfLogicalProcessors")
                 clock = value.get("max_clock_mhz") or value.get("MaxClockSpeed") or value.get("current_clock_mhz")
                 details = []
-                if cores not in (None, ""):
-                    details.append(f"{cores} physical cores")
-                if threads not in (None, ""):
-                    details.append(f"{threads} logical threads")
-                if clock not in (None, ""):
-                    details.append(f"max/current clock about {clock} MHz")
-                suffix = f" ({', '.join(details)})" if details else ""
-                return f"Verified SelfAware fact ({quorum}, confidence {confidence}): CPU = {name}{suffix}."
-            compact_cpu = _sm_compact_json_value(value)
-            return f"Verified SelfAware fact ({quorum}, confidence {confidence}): CPU = {compact_cpu}."
+                if cores not in (None, ""): details.append(f"{cores} physical cores")
+                if threads not in (None, ""): details.append(f"{threads} logical threads")
+                if clock not in (None, ""): details.append(f"clock about {clock} MHz")
+                return f"I currently have {name}" + (f" ({', '.join(details)})." if details else ".")
+            return f"I currently have {_sm_compact_json_value(value)}."
 
         if kind == "gpu":
             if isinstance(value, dict):
@@ -293,25 +434,33 @@ def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
                 util = value.get("utilization_pct")
                 vram = value.get("vram_total_mb") or value.get("memory")
                 details = []
-                if temp not in (None, ""):
-                    details.append(f"{temp}°C")
-                if util not in (None, ""):
-                    details.append(f"{util}% utilization")
-                if vram not in (None, ""):
-                    details.append(f"VRAM {vram}")
-                suffix = f" ({', '.join(details)})" if details else ""
-                return f"Verified SelfAware fact ({quorum}, confidence {confidence}): GPU = {name}{suffix}."
-            compact_gpu = _sm_compact_json_value(value)
-            return f"Verified SelfAware fact ({quorum}, confidence {confidence}): GPU = {compact_gpu}."
+                if temp not in (None, ""): details.append(f"{temp}°C")
+                if util not in (None, ""): details.append(f"{util}% utilization")
+                if vram not in (None, ""): details.append(f"VRAM {vram} MB" if str(vram).isdigit() else f"VRAM {vram}")
+                return f"My currently verified graphics hardware is {name}" + (f" ({', '.join(details)})." if details else ".")
+            return f"My currently verified graphics hardware is {_sm_compact_json_value(value)}."
 
-        compact = _sm_compact_json_value(value)
-        return f"Verified SelfAware fact ({quorum}, confidence {confidence}): {compact}."
+        if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
+            direct = _sm_v9g_network_direct_answer(claim, pv if isinstance(pv, dict) else value)
+            if direct:
+                return direct
+            return str(presentation_text or f"My currently verified network adapter summary is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}")
 
-    if decision == "ESCALATE_HIGH_REVIEW":
-        compact = _sm_compact_json_value(value)
-        return f"SelfAware found partial evidence for '{claim}', but only {quorum} passed. Result is escalated to HIGH review, not approved as settled fact. Best current value: {compact}."
+        if kind == "motherboard":
+            return f"My currently verified motherboard is {_sm_compact_json_value(value)}."
+        if kind == "memory":
+            return f"My currently verified memory status is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}."
+        if kind in {"disk_space", "storage_topology", "storage_devices"}:
+            return f"My currently verified storage status is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}."
+        if kind == "bios_version":
+            return f"My currently verified BIOS/UEFI version is {_sm_compact_json_value(value)}."
+        return f"My currently verified {kind.replace('_', ' ')} is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}."
 
-    return f"SelfAware could not verify '{claim}'. Verdict: {decision} ({quorum}, confidence {confidence}). I will not guess."
+    # Partial/denied cases are still useful evidence states, but normal chat must not expose courtroom terms.
+    if decision in {"ESCALATE_HIGH_REVIEW", "DENIED_WEAK_EVIDENCE", "DENIED_NO_EVIDENCE", "DENIEDNOEVIDENCE"}:
+        return _sm_v9g_clean_denial(kind, claim, ticket)
+
+    return _sm_v9g_clean_denial(kind, claim, ticket)
 
 
 def _sm_import_appself_runtime():
@@ -351,10 +500,13 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict
     fallback path and forces them through the same SelfAware 3-source evidence
     court used by /api/self/fact-check.
     """
-    if not _sm_is_selfaware_fact_question(text):
+    canonical_packet = _sm_build_canonical_query_packet(text)
+    if canonical_packet.get("domain") != "selfaware_body":
         return None
 
-    kind, target = _sm_selfaware_fact_kind_and_target(text)
+    kind = str(canonical_packet.get("fact_kind") or "general_system_fact")
+    target = str(canonical_packet.get("target") or "")
+    court_claim = str(canonical_packet.get("normalized_text") or text)
     try:
         _appself = _sm_import_appself_runtime()
 
@@ -394,6 +546,17 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict
             pass
 
         reply = _sm_format_selfaware_fact_reply(ticket)
+        compare_result = {"accepted": True, "decision": "COMPARE_NOT_RUN"}
+        try:
+            import SarahMemoryCompare as _SMCompare  # type: ignore
+            fn = getattr(_SMCompare, "compare_selfaware_answer_contract", None)
+            if callable(fn):
+                compare_result = fn(text, reply, canonical_packet=canonical_packet, meta={"source": "api_chat_selfaware_fact"})
+                if isinstance(compare_result, dict) and not bool(compare_result.get("accepted", True)):
+                    # Re-anchor response to the original metric/component instead of leaking a mismatched answer.
+                    reply = _sm_v9g_clean_denial(kind, text, {"target": target, "decision": ticket.get("decision")})
+        except Exception as _cmp_exc:
+            compare_result = {"accepted": True, "decision": "COMPARE_UNAVAILABLE", "error": str(_cmp_exc)}
         bundle = _sm_make_outward_bundle(
             _sm_present_text(reply, intent="system_status", meta={"source": "selfaware_fact_ticket"}),
             meta={
@@ -402,6 +565,9 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict
                 "intent": "system_status",
                 "fact_kind": kind,
                 "target": target,
+                "canonical_query_packet": canonical_packet,
+                "answer_shape": canonical_packet.get("answer_shape"),
+                "requested_metric": canonical_packet.get("requested_metric"),
                 "ticket_id": ticket.get("ticket_id"),
                 "decision": ticket.get("decision"),
                 "quorum": ticket.get("quorum"),
@@ -409,6 +575,7 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict
                 "approved_fact": bool(ticket.get("approved_fact")),
                 "appself_module_file": str(getattr(_appself, "__file__", "")),
                 "version": PROJECT_VERSION,
+                "compare_result": compare_result,
             },
             raw_answer=reply,
         )
@@ -2731,7 +2898,11 @@ def api_chat():
         if handled and quick_bundle is not None:
             return jsonify(quick_bundle), 200
 
-        if _is_identity_question(text):
+        selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
+        if isinstance(selfaware_fact_bundle, dict):
+            return jsonify(selfaware_fact_bundle), 200
+
+        if _sm_is_identity_intent(text):
             ident = _identity_payload()
             low = text.strip().lower()
             if "version" in low:
@@ -2753,10 +2924,6 @@ def api_chat():
             )
             bundle["identity"] = ident
             return jsonify(bundle), 200
-
-        selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
-        if isinstance(selfaware_fact_bundle, dict):
-            return jsonify(selfaware_fact_bundle), 200
 
         browser_state_bundle = _browser_state_answer_for_text(text)
         if browser_state_bundle is not None:
