@@ -1364,28 +1364,28 @@ The following flowcharts are now part of the project documentation and should be
 ```
 
 #### **Master SarahMemory AiOS Flow**
-![Master SarahMemory AiOS Flow](documents/SelfAwareFlowCharts/Master_SarahMemory_AiOS_Flow.png)
+![Master SarahMemory AiOS Flow](documents/FlowCharts/SelfAwareFlowCharts/Master_SarahMemory_AiOS_Flow.png)
 
 #### **Boot / Runtime Body Awareness Flow**
-![Boot Runtime Body Awareness Flow](documents/SelfAwareFlowCharts/Boot_Runtime_Body_Awareness_Flow.png)
+![Boot Runtime Body Awareness Flow](documents/FlowCharts/SelfAwareFlowCharts/Boot_Runtime_Body_Awareness_Flow.png)
 
 #### **Answer and Non-Action Query Flow**
-![Answer and Non-Action Query Flow](documents/SelfAwareFlowCharts/Answer_and_Non-Action_Query_Flow.png)
+![Answer and Non-Action Query Flow](documents/FlowCharts/SelfAwareFlowCharts/Answer_and_Non-Action_Query_Flow.png)
 
 #### **Action / Device / Driver Flow**
-![Action Device Driver Flow](documents/SelfAwareFlowCharts/Action_Device_Driver_Flow.png)
+![Action Device Driver Flow](documents/FlowCharts/SelfAwareFlowCharts/Action_Device_Driver_Flow.png)
 
 #### **CPU Temperature Case Flow**
-![CPU Temperature Case Flow](documents/SelfAwareFlowCharts/Example_CPU_Temperature_Case_Flow.png)
+![CPU Temperature Case Flow](documents/FlowCharts/SelfAwareFlowCharts/Example_CPU_Temperature_Case_Flow.png)
 
 #### **SMGET Governance Flow**
-![SMGET Governance Flow](documents/SelfAwareFlowCharts/SMGET_Governance_Flow.png)
+![SMGET Governance Flow](documents/FlowCharts/SelfAwareFlowCharts/SMGET_Governance_Flow.png)
 
 #### **Memory and Database Authority Flow**
-![Memory and Database Authority Flow](documents/SelfAwareFlowCharts/Memory_and_Database_Authority_Flow.png)
+![Memory and Database Authority Flow](documents/FlowCharts/SelfAwareFlowCharts/Memory_and_Database_Authority_Flow.png)
 
 #### **Final Enterprise Doctrine Flow**
-![Final Enterprise Doctrine Flow](documents/SelfAwareFlowCharts/Final_Enterprise_Doctrine_Flow.png)
+![Final Enterprise Doctrine Flow](documents/FlowCharts/SelfAwareFlowCharts/Final_Enterprise_Doctrine_Flow.png)
 
 ### **9. Why This Update Matters**
 
