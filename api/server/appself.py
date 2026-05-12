@@ -103,6 +103,10 @@ MAX_TICKETS_RETURN = int(os.environ.get("SELFWARE_MAX_TICKETS_RETURN", "200") or
 MAX_CLAIM_CHARS = int(os.environ.get("SELFWARE_MAX_CLAIM_CHARS", "12000") or 12000)
 MAX_EVIDENCE_JSON_CHARS = int(os.environ.get("SELFWARE_MAX_EVIDENCE_JSON_CHARS", "200000") or 200000)
 
+# V10/V9C: volatile live-body artifact contract used by /api/chat.
+VERIFIED_ARTIFACT_PACKAGE_TYPE = "SELF_AWARE_LIVE_HARDWARE_FACT"
+VERIFIED_ARTIFACT_PACKAGE_VERSION = "V10_V9C"
+
 
 # -----------------------------------------------------------------------------
 # Optional core imports
@@ -3189,7 +3193,155 @@ def run_selfaware_fact_check(
             source=source,
             exc=exc,
             meta=meta or {"source": source, "route": "run_selfaware_fact_check", "caught": True},
+
         )
+
+
+# -----------------------------------------------------------------------------
+# V10/V9C verified artifact contract
+# -----------------------------------------------------------------------------
+def _artifact_clean_text(kind: str, text: Any) -> str:
+    value = _safe_str(text, 2000)
+    if not value:
+        return ""
+    try:
+        value = re.sub(r"^\s*Verified\s+SelfAware\s+fact\s*\([^)]*\)\s*:\s*", "", value, flags=re.I).strip()
+        labels = {
+            "cpu": "CPU",
+            "gpu": "GPU",
+            "motherboard": "Motherboard",
+            "memory": "Memory",
+            "network": "Network adapters",
+            "network_card": "Network adapters",
+            "operating_system": "Operating platform",
+            "platform": "Operating platform",
+        }
+        candidates = [labels.get(str(kind or "").lower(), ""), "CPU", "GPU", "Motherboard", "Memory", "Network adapters", "Operating platform"]
+        for label in candidates:
+            if label and value.lower().startswith((label + " =").lower()):
+                value = value[len(label) + 2:].strip()
+                break
+    except Exception:
+        pass
+    return value.strip()
+
+
+def _hardware_epoch_from_ticket(ticket: Dict[str, Any]) -> str:
+    try:
+        ev = ticket.get("evidence") if isinstance(ticket.get("evidence"), dict) else {}
+        raw = json.dumps(_json_safe({
+            "requested_fact": ticket.get("requested_fact"),
+            "quorum": ticket.get("quorum"),
+            "confidence": ticket.get("confidence"),
+            "ts_iso": ticket.get("ts_iso"),
+            "majority_key": ticket.get("majority_key"),
+            "presentation_text": ticket.get("presentation_text"),
+            "jurisdiction": ticket.get("jurisdiction"),
+            "probe_count": len((ev.get("probes") or []) if isinstance(ev.get("probes"), list) else []),
+        }), ensure_ascii=False, sort_keys=True)
+        return "bootenv_" + hashlib.sha256(raw.encode("utf-8", errors="replace")).hexdigest()[:24]
+    except Exception:
+        return "bootenv_" + uuid.uuid4().hex[:24]
+
+
+def build_verified_artifact_package(ticket: Dict[str, Any], *, claim: str = "", cycle_id: str = "") -> Optional[Dict[str, Any]]:
+    """Build a one-cycle volatile package for live SelfAware hardware/body facts.
+
+    This package is allowed to travel through /api/chat for presentation and
+    Compare integrity/security review, but it must not be persisted as learned
+    memory or sent back into Evidence Court during the same chat cycle.
+    """
+    if not isinstance(ticket, dict) or not bool(ticket.get("approved_fact")):
+        return None
+    kind = _safe_str(ticket.get("requested_fact") or "hardware_fact", 120) or "hardware_fact"
+    artifact_value = ticket.get("presentation_value") if ticket.get("presentation_value") not in (None, "", [], {}) else ticket.get("majority_value")
+    artifact_text = _artifact_clean_text(kind, ticket.get("presentation_text") or "")
+    if not artifact_text:
+        try:
+            artifact_text = _artifact_clean_text(kind, _presentation_text(kind, artifact_value))
+        except Exception:
+            artifact_text = _artifact_clean_text(kind, artifact_value)
+    artifact_id = "self_artifact_" + uuid.uuid4().hex
+    artifact_hash = hashlib.sha256(str(artifact_text or "").encode("utf-8", errors="replace")).hexdigest()
+    cycle = _safe_str(cycle_id or (ticket.get("meta") or {}).get("cycle_id") or "", 120)
+    if not cycle:
+        cycle = "chat_cycle_" + uuid.uuid4().hex[:16]
+    pkg: Dict[str, Any] = {
+        "ok": True,
+        "package_type": VERIFIED_ARTIFACT_PACKAGE_TYPE,
+        "package_version": VERIFIED_ARTIFACT_PACKAGE_VERSION,
+        "artifact_id": artifact_id,
+        "cycle_id": cycle,
+        "hardware_epoch": _hardware_epoch_from_ticket(ticket),
+        "source_authority": "appself.evidence_court",
+        "origin_route": "/api/self/fact-check",
+        "artifact_kind": kind,
+        "artifact_value": _json_safe(artifact_value),
+        "artifact_text": artifact_text,
+        "artifact_hash": artifact_hash,
+        "claim": _safe_str(claim or ticket.get("claim") or "", MAX_CLAIM_CHARS),
+        "source_ticket_id": ticket.get("ticket_id"),
+        "approved_fact": True,
+        "evidence_court": {
+            "decision": ticket.get("decision"),
+            "quorum": ticket.get("quorum"),
+            "confidence": ticket.get("confidence"),
+            "pass_count": ticket.get("pass_count"),
+        },
+        "single_use": True,
+        "volatile": True,
+        "live_only": True,
+        "immutable_artifact": True,
+        "consumed": False,
+        "compare_mode": "integrity_security_only",
+        "do_not_reverify": True,
+        "do_not_persist": True,
+        "do_not_learn": True,
+        "do_not_write_sql": True,
+        "do_not_promote_to_memory": True,
+        "volatile_runtime_fact": True,
+        "redacted_audit_allowed": True,
+        "raw_evidence_exposure_allowed": False,
+        "allowed_use": ["chat.presentation", "reply.formatting", "compare.integrity_check"],
+        "blocked_use": ["memory_learning", "sql_fact_storage", "response_history_fact_promotion", "selfaware_reverification_loop", "hardware_identity_cache_promotion"],
+        "privacy_contract": {
+            "raw_evidence_exposed": False,
+            "ip_addresses_exposed": False,
+            "mac_addresses_exposed": False,
+            "full_environment_dump_exposed": False,
+            "network_details_are_counted_or_redacted": True,
+        },
+        "read_only": True,
+        "action_taken": False,
+    }
+    return _json_safe(pkg)
+
+
+def run_selfaware_verified_artifact(
+    *,
+    claim: str,
+    kind: str = "",
+    target: str = "",
+    source: str = "api_chat",
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    meta = dict(meta or {})
+    cycle_id = _safe_str(meta.get("cycle_id") or ("chat_cycle_" + uuid.uuid4().hex[:16]), 120)
+    meta["cycle_id"] = cycle_id
+    meta.setdefault("route", "run_selfaware_verified_artifact")
+    ticket = run_selfaware_fact_check(claim=claim, kind=kind, target=target, source=source, meta=meta)
+    package = build_verified_artifact_package(ticket, claim=claim, cycle_id=cycle_id)
+    return _json_safe({
+        "ok": True,
+        "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "ticket": ticket,
+        "verified_artifact_package": package,
+        "approved_fact": bool(isinstance(package, dict) and package.get("approved_fact")),
+        "presentation_text": package.get("artifact_text") if isinstance(package, dict) else "",
+        "do_not_write_sql": True,
+        "do_not_persist": True,
+        "do_not_learn": True,
+    })
 
 
 # -----------------------------------------------------------------------------
@@ -3416,6 +3568,32 @@ def self_body():
         except Exception:
             pass
     return _ok(_body_snapshot())
+
+
+@bp.route("/api/self/verified-artifact", methods=["POST", "OPTIONS"])
+def self_verified_artifact():
+    """Build a volatile verified hardware/body artifact for /api/chat.
+
+    This route is read-only. It does not execute hardware actions, patch files,
+    or promote the fact into learned memory.
+    """
+    if request.method == "OPTIONS":
+        return _ok({"options": True})
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+    payload = _j()
+    claim = _safe_str(payload.get("claim") or payload.get("text") or payload.get("query") or "", MAX_CLAIM_CHARS)
+    kind = _safe_str(payload.get("kind") or payload.get("requested_fact") or "", 120)
+    target = _safe_str(payload.get("target") or "", 255)
+    source = _safe_str(payload.get("source") or "api_self_verified_artifact", 120)
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    try:
+        result = run_selfaware_verified_artifact(claim=claim, kind=kind, target=target, source=source, meta=meta)
+        return _ok(result)
+    except Exception as exc:
+        ticket = _factcheck_error_ticket(claim=claim, kind=kind, target=target, source=source, exc=exc, meta=meta)
+        return _ok({"ok": False, "ticket": ticket, "verified_artifact_package": None, "error": str(exc)})
 
 
 @bp.route("/api/self/fact-check", methods=["POST", "OPTIONS"])
