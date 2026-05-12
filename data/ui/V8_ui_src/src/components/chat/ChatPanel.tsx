@@ -4,8 +4,117 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatComposer } from "./ChatComposer";
 import { TypingIndicator } from "./TypingIndicator";
 import { api, type ChatResponse } from "@/lib/api";
+import { apiFetch } from "@/lib/config";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
+
+
+type RepairApprovalCommand = "accept_fix" | "reject_fix" | "satisfied_yes" | "rollback_no";
+
+function normalizeRepairApprovalCommand(text: string): RepairApprovalCommand | null {
+  const raw = (text || "").trim();
+  const normalized = raw
+    .replace(/^\[|\]$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+  if (["accept fix", "accept", "approve fix", "approve patch", "apply approved patch"].includes(normalized)) {
+    return "accept_fix";
+  }
+
+  if (["reject fix", "reject", "hold fix", "do not apply", "cancel fix"].includes(normalized)) {
+    return "reject_fix";
+  }
+
+  if (["yes", "yes satisfied", "satisfied", "looks good", "keep fix"].includes(normalized)) {
+    return "satisfied_yes";
+  }
+
+  if (["no", "no rollback", "no - rollback", "rollback", "rollback fix", "undo fix"].includes(normalized)) {
+    return "rollback_no";
+  }
+
+  return null;
+}
+
+function readDevBridgeStageId(payload: any): string {
+  const candidates = [
+    payload?.latest_stage?.stage_id,
+    payload?.latest?.stage_id,
+    payload?.latest_response?.stage_id,
+    payload?.latest_response?.stage_manifest?.stage_id,
+    payload?.latest?.stage_manifest?.stage_id,
+  ];
+
+  for (const value of candidates) {
+    const text = String(value || "").trim();
+    if (text) return text;
+  }
+
+  return "";
+}
+
+function devBridgeErrorText(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  try {
+    return String(error || "unknown error");
+  } catch {
+    return "unknown error";
+  }
+}
+
+function repairAppliedSummary(stageId: string, applyResult: any): string {
+  const applied = Array.isArray(applyResult?.applied) ? applyResult.applied : [];
+  const errors = Array.isArray(applyResult?.errors) ? applyResult.errors : [];
+  const files = applied
+    .map((item: any) => `- ${String(item?.target_path || "unknown target")}`)
+    .join("\n");
+
+  return [
+    "Repair Applied",
+    "",
+    `Stage: ${stageId}`,
+    `Applied files: ${applied.length}`,
+    errors.length > 0 ? `Errors: ${errors.length}` : "Errors: 0",
+    files ? `\nFiles:\n${files}` : "",
+    "",
+    "Are you satisfied with this adjustment?",
+    "",
+    "[YES] [NO - ROLLBACK]",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function repairRollbackSummary(stageId: string, rollbackResult: any): string {
+  const restored = Array.isArray(rollbackResult?.restored) ? rollbackResult.restored : [];
+  const deleted = Array.isArray(rollbackResult?.deleted) ? rollbackResult.deleted : [];
+  const errors = Array.isArray(rollbackResult?.errors) ? rollbackResult.errors : [];
+
+  return [
+    "Rollback Complete",
+    "",
+    `Stage: ${stageId}`,
+    `Restored files: ${restored.length}`,
+    `Deleted created files: ${deleted.length}`,
+    errors.length > 0 ? `Errors: ${errors.length}` : "Errors: 0",
+    "",
+    errors.length > 0
+      ? "Rollback completed with warnings. Review DevBridge details before continuing."
+      : "Previous file state restored from the exact DevBridge pre-apply backup.",
+  ].join("\n");
+}
+
+
+// V10/V9D Frontend Authority Doctrine:
+// ChatPanel is a presentation/submission surface only.
+// It must not classify Identity/SelfAware/hardware queries or call /api/self/fact-check
+// directly from the chat lane. All chat text goes through /api/chat so the backend
+// owns classification, Evidence Court routing, security/governance, memory policy,
+// and final presentation packaging.
+
+
 
 export function ChatPanel() {
   const {
@@ -18,6 +127,7 @@ export function ChatPanel() {
     setSpeechCues,
     setAvatarSpeaking,
     setSpeechStartTime,
+    enqueueUiActions,
   } = useSarahStore();
 
   const isMobile = useIsMobile();
@@ -91,6 +201,19 @@ export function ChatPanel() {
     return Math.max(1600, Math.min(180000, estimatedMs + 4000));
   };
 
+  const postAvatarEvent = async (event: string) => {
+    try {
+      await fetch("/api/avatar/event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ event }),
+      });
+    } catch {
+      // Avatar event sync is non-critical.
+    }
+  };
+
   const stopAvatarSpeaking = () => {
     if (speakingTimeoutRef.current) {
       clearTimeout(speakingTimeoutRef.current);
@@ -100,6 +223,7 @@ export function ChatPanel() {
     setSpeechStartTime(null);
     setSpeechCues([]);
     api.avatar.setSpeaking(false).catch(() => {});
+    postAvatarEvent("success").catch(() => {});
   };
 
   const startAvatarSpeaking = (response: ChatResponse) => {
@@ -229,6 +353,165 @@ export function ChatPanel() {
     }
   };
 
+  const dispatchAssistantActions = (response: ChatResponse) => {
+    const actions = Array.isArray((response as any)?.actions) ? (response as any).actions : [];
+    if (actions.length === 0) return;
+
+    try {
+      enqueueUiActions(actions, "chat_response");
+    } catch (e) {
+      console.warn("[ChatPanel] Failed to enqueue UI actions:", e);
+    }
+
+    try {
+      window.dispatchEvent(
+        new CustomEvent("sarah:ui", {
+          detail: {
+            source: "chat_response",
+            ts: Date.now(),
+            actions,
+          },
+        })
+      );
+    } catch {
+      // non-critical UI automation bridge
+    }
+  };
+
+  const getLatestDevBridgeStageId = useCallback(async (): Promise<string> => {
+    const latest = await apiFetch<any>("/api/devbridge/latest", { method: "GET" });
+    return readDevBridgeStageId(latest);
+  }, []);
+
+  const handleRepairApprovalCommand = useCallback(
+    async (command: RepairApprovalCommand) => {
+      try {
+        if (command === "reject_fix") {
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            content:
+              "Repair Rejected\n\nNo patch was applied. The repair ticket remains available for manual review or a revised proposal.",
+          });
+          return true;
+        }
+
+        if (command === "satisfied_yes") {
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            content:
+              "Repair Closed\n\nUser satisfaction confirmed. The applied fix remains in place and the repair batch can be marked as accepted.",
+          });
+          return true;
+        }
+
+        const stageId = await getLatestDevBridgeStageId();
+
+        if (!stageId) {
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            content:
+              "DevBridge repair action blocked.\n\nNo latest staged patch was found. Stage a DevBridge patch first, then use the repair approval buttons.",
+          });
+          return true;
+        }
+
+        if (command === "accept_fix") {
+          addMessage({
+            role: "assistant",
+            content: `Repair approval received.\n\nValidating latest staged patch:\n${stageId}`,
+          });
+
+          await apiFetch<any>("/api/devbridge/validate", {
+            method: "POST",
+            body: JSON.stringify({ stage_id: stageId }),
+          });
+
+          const applyResult = await apiFetch<any>("/api/devbridge/apply-approved", {
+            method: "POST",
+            body: JSON.stringify({
+              stage_id: stageId,
+              confirm: "APPLY APPROVED PATCH",
+            }),
+          });
+
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            content: repairAppliedSummary(stageId, applyResult),
+          });
+          return true;
+        }
+
+        if (command === "rollback_no") {
+          addMessage({
+            role: "assistant",
+            content: `Rollback requested.\n\nRestoring from DevBridge surgical backup for stage:\n${stageId}`,
+          });
+
+          const rollbackResult = await apiFetch<any>("/api/devbridge/rollback", {
+            method: "POST",
+            body: JSON.stringify({
+              stage_id: stageId,
+              confirm: "ROLLBACK APPROVED PATCH",
+            }),
+          });
+
+          setTyping(false);
+          addMessage({
+            role: "assistant",
+            content: repairRollbackSummary(stageId, rollbackResult),
+          });
+          return true;
+        }
+
+        setTyping(false);
+        return false;
+      } catch (error) {
+        console.error("[ChatPanel] DevBridge repair command failed:", error);
+        postAvatarEvent("error").catch(() => {});
+        setTyping(false);
+        const msg = devBridgeErrorText(error);
+        toast.error(msg);
+        addMessage({
+          role: "assistant",
+          content: `DevBridge repair command failed.\n\n${msg}\n\nNo additional action was applied by ChatPanel.`,
+        });
+        return true;
+      }
+    },
+    [addMessage, getLatestDevBridgeStageId, setTyping]
+  );
+
+  const handleComposerMicState = useCallback(
+    (listening: boolean, reason: string) => {
+      try {
+        window.dispatchEvent(
+          new CustomEvent("sarah:ui", {
+            detail: {
+              source: "chat_composer",
+              ts: Date.now(),
+              actions: [
+                {
+                  type: "chat_mic_state",
+                  payload: { listening, reason },
+                },
+              ],
+            },
+          })
+        );
+      } catch {
+        // non-critical UI bridge
+      }
+
+      api.avatar.setListening(listening).catch(() => {});
+      postAvatarEvent(listening ? "busy" : "success").catch(() => {});
+    },
+    []
+  );
+
   // Unified send (used by composer + follow-ups + regenerate)
   const sendText = async (text: string, files?: File[]) => {
     const clean = (text || "").trim();
@@ -248,6 +531,12 @@ export function ChatPanel() {
 // -------------------------------------------------------------------
 const cmd = (clean || "").trim().toLowerCase();
 const hasFiles = Array.isArray(files) && files.length > 0;
+const repairApprovalCommand = normalizeRepairApprovalCommand(clean);
+
+if (repairApprovalCommand) {
+  await handleRepairApprovalCommand(repairApprovalCommand);
+  return;
+}
 
 if (hasFiles && cmd === "eat this") {
   try {
@@ -304,6 +593,7 @@ if (hasFiles && cmd === "eat this") {
 
     try {
       await api.avatar.setListening(true);
+      postAvatarEvent("busy").catch(() => {});
     } catch {}
 
     try {
@@ -321,6 +611,7 @@ if (hasFiles && cmd === "eat this") {
       }
 
       addMessage({ role: "assistant", content: response.content });
+      dispatchAssistantActions(response);
 
       startAvatarSpeaking(response);
 
@@ -330,6 +621,7 @@ if (hasFiles && cmd === "eat this") {
       }
     } catch (error) {
       console.error("Chat send error:", error);
+      postAvatarEvent("error").catch(() => {});
       setTyping(false);
       toast.error("Failed to send message");
       addMessage({
@@ -368,7 +660,7 @@ if (hasFiles && cmd === "eat this") {
       </div>
 
       {/* Composer */}
-      <ChatComposer onSendText={sendText} isSending={isTyping} />
+      <ChatComposer onSendText={sendText} isSending={isTyping} onMicStateChange={handleComposerMicState} />
     </div>
   );
 }

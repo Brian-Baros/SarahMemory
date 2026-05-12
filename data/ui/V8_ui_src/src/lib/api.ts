@@ -39,6 +39,8 @@ export interface MediaResult {
 export interface ChatResponse {
   ok?: boolean;
   reply?: string;
+  response?: string;
+  presentation_reply?: string;
   content: string;
   source: "sarah_backend" | "lovable_ai";
   audio_url?: string | null;
@@ -46,6 +48,7 @@ export interface ChatResponse {
   error?: string;
   web_augmented?: boolean;
   sources?: string[];
+  actions?: Array<Record<string, unknown>>;
   meta?: {
     source?: string;
     engine?: string;
@@ -186,6 +189,34 @@ export interface HealthResponse {
   version: string;
   ts: number;
   notes: string[];
+}
+
+
+export interface DevBridgeStatusResponse {
+  ok: boolean;
+  enabled?: boolean;
+  version?: string;
+  apply_gate?: Record<string, unknown>;
+  cmd_tickets?: Record<string, number>;
+  cmd_ticket_inventory?: Record<string, number>;
+  repair_counts?: Record<string, unknown>;
+}
+
+export interface DevBridgeRepairSummaryResponse {
+  ok: boolean;
+  generated_at?: string;
+  cmd_tickets?: Record<string, number>;
+  tickets?: { total?: number; by_status?: Record<string, number>; by_severity?: Record<string, number>; by_target_file?: Record<string, number> };
+  batches?: { total?: number; by_status?: Record<string, number>; by_severity?: Record<string, number>; by_target_file?: Record<string, number> };
+  note?: string;
+}
+
+export interface GovernanceResponse {
+  ok: boolean;
+  api_domain?: string;
+  route_base?: string;
+  governance?: Record<string, unknown>;
+  [key: string]: unknown;
 }
 
 export interface BootstrapResponse {
@@ -331,18 +362,31 @@ export const chatApi = {
       });
 
       const ok = isTruthySuccess(data) || Boolean(data.ok);
-      const reply = data.reply ?? data.content ?? "";
+      const reply = String(
+        data.presentation_reply ??
+          data.content ??
+          data.response ??
+          data.reply ??
+          data?.data?.presentation_reply ??
+          data?.data?.content ??
+          data?.data?.response ??
+          data?.data?.reply ??
+          ""
+      );
 
-      if (ok && typeof reply === "string" && reply.length) {
+      if (ok && reply.length) {
         return {
           ok: true,
           reply,
+          response: data.response,
+          presentation_reply: data.presentation_reply,
           content: reply,
           source: "sarah_backend",
           audio_url: data.audio_url ?? null,
           images: data.images,
           sources: data.sources,
           web_augmented: data.web_augmented,
+          actions: Array.isArray(data.actions) ? data.actions : [],
           meta: data.meta,
         };
       }
@@ -1043,6 +1087,73 @@ function getDefaultCapabilities(): BackendCapabilities {
   };
 }
 
+
+export const devBridgeApi = {
+  async status(): Promise<DevBridgeStatusResponse> {
+    return directCall<DevBridgeStatusResponse>("/api/devbridge/status", { method: "GET" });
+  },
+
+  async repairSummary(): Promise<DevBridgeRepairSummaryResponse> {
+    return directCall<DevBridgeRepairSummaryResponse>("/api/devbridge/repair-summary", { method: "GET" });
+  },
+
+  async repairTickets(): Promise<any> {
+    return directCall<any>("/api/devbridge/repair-tickets", { method: "GET" });
+  },
+
+  async repairBatches(): Promise<any> {
+    return directCall<any>("/api/devbridge/repair-batches", { method: "GET" });
+  },
+
+  async cmdTickets(): Promise<any> {
+    return directCall<any>("/api/devbridge/cmd-tickets", { method: "GET" });
+  },
+
+  async processCmdTickets(limit = 50, dryRun = false): Promise<any> {
+    return directCall<any>("/api/devbridge/cmd-tickets/process", {
+      method: "POST",
+      body: JSON.stringify({ limit, dry_run: dryRun }),
+    });
+  },
+};
+
+export const governanceApi = {
+  async get(domain: "net" | "net2" | "comm" | "media" | "drivers" | "store" | "browser"): Promise<GovernanceResponse> {
+    const routeMap: Record<string, string> = {
+      net: "/api/net/governance",
+      net2: "/api/net2/governance",
+      comm: "/api/comm/governance",
+      media: "/api/media/governance",
+      drivers: "/api/drivers/governance",
+      store: "/api/store/governance",
+      browser: "/api/browser/governance",
+    };
+    return directCall<GovernanceResponse>(routeMap[domain], { method: "GET" });
+  },
+
+  async all(): Promise<Record<string, GovernanceResponse | { ok: false; error: string }>> {
+    const domains = ["net", "net2", "comm", "media", "drivers", "store", "browser"] as const;
+    const entries = await Promise.all(
+      domains.map(async (domain) => {
+        try {
+          return [domain, await this.get(domain)] as const;
+        } catch (error: any) {
+          return [domain, { ok: false, error: String(error?.message || error) }] as const;
+        }
+      })
+    );
+    return Object.fromEntries(entries);
+  },
+
+  async addonCandidates(): Promise<any> {
+    return directCall<any>("/api/store/addons/candidates", { method: "GET" });
+  },
+
+  async driverManifestAudit(): Promise<any> {
+    return directCall<any>("/api/drivers/manifest/audit", { method: "GET" });
+  },
+};
+
 // ============================================================================
 // PROXY API (legacy)
 // ============================================================================
@@ -1101,6 +1212,8 @@ export const api = {
   research: researchApi,
   meta: metaApi,
   proxy: proxyApi,
+  devbridge: devBridgeApi,
+  governance: governanceApi,
 };
 
 export default api;
