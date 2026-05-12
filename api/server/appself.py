@@ -152,6 +152,11 @@ except Exception:
     _CogServices = None
 
 try:
+    import SarahMemoryCognitiveThinker as _CogThinker  # type: ignore
+except Exception:
+    _CogThinker = None
+
+try:
     import SarahMemorySafetyPolicies as _SafetyPolicies  # type: ignore
 except Exception:
     _SafetyPolicies = None
@@ -593,7 +598,7 @@ def _list_selfaware_reports(limit: int = 10) -> List[Dict[str, Any]]:
 # - SarahMemoryDatabase.py is an evidence locker and is read-only here; multiple DB rows
 #   never count as multiple independent witnesses.
 
-_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "drive", "drives", "drive_label", "usb_label", "temperature", "fan_speed", "network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan", "motherboard", "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers", "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci", "ports", "port", "operating_system", "platform", "general_system_fact"}
+_HARDWARE_KINDS = {"cpu", "gpu", "memory", "disk_space", "drive", "drives", "drive_label", "usb_label", "temperature", "fan_speed", "network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan", "motherboard", "usb", "usb_ports", "usb_devices", "usb_storage", "usb_host_controllers", "sata", "sata_ports", "storage_devices", "storage_topology", "nvme", "pcie", "pci", "ports", "port", "operating_system", "platform", "battery", "motor_controller", "ambient", "body_thermal", "general_system_fact"}
 _SOFTWARE_KINDS = {"software", "application", "process", "window", "desktop_surface"}
 _BOOT_RUNTIME_KINDS = {"boot", "startup", "shutdown", "reboot", "runtime", "lifecycle", "server_state"}
 _NETWORK_KINDS = {"network", "sarahnet", "sync", "mesh", "rendezvous"}
@@ -608,6 +613,10 @@ def _fact_jurisdiction(kind: str, claim: str = "") -> str:
     c = _safe_str(claim, MAX_CLAIM_CHARS).lower()
     if k in _DRIVER_KINDS or any(x in c for x in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
         return "driver_capability"
+    # V10/V9E: explicit hardware/body kinds outrank generic words such as
+    # "running" or "installed". A GPU that is "running" is still hardware.
+    if k in _HARDWARE_KINDS:
+        return "hardware_body"
     if k in _SOFTWARE_KINDS or any(x in c for x in ("installed", "running", "focused", "window", "application", "program", "software")):
         return "software_desktop"
     if k in _BOOT_RUNTIME_KINDS or any(x in c for x in ("boot", "startup", "shutdown", "reboot", "server state", "runtime state")):
@@ -620,8 +629,6 @@ def _fact_jurisdiction(kind: str, claim: str = "") -> str:
         return "adaptive_behavior"
     if k in _NETWORK_KINDS and k != "network":
         return "network_sarahnet"
-    if k in _HARDWARE_KINDS:
-        return "hardware_body"
     return "general_system"
 
 
@@ -765,10 +772,10 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
 
     if any(k in c for k in ("driver stack", "class a driver", "class b driver", "boot driver", "runtime driver", "device driver", "driver registry", "body capability", "body capabilities")):
         return "drivers"
+    if any(k in c for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature", "gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "motherboard temp", "motherboard temperature", "board temp", "thermal", "degrees c", "degrees fahrenheit")):
+        return "temperature"
     if any(k in c for k in ("motherboard", "mainboard", "baseboard", "system board")):
         return "motherboard"
-    if any(k in c for k in ("cpu temp", "processor temp", "temperature", "thermal", "degrees c", "degrees fahrenheit")):
-        return "temperature"
     if any(k in c for k in ("fan", "rpm")):
         return "fan_speed"
     if any(k in c for k in ("gpu", "graphics", "video card", "vram")):
@@ -844,6 +851,9 @@ def _extract_target_from_claim(claim: str, kind: str) -> str:
         if m:
             return m.group(1).upper() + ":"
 
+    if k == "temperature":
+        return _thermal_target_component_from_claim(text, "")
+
     if k == "core_file":
         m = re.search(r"\b((?:SarahMemory|app)[A-Za-z0-9_]*(?:\.py)?)\b", text)
         if m:
@@ -862,6 +872,243 @@ def _extract_target_from_claim(claim: str, kind: str) -> str:
                     return tail[:120]
 
     return ""
+
+
+# -----------------------------------------------------------------------------
+# V10/V9E Thermal Sensor Binding + Supreme Appeals helpers
+# -----------------------------------------------------------------------------
+def _thermal_float(value: Any) -> Optional[float]:
+    try:
+        if value in (None, "", "N/A", "n/a", "None"):
+            return None
+        f = float(value)
+        if f != f or f in (float("inf"), float("-inf")):
+            return None
+        return round(f, 2)
+    except Exception:
+        return None
+
+
+def _thermal_target_component_from_claim(claim: str, target: str = "") -> str:
+    low = _safe_str((target or claim), MAX_CLAIM_CHARS).lower()
+    if low in {"cpu", "processor"} or any(x in low for x in ("cpu", "processor")):
+        return "cpu"
+    if low in {"gpu", "graphics"} or any(x in low for x in ("gpu", "graphics", "video card", "nvidia", "radeon")):
+        return "gpu"
+    if any(x in low for x in ("motherboard", "mainboard", "baseboard", "system board", "chipset", "vrm", "board")):
+        return "motherboard"
+    if any(x in low for x in ("drive", "disk", "ssd", "hdd", "nvme", "storage")):
+        return "drive"
+    if any(x in low for x in ("battery", "battery pack")):
+        return "battery"
+    if any(x in low for x in ("motor", "servo", "actuator", "controller")):
+        return "motor_controller"
+    if any(x in low for x in ("ambient", "room", "environment")):
+        return "ambient"
+    return "body_thermal"
+
+
+def _thermal_candidate(component: str, temp_c: Any, *, label: str, source_type: str, source_family: str, confidence: str = "MEDIUM", direct: bool = False, raw: Any = None) -> Dict[str, Any]:
+    return {
+        "component": _safe_str(component, 80) or "unknown",
+        "temperature_c": _thermal_float(temp_c),
+        "label": _safe_str(label, 200),
+        "source_type": _safe_str(source_type, 120),
+        "source_family": _safe_str(source_family, 120),
+        "source_label": _safe_str(source_type.replace("_", " "), 160),
+        "confidence": _safe_str(confidence, 40) or "MEDIUM",
+        "direct": bool(direct),
+        "raw": _json_safe(raw) if raw is not None else None,
+    }
+
+
+def _thermal_component_from_sensor_name(name: str, label: str = "") -> Tuple[str, str, str, bool]:
+    text = f"{name} {label}".lower()
+    if any(x in text for x in ("gpu", "nvidia", "radeon", "amdgpu", "graphics")):
+        return "gpu", "direct_gpu_sensor", "HIGH", True
+    if any(x in text for x in ("coretemp", "k10temp", "cpu package", "package id", "tctl", "tdie", "cpu core", "core 0", "core 1", "core 2", "core 3")):
+        return "cpu", "direct_cpu_sensor", "HIGH", True
+    if any(x in text for x in ("cpu", "socket", "cputin")):
+        return "cpu", "motherboard_cpu_sensor", "MEDIUM_HIGH", False
+    if any(x in text for x in ("motherboard", "mainboard", "baseboard", "asus", "nct", "it87", "systin", "vrm", "chipset", "pch", "acpi", "acpitz")):
+        return "motherboard", "motherboard_thermal_sensor", "MEDIUM", False
+    if any(x in text for x in ("nvme", "ssd", "hdd", "disk", "drive")):
+        return "drive", "drive_thermal_sensor", "MEDIUM_HIGH", True
+    if "battery" in text:
+        return "battery", "battery_thermal_sensor", "MEDIUM", True
+    if any(x in text for x in ("motor", "servo", "actuator")):
+        return "motor_controller", "motor_controller_sensor", "MEDIUM", True
+    if any(x in text for x in ("ambient", "room", "environment")):
+        return "ambient", "ambient_sensor", "MEDIUM", True
+    return "unknown", "unmapped_thermal_zone", "LOW", False
+
+
+def _thermal_candidates_from_map(raw: Any, *, source_family: str = "thermal_map") -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    try:
+        if isinstance(raw, dict):
+            for key, component, stype in (("cpu_temp_c", "cpu", "direct_cpu_sensor"), ("gpu_temp_c", "gpu", "direct_gpu_sensor"), ("temperature_c", "gpu", "direct_gpu_sensor")):
+                if raw.get(key) not in (None, "", [], {}):
+                    candidates.append(_thermal_candidate(component, raw.get(key), label=key, source_type=stype, source_family=source_family, confidence="HIGH", direct=True, raw=raw))
+            for group, entries in raw.items():
+                if isinstance(entries, list):
+                    for item in entries:
+                        if isinstance(item, dict):
+                            label = str(item.get("label") or item.get("name") or "")
+                            cur = item.get("current") if item.get("current") is not None else item.get("temperature_c")
+                            component, source_type, confidence, direct = _thermal_component_from_sensor_name(str(group), label)
+                            if cur not in (None, "", [], {}):
+                                candidates.append(_thermal_candidate(component, cur, label=f"{group}:{label or 'sensor'}", source_type=source_type, source_family=source_family, confidence=confidence, direct=direct, raw=item))
+                elif isinstance(entries, dict):
+                    candidates.extend(_thermal_candidates_from_map(entries, source_family=f"{source_family}.{group}"))
+        elif isinstance(raw, list):
+            for idx, item in enumerate(raw):
+                if isinstance(item, dict):
+                    candidates.extend(_thermal_candidates_from_map(item, source_family=f"{source_family}[{idx}]"))
+    except Exception:
+        pass
+    out: List[Dict[str, Any]] = []
+    seen = set()
+    for c in candidates:
+        if c.get("temperature_c") is None:
+            continue
+        key = (c.get("component"), c.get("temperature_c"), c.get("source_type"), c.get("label"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
+
+
+def _select_thermal_reading(candidates: List[Dict[str, Any]], requested_component: str) -> Optional[Dict[str, Any]]:
+    requested = _safe_str(requested_component, 80).lower() or "body_thermal"
+    if not candidates:
+        return None
+    def score(c: Dict[str, Any]) -> int:
+        if c.get("temperature_c") in (None, ""):
+            return -10000
+        comp = str(c.get("component") or "").lower(); st = str(c.get("source_type") or "").lower(); conf = str(c.get("confidence") or "").upper(); s = 0
+        if comp == requested: s += 100
+        if requested == "cpu" and st in {"direct_cpu_sensor", "motherboard_cpu_sensor"}: s += 60
+        if requested == "gpu" and st == "direct_gpu_sensor": s += 60
+        if bool(c.get("direct")): s += 25
+        if conf == "HIGH": s += 20
+        elif conf == "MEDIUM_HIGH": s += 15
+        elif conf == "MEDIUM": s += 8
+        return s
+    best = sorted(candidates, key=score, reverse=True)[0]
+    if score(best) <= 0:
+        return None
+    if str(best.get("component") or "").lower() == requested:
+        return best
+    if requested == "body_thermal" and best.get("temperature_c") is not None:
+        return best
+    return None
+
+
+def _thermal_case_from_snapshot(snapshot: Dict[str, Any], target: str = "", *, claim: str = "", source_family: str = "boot_environment") -> Dict[str, Any]:
+    requested = _thermal_target_component_from_claim(claim or target or "", target)
+    body = snapshot.get("body") if isinstance(snapshot.get("body"), dict) else {}
+    model_metrics = snapshot.get("model_metrics") if isinstance(snapshot.get("model_metrics"), dict) else {}
+    candidates: List[Dict[str, Any]] = []
+    if requested in {"cpu", "body_thermal"}:
+        candidates.append(_thermal_candidate("cpu", model_metrics.get("cpu_temp_c"), label="model_metrics.cpu_temp_c", source_type="direct_cpu_sensor", source_family=source_family, confidence="HIGH", direct=True))
+    gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+    if requested in {"gpu", "body_thermal"} or gpu.get("temperature_c") not in (None, "", [], {}):
+        candidates.append(_thermal_candidate("gpu", gpu.get("temperature_c") if gpu.get("temperature_c") is not None else model_metrics.get("gpu_temp_c"), label="body.gpu.temperature_c", source_type="direct_gpu_sensor", source_family=source_family, confidence="HIGH", direct=True, raw=gpu))
+    for key in ("thermal_sensors", "thermal", "sensors", "temperature_sensors", "board_sensors"):
+        if key in body:
+            candidates.extend(_thermal_candidates_from_map(body.get(key), source_family=f"{source_family}.body.{key}"))
+    for key in ("thermal_sensors", "thermal", "Thermal", "sensors"):
+        if key in snapshot:
+            candidates.extend(_thermal_candidates_from_map(snapshot.get(key), source_family=f"{source_family}.{key}"))
+    selected = _select_thermal_reading(candidates, requested)
+    related: Dict[str, Any] = {}
+    for c in candidates:
+        comp = str(c.get("component") or "unknown")
+        if c.get("temperature_c") is not None and comp + "_temp_c" not in related:
+            related[comp + "_temp_c"] = c.get("temperature_c")
+    status = "direct_confirmed" if selected and selected.get("direct") else ("indirect_candidate" if selected else "unmapped_or_unavailable")
+    if requested == "cpu" and selected and selected.get("source_type") == "motherboard_cpu_sensor":
+        status = "indirect_motherboard_cpu_sensor_candidate"
+    return {"thermal_case": True, "requested_component": requested, "requested_metric": "temperature", "selected_reading": selected or {}, "direct_sensor_available": bool(selected and selected.get("direct")), "direct_cpu_temp_c": model_metrics.get("cpu_temp_c"), "sensor_binding_status": status, "sensor_candidates": [c for c in candidates if c.get("temperature_c") is not None][:24], "related_readings": related, "appeals_lane_required": bool(requested == "cpu" and (not selected or not selected.get("direct"))), "null_is_evidence": True, "read_only": True, "action_taken": False}
+
+
+def _thermal_case_from_raw_thermal(raw: Any, target: str = "", *, claim: str = "", source_family: str = "os_adapter") -> Dict[str, Any]:
+    requested = _thermal_target_component_from_claim(claim or target or "", target)
+    candidates = _thermal_candidates_from_map(raw, source_family=source_family)
+    selected = _select_thermal_reading(candidates, requested)
+    return {"thermal_case": True, "requested_component": requested, "requested_metric": "temperature", "selected_reading": selected or {}, "direct_sensor_available": bool(selected and selected.get("direct")), "sensor_binding_status": "direct_confirmed" if selected and selected.get("direct") else ("indirect_candidate" if selected else "unmapped_or_unavailable"), "sensor_candidates": candidates[:24], "related_readings": {str(c.get("component") or "unknown") + "_temp_c": c.get("temperature_c") for c in candidates if c.get("temperature_c") is not None}, "null_is_evidence": True, "read_only": True, "action_taken": False}
+
+
+def _thermal_cognitive_supreme_review(*, claim: str, thermal_case: Dict[str, Any], cpu_ticket: Optional[Dict[str, Any]] = None, motherboard_ticket: Optional[Dict[str, Any]] = None, gpu_ticket: Optional[Dict[str, Any]] = None, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    selected = thermal_case.get("selected_reading") if isinstance(thermal_case.get("selected_reading"), dict) else {}
+    requested = str(thermal_case.get("requested_component") or "body_thermal")
+    out: Dict[str, Any] = {"court": "SarahMemory Supreme Appeals Court", "authority_modules": ["SarahMemoryCognitiveSelf", "SarahMemoryCognitiveThinker", "SarahMemoryCognitiveServices", "SMGET"], "requested_component": requested, "selected_reading": selected, "decision": "DEFER", "allow": False, "reasons": [], "cognitive_self": {}, "cognitive_thinker": {}, "cognitive_services": {}, "smget_rule": "read_only_no_action_execution"}
+    if not selected or selected.get("temperature_c") in (None, ""):
+        out["decision"] = "DEFER_NO_MAPPED_SENSOR"; out["reasons"].append("No direct or mapped thermal sensor reading was available for the requested component."); return out
+    try:
+        if _CogSelf is not None:
+            fn = getattr(_CogSelf, "build_thermal_body_authority_packet", None)
+            if callable(fn): out["cognitive_self"] = fn(claim=claim, thermal_case=thermal_case, cpu_ticket=cpu_ticket, motherboard_ticket=motherboard_ticket, gpu_ticket=gpu_ticket, context=meta or {})
+    except Exception as exc:
+        out["cognitive_self"] = {"ok": False, "error": str(exc)}
+    try:
+        if _CogThinker is not None:
+            fn = getattr(_CogThinker, "review_thermal_sensor_appeal", None)
+            if callable(fn): out["cognitive_thinker"] = fn(claim=claim, thermal_case=thermal_case, cognitive_self_packet=out.get("cognitive_self") or {}, context=meta or {})
+    except Exception as exc:
+        out["cognitive_thinker"] = {"ok": False, "error": str(exc)}
+    try:
+        if _CogServices is not None:
+            fn = getattr(_CogServices, "govern_request", None)
+            if callable(fn):
+                out["cognitive_services"] = fn("SelfAware thermal sensor binding appeal: " + _safe_str(claim, 500), caller="appself.thermal_supreme_appeal", caller_context={"source": "appself", "thermal_case": thermal_case, "read_only": True, **dict(meta or {})}, user_present=True, user_consented=False, proposed_action={"action_type": "read_only_thermal_fact_presentation", "read_only": True, "touches_filesystem": False, "touches_network": False, "physical_actuation": False, "rollback_plan": "No state change; no rollback required."})
+    except Exception as exc:
+        out["cognitive_services"] = {"ok": False, "decision": "ALLOW", "error": str(exc)}
+    stype = str(selected.get("source_type") or "")
+    thinker_decision = str((out.get("cognitive_thinker") or {}).get("decision") or (out.get("cognitive_thinker") or {}).get("thinker_decision") or "").upper()
+    svc = out.get("cognitive_services") if isinstance(out.get("cognitive_services"), dict) else {}
+    svc_decision = str(svc.get("decision") or ("ALLOW" if svc.get("allow", True) else "DENY")).upper()
+    if svc_decision in {"DENY", "REQUIRE_USER"}:
+        out["decision"] = svc_decision; out["reasons"].append("CognitiveServices did not allow this thermal claim to be presented as settled."); return out
+    if selected.get("direct"):
+        out["decision"] = "DIRECT_CONFIRMED"; out["allow"] = True; out["reasons"].append("A direct thermal sensor is mapped to the requested component."); return out
+    if requested == "cpu" and stype == "motherboard_cpu_sensor":
+        cpu_ok = bool(isinstance(cpu_ticket, dict) and cpu_ticket.get("approved_fact")); mb_ok = bool(isinstance(motherboard_ticket, dict) and motherboard_ticket.get("approved_fact"))
+        if cpu_ok and mb_ok and thinker_decision not in {"DENY", "ETHICALLY_BLOCKED"}:
+            out["decision"] = "INDIRECT_CONFIRMED"; out["allow"] = True; out["reasons"].append("CPU and motherboard are each verified 3/3, and the board exposes a CPU-related thermal sensor."); return out
+    out["decision"] = "DEFER_UNMAPPED_INDIRECT_SENSOR"; out["reasons"].append("Thermal sensor exists, but the binding did not meet Supreme Appeals rules."); return out
+
+
+def _apply_thermal_supreme_appeal(ticket: Dict[str, Any], *, claim: str, target: str = "", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    try:
+        if not isinstance(ticket, dict) or str(ticket.get("requested_fact") or "") != "temperature":
+            return ticket
+        pv = ticket.get("presentation_value") if isinstance(ticket.get("presentation_value"), dict) else {}
+        mv = ticket.get("majority_value") if isinstance(ticket.get("majority_value"), dict) else {}
+        thermal_case = pv if pv.get("thermal_case") else (mv if mv.get("thermal_case") else {})
+        if not thermal_case: return ticket
+        requested = str(thermal_case.get("requested_component") or _thermal_target_component_from_claim(claim, target)); selected = thermal_case.get("selected_reading") if isinstance(thermal_case.get("selected_reading"), dict) else {}
+        cpu_ticket = motherboard_ticket = gpu_ticket = None
+        sub_meta = {"source": "thermal_supreme_appeal_subcase", "parent_ticket_id": ticket.get("ticket_id"), "do_not_write_sql": True, "do_not_persist": True, "do_not_learn": True}
+        if requested == "cpu":
+            cpu_ticket = _run_fact_ticket(claim="Supreme Appeals subcase: verify CPU identity for thermal binding", kind="cpu", target="", source="thermal_appeals", ticket_kind="SELF_FACT_APPEAL_SUBCASE", meta=sub_meta)
+            motherboard_ticket = _run_fact_ticket(claim="Supreme Appeals subcase: verify motherboard identity for CPU thermal binding", kind="motherboard", target="", source="thermal_appeals", ticket_kind="SELF_FACT_APPEAL_SUBCASE", meta=sub_meta)
+        elif requested == "gpu":
+            gpu_ticket = _run_fact_ticket(claim="Supreme Appeals subcase: verify GPU identity for thermal binding", kind="gpu", target="", source="thermal_appeals", ticket_kind="SELF_FACT_APPEAL_SUBCASE", meta=sub_meta)
+        elif requested == "motherboard":
+            motherboard_ticket = _run_fact_ticket(claim="Supreme Appeals subcase: verify motherboard identity for thermal binding", kind="motherboard", target="", source="thermal_appeals", ticket_kind="SELF_FACT_APPEAL_SUBCASE", meta=sub_meta)
+        appeal = _thermal_cognitive_supreme_review(claim=claim, thermal_case=thermal_case, cpu_ticket=cpu_ticket, motherboard_ticket=motherboard_ticket, gpu_ticket=gpu_ticket, meta=meta or {})
+        ticket.setdefault("evidence", {})["supreme_appeals_court"] = appeal; ticket["thermal_sensor_binding"] = thermal_case
+        if appeal.get("allow") and selected and selected.get("temperature_c") not in (None, ""):
+            thermal_case["sensor_binding_status"] = "direct_confirmed" if appeal.get("decision") == "DIRECT_CONFIRMED" else "indirect_confirmed"; thermal_case["supreme_appeals_decision"] = appeal.get("decision")
+            ticket.update({"quorum": "3/3", "pass_count": 3, "decision": "APPROVED_FACT", "confidence": "HIGH" if appeal.get("decision") == "DIRECT_CONFIRMED" else "MEDIUM_HIGH", "risk_tier": "low", "approved_fact": True, "escalate_high_review": False, "majority_value": thermal_case, "presentation_value": thermal_case, "presentation_text": _presentation_text("temperature", thermal_case), "recommended_next": "Approved thermal body fact through Sensor Binding + Supreme Appeals Court. Route to Reply/presentation. No action execution required."})
+        return ticket
+    except Exception as exc:
+        try: ticket.setdefault("evidence", {})["supreme_appeals_court_error"] = f"{type(exc).__name__}:{exc}"
+        except Exception: pass
+        return ticket
 
 
 def _evidence_source_registry() -> Dict[str, Any]:
@@ -1759,11 +2006,7 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
             return [a for a in adapters if "ethernet" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower() or "lan" in _safe_str(a.get("name") if isinstance(a, dict) else "", 160).lower()]
         return adapters
     if kind == "temperature":
-        gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
-        return {
-            "gpu_temp_c": gpu.get("temperature_c") or model_metrics.get("gpu_temp_c"),
-            "cpu_temp_c": model_metrics.get("cpu_temp_c"),
-        }
+        return _thermal_case_from_snapshot(snapshot, target, claim=target, source_family="boot_environment")
     if kind == "fan_speed":
         return body.get("fans") or snapshot.get("fans")
     return None
@@ -1776,6 +2019,14 @@ def _canonical_fact_value(value: Any, kind: str = "") -> str:
     k = _safe_str(kind, 80).lower()
     try:
         if isinstance(value, dict):
+            if k == "temperature" and value.get("thermal_case"):
+                selected = value.get("selected_reading") if isinstance(value.get("selected_reading"), dict) else {}
+                component = value.get("requested_component") or selected.get("component") or "body_thermal"
+                temp = selected.get("temperature_c")
+                status = value.get("sensor_binding_status") or "unknown"
+                if temp not in (None, ""):
+                    return _normalize_value({"component": component, "temp_c": temp, "source_type": selected.get("source_type"), "status": status}, k)
+                return _normalize_value({"component": component, "status": status, "direct_cpu_temp_c": value.get("direct_cpu_temp_c")}, k)
             if k in _TOPOLOGY_FACT_KINDS or value.get("topology_kind"):
                 counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
                 stable = {
@@ -1948,7 +2199,8 @@ def _direct_psutil_fact(kind: str, target: str = "") -> Dict[str, Any]:
                 temps = psutil.sensors_temperatures(fahrenheit=False) or {}
             except Exception:
                 temps = {}
-            return _probe_result("direct_psutil.sensors_temperatures", temps if temps else None, ok=bool(temps), error="temperature_sensors_unavailable" if not temps else "", kind=kind, source_family="os_adapter", evidence_class="adapter_hearsay", support_only=True, hearsay=True)
+            val = _thermal_case_from_raw_thermal(temps, target, claim=target, source_family="psutil.sensors_temperatures") if temps else None
+            return _probe_result("direct_psutil.sensors_temperatures", val, ok=bool(val), error="temperature_sensors_unavailable" if not temps else "", kind=kind, source_family="os_adapter", evidence_class="adapter_hearsay", support_only=True, hearsay=True)
         if kind == "fan_speed":
             fans = {}
             try:
@@ -2549,6 +2801,15 @@ def _decision_from_pass_count(pass_count: int) -> Tuple[str, str, str]:
 
 
 def _store_ticket(ticket: Dict[str, Any]) -> None:
+    # V10/V9E: live SelfAware chat/body facts are volatile.
+    # They may pass through Evidence Court / Appeals Court, but should not be
+    # promoted into persistent SQL when the chat bridge marks do_not_write_sql.
+    try:
+        meta = ticket.get("meta") if isinstance(ticket, dict) else {}
+        if isinstance(meta, dict) and (meta.get("do_not_write_sql") or meta.get("do_not_persist") or meta.get("do_not_learn")):
+            return
+    except Exception:
+        pass
     con = None
     try:
         _ensure_tables()
@@ -2863,6 +3124,8 @@ def _presentation_value(kind: str, value: Any) -> Any:
     try:
         if value in (None, "", [], {}):
             return value
+        if k == "temperature" and isinstance(value, dict):
+            return value
         if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
             safe_network = _network_adapter_safe_summary(value)
             safe_network["driver_capability"] = _build_driver_capability_snapshot("network_card")
@@ -2912,6 +3175,17 @@ def _presentation_text(kind: str, value: Any) -> str:
     pv = _presentation_value(kind, value)
     k = _safe_str(kind, 80).lower()
     try:
+        if k == "temperature" and isinstance(pv, dict):
+            selected = pv.get("selected_reading") if isinstance(pv.get("selected_reading"), dict) else {}
+            component = _safe_str(pv.get("requested_component") or selected.get("component") or "body_thermal", 80).replace("_", " ")
+            temp = selected.get("temperature_c")
+            source_type = _safe_str(selected.get("source_type") or "", 120).replace("_", " ")
+            status = _safe_str(pv.get("sensor_binding_status") or "unavailable", 120).replace("_", " ")
+            if temp not in (None, ""):
+                if component == "cpu" and "motherboard" in source_type:
+                    return f"CPU temperature = {temp}°C (verified motherboard CPU-related thermal sensor; no direct CPU thermal probe reading exposed)"
+                return f"{component.title()} temperature = {temp}°C ({source_type or 'verified thermal sensor'})"
+            return f"{component.title()} temperature = unavailable ({status}; direct sensor null is treated as evidence, not failure)"
         if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"} and isinstance(pv, dict):
             active = pv.get("active_adapters") if isinstance(pv.get("active_adapters"), list) else []
             inactive = pv.get("inactive_adapters") if isinstance(pv.get("inactive_adapters"), list) else []
@@ -3082,25 +3356,31 @@ def _run_fact_ticket(
         "meta": meta or {},
     }
 
+    if kind == "temperature":
+        ticket = _apply_thermal_supreme_appeal(ticket, claim=claim, target=target, meta=meta or {})
+
     if isinstance(rem_ticket, dict):
         ticket["rem_ticket_id"] = _safe_str(rem_ticket.get("ticket_id") or rem_ticket.get("dream_id") or rem_ticket.get("id"), 180)
         ticket["rem_cycle_id"] = _safe_str(rem_ticket.get("cycle_id") or rem_ticket.get("rem_cycle_id"), 180)
         ticket["rem_candidate"] = rem_ticket
 
-    if decision == "APPROVED_FACT":
+    final_decision = str(ticket.get("decision") or decision or "")
+    if final_decision == "APPROVED_FACT":
         if ticket_kind == "SELF_REM_MEDIUM_REVIEW_TICKET":
             ticket["promoted_ticket_type"] = "ACTION_CONCEPTUAL_TICKET"
             ticket["recommended_next"] = "Send fact-supported conceptual action to SarahMemoryCognitiveServices for judgment. User remains jury for material action."
         else:
             ticket["recommended_next"] = "Approved verified fact. Route to SarahMemoryReply/presentation boundary for safe reporting. No action execution required."
-    elif decision == "ESCALATE_HIGH_REVIEW":
+    elif final_decision == "ESCALATE_HIGH_REVIEW":
         ticket["recommended_next"] = "Escalate to HIGH review. Two independent evidence families agree, but SelfAware does not approve final fact."
     else:
         ticket["recommended_next"] = "Reject/archive as unsupported or weak evidence."
 
     ticket = _json_safe(ticket)
-    _store_ticket(ticket)
-    _write_selfaware_report(f"{ticket_id}", ticket)
+    meta_flags = ticket.get("meta") if isinstance(ticket.get("meta"), dict) else {}
+    if not (meta_flags.get("do_not_write_sql") or meta_flags.get("do_not_persist") or meta_flags.get("do_not_learn")):
+        _store_ticket(ticket)
+        _write_selfaware_report(f"{ticket_id}", ticket)
     return ticket
 
 
@@ -3279,6 +3559,8 @@ def build_verified_artifact_package(ticket: Dict[str, Any], *, claim: str = "", 
         "artifact_value": _json_safe(artifact_value),
         "artifact_text": artifact_text,
         "artifact_hash": artifact_hash,
+        "thermal_sensor_binding": ticket.get("thermal_sensor_binding") if kind == "temperature" else {},
+        "fact_target_component": ((ticket.get("thermal_sensor_binding") or {}).get("requested_component") if isinstance(ticket.get("thermal_sensor_binding"), dict) else ticket.get("target")),
         "claim": _safe_str(claim or ticket.get("claim") or "", MAX_CLAIM_CHARS),
         "source_ticket_id": ticket.get("ticket_id"),
         "approved_fact": True,

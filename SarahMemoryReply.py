@@ -821,6 +821,39 @@ def _sm_strip_selfaware_artifact_text(text: str, kind: str = "") -> str:
     return value.strip()
 
 
+def _sm_format_thermal_artifact_response(user_text: str, package: Dict[str, Any], artifact_text: str) -> Optional[str]:
+    try:
+        pkg = package if isinstance(package, dict) else {}
+        value = pkg.get("artifact_value") if isinstance(pkg.get("artifact_value"), dict) else {}
+        binding = pkg.get("thermal_sensor_binding") if isinstance(pkg.get("thermal_sensor_binding"), dict) else {}
+        if not value and binding:
+            value = binding
+        if not isinstance(value, dict) or not value.get("thermal_case"):
+            return None
+        selected = value.get("selected_reading") if isinstance(value.get("selected_reading"), dict) else {}
+        component = str(value.get("requested_component") or selected.get("component") or "body_thermal").replace("_", " ")
+        temp = selected.get("temperature_c")
+        source_type = str(selected.get("source_type") or "").replace("_", " ")
+        status = str(value.get("sensor_binding_status") or "unavailable").replace("_", " ")
+        if temp not in (None, ""):
+            if component == "cpu" and "motherboard" in source_type:
+                return f"I do not currently have a direct CPU temperature reading from a CPU thermal probe. This CPU is verified on my motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
+            if component == "gpu":
+                return f"My GPU temperature is currently {temp}°C."
+            if component == "motherboard":
+                return f"My motherboard-related temperature reading is currently {temp}°C."
+            return f"My currently verified {component} temperature is {temp}°C."
+        if component == "cpu":
+            related = value.get("related_readings") if isinstance(value.get("related_readings"), dict) else {}
+            gpu_temp = related.get("gpu_temp_c")
+            if gpu_temp not in (None, ""):
+                return f"I do not currently have a verified CPU temperature reading. The related live thermal reading I can verify is GPU temperature at {gpu_temp}°C."
+            return "I do not currently have a verified CPU temperature reading. Direct CPU sensor visibility is unavailable, and no mapped motherboard CPU-related thermal sensor has been approved yet."
+        return f"I do not currently have a verified {component} temperature reading. Sensor binding status: {status}."
+    except Exception:
+        return None
+
+
 def present_verified_artifact_answer(user_text: str, package: Dict[str, Any], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Presentation boundary for volatile SelfAware hardware/body artifacts."""
     meta = dict(meta or {})
@@ -834,6 +867,8 @@ def present_verified_artifact_answer(user_text: str, package: Dict[str, Any], me
     court = pkg.get("evidence_court") if isinstance(pkg.get("evidence_court"), dict) else {}
     if wants_court:
         response = f"SelfAware verified this {kind.replace('_', ' ')} at {court.get('quorum') or 'unknown quorum'} quorum with {court.get('confidence') or 'unknown'} confidence: {artifact_text}."
+    elif kind == "temperature":
+        response = _sm_format_thermal_artifact_response(user_text, pkg, artifact_text) or f"My currently verified thermal result is: {artifact_text}."
     elif kind == "cpu":
         article = "an" if artifact_text[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
         response = f"I currently have {article} {artifact_text}."

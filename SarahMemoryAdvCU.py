@@ -1041,6 +1041,13 @@ def _looks_like_device_query(text: str) -> bool:
         "drive space",
         "storage",
         "cpu usage",
+        "cpu temp",
+        "cpu temperature",
+        "gpu temp",
+        "gpu temperature",
+        "thermal",
+        "temperature",
+        "temp",
         "cpu",
         "ram",
         "memory usage",
@@ -2994,15 +3001,35 @@ def classify_chat_domain(text: str, meta: Optional[Dict[str, Any]] = None) -> Di
         "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi", "ethernet",
         "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
     )
-    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
-    is_selfaware = any(k in norm for k in hardware_terms) and any(k in norm for k in self_scope_terms)
+    self_scope_terms = ("my", "your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    hardware_self_implied = any(k in norm for k in (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "drive", "disk", "storage", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    ))
+    is_selfaware = any(k in norm for k in hardware_terms) and (any(k in norm for k in self_scope_terms) or hardware_self_implied)
     is_identity = (not is_selfaware) and bool(re.search(r"\b(what\s+(?:is|'s)\s+your\s+name|who\s+are\s+you|your\s+name|what\s+version|who\s+(?:made|created|built|designed|engineered|developed)\s+you|creator)\b", norm))
     fact_kind = ""
+    fact_target_component = ""
     if is_selfaware:
-        if "gpu" in norm or "graphics" in norm:
-            fact_kind = "gpu"
+        thermal = "temp" in norm or "temperature" in norm or "thermal" in norm or "hot" in norm
+        if thermal and ("cpu" in norm or "processor" in norm):
+            fact_kind = "temperature"; fact_target_component = "cpu"
+        elif thermal and ("gpu" in norm or "graphics" in norm):
+            fact_kind = "temperature"; fact_target_component = "gpu"
+        elif thermal and ("motherboard" in norm or "mainboard" in norm or "baseboard" in norm or "board" in norm):
+            fact_kind = "temperature"; fact_target_component = "motherboard"
+        elif thermal and ("drive" in norm or "disk" in norm or "storage" in norm or "ssd" in norm or "hdd" in norm or "nvme" in norm):
+            fact_kind = "temperature"; fact_target_component = "drive"
+        elif thermal and ("battery" in norm):
+            fact_kind = "temperature"; fact_target_component = "battery"
+        elif thermal and ("motor" in norm or "servo" in norm or "actuator" in norm or "controller" in norm):
+            fact_kind = "temperature"; fact_target_component = "motor_controller"
+        elif thermal and ("ambient" in norm or "room" in norm or "environment" in norm):
+            fact_kind = "temperature"; fact_target_component = "ambient"
+        elif "gpu" in norm or "graphics" in norm:
+            fact_kind = "gpu"; fact_target_component = "gpu"
         elif "cpu" in norm or "processor" in norm:
-            fact_kind = "temperature" if "temp" in norm or "temperature" in norm else "cpu"
+            fact_kind = "cpu"; fact_target_component = "cpu"
         elif "motherboard" in norm or "mainboard" in norm or "baseboard" in norm:
             fact_kind = "motherboard"
         elif "ram" in norm or "memory" in norm:
@@ -3019,6 +3046,9 @@ def classify_chat_domain(text: str, meta: Optional[Dict[str, Any]] = None) -> Di
         "domain": domain,
         "intent": "hardware_fact" if is_selfaware else ("identity_query" if is_identity else advcu_intent),
         "fact_kind": fact_kind,
+        "fact_target_component": fact_target_component,
+        "requested_metric": "temperature" if fact_kind == "temperature" else "",
+        "requires_sensor_binding": bool(fact_kind == "temperature"),
         "addressed_bot": addressed,
         "requires_evidence_court": bool(is_selfaware),
         "source": "SarahMemoryAdvCU.classify_chat_domain",

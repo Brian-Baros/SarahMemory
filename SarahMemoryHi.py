@@ -455,6 +455,7 @@ def _build_boot_environment_snapshot(refresh_reason: str = "boot") -> Dict[str, 
     bluetooth = _detect_bluetooth_items()
     npu = _detect_npu_items()
     driver_readiness = _build_b_level_driver_readiness_snapshot_uncached()
+    thermal_sensors = get_thermal_info() or {}
 
     root_path = None
     try:
@@ -474,6 +475,21 @@ def _build_boot_environment_snapshot(refresh_reason: str = "boot") -> Dict[str, 
         "gpu_temp_c": gpu.get("temperature_c"),
         "cpu_temp_c": None,
     }
+    try:
+        # Cross-platform best-effort: do not assume Windows/WMI.
+        for group, entries in (thermal_sensors or {}).items():
+            for entry in entries or []:
+                label = str((entry or {}).get("label") or "")
+                low = (str(group) + " " + label).lower()
+                if any(k in low for k in ("coretemp", "k10temp", "cpu package", "package id", "tctl", "tdie", "cpu", "socket", "cputin")):
+                    cur = (entry or {}).get("current")
+                    if cur not in (None, "", "N/A"):
+                        model_metrics["cpu_temp_c"] = float(cur)
+                        raise StopIteration
+    except StopIteration:
+        pass
+    except Exception:
+        pass
     try:
         disk_for_root = shutil.disk_usage(root_path or os.getcwd())
         model_metrics["disk_total_gb"] = float(disk_for_root.total) / (1024 ** 3)
@@ -514,6 +530,7 @@ def _build_boot_environment_snapshot(refresh_reason: str = "boot") -> Dict[str, 
             "cpu": cpu,
             "ram": ram,
             "gpu": gpu,
+            "thermal_sensors": thermal_sensors,
             "storage": storage,
             "network_adapters": network,
             "audio_devices": audio,

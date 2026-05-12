@@ -196,6 +196,36 @@ def _sm_is_selfaware_fact_question(text: str) -> bool:
     return True
 
 
+def _sm_selfaware_thermal_target_component(text: str, kind: str = "", target: str = "") -> str:
+    """Classify the physical component for SelfAware thermal questions.
+
+    Backend-only question targeting: proof still belongs to appself.py and the
+    Cognitive-Triforce/SMGET appeals lane.
+    """
+    t = (text or "").strip().lower()
+    tg = (target or "").strip().lower()
+    k = (kind or "").strip().lower()
+    if k != "temperature" and not any(x in t for x in ("temp", "temperature", "thermal", "overheat", "heat")):
+        return ""
+    if tg in {"cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard", "ambient", "battery", "drive", "storage", "motor", "controller", "body_thermal"}:
+        return {"processor": "cpu", "graphics": "gpu", "mainboard": "motherboard", "baseboard": "motherboard", "controller": "motor_controller"}.get(tg, tg)
+    if any(x in t for x in ("cpu", "processor")):
+        return "cpu"
+    if any(x in t for x in ("gpu", "graphics", "video card", "nvidia", "radeon")):
+        return "gpu"
+    if any(x in t for x in ("motherboard", "mainboard", "baseboard", "system board", "board temp", "chipset", "vrm")):
+        return "motherboard"
+    if any(x in t for x in ("drive", "disk", "ssd", "hdd", "nvme", "storage")):
+        return "drive"
+    if any(x in t for x in ("battery", "battery pack")):
+        return "battery"
+    if any(x in t for x in ("motor", "servo", "actuator", "controller")):
+        return "motor_controller"
+    if any(x in t for x in ("ambient", "room", "environment")):
+        return "ambient"
+    return "body_thermal"
+
+
 def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     t = (text or "").strip().lower()
     target = ""
@@ -203,10 +233,21 @@ def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     if m:
         target = m.group(1).upper() + ":"
 
+    # V10/V9E: thermal requests stay generalized by kind but preserve component.
     if any(k in t for k in ("cpu temp", "processor temp", "cpu temperature", "processor temperature")):
-        return "temperature", target
-    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature")):
-        return "temperature", target
+        return "temperature", "cpu"
+    if any(k in t for k in ("gpu temp", "gpu temperature", "graphics temp", "graphics temperature", "video card temp", "video card temperature")):
+        return "temperature", "gpu"
+    if any(k in t for k in ("motherboard temp", "motherboard temperature", "mainboard temp", "baseboard temp", "board temp", "vrm temp", "chipset temp")):
+        return "temperature", "motherboard"
+    if any(k in t for k in ("drive temp", "disk temp", "ssd temp", "hdd temp", "nvme temp", "storage temp")):
+        return "temperature", target or "drive"
+    if any(k in t for k in ("battery temp", "battery temperature")):
+        return "temperature", "battery"
+    if any(k in t for k in ("motor temp", "servo temp", "controller temp", "actuator temp")):
+        return "temperature", "motor_controller"
+    if any(k in t for k in ("temperature", "temp", "thermal", "overheating", "overheat")):
+        return "temperature", target or _sm_selfaware_thermal_target_component(text, "temperature", target)
     if any(k in t for k in ("fan", "rpm")):
         return "fan_speed", target
     if any(k in t for k in ("gpu", "graphics", "video card")):
@@ -232,6 +273,7 @@ def _sm_selfaware_fact_kind_and_target(text: str) -> tuple[str, str]:
     if any(k in t for k in ("network", "ethernet", "wifi", "wi-fi", "adapter", "ip address")):
         return "network_card", target
     return "general_system_fact", target
+
 
 
 def _sm_compact_json_value(value, *, max_chars: int = 1600) -> str:
@@ -434,6 +476,7 @@ def _sm_build_chat_classification_packet(text: str, payload: dict | None = None,
     addressed, addressed_name = _sm_addressed_bot(text)
     selfaware = _sm_is_selfaware_fact_question(text)
     kind, target = _sm_selfaware_fact_kind_and_target(text) if selfaware else ("", "")
+    target_component = _sm_selfaware_thermal_target_component(text, kind, target) if kind == "temperature" else ""
     identity_intent = _sm_is_identity_intent(text)
     advcu_intent = ""
     try:
@@ -445,7 +488,7 @@ def _sm_build_chat_classification_packet(text: str, payload: dict | None = None,
         advcu_intent = ""
     if selfaware:
         domain = "selfaware_body"
-        intent = "hardware_status" if kind in {"temperature", "fan_speed", "disk_space"} else "hardware_fact"
+        intent = "hardware_temperature" if kind == "temperature" else ("hardware_status" if kind in {"fan_speed", "disk_space"} else "hardware_fact")
         route = "appself.verified_artifact"
         reason = "Live hardware/body-map fact requires SelfAware Evidence Court verification."
     elif identity_intent:
@@ -468,12 +511,15 @@ def _sm_build_chat_classification_packet(text: str, payload: dict | None = None,
         "intent": intent,
         "fact_kind": kind,
         "fact_target": target,
+        "fact_target_component": target_component,
+        "requested_metric": "temperature" if kind == "temperature" else "",
+        "requires_sensor_binding": bool(kind == "temperature"),
         "requires_evidence_court": bool(domain == "selfaware_body"),
         "requires_identity_profile": bool(domain == "identity"),
         "requires_device_manager": False,
         "requires_model_assist": bool(domain not in {"selfaware_body"}),
         "classification_sources": {
-            "app_static": {"identity_intent": identity_intent, "selfaware_body": selfaware, "fact_kind": kind},
+            "app_static": {"identity_intent": identity_intent, "selfaware_body": selfaware, "fact_kind": kind, "fact_target_component": target_component},
             "advcu": {"intent": advcu_intent},
             "ingress": ingress_route,
         },
@@ -521,6 +567,23 @@ def _sm_compose_verified_artifact_fallback_reply(claim: str, kind: str, artifact
     wants_court = any(k in low for k in ("evidence court", "court result", "quorum", "confidence", "verified fact", "show evidence", "proof"))
     if wants_court:
         return f"SelfAware verified this {kind.replace('_', ' ')} at {ticket.get('quorum') or 'unknown quorum'} quorum with {ticket.get('confidence') or 'unknown'} confidence: {artifact_text}."
+    if kind == "temperature":
+        try:
+            pv = ticket.get("presentation_value") if isinstance(ticket, dict) else None
+            if isinstance(pv, dict):
+                selected = pv.get("selected_reading") if isinstance(pv.get("selected_reading"), dict) else {}
+                component = str(pv.get("requested_component") or selected.get("component") or "body").replace("_", " ")
+                temp = selected.get("temperature_c")
+                source_label = str(selected.get("source_label") or selected.get("source_type") or "verified sensor").replace("_", " ")
+                if temp not in (None, ""):
+                    if component == "cpu" and "motherboard" in source_label:
+                        return f"I do not currently have a direct CPU thermal-probe reading. The CPU is verified on this motherboard, and the motherboard exposes a CPU-related thermal sensor. Based on that verified board sensor, my CPU temperature is currently {temp}°C."
+                    return f"My currently verified {component} temperature is {temp}°C via {source_label}."
+                status = str(pv.get("sensor_binding_status") or "unavailable").replace("_", " ")
+                return f"I do not currently have a verified {component} temperature reading. Sensor binding status: {status}."
+        except Exception:
+            pass
+        return f"My currently verified thermal result is: {artifact_text}."
     if kind == "cpu":
         article = "an" if artifact_text[:1].lower() in {"a", "e", "i", "o", "u"} else "a"
         return f"I currently have {article} {artifact_text}."
@@ -748,6 +811,8 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat", classif
             return None
         kind = str(cp.get("fact_kind") or "").strip() or _sm_selfaware_fact_kind_and_target(text)[0]
         target = str(cp.get("fact_target") or "").strip() or _sm_selfaware_fact_kind_and_target(text)[1]
+        if kind == "temperature" and not target:
+            target = str(cp.get("fact_target_component") or "").strip()
     else:
         if not _sm_is_selfaware_fact_question(text):
             return None
@@ -762,6 +827,7 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat", classif
             "cycle_id": cycle_id,
             "bridge": "runtime_appself_artifact",
             "chat_classification_packet": cp,
+            "target_component": str(cp.get("fact_target_component") or (target if kind == "temperature" else "")),
             "contract": _SM_V9C_CONTRACT,
             "do_not_write_sql": True,
             "do_not_persist": True,

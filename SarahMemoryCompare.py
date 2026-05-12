@@ -216,6 +216,18 @@ def compare_verified_artifact_package(user_text: str, generated_response: str, p
     courtroom_leak = bool(re.search(r"\bVerified\s+SelfAware\s+fact\b", response_text, re.I)) and not wants_court
     privacy_leak = bool(re.search(r"\b(?:[0-9a-f]{2}:){5}[0-9a-f]{2}\b|\b\d{1,3}(?:\.\d{1,3}){3}\b", response_text, re.I))
     artifact_preserved = bool(artifact_text and artifact_text.lower() in response_text.lower())
+    try:
+        if not artifact_preserved and str((package or {}).get("artifact_kind") or "").lower() == "temperature":
+            av = (package or {}).get("artifact_value") if isinstance((package or {}).get("artifact_value"), dict) else {}
+            selected = av.get("selected_reading") if isinstance(av.get("selected_reading"), dict) else {}
+            temp = selected.get("temperature_c")
+            comp = str(av.get("requested_component") or selected.get("component") or "").lower().replace("_", " ")
+            if temp not in (None, "") and str(temp).lower() in response_text.lower() and (not comp or comp in response_text.lower()):
+                artifact_preserved = True
+            elif temp in (None, "") and comp and comp in response_text.lower() and any(x in response_text.lower() for x in ("not currently", "unavailable", "not have", "no verified")):
+                artifact_preserved = True
+    except Exception:
+        pass
     accepted = bool(artifact_preserved and not courtroom_leak and not privacy_leak)
     return {
         "ok": True,

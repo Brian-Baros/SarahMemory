@@ -1595,8 +1595,12 @@ def build_chat_classification_skeleton(text: str, context_packet: Optional[Dict[
         "ram", "memory", "disk", "drive", "storage", "network adapter", "wifi", "wi-fi",
         "ethernet", "temperature", "temp", "fan", "rpm", "sata", "usb", "nvme", "pcie",
     )
-    self_scope_terms = ("your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
-    is_selfaware = any(k in normalized for k in hardware_terms) and any(k in normalized for k in self_scope_terms)
+    self_scope_terms = ("my", "your", "you", "system", "runtime", "body map", "body-map", "computer", "machine", "pc")
+    hardware_self_implied = any(k in normalized for k in (
+        "cpu", "processor", "gpu", "graphics", "motherboard", "mainboard", "baseboard",
+        "ram", "memory", "drive", "disk", "storage", "fan", "rpm", "sata", "usb", "nvme", "pcie",
+    ))
+    is_selfaware = any(k in normalized for k in hardware_terms) and (any(k in normalized for k in self_scope_terms) or hardware_self_implied)
     identity_patterns = (
         r"\bwhat\s+(?:is|'s)\s+your\s+name\b",
         r"\bwho\s+are\s+you\b",
@@ -1606,11 +1610,27 @@ def build_chat_classification_skeleton(text: str, context_packet: Optional[Dict[
     )
     is_identity = (not is_selfaware) and any(re.search(p, normalized) for p in identity_patterns)
     fact_kind = ""
+    fact_target_component = ""
     if is_selfaware:
-        if "gpu" in normalized or "graphics" in normalized:
-            fact_kind = "gpu"
+        thermal = "temp" in normalized or "temperature" in normalized or "thermal" in normalized or "hot" in normalized
+        if thermal and ("cpu" in normalized or "processor" in normalized):
+            fact_kind = "temperature"; fact_target_component = "cpu"
+        elif thermal and ("gpu" in normalized or "graphics" in normalized):
+            fact_kind = "temperature"; fact_target_component = "gpu"
+        elif thermal and ("motherboard" in normalized or "mainboard" in normalized or "baseboard" in normalized or "board" in normalized):
+            fact_kind = "temperature"; fact_target_component = "motherboard"
+        elif thermal and ("drive" in normalized or "disk" in normalized or "storage" in normalized or "ssd" in normalized or "hdd" in normalized or "nvme" in normalized):
+            fact_kind = "temperature"; fact_target_component = "drive"
+        elif thermal and ("battery" in normalized):
+            fact_kind = "temperature"; fact_target_component = "battery"
+        elif thermal and ("motor" in normalized or "servo" in normalized or "actuator" in normalized or "controller" in normalized):
+            fact_kind = "temperature"; fact_target_component = "motor_controller"
+        elif thermal and ("ambient" in normalized or "room" in normalized or "environment" in normalized):
+            fact_kind = "temperature"; fact_target_component = "ambient"
+        elif "gpu" in normalized or "graphics" in normalized:
+            fact_kind = "gpu"; fact_target_component = "gpu"
         elif "cpu" in normalized or "processor" in normalized:
-            fact_kind = "temperature" if "temp" in normalized or "temperature" in normalized else "cpu"
+            fact_kind = "cpu"; fact_target_component = "cpu"
         elif "motherboard" in normalized or "mainboard" in normalized or "baseboard" in normalized:
             fact_kind = "motherboard"
         elif "ram" in normalized or "memory" in normalized:
@@ -1632,6 +1652,9 @@ def build_chat_classification_skeleton(text: str, context_packet: Optional[Dict[
         "domain_hint": domain,
         "intent_hint": "hardware_fact" if is_selfaware else ("identity_query" if is_identity else "general"),
         "fact_kind_hint": fact_kind,
+        "fact_target_component": fact_target_component,
+        "requested_metric": "temperature" if fact_kind == "temperature" else "",
+        "requires_sensor_binding": bool(fact_kind == "temperature"),
         "requires_evidence_court": bool(is_selfaware),
         "context_packet_seen": bool(isinstance(context_packet, dict)),
     }
