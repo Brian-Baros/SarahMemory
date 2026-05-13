@@ -117,7 +117,7 @@ _FOLLOWUP_MAX_ITEMS = 256
 
 YES_RE = re.compile(r"^(yes|yeah|yep|yup|sure|ok|okay|please|do it|go on|continue|tell me more)\b", re.I)
 NO_RE = re.compile(r"^(no|nope|nah|never mind|nevermind|stop|cancel|forget it|no thanks)\b", re.I)
-IDENTITY_RE = re.compile(r"\b(what\s+is\s+your\s+name|who\s+are\s+you|who\s+(made|created|built|developed|engineered|designed)\s+you)\b", re.I)
+IDENTITY_RE = re.compile(r"\b(what\s+is\s+your\s+name|who\s+are\s+you|your\s+name|what\s+version\s+are\s+you|your\s+version|sarahmemory\s+version|server\s+version|who\s+(made|created|built|developed|engineered|designed)\s+you|creator|softdev0|brian\s+lee\s+baros)\b", re.I)
 BAD_UI_TRAIL_RE = re.compile(r"(?:\s*,?\s*\[\s*\]\s*)+$")
 BAD_DIG_DEEPER_RE = re.compile(r"\n?\s*[•*-]?\s*Should\s+I\s+dig\s+deeper\s+on\s+that\?\s*(?:\[\s*\])?\s*$", re.I)
 
@@ -787,7 +787,10 @@ def _sm_creative_artifacts_from_meta(meta: Dict[str, Any]) -> List[Dict[str, Any
 _MATH_ALLOWED = set("0123456789+-*/(). %")
 
 def _looks_like_math(text: str) -> bool:
-    t = (text or "").replace("what is", "").replace("=", "").strip()
+    t = (text or "").strip()
+    t = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", t, flags=re.I).strip()
+    t = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", t, flags=re.I).strip()
+    t = t.replace("=", "").strip().rstrip("?")
     if not t:
         return False
     return all(c in _MATH_ALLOWED for c in t)
@@ -798,7 +801,10 @@ def _eval_safe_math(expr: str) -> Optional[str]:
     No names, no functions, no pow operator to avoid surprises.
     """
     try:
-        clean = expr.replace("what is", "").replace("=", "").strip()
+        clean = (expr or "").strip()
+        clean = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", clean, flags=re.I).strip()
+        clean = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", clean, flags=re.I).strip()
+        clean = clean.replace("=", "").strip().rstrip("?")
         if not clean or not _looks_like_math(clean):
             return None
         # Disallow exponent to keep it modest
@@ -1640,8 +1646,17 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
     # ---------------------------------------------------------------------
     # (1) Identity / greeting
     norm = re.sub(r"[^\w\s]", "", (text_in or "").lower()).strip()
-    if norm in ("who are you", "what is your name"):
-        ans = get_identity_response(text_in)  # canonical identity line
+    if IDENTITY_RE.search(text_in or "") or norm in ("who are you", "what is your name"):
+        low_ident = (text_in or "").strip().lower()
+        if "version" in low_ident:
+            try:
+                ans = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0')}."
+            except Exception:
+                ans = "I am Sarah — your SarahMemory AiOS companion. Version: 8.0.0."
+        elif re.search(r"\b(who\s+(made|created|built|developed|engineered|designed)\s+you|creator|engineer|designer)\b", low_ident):
+            ans = "I was created by Brian Lee Baros (SOFTDEV0 LLC) as part of SarahMemory AiOS."
+        else:
+            ans = get_identity_response(text_in)  # canonical identity line
         meta["intent"] = "identity"
         out = _finalize_text(ans, meta)       # still run through personality
         bundle = ReplyBundle(out, meta=meta).to_dict()

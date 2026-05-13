@@ -521,7 +521,13 @@ def _classify_intent(text: str) -> str:
         return "chemistry"
     if _has_phrase("optimize", "speed up", "performance", "refactor", "bug", "error", "traceback"):
         return "engineering"
-    if _has_phrase("who are you", "version", "creator", "brian", "softdev0"):
+    if _has_phrase(
+        "who are you", "what is your name", "your name",
+        "who made you", "who created you", "who built you",
+        "who designed you", "who engineered you",
+        "creator", "brian", "softdev0", "what version are you",
+        "your version", "sarahmemory version", "server version"
+    ):
         return "identity"
     if _has_phrase("research", "look up", "browse", "latest", "verify", "sources", "citation"):
         return "research"
@@ -901,25 +907,66 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
     """Attempt deterministic evaluation.
 
     Priority:
-      1) SarahMemoryLogicCalc (if available and registry-approved)
-      2) Safe fallback parser for basic arithmetic + sqrt when LogicCalc is unavailable
+      1) SarahMemoryLogicCalc.route(...) using the exported singleton or class
+      2) SarahMemoryLogicCalc answer/solve aliases if present
+      3) Safe fallback parser for basic arithmetic + sqrt
     """
     raw = (text or "").strip()
     if not raw:
         return None
 
-    # Primary: project engine
+    def _logiccalc_payload_to_neuron(out: Any, engine_name: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(out, dict):
+            return None
+        if not bool(out.get("ok")):
+            return None
+
+        kind = str(out.get("canonical_type") or out.get("kind") or "").strip().lower()
+        allowed_kinds = {
+            "calc", "convert", "solve", "vector", "tensor", "calculus",
+            "chemistry", "nuclear", "constants",
+        }
+        # LogicCalc intentionally has an explain fallback for general language.
+        # Neuron Tier-0 must not accept that as a math/science truth answer.
+        if kind not in allowed_kinds:
+            return None
+
+        value = out.get("canonical_answer")
+        if value is None:
+            value = out.get("value")
+        if value is None:
+            value = out.get("raw_answer")
+        text_out = str(out.get("presentation_hint") or out.get("text") or "").strip()
+        if value in (None, "") and not text_out:
+            return None
+
+        meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+        expr = meta.get("expression") or meta.get("formula") or meta.get("equation")
+        return {
+            "ok": True,
+            "engine": engine_name,
+            "expr": expr,
+            "value": value,
+            "text": text_out,
+            "meta": {**meta, "normalized_from": raw, "intent": "calc" if kind == "calc" else kind},
+            "meaning": out.get("meaning"),
+            "canonical_type": kind,
+            "deterministic": True,
+        }
+
+    # Primary: project engine.  Current SarahMemoryLogicCalc exports LogicCalc as
+    # a singleton instance, not a callable class.  Support both contracts without
+    # changing the public module name.
     if _LogicCalc and _core_module_allowed("SarahMemoryLogicCalc", "reasoning", _LogicCalc):
         try:
-            engine = _LogicCalc()
-            if hasattr(engine, "answer"):
-                out = engine.answer(raw)  # type: ignore
-                if out:
-                    return out
-            if hasattr(engine, "solve"):
-                out = engine.solve(raw)  # type: ignore
-                if out:
-                    return out
+            engine = _LogicCalc() if isinstance(_LogicCalc, type) else _LogicCalc
+            for method_name in ("route", "answer", "solve"):
+                fn = getattr(engine, method_name, None)
+                if callable(fn):
+                    out = fn(raw)  # type: ignore[misc]
+                    normalized = _logiccalc_payload_to_neuron(out, f"LogicCalc.{method_name}")
+                    if normalized:
+                        return normalized
         except Exception:
             pass
 
@@ -931,7 +978,10 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
         t = raw.lower()
 
         # Normalize common phrasing into an expression
-        t = t.replace("what is", "").replace("whats", "").replace("what\'s", "").strip()
+        t = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", t, flags=re.I).strip()
+        t = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", t, flags=re.I).strip()
+        t = t.replace("=", "").strip()
+        t = re.sub(r"\?$", "", t).strip()
         t = re.sub(r"^\s*the\s+", "", t)
         t = t.replace("the sum of", "").replace("sum of", "")
         t = t.replace("square root of", "sqrt(")
@@ -977,7 +1027,8 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
         # Replace plus/minus/times/divided
         t = t.replace(" plus ", " + ").replace(" minus ", " - ").replace(" times ", " * ")
         t = t.replace(" multiplied by ", " * ").replace(" x ", " * ")
-        t = t.replace(" divided by ", " / ").replace(" over ", " / ")
+        t = t.replace(" divided by ", " / ").replace(" divide by ", " / ")
+        t = t.replace(" over ", " / ")
 
         # Normalize digit scale phrases (e.g., '1 thousand' -> '(1*1000)')
         t = re.sub(r"\b(\d+(?:\.\d+)?)\s+(thousand|k)\b", r"(\1*1000)", t)
@@ -1300,6 +1351,23 @@ def _try_websym(text: str) -> Optional[str]:
                 out = fn(text)
                 if isinstance(out, str) and out.strip():
                     return out
+        synth = getattr(_WebSYM, "WebSemanticSynthesizer", None)
+        if synth is not None:
+            is_math = getattr(synth, "is_math_query", None)
+            calculator = getattr(synth, "sarah_calculator", None)
+            standalone_is_math = getattr(_WebSYM, "is_math_expression", None)
+            q = str(text or "").strip()
+            if callable(calculator) and q:
+                allowed = True
+                if callable(is_math):
+                    allowed = bool(is_math(q))
+                elif callable(standalone_is_math):
+                    allowed = bool(standalone_is_math(q))
+                if allowed:
+                    out = calculator(q, original_query=q)
+                    out = str(out or "").strip()
+                    if out:
+                        return out
     except Exception:
         return None
     return None
@@ -2739,12 +2807,38 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
         adv_intent = str(adv.get("intent") or "").strip()
         adv_conf = adv.get("confidence")
         if adv_intent and isinstance(adv_conf, (int, float)) and float(adv_conf) >= 0.55:
-            intent = adv_intent.lower()
+            adv_intent_l = adv_intent.lower()
+            if adv_intent_l in {"identity", "identity_query"}:
+                intent = "identity"
+            elif intent == "identity" and adv_intent_l in {"question", "general", "chat"}:
+                pass
+            else:
+                intent = adv_intent_l
     except Exception:
         pass
 
     inp.meta["intent"] = intent
     trace["intent"] = intent
+
+    if intent == "identity":
+        low_ident = (inp.text or "").strip().lower()
+        if "version" in low_ident:
+            reply = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0') if config else '8.0.0'}."
+        elif any(k in low_ident for k in ("who made you", "who created you", "creator", "who built you", "who designed you", "designer", "engineer", "who engineered you")):
+            reply = "I was created by Brian Lee Baros (SOFTDEV0 LLC) as part of SarahMemory AiOS."
+        else:
+            reply = "I am Sarah — your SarahMemory AiOS companion."
+        _trace_primary_lane(trace, "answer", "identity")
+        trace["tiers"].append({"tier": 0, "engine": "IdentityGuard", "ok": True})
+        return NeuronResult(
+            ok=True,
+            reply=reply,
+            confidence=0.99,
+            intent="identity",
+            source="identity_guard",
+            artifacts={"identity": {"name": "Sarah", "platform": "SarahMemory AiOS", "creator": "Brian Lee Baros", "organization": "SOFTDEV0 LLC"}},
+            trace=trace,
+        )
 
     if str(ingress_route.get("route_id") or "").startswith("research.weather") and bool(allowed_tiers.get("tier2", True)) and not inp.meta.get("offline"):
         research_data = _try_research(inp.text)
