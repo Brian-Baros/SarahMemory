@@ -191,6 +191,8 @@ def _sm_v9g_component_from_text(norm: str) -> str:
         return "cpu"
     if _sm_v9g_contains_any(norm, ("gpu", "graphics", "video card", "nvidia", "radeon")):
         return "gpu"
+    if _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "uvc", "imaging device", "video capture", "vision device")):
+        return "camera_vision"
     if _sm_v9g_contains_any(norm, ("motherboard", "mainboard", "baseboard", "system board", "board", "chipset", "vrm")):
         return "motherboard"
     if _sm_v9g_contains_any(norm, ("drive", "disk", "disc", "storage", "ssd", "hdd", "nvme")):
@@ -239,6 +241,11 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
         requested_metric = "body_map"
         fact_kind = "body_map"
         answer_shape = "summary"
+    elif _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "camera device", "camera devices", "vision capability", "vision capabilities", "vision system", "vision hardware", "video capture", "uvc", "imaging device")):
+        requested_metric = "camera_hardware" if _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "camera device", "camera devices", "video capture", "uvc", "imaging device")) else "vision_capabilities"
+        fact_kind = "camera" if requested_metric == "camera_hardware" else "vision"
+        target = "webcam" if _sm_v9g_contains_any(norm, ("webcam", "web cam")) else (component or target or "camera_vision")
+        answer_shape = "direct_answer"
     elif _sm_v9g_contains_any(norm, ("network adapter", "network card", "ethernet", "wi-fi", "wifi", "lan", "bluetooth network")):
         requested_metric = "connectivity" if ("ethernet" in norm or "wi-fi" in norm or "wifi" in norm) and re.search(r"\bare\s+you\s+connected|\bconnected\b", norm) else "network_adapters"
         fact_kind = "network"
@@ -275,6 +282,7 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
         _sm_v9g_contains_any(norm, (
             "my ", "your ", "you using", "am i using", "are you using", "system", "machine", "computer", "pc",
             "runtime", "body map", "body-map", "hardware", "motherboard", "cpu", "processor", "gpu", "graphics",
+            "webcam", "web cam", "camera", "vision capability", "vision capabilities", "vision hardware", "video capture", "uvc",
             "ram", "memory", "fan", "rpm", "temperature", "temp", "thermal", "network adapter", "ethernet", "wi-fi",
             "python version", "node name", "hostname", "bios", "uefi", "firmware",
         ))
@@ -362,6 +370,8 @@ def _sm_v9g_clean_denial(kind: str, claim: str, ticket: dict) -> str:
         return "I can identify the motherboard only if evidence is available, but I do not currently have a verified BIOS/UEFI version witness."
     if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
         return "I cannot verify the requested network hardware state from the current evidence packet."
+    if kind in {"vision", "camera", "webcam", "visual", "face", "object", "scene"}:
+        return "I cannot verify a physical webcam/camera device from the current evidence packet. Vision software capability may still be present, but I will not guess the camera hardware type."
     return f"I cannot verify that {kind.replace('_', ' ')} fact from the current evidence packet. I will not guess."
 
 
@@ -445,6 +455,18 @@ def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
             if direct:
                 return direct
             return str(presentation_text or f"My currently verified network adapter summary is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}")
+
+        if kind in {"vision", "camera", "webcam", "visual", "face", "object", "scene"}:
+            if presentation_text:
+                return presentation_text
+            vv = pv if isinstance(pv, dict) else value
+            if isinstance(vv, dict):
+                devices = vv.get("camera_devices") if isinstance(vv.get("camera_devices"), list) else []
+                caps = vv.get("capabilities") if isinstance(vv.get("capabilities"), list) else []
+                if devices:
+                    return "My verified webcam/camera hardware is: " + "; ".join(str(x) for x in devices[:6]) + (". Vision capabilities online: " + ", ".join(str(x) for x in caps[:8]) + "." if caps else ".")
+                return "I have SarahMemory vision software capability available" + (": " + ", ".join(str(x) for x in caps[:8]) if caps else "") + ", but I do not currently have a verified physical webcam device in the body map."
+            return f"My currently verified vision capability is: {_sm_compact_json_value(vv)}."
 
         if kind == "motherboard":
             return f"My currently verified motherboard is {_sm_compact_json_value(value)}."
@@ -2867,6 +2889,9 @@ def api_chat():
             neoskymatrix=neoskymatrix,
             developersmode=developersmode,
         )
+        chat_classification_packet = _sm_build_canonical_query_packet(text, payload=payload, context_packet=context_packet)
+        context_packet["chat_classification_packet"] = chat_classification_packet
+        context_packet.setdefault("meta", {})["chat_classification_packet"] = chat_classification_packet
         ingress_route = _sm_build_virtual_ingress_route(text, payload=payload, context_packet=context_packet)
         context_packet.setdefault("meta", {})["ingress_route"] = ingress_route
         context_packet["meta"]["proposed_action"] = _sm_proposed_action_from_ingress(ingress_route)

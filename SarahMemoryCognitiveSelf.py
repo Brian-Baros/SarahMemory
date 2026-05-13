@@ -188,6 +188,7 @@ _CAPABILITY_MODULES = {
     "action_lane": ["SarahMemoryNeuron", "SarahMemoryIntegration", "SarahMemoryAiFunctions", "SarahMemoryFilesystem"],
     "creative_lane": ["SarahMemoryCanvasStudio", "SarahMemoryVideoEditorCore", "SarahMemoryMusicGenerator", "SarahMemoryLyricsToSong"],
     "system_lane": ["SarahMemoryDiagnostics", "SarahMemoryGlobals", "SarahMemoryIntegration"],
+    "vision_lane": ["SarahMemoryFacialRecognition", "SarahMemorySOBJE"],
     "network_lane": ["SarahMemoryNetwork", "SarahMemoryResearch", "SarahMemoryAPI"],
     "presentation": ["SarahMemoryReply", "SarahMemoryVoice"],
 }
@@ -800,6 +801,7 @@ def _build_capability_map(context: Optional[Dict[str, Any]] = None) -> Dict[str,
         "action_lane": not status.public_web,
         "creative_lane": True,
         "system_lane": not status.public_web,
+        "vision_lane": True,
         "network_lane": (not status.local_only) and bool(getattr(config, "COGNITIVE_ONLINE_ENABLED", False)),
         "filesystem_mutation": not status.public_web and (status.neoskymatrix or status.developersmode),
         "command_execution": not status.public_web and (status.neoskymatrix or status.developersmode),
@@ -834,11 +836,26 @@ def _build_capability_map(context: Optional[Dict[str, Any]] = None) -> Dict[str,
     except Exception:
         pass
 
+    vision_hardware: Dict[str, Any] = {"camera_devices": [], "camera_count": 0, "hardware_camera_verified": False}
+    try:
+        body_map = _build_body_map()
+        env = body_map.get("runtime_environment") if isinstance(body_map.get("runtime_environment"), dict) else {}
+        body = env.get("body") if isinstance(env.get("body"), dict) else {}
+        cams = body.get("camera_devices") if isinstance(body.get("camera_devices"), list) else []
+        vision_hardware = {
+            "camera_devices": cams,
+            "camera_count": len(cams),
+            "hardware_camera_verified": bool(cams),
+        }
+    except Exception:
+        pass
+
     return {
         "lanes": lanes,
         "allowed": allowed,
         "blocked_reasons": blocked_reasons,
         "models": model_snapshot,
+        "vision_hardware": vision_hardware,
         "desktop_surface": _desktop_surface_status(),
         "system_flags": {
             "safe_mode": status.safe_mode,

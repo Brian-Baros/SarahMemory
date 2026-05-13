@@ -431,6 +431,7 @@ def _boot_environment_chat_facts(snapshot: Dict[str, Any]) -> Dict[str, str]:
     motherboard = str(body.get("motherboard") or "Unknown motherboard")
     gpu_name = str(gpu.get("name") or "No dedicated GPU detected")
     cpu_name = str(cpu.get("name") or "Unknown CPU")
+    camera_devices = body.get("camera_devices") if isinstance(body.get("camera_devices"), list) else []
     facts = {
         "cpu": cpu_name,
         "gpu": gpu_name,
@@ -438,6 +439,9 @@ def _boot_environment_chat_facts(snapshot: Dict[str, Any]) -> Dict[str, str]:
         "ram": f"{ram.get('total_gb', 'Unknown')} GB total, {ram.get('available_gb', 'Unknown')} GB available",
         "network_adapters": str(len(body.get("network_adapters") or [])),
         "storage_devices": str(len(body.get("storage") or [])),
+        "camera_devices": str(len(camera_devices)),
+        "webcam": "; ".join(str(x) for x in camera_devices[:3]) if camera_devices else "No verified physical webcam/camera device detected",
+        "vision_hardware": "; ".join(str(x) for x in camera_devices[:3]) if camera_devices else "No verified physical webcam/camera device detected",
     }
     return facts
 

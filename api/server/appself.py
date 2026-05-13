@@ -602,7 +602,7 @@ _SOFTWARE_KINDS = {"software", "application", "process", "window", "desktop_surf
 _BOOT_RUNTIME_KINDS = {"boot", "startup", "shutdown", "reboot", "runtime", "lifecycle", "server_state"}
 _NETWORK_KINDS = {"network", "sarahnet", "sync", "mesh", "rendezvous"}
 _REM_CODE_KINDS = {"rem", "rem_medium", "code", "patch", "self_evolution", "sandbox", "module_generation"}
-_VISION_KINDS = {"vision", "camera", "face", "object", "scene", "visual"}
+_VISION_KINDS = {"vision", "camera", "webcam", "camera_device", "camera_devices", "vision_capability", "vision_capabilities", "face", "object", "scene", "visual"}
 _ADAPTIVE_KINDS = {"adaptive", "emotion", "personality", "preference", "behavior"}
 _DRIVER_KINDS = {"driver", "drivers", "driver_stack", "device_driver", "body_capability", "body_capabilities", "hardware_capability"}
 
@@ -750,6 +750,14 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
             "network_card": "network_card",
             "network_adapter": "network_card",
             "nic": "network_card",
+            "camera": "camera",
+            "webcam": "camera",
+            "web_cam": "camera",
+            "camera_device": "camera",
+            "camera_devices": "camera",
+            "vision_capability": "vision",
+            "vision_capabilities": "vision",
+            "visual": "vision",
             "wifi": "wifi_card",
             "wi_fi": "wifi_card",
             "wireless": "wifi_card",
@@ -791,6 +799,8 @@ def _infer_fact_kind(claim: str, explicit_kind: str = "") -> str:
         return "motherboard"
     if any(k in c for k in ("fan", "rpm")):
         return "fan_speed"
+    if any(k in c for k in ("webcam", "web cam", "camera device", "camera devices", "what camera", "what type of camera", "what type of webcam", "vision capability", "vision capabilities", "vision hardware", "video capture", "uvc", "imaging device")):
+        return "camera" if any(x in c for x in ("webcam", "web cam", "camera", "uvc", "imaging device", "video capture")) else "vision"
     if any(k in c for k in ("gpu", "graphics", "video card", "vram")):
         return "gpu"
     if any(k in c for k in ("cpu", "processor")):
@@ -855,6 +865,17 @@ def _extract_target_from_claim(claim: str, kind: str) -> str:
     text = _safe_str(claim, MAX_CLAIM_CHARS)
     low = text.lower()
     k = _safe_str(kind, 80).lower()
+
+    if k in _VISION_KINDS:
+        if any(x in low for x in ("webcam", "web cam")):
+            return "webcam"
+        if any(x in low for x in ("camera", "uvc", "imaging device", "video capture")):
+            return "camera"
+        if any(x in low for x in ("face", "facial")):
+            return "face"
+        if any(x in low for x in ("object", "objects", "scene")):
+            return "scene"
+        return "camera_vision"
 
     if k == "temperature":
         # Preserve the requested body component so the thermal Evidence Court
@@ -1801,6 +1822,23 @@ def _select_snapshot_fact(snapshot: Dict[str, Any], kind: str, target: str = "")
         return body.get("ram") or chat_facts.get("ram") or {"ram_total_mb": model_metrics.get("ram_total_mb"), "ram_avail_mb": model_metrics.get("ram_avail_mb")}
     if kind in {"disk_space", "usb_label"}:
         return _select_from_storage(body.get("storage"), target)
+    if kind in _VISION_KINDS:
+        cameras = body.get("camera_devices") or chat_facts.get("camera_devices")
+        if isinstance(cameras, list) and cameras:
+            return {
+                "capability_class": "vision_environment",
+                "camera_devices": cameras,
+                "camera_count": len(cameras),
+                "hardware_camera_verified": True,
+                "source": "runtime_environment.body.camera_devices",
+            }
+        return {
+            "capability_class": "vision_environment",
+            "camera_devices": cameras if isinstance(cameras, list) else [],
+            "camera_count": len(cameras) if isinstance(cameras, list) else 0,
+            "hardware_camera_verified": False,
+            "source": "runtime_environment.body.camera_devices",
+        }
     if kind in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"}:
         adapters = body.get("network_adapters") or chat_facts.get("network_adapters")
         if kind == "wifi_card" and isinstance(adapters, list):
@@ -1878,6 +1916,17 @@ def _canonical_fact_value(value: Any, kind: str = "") -> str:
                 name = value.get("name") or value.get("adapter") or value.get("interface")
                 if name:
                     return _normalize_value(name, k)
+            if k in _VISION_KINDS:
+                devices = value.get("camera_devices") if isinstance(value.get("camera_devices"), list) else []
+                caps = value.get("capabilities") if isinstance(value.get("capabilities"), list) else []
+                stable = {
+                    "capability_class": value.get("capability_class") or "vision_environment",
+                    "camera_count": len(devices),
+                    "hardware_camera_verified": bool(devices) or bool(value.get("hardware_camera_verified")),
+                    "module_available": bool(value.get("module_available") or value.get("facial_recognition_module_available") or value.get("object_scene_module_available")),
+                    "capabilities": sorted(set(_safe_str(x, 80) for x in caps if x)),
+                }
+                return _normalize_value(stable, k)
             if k in _SOFTWARE_KINDS or k == "software":
                 app = value.get("canonical_name") or value.get("app_name") or value.get("name") or value.get("module")
                 found = value.get("found")
@@ -2355,7 +2404,7 @@ def _cognitive_self_fact(kind: str, target: str = "") -> Dict[str, Any]:
                 return _probe_result("SarahMemoryCognitiveSelf.core_files", {"file": target, "present_in_self_model": bool(present), "core": core}, ok=present, error="not_present_in_self_model" if not present else "", kind=kind, source_family="SarahMemoryCognitiveSelf", evidence_class="case_file")
             return _probe_result("SarahMemoryCognitiveSelf.core_files", core, ok=core not in (None, {}, []), error="core_file_model_unavailable" if not core else "", kind=kind, source_family="SarahMemoryCognitiveSelf", evidence_class="case_file")
 
-        if kind in _HARDWARE_KINDS:
+        if kind in _HARDWARE_KINDS or kind in _VISION_KINDS:
             body_map = model.get("body_map") if isinstance(model.get("body_map"), dict) else {}
             env = body_map.get("runtime_environment") if isinstance(body_map.get("runtime_environment"), dict) else {}
             val = _select_snapshot_fact(env, kind, target)
@@ -2583,25 +2632,71 @@ def _evolution_fact(kind: str, target: str = "") -> Dict[str, Any]:
     return _probe_result("SarahMemoryEvolution.module_contract", value, kind=kind, source_family="SarahMemoryEvolution", evidence_class="restricted_witness")
 
 
+def _vision_runtime_body_snapshot(target: str = "") -> Dict[str, Any]:
+    """Read-only vision/body capability snapshot.
+
+    This does not open the webcam and does not start a driver session. It only
+    reports the current runtime body map and imported vision-module contracts.
+    """
+    env: Dict[str, Any] = {}
+    body: Dict[str, Any] = {}
+    cameras: List[Any] = []
+    try:
+        if _Hi is not None:
+            fn = getattr(_Hi, "get_boot_environment_snapshot", None)
+            if callable(fn):
+                env = fn(force_refresh=False, refresh_reason="appself_vision_fact", persist=True)  # type: ignore[misc]
+                if isinstance(env, dict):
+                    body = env.get("body") if isinstance(env.get("body"), dict) else {}
+                    cams = body.get("camera_devices")
+                    if isinstance(cams, list):
+                        cameras = [x for x in cams if x not in (None, "", [], {})]
+    except Exception:
+        env = {}
+        body = {}
+        cameras = []
+
+    return {
+        "capability_class": "vision_environment",
+        "target": _safe_str(target or "camera_vision", 120),
+        "camera_devices": cameras,
+        "camera_count": len(cameras),
+        "hardware_camera_verified": bool(cameras),
+        "runtime_snapshot_available": bool(env),
+        "facial_recognition_module_available": _FacialRecognition is not None,
+        "object_scene_module_available": _SOBJE is not None,
+        "source": "SarahMemoryHi.runtime_environment.body.camera_devices",
+    }
+
+
 def _vision_fact(kind: str, target: str = "") -> Dict[str, Any]:
     if _FacialRecognition is None:
         return _probe_result("SarahMemoryFacialRecognition", None, ok=False, error="module_unavailable", kind=kind, source_family="SarahMemoryFacialRecognition", evidence_class="witness")
-    value = {
+    value = _vision_runtime_body_snapshot(target)
+    value.update({
+        "module": "SarahMemoryFacialRecognition",
         "module_available": True,
+        "capabilities": ["face_detection", "facial_recognition", "face_vector_memory", "facial_expression_state"],
         "faiss_available": bool(getattr(_FacialRecognition, "faiss_available", False)),
         "has_find_similar_vectors": callable(getattr(_FacialRecognition, "find_similar_vectors", None)),
-    }
+        "has_personalized_greeting_from_camera": callable(getattr(_FacialRecognition, "personalized_greeting_from_camera", None)),
+        "has_user_fer_state": callable(getattr(_FacialRecognition, "get_user_fer_state", None)),
+    })
     return _probe_result("SarahMemoryFacialRecognition.module_contract", value, kind=kind, source_family="SarahMemoryFacialRecognition", evidence_class="witness")
 
 
 def _sobje_fact(kind: str, target: str = "") -> Dict[str, Any]:
     if _SOBJE is None:
         return _probe_result("SarahMemorySOBJE", None, ok=False, error="module_unavailable", kind=kind, source_family="SarahMemorySOBJE", evidence_class="witness")
-    value = {
+    value = _vision_runtime_body_snapshot(target)
+    value.update({
+        "module": "SarahMemorySOBJE",
         "module_available": True,
+        "capabilities": ["object_detection", "scene_summary", "color_detection", "visual_question_answering", "frame_observation"],
         "object_detection_enabled": bool(getattr(_SOBJE, "OBJECT_DETECTION_ENABLED", False)),
         "has_visual_intent_parser": callable(getattr(_SOBJE, "sm_parse_visual_intent", None)),
-    }
+        "has_answer_visual_question": callable(getattr(_SOBJE, "answer_visual_question", None)),
+    })
     return _probe_result("SarahMemorySOBJE.module_contract", value, kind=kind, source_family="SarahMemorySOBJE", evidence_class="witness")
 
 
@@ -2795,6 +2890,73 @@ def _collect_fact_probes(kind: str, claim: str, target: str = "") -> List[Dict[s
     return probes
 
 
+def _aggregate_vision_probe_values(probes: List[Dict[str, Any]], kind: str = "") -> Dict[str, Any]:
+    devices: List[str] = []
+    capabilities: List[str] = []
+    modules: Dict[str, Dict[str, Any]] = {}
+    evidence_families: List[str] = []
+    artifact_present = False
+
+    def _add_cap(name: str) -> None:
+        name = _safe_str(name, 120).replace("_", " ").strip()
+        if name and name not in capabilities:
+            capabilities.append(name)
+
+    for p in probes:
+        if not p.get("verified") or bool(p.get("support_only")) or bool(p.get("hearsay")):
+            continue
+        fam = _safe_str(p.get("source_family") or p.get("source"), 160)
+        if fam and fam not in evidence_families:
+            evidence_families.append(fam)
+        val = p.get("value") if isinstance(p.get("value"), dict) else {}
+        if not isinstance(val, dict):
+            continue
+        for item in val.get("camera_devices") if isinstance(val.get("camera_devices"), list) else []:
+            s = _safe_str(item, 240).strip()
+            if s and s not in devices:
+                devices.append(s)
+        for cap in val.get("capabilities") if isinstance(val.get("capabilities"), list) else []:
+            _add_cap(str(cap))
+        module = _safe_str(val.get("module"), 120)
+        if module:
+            modules[module] = {
+                "available": bool(val.get("module_available", True)),
+                "object_detection_enabled": val.get("object_detection_enabled"),
+                "faiss_available": val.get("faiss_available"),
+            }
+        if fam == "SarahMemoryFacialRecognition" or module == "SarahMemoryFacialRecognition":
+            _add_cap("face detection")
+            _add_cap("facial recognition")
+            _add_cap("facial expression state")
+        if fam == "SarahMemorySOBJE" or module == "SarahMemorySOBJE":
+            _add_cap("object detection")
+            _add_cap("scene summary")
+            _add_cap("color detection")
+            _add_cap("visual question answering")
+        if fam == "vision_artifact":
+            artifact_present = True
+            _add_cap("vision event logging")
+        if fam == "SarahMemoryCognitiveSelf":
+            _add_cap("runtime body-map awareness")
+
+    return {
+        "capability_class": "vision_environment",
+        "requested_fact": _safe_str(kind or "vision", 80),
+        "camera_devices": devices,
+        "camera_count": len(devices),
+        "hardware_camera_verified": bool(devices),
+        "modules": modules,
+        "capabilities": capabilities,
+        "vision_artifact_present": artifact_present,
+        "evidence_families": evidence_families,
+        "limits": {
+            "camera_opened": False,
+            "driver_session_started": False,
+            "read_only_fact_check": True,
+        },
+    }
+
+
 def _extract_majority_value(probes: List[Dict[str, Any]], kind: str = "") -> Tuple[int, str, Any, Dict[str, Any]]:
     seen_families: set = set()
     quorum_candidates: List[Dict[str, Any]] = []
@@ -2822,6 +2984,22 @@ def _extract_majority_value(probes: List[Dict[str, Any]], kind: str = "") -> Tup
         if not n:
             continue
         normalized.setdefault(n, []).append(p)
+
+    k = _safe_str(kind, 80).lower()
+    if k in _VISION_KINDS:
+        verified_vision = [p for p in quorum_candidates if p.get("verified")]
+        if verified_vision:
+            aggregate = _aggregate_vision_probe_values(verified_vision, kind)
+            pass_count = len(verified_vision)
+            majority_key = _canonical_fact_value(aggregate, kind)
+            return pass_count, majority_key, aggregate, {
+                "quorum_candidates": quorum_candidates,
+                "normalized_groups": {majority_key: pass_count},
+                "winning_source_families": [p.get("source_family") for p in verified_vision],
+                "duplicate_rejections": duplicate_rejections,
+                "support_sources": [p for p in probes if bool(p.get("support_only"))],
+                "rule": "vision_environment_capabilities_are_complementary; one source family one vote; no camera opened",
+            }
 
     if not normalized:
         return 0, "", None, {
@@ -3249,6 +3427,16 @@ def _presentation_text(kind: str, value: Any) -> str:
                 suffix = (" The related live thermal reading I can verify is " + ", ".join(related_bits) + ".") if related_bits else ""
                 return "I do not currently have a verified CPU temperature reading from a direct or mapped motherboard CPU-related thermal sensor." + suffix
             return f"I do not currently have a verified {component} temperature reading ({status})."
+        if k in _VISION_KINDS and isinstance(pv, dict):
+            devices = pv.get("camera_devices") if isinstance(pv.get("camera_devices"), list) else []
+            caps = pv.get("capabilities") if isinstance(pv.get("capabilities"), list) else []
+            mods = pv.get("modules") if isinstance(pv.get("modules"), dict) else {}
+            cap_text = ", ".join(_safe_str(x, 80) for x in caps[:10]) if caps else "vision helper modules available"
+            if devices:
+                return "Vision hardware = webcam/camera devices verified: " + "; ".join(_safe_str(x, 240) for x in devices[:6]) + ". Vision capabilities online: " + cap_text + ". Fact-check only; no camera stream was opened."
+            if mods or caps:
+                return "Vision capability = SarahMemory vision software is available (" + cap_text + "), but no physical webcam/camera device is currently verified in the runtime body map. Fact-check only; no camera stream was opened."
+            return "Vision capability = no verified webcam/camera hardware or vision module capability in the current evidence packet."
         if k in {"network", "network_card", "wifi_card", "bluetooth_card", "ethernet_card", "lan"} and isinstance(pv, dict):
             active = pv.get("active_adapters") if isinstance(pv.get("active_adapters"), list) else []
             inactive = pv.get("inactive_adapters") if isinstance(pv.get("inactive_adapters"), list) else []
