@@ -1409,7 +1409,9 @@ This is a major step toward SarahMemory AiOS functioning as a **biological-style
 [Note to self - As this project moves forward extreme caution must be set always into the Cognitive Tri-Force and SMGET layers]
 ![Human to SarahMemory DNA Flow Representation ](documents/SarahMemory-DNA-Representation.jpg)
 ---
-###IF YOU UNDERSTAND AND READ THE ENTIRE HISTORY OF THIS JOURNEY. UP TO THIS POINT - Now For the Serious Stuff. 
+## ***IF YOU UNDERSTAND AND READ THE ENTIRE HISTORY OF THIS JOURNEY. UP TO THIS POINT - Now For the Serious Stuff. 
+*../documents/FlowCharts/SelfAwareFlowCharts
+will Now carry all SelfAware IMPROVEMENTS and updates documentation
 
 ---
 # SarahMemory AiOS Full Chat/Input Dataflow Map NOW AS HOW DATA IS BEING PROCESSED. AS OF MAY 12th-13th 2026
