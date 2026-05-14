@@ -1,0 +1,468 @@
+flowchart TD
+%% =========================================================
+%% SarahMemory AiOS v8->v10 Full Chat/Input Dataflow Map
+%% Lettered node system:
+%% A = Surfaces / ingress
+%% B = Backend normalization
+%% C = Canonical query and fast-path gates
+%% D = Context and flags
+%% E = Cognitive Tri-Force
+%% F = Neuron and lane routing
+%% G = Evidence / SelfAware / body facts
+%% H = General answer / reasoning
+%% I = Research / browser / web
+%% J = Creative studio
+%% K = Vision / sensory / SOBJE
+%% L = Action / Driver / OperatorCore / SMGET
+%% M = Network / SarahNet
+%% N = REM / DL / learning
+%% O = Safety / trust / assurance
+%% P = Compare / validation / compass
+%% Q = Reply / presentation / frontend output
+%% R = Storage / audit / memory
+%% =========================================================
+
+classDef surface fill:#0b1f33,stroke:#7cc7ff,color:#e8f7ff,stroke-width:1px
+classDef backend fill:#14213d,stroke:#9bd2ff,color:#ffffff,stroke-width:1px
+classDef canon fill:#1d3557,stroke:#a8dadc,color:#ffffff,stroke-width:1px
+classDef tri fill:#2d1b52,stroke:#d6b4ff,color:#ffffff,stroke-width:1px
+classDef lane fill:#102a43,stroke:#6ee7ff,color:#ffffff,stroke-width:1px
+classDef safety fill:#3a0f1f,stroke:#ff9bb3,color:#ffffff,stroke-width:1px
+classDef validate fill:#2f2f00,stroke:#fff176,color:#ffffff,stroke-width:1px
+classDef output fill:#0f3d2e,stroke:#84f2c3,color:#ffffff,stroke-width:1px
+classDef store fill:#2a2a2a,stroke:#d0d0d0,color:#ffffff,stroke-width:1px
+classDef decision fill:#111111,stroke:#ffffff,color:#ffffff,stroke-width:1px
+
+subgraph A["A. Input Surfaces / User-Environment Signals"]
+direction TB
+A0["A0 User / Environment / Device Signal"]:::surface
+A1{"A1 Input Surface Selector"}:::decision
+A2["A2 Classic UI<br/>SarahMemoryGUI.py"]:::surface
+A3["A3 Web / React / Flask UI<br/>ChatPanel / app.py"]:::surface
+A4["A4 Voice / Avatar / TTS-STT Event"]:::surface
+A5["A5 Vision / Sensor / Driver Event"]:::surface
+A6["A6 SarahNet / Remote Node Event"]:::surface
+A7["A7 Browser / Research Panel Event"]:::surface
+A8["A8 Addon / Driver UI Event"]:::surface
+A9["A9 REM / DL Scheduled Internal Event"]:::surface
+end
+
+A0 --> A1
+A1 --> A2
+A1 --> A3
+A1 --> A4
+A1 --> A5
+A1 --> A6
+A1 --> A7
+A1 --> A8
+A1 --> A9
+
+subgraph B["B. Backend Ingress / Payload Normalization"]
+direction TB
+B0["B0 Backend Ingress"]:::backend
+B1["B1 app.py /api/chat<br/>Primary Chat API Entry"]:::backend
+B2["B2 Payload Parse<br/>text, intent, tone, complexity,<br/>avatar_request, diagnostics_ping"]:::backend
+B3["B3 Runtime Flag Read<br/>SarahMemoryGlobals.py"]:::backend
+B4["B4 Mode Flags<br/>LOCAL_ONLY_MODE, SAFE_MODE,<br/>NEOSKYMATRIX, DEVELOPERSMODE,<br/>RUN_MODE, DEVICE_MODE"]:::backend
+B5["B5 Session / Caller / Surface Metadata"]:::backend
+B6["B6 _sm_build_context_packet()"]:::backend
+B7["B7 _sm_build_virtual_ingress_route()"]:::backend
+B8["B8 proposed_action attached to context_packet.meta"]:::backend
+end
+
+A2 --> B0
+A3 --> B0
+A4 --> B0
+A5 --> B0
+A6 --> B0
+A7 --> B0
+A8 --> B0
+A9 --> B0
+B0 --> B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8
+
+subgraph C["C. Canonical Query / Normalize Once / Fast-Path Gates"]
+direction TB
+C0["C0 _sm_build_canonical_query_packet()"]:::canon
+C1["C1 Normalize Once / Classify Once"]:::canon
+C2["C2 Preserve Target + Metric<br/>raw_text, normalized_text,<br/>domain, intent, component, metric"]:::canon
+C3{"C3 Identity Question?"}:::decision
+C4["C4 IdentityGuard Fast Path<br/>who are you / version / creator"]:::canon
+C5{"C5 Self/System/Body Fact Question?"}:::decision
+C6["C6 SelfAware Body Lane Candidate"]:::canon
+C7{"C7 Action-like / Side-effect Request?"}:::decision
+C8["C8 SMGET Candidate<br/>contract preview path"]:::canon
+C9{"C9 General Chat / Reasoning / Creative?"}:::decision
+C10["C10 Continue to Cognitive Flow"]:::canon
+end
+
+B8 --> C0 --> C1 --> C2 --> C3
+C3 -- Yes --> C4
+C3 -- No --> C5
+C5 -- Yes --> C6
+C5 -- No --> C7
+C7 -- Yes --> C8
+C7 -- No --> C9
+C9 --> C10
+
+subgraph D["D. Context / Policy / Runtime Snapshot"]
+direction TB
+D0["D0 Runtime Context Packet"]:::backend
+D1["D1 local_only / safe_mode / public_web"]:::backend
+D2["D2 user_present / user_consented"]:::backend
+D3["D3 caller / origin / surface"]:::backend
+D4["D4 proposed_action metadata"]:::backend
+D5["D5 requested lane hint"]:::backend
+D6["D6 current model/provider flags"]:::backend
+D7["D7 deterministic local-first preference"]:::backend
+end
+
+C10 --> D0
+C6 --> D0
+C8 --> D0
+D0 --> D1
+D0 --> D2
+D0 --> D3
+D0 --> D4
+D0 --> D5
+D0 --> D6
+D0 --> D7
+
+subgraph E["E. Cognitive Tri-Force / Digital Organism Cortex"]
+direction LR
+E0["E0 CognitiveSelf<br/>SarahMemoryCognitiveSelf.py<br/>What exists / what body am I in?"]:::tri
+E1["E1 CognitiveServices<br/>SarahMemoryCognitiveServices.py<br/>What may proceed?"]:::tri
+E2["E2 CognitiveThinker<br/>SarahMemoryCognitiveThinker.py<br/>What could this mean?"]:::tri
+E3["E3 CognitiveCompass<br/>SarahMemoryCognitiveCompass.py<br/>Stay on original goal"]:::tri
+E4["E4 Tri-Force Contract<br/>Self = Authority<br/>Services = Judge<br/>Thinker = Meaning<br/>Compass = Bearing"]:::tri
+E5["E5 Cognitive Policy Snapshot"]:::tri
+E6["E6 Governor Decision<br/>ALLOW / DENY / DEFER / REQUIRE_USER"]:::tri
+E7["E7 Optional Co-Equal Thinker Review<br/>high-impact / ethical / possibility"]:::tri
+E8["E8 Compass Guard<br/>anti-drift / anti-loop / completion proof"]:::tri
+end
+
+D0 --> E0
+D0 --> E1
+D0 --> E2
+D0 --> E3
+E0 --> E4
+E1 --> E4
+E2 --> E4
+E3 --> E4
+E0 --> E5
+E1 --> E5
+E1 --> E6
+E1 --> E7
+E2 --> E7
+E3 --> E8
+
+subgraph O["O. Safety / Trust / Assurance / Constitutional Gates"]
+direction TB
+O0["O0 SarahMemorySafetyPolicies.py<br/>Policy snapshot / risk tier rules"]:::safety
+O1["O1 SarahMemoryTrustRegistry.py<br/>Caller / capability trust"]:::safety
+O2["O2 SarahMemorySecurityGovernor.py<br/>Boundary / sovereignty / intrusion review"]:::safety
+O3["O3 SarahMemoryAssuranceGate.py<br/>Confidence / verification gate"]:::safety
+O4["O4 NEOSKYMATRIX / SAFE_MODE / LOCAL_ONLY gates"]:::safety
+O5["O5 Consent Gate<br/>user present / explicit approval"]:::safety
+O6["O6 No Raw Model Authority<br/>helper model cannot self-authorize"]:::safety
+O7["O7 No Silent Mutation<br/>no core rewrite without governed path"]:::safety
+O8["O8 Sandbox / simulate / dry-run preference"]:::safety
+O9{"O9 Governance Outcome"}:::decision
+end
+
+E6 --> O0
+E6 --> O1
+E6 --> O2
+E6 --> O3
+E6 --> O4
+E6 --> O5
+E6 --> O6
+E6 --> O7
+E6 --> O8
+O0 --> O9
+O1 --> O9
+O2 --> O9
+O3 --> O9
+O4 --> O9
+O5 --> O9
+O6 --> O9
+O7 --> O9
+O8 --> O9
+
+subgraph F["F. Neuron Primary Router / Lane Selection"]
+direction TB
+F0["F0 SarahMemoryNeuron.py<br/>Primary router"]:::lane
+F1["F1 AdvCU Semantic Core<br/>SarahMemoryAdvCU.py"]:::lane
+F2["F2 PreToken Analyzer<br/>SarahMemoryPreTokenAnalyzer.py"]:::lane
+F3["F3 Route Packet<br/>route_id, domain, action,<br/>target_module, confidence,<br/>entities, intent_hint"]:::lane
+F4{"F4 Lane Select"}:::decision
+F5["F5 Tier-0 Deterministic"]:::lane
+F6["F6 Tier-1 Symbolic"]:::lane
+F7["F7 Tier-2 Research / Evidence"]:::lane
+F8["F8 Tier-3 API / Helper Model"]:::lane
+end
+
+O9 -- ALLOW_or_safe_route --> F0
+O9 -- DENY --> Q8
+O9 -- DEFER --> Q7
+O9 -- REQUIRE_USER --> Q6
+F0 --> F1 --> F2 --> F3 --> F4
+F4 --> F5
+F4 --> F6
+F4 --> F7
+F4 --> F8
+
+subgraph G["G. SelfAware / Body / Evidence Court Lane"]
+direction TB
+G0["G0 SelfAware Body Lane"]:::lane
+G1["G1 Lower Court Evidence Verification"]:::lane
+G2["G2 SarahMemoryHi.py<br/>Live telemetry / boot body snapshot"]:::lane
+G3["G3 SarahMemoryDiagnostics.py<br/>Local hard evidence"]:::lane
+G4["G4 SarahNetMCP_Diagnostics.py<br/>remote/network evidence"]:::lane
+G5["G5 appself.py<br/>Evidence Court packaging"]:::lane
+G6["G6 Evidence Quorum<br/>0/3 deny, 1/3 weak, 2/3 high review, 3/3 approved"]:::lane
+G7["G7 Higher Court<br/>Cognitive Appeals / Meaning"]:::lane
+G8["G8 CognitiveSelf Authority<br/>what exists / current body"]:::tri
+G9["G9 CognitiveServices Judge<br/>what may be claimed"]:::tri
+G10["G10 Body Fact Result<br/>hardware / sensor / runtime answer"]:::lane
+end
+
+C6 --> G0
+F4 --> G0
+G0 --> G1
+G1 --> G2
+G1 --> G3
+G1 --> G4
+G1 --> G5
+G2 --> G6
+G3 --> G6
+G4 --> G6
+G5 --> G6
+G6 --> G7
+G7 --> G8
+G7 --> G9
+G8 --> G10
+G9 --> G10
+
+subgraph H["H. General Answer / Reasoning Lane"]
+direction TB
+H0["H0 General Answer Lane"]:::lane
+H1["H1 SarahMemoryLogicCalc.py<br/>Deterministic calculation / logic"]:::lane
+H2["H2 SarahMemoryWebSYM.py<br/>Symbolic / science / math support"]:::lane
+H3["H3 SarahMemoryDatabase.py<br/>local truth/memory retrieval"]:::lane
+H4["H4 SarahMemoryAPI.py<br/>optional helper model provider"]:::lane
+H5["H5 Model Resolver Contract<br/>category-governed helper only"]:::lane
+H6["H6 Candidate Answer Packet"]:::lane
+end
+
+F5 --> H0
+F6 --> H0
+F8 --> H0
+H0 --> H1
+H0 --> H2
+H0 --> H3
+H0 --> H4
+H4 --> H5
+H1 --> H6
+H2 --> H6
+H3 --> H6
+H5 --> H6
+
+subgraph I["I. Research / Browser / Web Evidence Lane"]
+direction TB
+I0["I0 Research Lane"]:::lane
+I1["I1 SarahMemoryResearch.py"]:::lane
+I2["I2 SarahMemoryBrowser.py / ResearchPanel"]:::lane
+I3["I3 SoftwareResearch / procedure discovery"]:::lane
+I4{"I4 Online allowed?"}:::decision
+I5["I5 Local cache / offline fallback"]:::lane
+I6["I6 Web/API source fetch"]:::lane
+I7["I7 Source summary / evidence packet"]:::lane
+I8["I8 Redaction / privacy minimization"]:::safety
+end
+
+F7 --> I0
+I0 --> I1 --> I2 --> I3 --> I4
+I4 -- No --> I5 --> I7
+I4 -- Yes_plus_consent --> I6 --> I8 --> I7
+
+subgraph J["J. Creative Studio Lane"]
+direction TB
+J0["J0 Creative Studio Lane"]:::lane
+J1["J1 SarahMemoryCanvasStudio.py<br/>image/art"]:::lane
+J2["J2 SarahMemoryMusicGenerator.py<br/>music"]:::lane
+J3["J3 SarahMemoryLyricsToSong.py<br/>lyrics/song"]:::lane
+J4["J4 SarahMemoryVideoEditorCore.py<br/>video"]:::lane
+J5["J5 Creative artifact packet"]:::lane
+J6["J6 Preview / download / artifact metadata"]:::lane
+end
+
+F4 --> J0
+J0 --> J1
+J0 --> J2
+J0 --> J3
+J0 --> J4
+J1 --> J5
+J2 --> J5
+J3 --> J5
+J4 --> J5
+J5 --> J6
+
+subgraph K["K. Vision / Sensory / SOBJE Lane"]
+direction TB
+K0["K0 Vision Lane"]:::lane
+K1["K1 Frontend camera/live frame input"]:::surface
+K2["K2 Backend vision process target"]:::lane
+K3["K3 SarahMemoryFacialRecognition.py"]:::lane
+K4["K4 SarahMemorySOBJE.py<br/>object/body/object-in-hand"]:::lane
+K5["K5 Color / scene / object summary"]:::lane
+K6["K6 Capability distinction<br/>cloud sees frame; local sees device model"]:::lane
+K7["K7 Visual answer packet"]:::lane
+end
+
+A5 --> K0
+F4 --> K0
+K0 --> K1 --> K2
+K2 --> K3
+K2 --> K4
+K2 --> K5
+K2 --> K6
+K3 --> K7
+K4 --> K7
+K5 --> K7
+K6 --> K7
+
+subgraph L["L. Action / Driver / OperatorCore / SMGET Lane"]
+direction TB
+L0["L0 Action / Driver Lane"]:::lane
+L1["L1 _sm_try_operatorcore_request()"]:::lane
+L2["L2 SarahMemoryOperatorCore.py<br/>ActionContract builder/executor choke-point"]:::lane
+L3["L3 ActionContract<br/>origin, executor, permissions,<br/>risk_level, execution_mode"]:::lane
+L4["L4 execution_mode<br/>simulate / draft / apply / rollback"]:::lane
+L5["L5 Driver / Addon selection"]:::lane
+L6["L6 appdrivers.py / Drivers / Addons"]:::lane
+L7["L7 Filesystem / command / desktop automation owner"]:::lane
+L8["L8 Execution Result Packet"]:::lane
+L9["L9 Rollback / failure packet"]:::safety
+end
+
+C8 --> L0
+F4 --> L0
+O9 -- SMGET_preview --> L1
+L0 --> L1 --> L2 --> L3 --> L4
+L4 --> L5 --> L6 --> L7 --> L8
+L4 --> L9
+
+subgraph M["M. SarahNet / Network / Remote Node Lane"]
+direction TB
+M0["M0 Network Lane"]:::lane
+M1["M1 SarahMemoryNetwork.py"]:::lane
+M2["M2 appnet / appnet2"]:::lane
+M3["M3 SarahNet node identity / trust"]:::lane
+M4["M4 Remote capability request"]:::lane
+M5["M5 Network consent / exposure review"]:::safety
+M6["M6 Network result packet"]:::lane
+end
+
+A6 --> M0
+F4 --> M0
+M0 --> M1 --> M2 --> M3 --> M4 --> M5 --> M6
+
+subgraph N["N. REM / Deep Learning / Memory Consolidation Lane"]
+direction TB
+N0["N0 REM / DL Lane"]:::lane
+N1["N1 REM candidate / dream ticket"]:::lane
+N2["N2 Deep Learning conversational update"]:::lane
+N3["N3 SystemLearn / SystemIndex / databases"]:::store
+N4["N4 REM risk triage<br/>HIGH discard/quarantine<br/>MID review-only<br/>LOW eligible"]:::safety
+N5["N5 AssuranceGate + CognitiveServices required"]:::safety
+N6["N6 Learning result / candidate packet"]:::lane
+end
+
+A9 --> N0
+F4 --> N0
+N0 --> N1
+N0 --> N2
+N1 --> N4 --> N5 --> N6
+N2 --> N3 --> N6
+
+subgraph P["P. Validation / Compass / Compare / GuardDogs"]
+direction TB
+P0["P0 Candidate Output Packet"]:::validate
+P1["P1 SarahMemoryCompare.py<br/>GuardDogs final acceptance"]:::validate
+P2["P2 Compare checks<br/>truth, scope, relevance,<br/>regression, hallucination"]:::validate
+P3{"P3 Compare Passed?"}:::decision
+P4["P4 CognitiveCompass Reanchor<br/>stay on original goal"]:::tri
+P5["P5 Hold Reply<br/>completion not proven"]:::validate
+P6["P6 Safe Abort / Clarify / Ask User"]:::validate
+P7["P7 Release Approved Candidate"]:::validate
+end
+
+G10 --> P0
+H6 --> P0
+I7 --> P0
+J6 --> P0
+K7 --> P0
+L8 --> P0
+L9 --> P0
+M6 --> P0
+N6 --> P0
+P0 --> P1 --> P2 --> P3
+P3 -- No --> P4
+P4 --> F0
+P3 -- No_cannot_recover --> P6
+P3 -- Pending --> P5
+P3 -- Yes --> P7
+E8 --> P4
+
+subgraph Q["Q. Reply / Presentation / Frontend Output"]
+direction TB
+Q0["Q0 Presentation Layer"]:::output
+Q1["Q1 _sm_present_text()"]:::output
+Q2["Q2 SarahMemoryReply.py<br/>central reply/bundle fallback"]:::output
+Q3["Q3 _sm_make_outward_bundle()"]:::output
+Q4["Q4 JSON Response<br/>ok, reply/response,<br/>presentation_reply, meta,<br/>artifacts, actions, errors"]:::output
+Q5["Q5 Frontend Chat Render"]:::output
+Q6["Q6 Ask User Confirmation"]:::output
+Q7["Q7 Clarify / Explain Unknown / Trigger Thinker"]:::output
+Q8["Q8 Safe Denial + Rationale"]:::output
+Q9["Q9 Voice / Avatar Output"]:::output
+Q10["Q10 Browser / Panel / Artifact Output"]:::output
+end
+
+P7 --> Q0 --> Q1 --> Q2 --> Q3 --> Q4 --> Q5
+Q4 --> Q9
+Q4 --> Q10
+P5 --> Q7
+P6 --> Q8
+O9 -- REQUIRE_USER --> Q6
+O9 -- DEFER --> Q7
+O9 -- DENY --> Q8
+
+subgraph R["R. Storage / Audit / Memory / Optional Persistence"]
+direction TB
+R0["R0 Optional Memory / Audit"]:::store
+R1["R1 Approved metadata / database / dataset"]:::store
+R2["R2 Audit logs"]:::store
+R3["R3 Violated body facts<br/>DO NOT persist as truth"]:::store
+R4["R4 REM / DL candidate store"]:::store
+R5["R5 User-approved memory only"]:::store
+R6["R6 System logs / cognitive_governor_events"]:::store
+R7["R7 cognitive_self.db / cognitive_thinker.db / compass db"]:::store
+end
+
+Q4 --> R0
+R0 --> R1
+R0 --> R2
+R0 --> R3
+R0 --> R4
+R0 --> R5
+E1 --> R6
+E0 --> R7
+E2 --> R7
+E3 --> R7
+N6 --> R4
+R5 -. allowed_context_only .-> D0
+R4 -. reviewed_candidate_only .-> E1
+Q6 -. user_confirmation .-> B1
+Q7 -. clarification .-> B1
+Q8 -. safe_terminal_output .-> Q5
