@@ -93,6 +93,11 @@ from SarahMemoryGlobals import (
     get_runtime_meta
 )
 
+try:
+    import SarahMemoryGlobals as _SMG  # constitutional runtime flags; read-only consumer
+except Exception:
+    _SMG = None
+
 from SarahMemoryFilesystem import save_code_to_addons
 
 # ============================================================================
@@ -119,6 +124,128 @@ console_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
 if not logger.hasHandlers():
     logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+
+# ---------------------------------------------------------------------------
+# SQLite contention control for Synapses / LivingModel writes
+# ---------------------------------------------------------------------------
+# SQLite is a single-writer database. Synapses has both the awareness/ledger
+# loop and the LivingModel job dispatcher touching synapses.db. These helpers
+# do not change governance or learning policy; they only make the local writer
+# path survivable when one loop temporarily owns the write lock.
+_SQLITE_WRITE_LOCK = threading.RLock()
+_SQLITE_WAL_INIT_LOCK = threading.RLock()
+_SQLITE_WAL_INITIALIZED = set()
+_SQLITE_LOCK_WARNING_STATE: Dict[str, float] = {}
+
+
+def _constitutional_value(name: str, default: Any = None) -> Any:
+    """Read optional tuning values from SarahMemoryGlobals.py, then env, then default.
+
+    SarahMemoryGlobals remains the constitutional source. Environment fallback is
+    only for standalone diagnostics when Globals is unavailable or missing a key.
+    """
+    try:
+        if _SMG is not None and hasattr(_SMG, name):
+            return getattr(_SMG, name)
+    except Exception:
+        pass
+    try:
+        env_value = os.getenv(name)
+        if env_value not in (None, ""):
+            return env_value
+    except Exception:
+        pass
+    return default
+
+
+def _syn_sqlite_timeout_seconds() -> float:
+    try:
+        return max(1.0, float(_constitutional_value("SYNAPSES_SQLITE_TIMEOUT_SECONDS", 60.0)))
+    except Exception:
+        return 60.0
+
+
+def _syn_sqlite_busy_timeout_ms() -> int:
+    try:
+        return max(1000, int(float(_constitutional_value("SYNAPSES_SQLITE_BUSY_TIMEOUT_MS", 60000))))
+    except Exception:
+        return 60000
+
+
+def _syn_sqlite_retry_attempts() -> int:
+    try:
+        return max(1, int(float(_constitutional_value("SYNAPSES_SQLITE_RETRY_ATTEMPTS", 8))))
+    except Exception:
+        return 8
+
+
+def _syn_sqlite_retry_base_seconds() -> float:
+    try:
+        return max(0.02, float(_constitutional_value("SYNAPSES_SQLITE_RETRY_BASE_SECONDS", 0.15)))
+    except Exception:
+        return 0.15
+
+
+def _syn_sqlite_retry_max_seconds() -> float:
+    try:
+        return max(0.10, float(_constitutional_value("SYNAPSES_SQLITE_RETRY_MAX_SECONDS", 2.0)))
+    except Exception:
+        return 2.0
+
+
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    msg = str(exc or "").lower()
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "database is locked" in msg
+        or "database table is locked" in msg
+        or "database is busy" in msg
+        or "locked" == msg.strip()
+    )
+
+
+def _sqlite_backoff_sleep(attempt: int) -> None:
+    try:
+        delay = min(
+            _syn_sqlite_retry_max_seconds(),
+            _syn_sqlite_retry_base_seconds() * (2 ** max(0, int(attempt)))
+        )
+        # Deterministic micro-jitter from attempt index to reduce lock-step retry.
+        delay += min(0.05, 0.01 * (int(attempt) % 5))
+        time.sleep(delay)
+    except Exception:
+        time.sleep(0.1)
+
+
+def _throttled_lock_warning(key: str, message: str, *, interval_seconds: float = 60.0) -> None:
+    try:
+        now = time.time()
+        last = float(_SQLITE_LOCK_WARNING_STATE.get(key, 0.0) or 0.0)
+        if (now - last) >= float(interval_seconds):
+            _SQLITE_LOCK_WARNING_STATE[key] = now
+            logger.warning(message)
+        else:
+            logger.debug(message)
+    except Exception:
+        try:
+            logger.warning(message)
+        except Exception:
+            pass
+
+
+def _rollback_quietly(conn: Optional[sqlite3.Connection]) -> None:
+    try:
+        if conn is not None:
+            conn.rollback()
+    except Exception:
+        pass
+
+
+def _close_quietly(conn: Optional[sqlite3.Connection]) -> None:
+    try:
+        if conn is not None:
+            conn.close()
+    except Exception:
+        pass
 
 # Sandbox Configuration with organized subdirectories
 SANDBOX_DIR = os.path.join(BASE_DIR, 'sandbox')
@@ -276,13 +403,47 @@ class GeneratedCode:
 # ============================================================================
 
 def connect_db(db_name: str) -> sqlite3.Connection:
-    """Enhanced database connection with WAL mode and foreign keys"""
+    """Enhanced database connection with WAL mode, busy timeout, and foreign keys."""
     try:
         db_path = os.path.join(DATASETS_DIR, db_name)
-        conn = sqlite3.connect(db_path, timeout=30.0)
+        conn = sqlite3.connect(
+            db_path,
+            timeout=_syn_sqlite_timeout_seconds(),
+            check_same_thread=False,
+        )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_syn_sqlite_busy_timeout_ms()}")
+        except Exception:
+            pass
+        try:
+            conn.execute("PRAGMA foreign_keys = ON")
+        except Exception:
+            pass
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except Exception:
+            pass
+
+        # WAL initialization can itself need a write lock. Do it once per path,
+        # fail-soft if another process owns the DB at this exact moment.
+        with _SQLITE_WAL_INIT_LOCK:
+            if db_path not in _SQLITE_WAL_INITIALIZED:
+                try:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                except sqlite3.OperationalError as wal_exc:
+                    if _is_sqlite_lock_error(wal_exc):
+                        _throttled_lock_warning(
+                            "wal_init_locked",
+                            f"[SynapsesDB] WAL init deferred for {db_name}: database is locked",
+                            interval_seconds=120.0,
+                        )
+                    else:
+                        raise
+                except Exception as wal_exc:
+                    logger.debug(f"[SynapsesDB] WAL init skipped for {db_name}: {wal_exc}")
+                _SQLITE_WAL_INITIALIZED.add(db_path)
+
         logger.debug(f"Connected to database: {db_path}")
         return conn
     except Exception as e:
@@ -450,31 +611,63 @@ def log_dataset_sample(
     except Exception:
         pass
 
-    # Persist (dedupe enforced by UNIQUE index + OR IGNORE)
-    try:
-        conn = connect_db("synapses.db")
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO dataset_ledger
-            (dataset_id, sample_type, source_ref, content_json, content_sha256, score, verified, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(dataset_id),
-                str(sample_type),
-                str(source_ref),
-                payload,
-                str(content_hash),
-                float(score),
-                1 if verified else 0,
-                _now_iso(),
-            ),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.error(f"Dataset ledger write failed: {e}", exc_info=True)
+    # Persist (dedupe enforced by UNIQUE index + OR IGNORE).
+    # Lock contention is expected when the awareness loop and training dispatcher
+    # overlap. Retry with bounded backoff; do not spam ERROR for transient locks.
+    locked_exc: Optional[BaseException] = None
+    attempts = _syn_sqlite_retry_attempts()
+    for attempt in range(attempts):
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            with _SQLITE_WRITE_LOCK:
+                conn = connect_db("synapses.db")
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT OR IGNORE INTO dataset_ledger
+                    (dataset_id, sample_type, source_ref, content_json, content_sha256, score, verified, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(dataset_id),
+                        str(sample_type),
+                        str(source_ref),
+                        payload,
+                        str(content_hash),
+                        float(score),
+                        1 if verified else 0,
+                        _now_iso(),
+                    ),
+                )
+                conn.commit()
+                _close_quietly(conn)
+                return content_hash
+        except Exception as e:
+            if _is_sqlite_lock_error(e):
+                locked_exc = e
+                _rollback_quietly(conn)
+                _close_quietly(conn)
+                if attempt < attempts - 1:
+                    _sqlite_backoff_sleep(attempt)
+                    continue
+                # Remove cache key so a later awareness tick may retry this sample.
+                try:
+                    with _DATASET_LEDGER_DEDUPE_LOCK:
+                        _DATASET_LEDGER_DEDUPE_CACHE.pop(key, None)
+                except Exception:
+                    pass
+                _throttled_lock_warning(
+                    "dataset_ledger_locked",
+                    f"Dataset ledger write deferred after SQLite lock contention: {locked_exc}",
+                    interval_seconds=60.0,
+                )
+                return content_hash
+            _rollback_quietly(conn)
+            _close_quietly(conn)
+            logger.error(f"Dataset ledger write failed: {e}", exc_info=True)
+            return content_hash
+        finally:
+            _close_quietly(conn)
 
     return content_hash
 
@@ -1155,56 +1348,80 @@ def claim_next_training_job(worker_id: str = "synapses") -> Optional[Dict[str, A
     """
     Atomically claim the next queued training job (highest priority, earliest requested).
     Returns the claimed job row as a dict, or None.
+
+    SQLite lock contention is handled as a normal background-loop condition:
+    retry briefly, then defer without flooding the logs with traceback noise.
     """
     ensure_sarahmemory_model_dirs()
-    try:
-        conn = connect_db("synapses.db")
-        cur = conn.cursor()
+    attempts = _syn_sqlite_retry_attempts()
+    locked_exc: Optional[BaseException] = None
 
-        conn.execute("BEGIN IMMEDIATE;")
-        cur.execute(
-            """
-            SELECT job_id
-            FROM training_jobs
-            WHERE status = 'queued'
-            ORDER BY priority DESC, requested_at ASC
-            LIMIT 1
-            """
-        )
-        row = cur.fetchone()
-        if not row:
-            conn.execute("COMMIT;")
-            conn.close()
-            return None
-
-        job_id = row[0]
-        cur.execute(
-            """
-            UPDATE training_jobs
-            SET status='running', started_at=?, worker_id=?
-            WHERE job_id=? AND status='queued'
-            """,
-            (_now_iso(), str(worker_id), str(job_id)),
-        )
-        if cur.rowcount != 1:
-            conn.execute("COMMIT;")
-            conn.close()
-            return None
-
-        cur.execute("SELECT * FROM training_jobs WHERE job_id=?", (str(job_id),))
-        full = cur.fetchone()
-        conn.execute("COMMIT;")
-        conn.close()
-        return dict(full) if full else None
-
-    except Exception as e:
-        logger.error(f"[LivingModel][P3] claim_next_training_job failed: {e}", exc_info=True)
+    for attempt in range(attempts):
+        conn: Optional[sqlite3.Connection] = None
         try:
-            conn.execute("ROLLBACK;")
-            conn.close()
-        except Exception:
-            pass
-        return None
+            with _SQLITE_WRITE_LOCK:
+                conn = connect_db("synapses.db")
+                cur = conn.cursor()
+
+                conn.execute("BEGIN IMMEDIATE;")
+                cur.execute(
+                    """
+                    SELECT job_id
+                    FROM training_jobs
+                    WHERE status = 'queued'
+                    ORDER BY priority DESC, requested_at ASC
+                    LIMIT 1
+                    """
+                )
+                row = cur.fetchone()
+                if not row:
+                    conn.execute("COMMIT;")
+                    _close_quietly(conn)
+                    return None
+
+                job_id = row[0]
+                cur.execute(
+                    """
+                    UPDATE training_jobs
+                    SET status='running', started_at=?, worker_id=?
+                    WHERE job_id=? AND status='queued'
+                    """,
+                    (_now_iso(), str(worker_id), str(job_id)),
+                )
+                if cur.rowcount != 1:
+                    conn.execute("COMMIT;")
+                    _close_quietly(conn)
+                    return None
+
+                cur.execute("SELECT * FROM training_jobs WHERE job_id=?", (str(job_id),))
+                full = cur.fetchone()
+                conn.execute("COMMIT;")
+                _close_quietly(conn)
+                return dict(full) if full else None
+
+        except Exception as e:
+            if _is_sqlite_lock_error(e):
+                locked_exc = e
+                _rollback_quietly(conn)
+                _close_quietly(conn)
+                if attempt < attempts - 1:
+                    _sqlite_backoff_sleep(attempt)
+                    continue
+                _throttled_lock_warning(
+                    "training_job_claim_locked",
+                    f"[LivingModel][P3] claim_next_training_job deferred after SQLite lock contention: {locked_exc}",
+                    interval_seconds=60.0,
+                )
+                return None
+
+            logger.error(f"[LivingModel][P3] claim_next_training_job failed: {e}", exc_info=True)
+            _rollback_quietly(conn)
+            _close_quietly(conn)
+            return None
+        finally:
+            _close_quietly(conn)
+
+    return None
 
 
 def complete_training_job(

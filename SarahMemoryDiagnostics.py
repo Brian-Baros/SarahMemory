@@ -93,6 +93,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryEvolution.py"), #Self Evolving Module Creator.
     os.path.join(config.BASE_DIR, "SarahMemoryExpressOut.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryFacialRecognition.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryMSDC.py"), # Motor/Servo/Device Controller (governed body/device manager)
     os.path.join(config.BASE_DIR, "SarahMemoryFilesystem.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryGlobals.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryGUI.py"),

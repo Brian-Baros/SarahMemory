@@ -64,6 +64,21 @@ except ImportError:
     pass
 USE_DL_MODELS = any(model_cfg.get("enabled") for model_cfg in OBJECT_MODEL_CONFIG.values())
 
+FACIAL_DIRECT_CAMERA_ENABLED = str(os.getenv("SARAH_FACE_DIRECT_CAMERA", "false")).strip().lower() in ("1", "true", "yes", "on")
+FACIAL_SIMULATED_LEARNING_ENABLED = str(os.getenv("SARAH_FACE_ALLOW_SIMULATED_LEARNING", "false")).strip().lower() in ("1", "true", "yes", "on")
+
+def _facial_direct_camera_enabled() -> bool:
+    """Hard gate for legacy direct cv2.VideoCapture paths. Default OFF.
+
+    The governed WebUI path passes frames through appvision/MSDC instead of
+    letting FacialRecognition own the webcam.
+    """
+    return bool(FACIAL_DIRECT_CAMERA_ENABLED)
+
+def _facial_simulated_learning_enabled() -> bool:
+    """Hard gate for legacy random-vector training. Default OFF to prevent DB bloat."""
+    return bool(FACIAL_SIMULATED_LEARNING_ENABLED)
+
 # ---------------------------------------------------------------------------
 # v8.0 Resolver Enhancement:
 # - Respect SarahMemoryGlobals.resolve_model("vision") ordering when possible.
@@ -460,40 +475,47 @@ def recognize_identity_from_vector(query_vector):
 
 # ------------------------- Personality Greeting Export -------------------------
 
-def personalized_greeting_from_camera():
+def personalized_greeting_from_camera(frame=None):
+    """Return a bounded greeting from a provided frame.
+
+    Legacy direct webcam capture is disabled by default. The governed camera
+    path is: user ON/OFF -> appvision/MSDC -> frame -> FacialRecognition.
+    Identity recognition from random/fake vectors is not used here.
     """
-    Uses the webcam frame to recognize identity and return a greeting string.
-    """
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        return "Hi there."
-    ret, frame = cap.read()
-    cap.release()
-    if not ret:
-        return "Hello!"
-    face_cascade = load_face_cascade()
-    faces = detect_faces_dnn(frame)
-    if len(faces) == 0:
-        return "Hello!"
-    # Simulate vector from face
-    fake_vector = np.random.rand(VECTOR_DIM)
-    identity = recognize_identity_from_vector(fake_vector)
-    name = identity.get("name", "User")
-    emotion = identity.get("emotion", "neutral")
-    return f"Welcome back, {name}. You seem {emotion} today."
+    if frame is None:
+        if not _facial_direct_camera_enabled():
+            return "Hi there. Camera greeting is governed and requires an approved frame."
+        try:
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                return "Hi there."
+            ret, frame = cap.read()
+            cap.release()
+            if not ret:
+                return "Hello!"
+        except Exception:
+            return "Hello!"
+    analysis = analyze_face_frame(frame, allow_identity=False, allow_learning=False)
+    count = int((analysis or {}).get("face_count") or 0) if isinstance(analysis, dict) else 0
+    if count > 0:
+        return "Hello. I can see a face in the approved frame."
+    return "Hello!"
 
 # ------------------------- Idle Hook: Inject Facial Data into Optimization -------------------------
 
 def contribute_facial_data_to_learning():
-    """
-    When triggered from SarahMemoryOptimization.py, simulate learning faces and saving vector states.
-    """
+    """Legacy hook retained, but random-vector training is gated OFF by default."""
     try:
+        if not _facial_simulated_learning_enabled():
+            log_facial_event("Idle Facial Data Skipped", "Simulated facial vector learning disabled by governance gate.")
+            return False
         fake_vector = np.random.rand(VECTOR_DIM)
         async_add_vector(fake_vector)
-        log_facial_event("Idle Facial Data Injected", f"Background vector trained.")
+        log_facial_event("Idle Facial Data Injected", "Background vector trained under explicit simulated-learning gate.")
+        return True
     except Exception as e:
         log_facial_event("Idle Training Failed", str(e))
+        return False
 
 def draw_faces(frame, faces):
     """
@@ -509,16 +531,69 @@ def draw_faces(frame, faces):
         log_facial_event("Draw Faces Error", f"Exception: {e}")
         return frame
 
+def analyze_face_frame(frame, allow_identity: bool = False, allow_learning: bool = False):
+    """Frame-based facial analysis for the governed vision path.
+
+    This function never opens the webcam and never stores identity vectors unless
+    a caller explicitly enables learning. It is safe for appvision/SOBJE/Neuron
+    frame interpretation.
+    """
+    result = {
+        "ok": False,
+        "face_count": 0,
+        "faces": [],
+        "fer": {},
+        "identity": {"attempted": False, "recognized": False, "name": "Unknown"},
+        "learning_stored": False,
+        "limits": {
+            "direct_camera_opened": False,
+            "identity_learning_requires_user_approval": True,
+            "simulated_identity_disabled": True,
+        },
+    }
+    if frame is None:
+        result["error"] = "frame_missing"
+        return result
+    try:
+        faces = detect_faces_dnn(frame)
+        result["faces"] = faces if isinstance(faces, list) else []
+        result["face_count"] = len(result["faces"])
+        result["ok"] = True
+    except Exception as exc:
+        result["error"] = f"detect_faces_failed:{exc}"
+    try:
+        if "get_user_fer_state" in globals() and callable(globals().get("get_user_fer_state")):
+            fer = get_user_fer_state(frame=frame)  # type: ignore[name-defined]
+            if isinstance(fer, dict):
+                result["fer"] = fer
+    except Exception as exc:
+        result.setdefault("warnings", []).append(f"fer_failed:{exc}")
+    if allow_identity:
+        result["identity"]["attempted"] = True
+        result["identity"]["recognized"] = False
+        result["identity"]["reason"] = "real_face_embedding_pipeline_not_verified"
+    if allow_learning and _facial_simulated_learning_enabled():
+        result["learning_stored"] = bool(contribute_facial_data_to_learning())
+    return result
+
+
 def start_facial_recognition_monitor(interval=0.1):
+    """Legacy direct webcam monitor retained behind a hard governance gate.
+
+    Normal WebUI/local vision should use appvision/MSDC and pass frames into
+    analyze_face_frame().
     """
-    Start a background loop that captures and processes webcam frames for facial recognition.
-    NEW (v6.4): Runs detection asynchronously without blocking the UI.
-    """
+    if not _facial_direct_camera_enabled():
+        log_facial_event("Direct Camera Monitor Blocked", "Use appvision/MSDC governed frame path instead of FacialRecognition owning webcam.")
+        return False
     import threading
     def monitor():
         face_cascade = load_face_cascade()
         if face_cascade is None:
             return
+        if not _facial_direct_camera_enabled():
+            logger_fr.error("Direct camera test blocked. Set SARAH_FACE_DIRECT_CAMERA=true to run this standalone test.")
+            sys.exit(1)
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             logger_fr.error("Unable to access the webcam.")
@@ -533,6 +608,7 @@ def start_facial_recognition_monitor(interval=0.1):
             time.sleep(interval)
         cap.release()
     threading.Thread(target=monitor, daemon=True).start()
+    return True
 
 # Additional integration for storing recognized face vectors per user
 USER_DB = os.path.join(DATASETS_DIR, "user_profiles.db")

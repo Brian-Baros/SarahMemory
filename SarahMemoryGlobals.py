@@ -2,7 +2,7 @@
 File: SarahMemoryGlobals.py
 Part of the SarahMemory Companion AI-bot Platform
 Version: v8.0.0
-Date: 2025-04-09
+Date: 2025-05-14
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -2164,6 +2164,17 @@ SYNC_DIR          = os.path.join(DATA_DIR, "sync")
 VAULT_DIR         = os.path.join(DATA_DIR, "vault")
 WALLET_DIR        = os.path.join(DATA_DIR, "wallet")
 
+#=============================================================================
+# SarahMemory Database SQL/(Sqlite3) and all ../data/memory/datasets .db file Fine Tuning
+#==============================================================================
+SYNAPSES_SQLITE_TIMEOUT_SECONDS = 60.0
+SYNAPSES_SQLITE_BUSY_TIMEOUT_MS = 60000
+SYNAPSES_SQLITE_RETRY_ATTEMPTS = 8
+SYNAPSES_SQLITE_RETRY_BASE_SECONDS = 0.15
+SYNAPSES_SQLITE_RETRY_MAX_SECONDS = 2.0
+
+
+
 # =============================================================================
 # SarahMemory Core Discovery / Registration / Governance (SM_FULL_IO lock)
 # -----------------------------------------------------------------------------
@@ -3007,7 +3018,21 @@ DEVELOPERSMODE = True #When True DevelopersMode will be enabled and allow access
 #to more advanced features and tools, default False
  
 # this Flag is to STAY OFF! in False until full Autonomious Functionality is and can be achevied
+#-------------------------------------------------------------------------------------------------------------
+# MANUAL AUTO AND AUTOMONUS (MOTOR, SERVO, DEVICE CONTROLLER) FLAG CONTROLS
+#-------------------------------------------------------------------------------------------------------------
+VISION_OBSERVATION_LOGGING_ENABLED = False #Default is OFF so SOBJE does not keep stuffing the database with observations unless explicitly enabled.
+VISION_TEMP_CACHE_ENABLED = True
+VISION_TEMP_CACHE_DAYS = 7
+VISION_PATTERN_LEARNING_ENABLED = True
+VISION_PATTERN_HEALTH_WATCH_ENABLED = False
+VISION_RAW_FRAME_RETENTION_ENABLED = False
+VISION_APPROVED_LEARNING_REQUIRED = True
 
+
+
+
+#--------------------------------------------------------------------------------------------------------------
 def ensure_directories():
     """
     Create all necessary directories for SarahMemory system.

@@ -48,6 +48,19 @@ import re as _re
 from typing import Any, Dict, List, Optional, Tuple
 import SarahMemoryGlobals as config
 from SarahMemoryGlobals import DATASETS_DIR, OBJECT_MODEL_CONFIG, OBJECT_DETECTION_ENABLED, MODEL_PATHS
+
+
+def _vision_observation_logging_enabled() -> bool:
+    """Read the vision observation logging switch from SarahMemoryGlobals.
+
+    SarahMemoryGlobals.py is the constitutional control plane. SOBJE must not
+    decide this locally and must not silently enable DB growth from environment
+    variables. Missing flag fails closed.
+    """
+    try:
+        return bool(getattr(config, "VISION_OBSERVATION_LOGGING_ENABLED", False))
+    except Exception:
+        return False
 #import SarahMemoryFacialRecognition as fr
 #from SarahMemoryGlobals import run_async
 #from SarahMemoryHi import async_update_network_state
@@ -323,143 +336,25 @@ def sm_parse_visual_intent(text: str):
 
 
 def ultra_detect_objects(frame: np.ndarray) -> list:
-
-    # === [ADDED] YOLO + real observations + DB logging ===
-    real_detections = []  # (label, (x1,y1,x2,y2), conf, model_name)
-    try:
-        models = _get_yolo_models_for_inference()
-        if models:
-            # choose first loaded model (or loop models)
-            for mname, model in models.items():
-                results = model.predict(frame, imgsz=640, conf=0.25, verbose=False)
-                for r in results:
-                    for b in r.boxes:
-                        cls_id = int(b.cls[0])
-                        conf  = float(b.conf[0])
-                        x1,y1,x2,y2 = map(int, b.xyxy[0].tolist())
-                        raw_label = model.names.get(cls_id, "object")
-                        real_detections.append((raw_label, (x1,y1,x2,y2), conf, mname))
-    except Exception as _e:
-        logging.warning(f"YOLO inference failed: {_e}")
-
-    # if nothing from YOLO, fallback to contours with a generic 'object'
-    if not real_detections:
-        contours = get_contours(frame)
-        for c in contours:
-            if cv2.contourArea(c) > 500:
-                x,y,w,h = cv2.boundingRect(c)
-                real_detections.append(("object", (x,y,x+w,y+h), 0.5, "contour"))
-
-    # draw & map to domain + optional color for key targets
-    observations = []
-    for raw_label, (x1,y1,x2,y2), conf, mname in real_detections:
-        # draw box
-        cv2.rectangle(processed_frame,(x1,y1),(x2,y2),(0,255,0),2)
-        cv2.putText(processed_frame, f"{raw_label} {conf:.2f}", (x1, max(12,y1-6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (36,255,12), 1)
-
-        domain, canon = _domain_of(raw_label)
-        color_stats = None
-        # color-worthy targets
-        if domain in ("garment","food","container","object"):
-            roi = frame[y1:y2, x1:x2].copy()
-            color_stats = _sm_roi_color(roi)
-
-        observations.append({
-            "raw_label": raw_label,
-            "label": canon,
-            "domain": domain,
-            "bbox": [x1,y1,x2,y2],
-            "confidence": conf,
-            "model": mname,
-            "color": color_stats
-        })
-
-    # === DB logging (real observations only) ===
-    try:
-        from SarahMemoryDatabase import get_db_connection
-        import json as _json
-        conn = get_db_connection('ai_learning.db')  # keep your existing db name
-        cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS object_observations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT, label TEXT, domain TEXT, confidence REAL,
-            bbox TEXT, model TEXT, color_name TEXT, color_hex TEXT, raw_stats TEXT
-        )""")
-        ts = datetime.utcnow().isoformat()
-        for obs in observations:
-            color = obs.get("color") or {}
-            cur.execute("""INSERT INTO object_observations
-                (timestamp, label, domain, confidence, bbox, model, color_name, color_hex, raw_stats)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (ts, obs["label"], obs["domain"], float(obs["confidence"]),
-                 _json.dumps(obs["bbox"]), obs["model"],
-                 color.get("name"), color.get("hex"),
-                 _json.dumps(obs)))
-        conn.commit(); conn.close()
-    except Exception as _e:
-        logging.warning(f"object_observations logging failed: {_e}")
-
-
-
-
-    # === [ADDED] ROI dominant color helper (uses AdvCU color naming) ===
-    import numpy as _np
-    import cv2 as _cv2
-
-    def _sm_roi_color(bgr_roi):
-        if bgr_roi is None or bgr_roi.size == 0:
-            return {"hex":"#000000","rgb":[0,0,0],"hsl":[0,0,0],"name":"unknown","confidence":0.0}
-        hsv = _cv2.cvtColor(bgr_roi, _cv2.COLOR_BGR2HSV)
-        h,s,v = _cv2.split(hsv)
-        mask = (s > 18) & (v > 25)
-        pix = bgr_roi[mask] if mask.any() else bgr_roi.reshape(-1,3)
-        Z = _np.float32(pix); K=3
-        crit = (_cv2.TERM_CRITERIA_EPS + _cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
-        try:
-            _, labels, centers = _cv2.kmeans(Z, K, None, crit, 3, _cv2.KMEANS_PP_CENTERS)
-            counts = _np.bincount(labels.flatten(), minlength=K)
-            idx = int(counts.argmax())
-            b,g,r = centers[idx].astype(int).tolist()
-            from SarahMemoryAdvCU import sm_color_name_from_rgb
-            name = sm_color_name_from_rgb(r,g,b)
-            conf = float(counts[idx]/max(1,counts.sum()))
-        except Exception:
-            b,g,r = pix.mean(axis=0).astype(int).tolist()
-            from SarahMemoryAdvCU import sm_color_name_from_rgb
-            name = sm_color_name_from_rgb(r,g,b)
-            conf = 0.5
-        rp,gp,bp = r/255.0, g/255.0, b/255.0
-        mx, mn = max(rp,gp,bp), min(rp,gp,bp)
-        l = (mx+mn)/2.0
-        if mx==mn: h=0.0; s=0.0
-        else:
-            d = mx-mn
-            s = d/(2.0-mx-mn) if l>0.5 else d/(mx+mn+1e-9)
-            if mx==rp: h = ((gp-bp)/d + (6 if gp<bp else 0))
-            elif mx==gp: h = ((bp-rp)/d + 2)
-            else: h = ((rp-gp)/d + 4)
-            h *= 60.0; h%=360.0
-        hexv = f"#{r:02x}{g:02x}{b:02x}"
-        return {"hex":hexv,"rgb":[int(r),int(g),int(b)],"hsl":[float(h),float(s),float(l)],"name":name,"confidence":conf}
     """
-    Detects objects from the provided frame, applies domain tagging,
-    logs findings to the database, and returns selected labels.
+    Super Object Detection Engine.
 
-    Improvements:
-      - Uses a local copy of the frame for drawing.
-      - Reduces synthetic term generation for performance.
-      - Uses context managers for SQLite logging.
-      - Added inline documentation and type hints.
+    Design intent:
+      - Works without an installed vision model using the legacy/offline
+        contour + broad-domain "dead/demo robot" fallback.
+      - Uses enabled SarahMemoryGlobals vision models when present.
+      - Never opens hardware; receives a frame only.
+      - Writes observations only when SarahMemoryGlobals.VISION_OBSERVATION_LOGGING_ENABLED is True.
     """
     if frame is None:
         logger.warning("No frame provided for object detection.")
         return []
 
-    processed_frame = frame.copy()  # local copy for drawing
+    processed_frame = frame.copy()
 
-    def get_contours(frame: np.ndarray) -> list:
+    def get_contours(src: np.ndarray) -> list:
         try:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            gray = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
             blurred = cv2.GaussianBlur(gray, (5, 5), 0)
             edges = cv2.Canny(blurred, 100, 200)
             contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -468,20 +363,142 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
             logger.error(f"Error extracting contours: {e}")
             return []
 
-    def draw_and_identify(contours: list, min_area: int = 500) -> list:
-        tags = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            if area > min_area:
-                x, y, w, h = cv2.boundingRect(contour)
-                cv2.rectangle(processed_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                cv2.putText(processed_frame, "object", (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                tags.append("object")
-        return tags
+    def _sm_roi_color(bgr_roi):
+        try:
+            import numpy as _np
+            import cv2 as _cv2
+            if bgr_roi is None or bgr_roi.size == 0:
+                return {"hex": "#000000", "rgb": [0, 0, 0], "hsl": [0, 0, 0], "name": "unknown", "confidence": 0.0}
+            hsv = _cv2.cvtColor(bgr_roi, _cv2.COLOR_BGR2HSV)
+            _h, s, v = _cv2.split(hsv)
+            mask = (s > 18) & (v > 25)
+            pix = bgr_roi[mask] if mask.any() else bgr_roi.reshape(-1, 3)
+            Z = _np.float32(pix)
+            K = 3 if len(Z) >= 3 else 1
+            crit = (_cv2.TERM_CRITERIA_EPS + _cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
+            try:
+                _, labels, centers = _cv2.kmeans(Z, K, None, crit, 3, _cv2.KMEANS_PP_CENTERS)
+                counts = _np.bincount(labels.flatten(), minlength=K)
+                idx = int(counts.argmax())
+                b, g, r = centers[idx].astype(int).tolist()
+                try:
+                    from SarahMemoryAdvCU import sm_color_name_from_rgb
+                    name = sm_color_name_from_rgb(r, g, b)
+                except Exception:
+                    name = _bgr_to_color_name((b, g, r))
+                conf = float(counts[idx] / max(1, counts.sum()))
+            except Exception:
+                b, g, r = pix.mean(axis=0).astype(int).tolist()
+                try:
+                    from SarahMemoryAdvCU import sm_color_name_from_rgb
+                    name = sm_color_name_from_rgb(r, g, b)
+                except Exception:
+                    name = _bgr_to_color_name((b, g, r))
+                conf = 0.5
+            rp, gp, bp = r / 255.0, g / 255.0, b / 255.0
+            mx, mn = max(rp, gp, bp), min(rp, gp, bp)
+            light = (mx + mn) / 2.0
+            if mx == mn:
+                hue = 0.0
+                sat = 0.0
+            else:
+                d = mx - mn
+                sat = d / (2.0 - mx - mn) if light > 0.5 else d / (mx + mn + 1e-9)
+                if mx == rp:
+                    hue = ((gp - bp) / d + (6 if gp < bp else 0))
+                elif mx == gp:
+                    hue = ((bp - rp) / d + 2)
+                else:
+                    hue = ((rp - gp) / d + 4)
+                hue *= 60.0
+                hue %= 360.0
+            return {
+                "hex": f"#{r:02x}{g:02x}{b:02x}",
+                "rgb": [int(r), int(g), int(b)],
+                "hsl": [float(hue), float(sat), float(light)],
+                "name": name,
+                "confidence": conf,
+            }
+        except Exception:
+            return {"hex": "#000000", "rgb": [0, 0, 0], "hsl": [0, 0, 0], "name": "unknown", "confidence": 0.0}
 
-    contours = get_contours(frame)
-    detected_objects = draw_and_identify(contours)
+    real_detections = []  # (label, (x1, y1, x2, y2), conf, model_name)
+    try:
+        models = _get_yolo_models_for_inference()
+        for mname, model in (models or {}).items():
+            results = model.predict(frame, imgsz=640, conf=0.25, verbose=False)
+            for r in results:
+                names = getattr(r, "names", None) or getattr(model, "names", {}) or {}
+                for b in getattr(r, "boxes", []) or []:
+                    try:
+                        cls_id = int(b.cls[0])
+                        conf = float(b.conf[0])
+                        x1, y1, x2, y2 = map(int, b.xyxy[0].tolist())
+                        raw_label = str(names.get(cls_id, "object"))
+                        real_detections.append((raw_label, (x1, y1, x2, y2), conf, mname))
+                    except Exception:
+                        continue
+    except Exception as _e:
+        logging.warning(f"YOLO inference failed: {_e}")
+
+    # If no model is available, retain the offline contour-only construct.
+    if not real_detections:
+        for c in get_contours(frame):
+            try:
+                if cv2.contourArea(c) > 500:
+                    x, y, w, h = cv2.boundingRect(c)
+                    real_detections.append(("object", (x, y, x + w, y + h), 0.5, "contour"))
+            except Exception:
+                continue
+
+    observations = []
+    detected_objects = []
+    for raw_label, (x1, y1, x2, y2), conf, mname in real_detections:
+        try:
+            cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(processed_frame, f"{raw_label} {conf:.2f}", (x1, max(12, y1 - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (36, 255, 12), 1)
+        except Exception:
+            pass
+        domain, canon = _domain_of(raw_label)
+        color_stats = None
+        if domain in ("garment", "food", "container", "object"):
+            roi = _clamp_crop(frame, x1, y1, x2, y2)
+            color_stats = _sm_roi_color(roi)
+        detected_objects.append(canon or raw_label)
+        observations.append({
+            "raw_label": raw_label,
+            "label": canon,
+            "domain": domain,
+            "bbox": [x1, y1, x2, y2],
+            "confidence": conf,
+            "model": mname,
+            "color": color_stats,
+        })
+
+    if _vision_observation_logging_enabled() and observations:
+        try:
+            from SarahMemoryDatabase import get_db_connection
+            import json as _json
+            conn = get_db_connection('ai_learning.db')
+            cur = conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS object_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT, label TEXT, domain TEXT, confidence REAL,
+                bbox TEXT, model TEXT, color_name TEXT, color_hex TEXT, raw_stats TEXT
+            )""")
+            ts = datetime.utcnow().isoformat()
+            for obs in observations:
+                color = obs.get("color") or {}
+                cur.execute("""INSERT INTO object_observations
+                    (timestamp, label, domain, confidence, bbox, model, color_name, color_hex, raw_stats)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (ts, obs["label"], obs["domain"], float(obs["confidence"]),
+                     _json.dumps(obs["bbox"]), obs["model"],
+                     color.get("name"), color.get("hex"), _json.dumps(obs)))
+            conn.commit()
+            conn.close()
+        except Exception as _e:
+            logging.warning(f"object_observations logging failed: {_e}")
 
     domains = {
         "animals": [
@@ -676,19 +693,19 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
                 detected_tags.append((category, obj))
                 break
 
-    # Check for critical conditions.
     medical_flags = {
         "condition: mole": "Possible melanoma",
         "expression: slouched": "Posture anomaly / neuro issue",
         "face-point: landmark_2349": "Right eye droop — stroke warning",
-        "skin tone: uneven": "Skin cancer check"
+        "skin tone: uneven": "Skin cancer check",
     }
     for tag in detected_tags:
         if tag in medical_flags:
             alert_medical(tag)
 
-    # Generate synthetic high-tech terms (reduced count for better performance)
-    synthetic_count = 500  # Reduced from 10000 iterations
+    # Legacy offline/demo fallback vocabulary. This keeps SarahMemory operational
+    # without a selected vision model, but model detections are preferred when present.
+    synthetic_count = 500
     prefixes = ["modular", "adaptive", "quantum", "neural", "precision", "bio-active", "liquid-cooled", "synthetic"]
     nouns = ["transmitter", "oscillator", "stabilizer", "inverter", "thruster", "sensor", "valve", "core"]
     suffixes = ["array", "hub", "grid", "cell", "interface", "matrix", "system", "scanner"]
@@ -697,56 +714,69 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
         for _ in range(synthetic_count)
     ]
 
-    # Combine domain terms with synthetic terms.
     all_objects = []
     for category, terms in domains.items():
         for term in terms:
             all_objects.append(f"{category}: {term}")
     all_objects.extend(synthetic_terms)
 
-    random.shuffle(all_objects)
-    selected = random.sample(all_objects, random.randint(3, 12))
+    selected = []
+    for obs in observations[:8]:
+        label = obs.get("label") or obs.get("raw_label")
+        domain = obs.get("domain") or "object"
+        if label:
+            item = f"{domain}: {label}"
+            if item not in selected:
+                selected.append(item)
+    if len(selected) < 3 and all_objects:
+        random.shuffle(all_objects)
+        target_count = random.randint(3, 12)
+        for item in all_objects:
+            if item not in selected:
+                selected.append(item)
+            if len(selected) >= target_count:
+                break
 
-    # Log selected detections to SQLite.
-    try:
-        db_path = os.path.join(config.DATASETS_DIR, "ai_learning.db")
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS object_observations (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    label TEXT
-                )
-            """)
-            timestamp = datetime.now().isoformat()
-            for item in selected:
+    if _vision_observation_logging_enabled() and selected:
+        try:
+            db_path = os.path.join(config.DATASETS_DIR, "ai_learning.db")
+            os.makedirs(os.path.dirname(db_path), exist_ok=True)
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT COUNT(*) FROM object_observations
-                    WHERE label = ? AND DATE(timestamp) = DATE('now')
-                """, (item,))
-                if cursor.fetchone()[0] == 0:
-                    if hasattr(config, 'vision_canvas'):
-                        try:
-                            config.vision_canvas.itemconfig(config.vision_light, fill="red")
-                        except Exception as ce:
-                            logger.warning(f"Vision light update failed: {ce}")
-                    cursor.execute("INSERT INTO object_observations (timestamp, label) VALUES (?, ?)",
-                                   (timestamp, item))
-                    if hasattr(config, 'status_bar'):
-                        try:
-                            config.status.set_status(f"Identified: {item}")
-                        except Exception as sbe:
-                            logger.warning(f"Status bar update failed: {sbe}")
-            conn.commit()
-    except Exception as e:
-        if hasattr(config, 'vision_canvas'):
-            try:
-                config.vision_canvas.itemconfig(config.vision_light, fill="yellow")
-            except Exception as ce:
-                logger.warning(f"Vision light update failed: {ce}")
-        logger.warning(f"Could not log object detections: {e}")
+                    CREATE TABLE IF NOT EXISTS object_observations (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT,
+                        label TEXT
+                    )
+                """)
+                timestamp = datetime.now().isoformat()
+                for item in selected:
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM object_observations
+                        WHERE label = ? AND DATE(timestamp) = DATE('now')
+                    """, (item,))
+                    if cursor.fetchone()[0] == 0:
+                        if hasattr(config, 'vision_canvas'):
+                            try:
+                                config.vision_canvas.itemconfig(config.vision_light, fill="red")
+                            except Exception as ce:
+                                logger.warning(f"Vision light update failed: {ce}")
+                        cursor.execute("INSERT INTO object_observations (timestamp, label) VALUES (?, ?)",
+                                       (timestamp, item))
+                        if hasattr(config, 'status_bar'):
+                            try:
+                                config.status.set_status(f"Identified: {item}")
+                            except Exception as sbe:
+                                logger.warning(f"Status bar update failed: {sbe}")
+                conn.commit()
+        except Exception as e:
+            if hasattr(config, 'vision_canvas'):
+                try:
+                    config.vision_canvas.itemconfig(config.vision_light, fill="yellow")
+                except Exception as ce:
+                    logger.warning(f"Vision light update failed: {ce}")
+            logger.warning(f"Could not log object detections: {e}")
 
     logger.info(f"Ultra Detected: {selected}")
     if hasattr(config, 'vision_canvas'):
@@ -755,6 +785,7 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
         except Exception as ce:
             logger.warning(f"Vision light update failed: {ce}")
     return selected
+
 def get_recent_environmental_tags(limit: int = 10) -> str:
     """
     Returns a summarized and human-readable description of recent environmental observations.
@@ -960,6 +991,8 @@ def _normalize_visual_request(question_or_payload: Any) -> Dict[str, Any]:
             request["query_type"] = "identify_color"
         elif any(s in q for s in ("before and after", "compare", "difference", "changed")):
             request["query_type"] = "compare_before_after"
+        elif any(s in q for s in ("what is in my hand", "what's in my hand", "what is in my hands", "what am i holding", "holding in my hand", "object in my hand")):
+            request["query_type"] = "held_object"
         elif any(s in q for s in ("what do you see", "scene", "summarize", "around me", "environment")):
             request["query_type"] = "scene_summary"
         else:
@@ -987,6 +1020,7 @@ def _normalize_visual_request(question_or_payload: Any) -> Dict[str, Any]:
             "compare_before_after": ["difference"],
             "assess_style_or_fit": ["style", "fit"],
             "scene_summary": ["scene"],
+            "held_object": ["objects", "position"],
         }
         request["requested_attributes"] = list(default_attrs.get(request["query_type"], []))
 
@@ -1261,6 +1295,117 @@ def _motion_findings(frame: np.ndarray) -> Dict[str, Any]:
         return findings
 
 
+
+def _area_of_bbox_xyxy(box: Any) -> int:
+    try:
+        x1, y1, x2, y2 = [int(v) for v in (box or [0, 0, 0, 0])]
+        return max(0, x2 - x1) * max(0, y2 - y1)
+    except Exception:
+        return 0
+
+
+def _bbox_center_xy(box: Any) -> Tuple[float, float]:
+    try:
+        x1, y1, x2, y2 = [float(v) for v in (box or [0, 0, 0, 0])]
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+    except Exception:
+        return (0.0, 0.0)
+
+
+def _bbox_iou_xyxy(a: Any, b: Any) -> float:
+    try:
+        ax1, ay1, ax2, ay2 = [float(v) for v in (a or [0, 0, 0, 0])]
+        bx1, by1, bx2, by2 = [float(v) for v in (b or [0, 0, 0, 0])]
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = iw * ih
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        denom = area_a + area_b - inter
+        return float(inter / denom) if denom > 0 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _estimate_hand_regions(frame: np.ndarray, face_box: Optional[Tuple[int, int, int, int]] = None) -> List[Dict[str, Any]]:
+    """Return bounded hand/holding candidate zones without opening any device.
+
+    This is a fallback relationship heuristic for questions like "what is in my hand".
+    If a detector supplies explicit hand/person/object boxes, those stay preferred.
+    """
+    regions: List[Dict[str, Any]] = []
+    try:
+        h, w = frame.shape[:2]
+        if face_box:
+            fx, fy, fw, fh = face_box
+            y1 = min(h, fy + int(fh * 1.15))
+            y2 = min(h, fy + int(fh * 3.2))
+            span = max(fw, int(w * 0.16))
+            regions.append({"label": "left_hand_region", "bbox": [max(0, fx - span), y1, min(w, fx + int(fw * 0.25)), y2], "method": "face_relative"})
+            regions.append({"label": "right_hand_region", "bbox": [max(0, fx + int(fw * 0.75)), y1, min(w, fx + fw + span), y2], "method": "face_relative"})
+        # Generic lower-mid zones for phone/cloud webcam framing when face/hand detector is unavailable.
+        regions.append({"label": "lower_left_hand_region", "bbox": [0, int(h * 0.45), int(w * 0.55), h], "method": "generic_frame"})
+        regions.append({"label": "lower_right_hand_region", "bbox": [int(w * 0.45), int(h * 0.45), w, h], "method": "generic_frame"})
+    except Exception:
+        pass
+    clean: List[Dict[str, Any]] = []
+    for item in regions:
+        bbox = item.get("bbox") if isinstance(item, dict) else None
+        if _area_of_bbox_xyxy(bbox) > 0:
+            clean.append(item)
+    return clean
+
+
+def _detect_held_object(frame: np.ndarray, detections: List[Dict[str, Any]], face_box: Optional[Tuple[int, int, int, int]] = None) -> Dict[str, Any]:
+    hand_regions = _estimate_hand_regions(frame, face_box)
+    candidates: List[Dict[str, Any]] = []
+    ignored_labels = {"person", "face", "head", "hand", "hands", "arm", "arms"}
+    for det in list(detections or []):
+        label = str(det.get("label") or det.get("raw_label") or "object").strip().lower()
+        if not label or label in ignored_labels:
+            continue
+        bbox = det.get("bbox") if isinstance(det.get("bbox"), list) else None
+        if not bbox:
+            continue
+        best_score = 0.0
+        best_region = None
+        for region in hand_regions:
+            rb = region.get("bbox")
+            iou = _bbox_iou_xyxy(bbox, rb)
+            cx, cy = _bbox_center_xy(bbox)
+            rx1, ry1, rx2, ry2 = [float(v) for v in rb]
+            inside = rx1 <= cx <= rx2 and ry1 <= cy <= ry2
+            score = iou + (0.35 if inside else 0.0) + min(0.25, float(det.get("confidence") or 0.0) * 0.25)
+            if score > best_score:
+                best_score = score
+                best_region = region
+        if best_score > 0.10:
+            item = dict(det)
+            item["held_score"] = round(best_score, 4)
+            item["hand_region"] = best_region
+            candidates.append(item)
+    candidates.sort(key=lambda d: (float(d.get("held_score") or 0.0), float(d.get("confidence") or 0.0)), reverse=True)
+    if candidates:
+        best = candidates[0]
+        return {
+            "visible": True,
+            "object": best.get("label") or best.get("raw_label") or "object",
+            "raw_label": best.get("raw_label") or best.get("label") or "object",
+            "confidence": max(0.42, min(0.82, float(best.get("confidence") or 0.45) + 0.10)),
+            "bbox": best.get("bbox"),
+            "color": best.get("color"),
+            "hand_region": best.get("hand_region"),
+            "candidates": candidates[:5],
+        }
+    return {
+        "visible": False,
+        "object": None,
+        "confidence": 0.25 if hand_regions else 0.0,
+        "hand_regions": hand_regions[:4],
+        "candidates": [],
+    }
+
 def _build_visual_findings(question_or_payload: Any, frame: Optional[np.ndarray]) -> Dict[str, Any]:
     request = _normalize_visual_request(question_or_payload)
     findings: Dict[str, Any] = {
@@ -1283,6 +1428,7 @@ def _build_visual_findings(question_or_payload: Any, frame: Optional[np.ndarray]
         "distance": {"label": "unknown", "confidence": 0.0, "approx_ratio": 0.0},
         "safety": {"hazard_zone_violation": None, "configured": False, "message": None},
         "style": {"assessment": None, "confidence": 0.0},
+        "held_object": {"visible": False, "object": None, "confidence": 0.0},
         "confidence": 0.0,
         "errors": [],
     }
@@ -1347,6 +1493,15 @@ def _build_visual_findings(question_or_payload: Any, frame: Optional[np.ndarray]
             findings["distance"] = _distance_from_bbox(frame, best.get("bbox"))
             findings["resolved_subject"] = best.get("label") or findings["resolved_subject"]
         findings["confidence"] = float(findings["distance"].get("confidence") or 0.0)
+
+    elif query_type == "held_object":
+        held = _detect_held_object(frame, detections, face_box=face)
+        findings["held_object"] = held
+        if held.get("object"):
+            findings["resolved_subject"] = held.get("object")
+            if held.get("object") not in findings["subject_candidates"]:
+                findings["subject_candidates"].insert(0, held.get("object"))
+        findings["confidence"] = float(held.get("confidence") or 0.0)
 
     elif query_type == "inspect_safety_zone":
         if detections and not face:
@@ -1446,6 +1601,19 @@ def _answer_from_visual_findings(findings: Dict[str, Any]) -> str:
             return "I can't estimate the distance confidently from this frame."
         return f"The {subject} appears {label}."
 
+    if query_type == "held_object":
+        held = findings.get("held_object") or {}
+        obj = held.get("object")
+        if obj:
+            color = held.get("color") if isinstance(held.get("color"), dict) else {}
+            color_name = color.get("name") if isinstance(color, dict) else None
+            if color_name and color_name != "unknown":
+                return f"You appear to be holding a {color_name} {obj}."
+            return f"You appear to be holding a {obj}."
+        if (held.get("hand_regions") or held.get("candidates")):
+            return "I can inspect the hand region, but I cannot verify the object in your hand clearly enough yet."
+        return "I cannot verify a hand-held object from this frame yet."
+
     if query_type == "inspect_safety_zone":
         safety = findings.get("safety") or {}
         dist = findings.get("distance") or {}
@@ -1514,6 +1682,7 @@ def answer_visual_question(question, frame):
         "distance": findings.get("distance") or {},
         "safety": findings.get("safety") or {},
         "style": findings.get("style") or {},
+        "held_object": findings.get("held_object") or {},
         "sensor_status": findings.get("sensor_status") or {},
         "confidence": findings.get("confidence") or 0.0,
         "errors": findings.get("errors") or [],

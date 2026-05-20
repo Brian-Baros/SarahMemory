@@ -515,7 +515,7 @@ def _classify_intent(text: str) -> str:
 
     if _has_phrase("diagnos", "self-test", "self test", "health check"):
         return "diagnostics"
-    if _has_phrase("gpu", "vram", "cuda", "disk space", "free disk", "free space", "storage", "drive space", "cpu", "ram", "memory usage", "system stats", "system status", "hardware stats", "webcam", "web cam", "camera device", "camera devices", "vision capability", "vision capabilities", "vision hardware"):
+    if _has_phrase("gpu", "vram", "cuda", "disk space", "free disk", "free space", "storage", "drive space", "cpu", "ram", "memory usage", "system stats", "system status", "hardware stats"):
         return "device_query"
     if _has_phrase("chem", "molar", "stoichi", "compound", "element", "reaction", "acid", "base") or re.search(r"\bph\b", t):
         return "chemistry"
@@ -1183,10 +1183,6 @@ def _detect_system_kind(text: str, intent: str = "") -> Optional[str]:
         return "ram"
     if any(k in t for k in ("network adapter", "network adapters", "ethernet", "wi-fi", "wifi", "bluetooth network")):
         return "network"
-    visual_live_cues = ("what do you see", "what can you see", "look at", "read this", "what color", "what colour", "analyze this image", "describe this image", "scene summary")
-    visual_body_cues = ("webcam", "web cam", "camera device", "camera devices", "what camera", "what type of camera", "what type of webcam", "do you have a camera", "do you have a webcam", "vision capability", "vision capabilities", "vision hardware")
-    if any(k in t for k in visual_body_cues) and not any(k in t for k in visual_live_cues):
-        return "camera"
     if any(k in t for k in ("disk space", "free disk", "free space", "storage", "drive space")):
         return "disk"
     if any(k in t for k in ("system stats", "system status", "hardware stats", "environment", "where are you running", "what are you running on")):
@@ -1515,6 +1511,7 @@ _VISUAL_QUERY_TYPES = {
     "compare_before_after",
     "assess_style_or_fit",
     "scene_summary",
+    "held_object",
 }
 
 _VISUAL_STRONG_CUE_PHRASES = (
@@ -1530,13 +1527,14 @@ _VISUAL_STRONG_CUE_PHRASES = (
     "look fat", "look good", "look okay", "does this shirt make me",
     "who is this person", "is this", "do you recognize", "who is this", "where is my",
     "behind me", "in front of me", "left of me", "right of me", "next to me",
+    "in my hand", "in my hands", "what is in my hand", "what am i holding", "what's in my hand", "what object is in my hand",
     "take a snapshot", "capture this", "take a picture", "take a photo",
     "zoom in", "zoom on", "magnify", "closer look", "focus on",
 )
 
 _VISUAL_SUBJECT_HINTS = (
     "shirt", "pants", "trousers", "jeans", "shorts", "dress", "skirt", "jacket", "coat",
-    "hat", "cap", "glasses", "eyes", "eye", "face", "beard", "mouth", "nose", "hair",
+    "hat", "cap", "glasses", "eyes", "eye", "face", "beard", "mouth", "nose", "hair", "hand", "hands",
     "employee", "worker", "person", "people", "woman", "man", "girl", "boy",
     "wife", "daughter", "son", "child", "mother", "father", "sister", "brother",
     "machine", "forklift", "car", "road", "controller", "keys", "key",
@@ -1557,7 +1555,7 @@ _VISUAL_ACTION_CUE_PHRASES = (
 )
 
 _VISUAL_DEICTIC_REFERENCES = (
-    "this", "that", "these", "those", "here", "holding up", "in my hand", "on this",
+    "this", "that", "these", "those", "here", "holding up", "in my hand", "in my hands", "holding", "on this",
 )
 
 
@@ -1739,6 +1737,8 @@ def _infer_visual_query_type(text: str) -> str:
 
     if _contains_any_phrase_token(t, ("what color", "what colour", "color of", "colour of")):
         return "identify_color"
+    if _contains_any_phrase_token(t, ("what is in my hand", "what's in my hand", "what is in my hands", "what am i holding", "what object is in my hand", "in my hand", "in my hands")):
+        return "held_object"
     if _contains_any_phrase_token(t, ("what does", "read this", "read the text", "text on", "say on", "ocr", "read what is on")):
         return "read_text"
     if _looks_like_person_identity_prompt(t):
@@ -1788,7 +1788,7 @@ def _infer_visual_subject(text: str, query_type: str = "") -> str:
     candidates = (
         "water bottle", "waterbottle", "bottle", "logo", "paper", "document", "page", "note",
         "shirt", "pants", "trousers", "jeans", "shorts", "dress", "skirt", "jacket", "coat",
-        "hat", "cap", "glasses", "eyes", "eye", "face", "beard", "mouth", "nose", "hair",
+        "hat", "cap", "glasses", "eyes", "eye", "face", "beard", "mouth", "nose", "hair", "hand", "hands",
         "employee", "worker", "person", "wife", "daughter", "son", "child", "mother", "father",
         "machine", "forklift", "car", "road", "controller", "keys", "key",
         "desk", "screen", "monitor", "door", "animal", "dog", "cat", "webcam", "camera", "pc", "computer",
@@ -1934,7 +1934,7 @@ def _is_visual_request(intent: str, text: str, meta: Optional[Dict[str, Any]] = 
             or (has_visual_media and (has_deictic_reference or has_visual_subject or helper_has_signal))
         )
 
-    if candidate_query_type in {"scene_summary", "detect_objects"}:
+    if candidate_query_type in {"scene_summary", "detect_objects", "held_object"}:
         return bool(
             has_visual_phrase
             or has_visual_subject
@@ -3026,26 +3026,6 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.Network", "ok": ok})
             reply = f"I can see {len(names)} network adapters: {', '.join(names[:12])}." if ok else "Network adapter details are not available in my unified environment snapshot."
             return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"network_adapters": adapters}, trace=trace)
-
-        if system_kind == "camera":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            cameras = body.get("camera_devices") if isinstance(body.get("camera_devices"), list) else []
-            caps = []
-            if _FaceRec is not None and _vision_helper_allowed("SarahMemoryFacialRecognition", _FaceRec):
-                caps.extend(["face detection", "facial recognition", "facial expression state"])
-            if _SOBJE is not None and _vision_helper_allowed("SarahMemorySOBJE", _SOBJE):
-                caps.extend(["object detection", "scene summary", "color detection", "visual question answering"])
-            caps = list(dict.fromkeys(caps))
-            ok = bool(cameras or caps)
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.CameraVision", "ok": ok, "camera_count": len(cameras)})
-            if cameras:
-                reply = "My verified webcam/camera hardware is: " + "; ".join(str(x) for x in cameras[:6]) + (". Vision capabilities online: " + ", ".join(caps[:8]) + "." if caps else ".")
-            elif caps:
-                reply = "I have SarahMemory vision software capability online (" + ", ".join(caps[:8]) + "), but no physical webcam/camera device is currently verified in my unified environment snapshot."
-            else:
-                reply = "Camera/vision details are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.55, artifacts={"camera_devices": cameras, "vision_capabilities": caps}, trace=trace)
 
         if system_kind == "disk":
             _trace_primary_lane(trace, 'system', 'DiskUsage')
