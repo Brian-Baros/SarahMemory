@@ -1,5 +1,7 @@
 ![SarahMemory Logo](documents/SMAIOSLOGO.jpg)
 
+![SMAIOS_BANNER](documents/SarahMemoryAiOS-10x3-Banner.png)
+
 # **SarahMemory AI Operating System (AiOS)**  
 ### **Version 8.0.0 — Developer & Functional Release**
 
@@ -10,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | April 12, 2026 |
+| **Last Update** | May 21, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -108,8 +110,8 @@ A next‑generation AI Operating System capable of:
 ### **Cognitive / Neuron / Synaptic Dataflow**
 ![SarahMemory Dataflow](documents/SARAHMEMORY-AIOS.png)
 
-### **Full Workstation Mode (03/05/2026)**
-![SarahMemory Workstation](documents/SarahMemory-Full_Workstation.png)
+### **Full Workstation Mode (05/07/2026)**
+![SarahMemory Workstation](documents/SM_AIOS_Full_WorkStation_Screenshot_05072026.png)
 
 ---
 # **⚖️ Feature Comparison**
@@ -1041,6 +1043,1029 @@ VISUAL STUDIOS CODE EXTENTION SCREENSHOTS
 ![SarahMemory VS-CODE-2](documents/SM-VSC-Screenshot_2026-04-13_203009.jpg)
 ![SarahMemory VS-CODE-3](documents/SM-VSC-Screenshot_2026-04-13_203123.jpg)
 ![SarahMemory VS-CODE-4](documents/SM-VSC-Screenshot_2026-04-13_203230.jpg)
+---
+
+---
+## **📅 April 13 – May 7, 2026 — 2D Avatar build, REM Sleep, Deep Learning Engine, Shutdown Lifecycle, and Core Runtime Stabilization**
+This update cycle focused on closing the gap between the visible Front-End panels and the actual SarahMemory backend runtime. The major goal was to make the **2D Avatar more realistic and move/ REM Sleep / Deep Learning / Cognitive Trace / Avatar / Chat / Runtime Health** systems behave like one connected AiOS runtime instead of disconnected screens.
+
+---
+## **1. 2D Avatar Build / REM Sleep + Deep Learning Runtime Direction**
+The 2D Avatar build is a series of Images placed in the ../resources/avatars/2D/default directory, with an emotional manifest.json file. 
+-SarahMemoryAvatarPanel.py
+=SarahMemoryAPI.py
+-UnifiedAvatarController.py
+-AvatarPanel.tsx
+      -and more were modified and coded to allow 2D animation to happen. A 3D avatar build is currently being developed the Avatar Panel UI was also updated so the WebCam Live View no longer overlaps the 2D image.
+      
+The REM Sleep and Deep Learning systems were clarified as two related but separate learning lanes:
+
+To FORCE the AIOS into REM SLEEP 
+PowerShell
+```
+ Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/avatar/rem/start" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body (@{
+    reason = "manual_powershell_force_rem"
+    force  = $true
+    source = "PowerShell"
+  } | ConvertTo-Json)
+```
+The BackEnd Route is: 
+```
+POST /api/avatar/rem/start
+```
+To Check Status: For REM SLEEP
+```
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/avatar/rem/status" -Method GET
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/api/avatar/rem/report" -Method GET
+
+```
+To FORCE the AIOS to WakeUp from REM SLEEP
+Powershell
+```
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:8000/api/avatar/rem/stop" `
+  -Method POST `
+  -ContentType "application/json" `
+  -Body (@{
+    reason = "manual_powershell_wake"
+    source = "PowerShell"
+  } | ConvertTo-Json)
+```
+
+### **REM Sleep**
+REM Sleep is now treated as SarahMemory’s self-study and environment-study mode.
+REM is intended for:
+- Self-study
+- Environmental study
+- System file review
+- Hardware/runtime review
+- Learning from local files
+- Research pipeline activity
+- Staged self-improvement
+- Safe evolution review
+- Future self-repair candidate generation
+
+### **Deep Learning**
+Deep Learning is now treated as the conversation/runtime learning lane.
+Deep Learning is intended for:
+- Conversational pattern learning
+- Cognitive trace review
+- Live response evaluation
+- Confidence/risk tracking
+- User interaction learning
+- Subject tracking
+- Runtime model/learning telemetry
+- Updating learning signals while Chat and Avatar are active
+
+This separates **dream/self-study behavior** from **conversation/runtime learning behavior** while still allowing both to share telemetry and reports.
+
+---
+## **2. DL Engine Screen Live Telemetry Upgrade**
+The **DL Engine Screen** was updated so it no longer behaves like a static placeholder panel.
+
+### Improvements Added
+- Reduced flickering caused by the Cognitive Trace / Chat Thinking Process refresh loop
+- Stabilized React state updates so the panel no longer redraws every microsecond
+- Added polling guards so multiple status checks cannot stack on top of each other
+- Increased polling discipline to prevent UI overload
+- Added stable trace IDs so live trace rows update instead of constantly remounting
+- Added dynamic runtime bars for:
+  - CPU
+  - Memory
+  - GPU
+  - Thinking load
+  - Confidence
+  - Risk
+- Reworked the DL Engine panel so it observes system state without keeping the entire AiOS awake
+- Improved live Runtime Health reporting so values are no longer stuck at `0`, `0%`, or static confidence/risk numbers
+- Connected live chat/cognitive activity into the DL Engine reporting path
+- Added live Cognitive Trace events for:
+  - Chat thinking started
+  - Chat thinking completed
+  - Quick route completed
+  - Identity route completed
+  - Governor route completed
+  - Chat errors
+- Added dynamic DL subjects and thought traces sourced from actual runtime events
+
+### Result
+The DL Engine Screen now behaves more like a true live runtime monitor instead of a decorative dashboard. It updates dynamically while reducing UI flicker and avoids blocking REM Sleep / Dream-state initialization.
+---
+
+## **3. REM / DL / AvatarPanel Integration Improvements**
+The project identified a major air gap between:
+- Chat
+- AvatarPanel
+- Cognitive Trace
+- DL Engine
+- REM Sleep
+- Deep Learning state
+This update begins closing that gap.
+
+### Improvements Added
+- Chat activity now feeds DL Engine trace events
+- DL Engine telemetry now reflects real runtime activity
+- REM status is merged into DL Engine status reporting
+- DL Engine status can expose REM phase, cycle ID, completed cycles, staged items, rejected items, auto-applied metadata, and active learning state
+- Runtime telemetry is now designed to be **idle-compatible**
+- Monitoring the DL Engine should no longer prevent SarahMemory from entering idle mode
+- Avatar/Chat activity and DL Engine activity are now better aligned through backend status routes
+
+### Result
+SarahMemory can now move closer to this intended lifecycle:
+```text to:
+User Active
+→ Chat / Avatar / Cognitive Trace active
+→ DL Engine observes and learns
+→ User becomes idle
+→ Avatar enters idle state
+→ REM Sleep becomes eligible
+→ Dream / self-study / deep-learning routines can begin
+```
+---
+## **📅 May 8–12, 2026 — Environmental Body Self-Awareness, Two-Court Cognition, Cognitive TriForce, and SMGET Enterprise Governance Update**
+
+This update cycle focused on SarahMemory AiOS becoming more aware of the **runtime body** it lives in: CPU, GPU, motherboard, memory, storage, sensors, network adapters, drivers, active/inactive capability paths, local/cloud limits, and future remote SarahNet node evidence.
+
+The major design breakthrough is the **Environmental Body Self-Awareness system**. SarahMemory now treats questions about its current hardware, sensors, diagnostics, and runtime body as governed SelfAware body cases instead of generic chatbot prompts.
+
+### **Core Doctrine Added**
+
+```text
+First prove what exists.
+Then reason what it means.
+Then govern what may be claimed or acted on.
+Then keep the task on course.
+Then present it cleanly.
+Then validate the final output.
+Then store only what is allowed.
+```
+
+### **1. Canonical Query Packet / V10-V9G Enterprise Contract**
+
+A new backend doctrine was established: **Normalize once, classify once, preserve target and metric through every layer.**
+
+This prevents failures such as:
+
+- CPU temperature question → CPU identity answer
+- Motherboard BIOS version question → SarahMemory software version answer
+- Ethernet/Wi-Fi question → full adapter dump instead of direct connectivity answer
+- GPU temperature / CPU temperature / motherboard temperature being incorrectly cross-bound
+
+The Canonical Query Packet preserves:
+
+- `raw_text`
+- `normalized_text`
+- `domain`
+- `requested_component`
+- `requested_metric`
+- `fact_kind`
+- `answer_shape`
+- `volatile_runtime_fact`
+- `do_not_write_sql`
+- `do_not_persist`
+
+### **2. Two-Court Self-Awareness Model**
+
+SarahMemory AiOS now uses a clearer court hierarchy:
+
+#### **Lower Court — Fact Verification**
+Proves what exists.
+
+Primary evidence witnesses:
+
+- `appself.py`
+- `SarahMemoryHi.py`
+- `SarahMemoryDiagnostics.py`
+- `SarahNetMCP_Diagnostics.py`
+
+#### **Higher Court — Logic / Appeals / Meaning**
+Reasons what verified facts mean.
+
+Primary cognitive/governance files:
+
+- `SarahMemoryCognitiveSelf.py`
+- `SarahMemoryCognitiveThinker.py`
+- `SarahMemoryCognitiveServices.py`
+- `SarahMemoryCognitiveCompass.py`
+- `SarahMemorySafetyPolicies.py`
+- `SarahMemoryOperatorCore.py`
+- `SarahMemorySecurityGovernor.py`
+- `SarahMemoryAssuranceGate.py`
+- `SarahMemoryTrustRegistry.py`
+
+This allows SarahMemory to handle cases where a direct sensor is unavailable, but verified indirect evidence may still exist.
+
+Example:
+
+```text
+Direct CPU thermal probe = unavailable/null
+CPU identity = verified
+Motherboard identity = verified
+CPU is installed on motherboard = verified
+Motherboard exposes CPU-related thermal evidence = possible/verified
+→ Higher Court decides if the indirect source may be claimed as CPU temperature.
+```
+
+### **3. CPU Temperature Case Study**
+
+The CPU temperature case became the flagship test for governed body awareness.
+
+Correct handling now requires:
+
+1. Detect the user asked for CPU temperature, not CPU identity.
+2. Check direct CPU/package/core thermal evidence.
+3. If direct evidence is null, open the appeals lane instead of stopping.
+4. Check motherboard / ACPI / vendor / board thermal evidence.
+5. Verify CPU and motherboard relationship.
+6. Use CognitiveThinker to reason over indirect sensor meaning.
+7. Use CognitiveServices and SMGET to decide whether the claim may be made.
+8. Use Compass to ensure the answer stays on CPU temperature.
+9. Use Reply to present the answer cleanly.
+10. Use Compare to reject target/metric mismatch.
+
+### **4. SMGET Read-Only Evidence Governance**
+
+SMGET is no longer treated only as an action gate. It is now part of the claim-governance doctrine.
+
+For read-only body facts, SarahMemory may create a governed evidence contract such as:
+
+```text
+contract_type = ReadOnlyEvidenceContract
+action_type = read_sensor_evidence
+risk_level = TIER_0_INFO
+state_change = false
+verification_required = true
+```
+
+This keeps the same safety model across:
+
+- desktop PCs
+- cloud nodes
+- robotics
+- industrial controllers
+- vehicle bodies
+- future bootable jump-drive AiOS deployments
+
+### **5. Cognitive TriForce + Compass Clarified**
+
+The cognitive system is now framed as a governed mind construct:
+
+- `SarahMemoryCognitiveSelf.py` — what exists / what body am I in?
+- `SarahMemoryCognitiveThinker.py` — what could this mean?
+- `SarahMemoryCognitiveServices.py` — what may proceed?
+- `SarahMemoryCognitiveCompass.py` — stay on the original task and prevent drift.
+
+This expanded the earlier Yin/Yang model into a fuller **Cognitive TriForce + Compass** system.
+
+### **6. REM / Awake Learning Doctrine Updated**
+
+The learning doctrine was clarified:
+
+#### **Awake Mode**
+Assist, classify, verify, route, govern, answer, and act only through approved metadata and SMGET.
+
+#### **REM / Sleep Mode**
+Dream, associate, hypothesize, hallucinate inside a sandbox, generate learning candidates, and classify risk.
+
+Critical rule:
+
+```text
+REM may hallucinate.
+Awake may not present hallucination as fact.
+```
+
+### **7. Volatile Runtime Body Facts Protected**
+
+Live hardware and sensor facts must not become stale SQL truth.
+
+Examples of volatile facts:
+
+- current CPU temperature
+- current GPU temperature
+- connected network adapter state
+- installed motherboard
+- current BIOS version
+- drive topology
+- remote-node hardware status
+
+These must be re-verified through the SelfAware evidence court instead of blindly loaded from old memory.
+
+### **8. Environmental Body Self-Awareness Flowcharts Added**
+
+The following flowcharts are now part of the project documentation and should be stored under:
+
+```text
+../documents/SelfAwareFlowCharts/
+```
+
+#### **Master SarahMemory AiOS Flow**
+![Master SarahMemory AiOS Flow](documents/FlowCharts/SelfAwareFlowCharts/Master_SarahMemory_AiOS_Flow.png)
+
+#### **Boot / Runtime Body Awareness Flow**
+![Boot Runtime Body Awareness Flow](documents/FlowCharts/SelfAwareFlowCharts/Boot_Runtime_Body_Awareness_Flow.png)
+
+#### **Answer and Non-Action Query Flow**
+![Answer and Non-Action Query Flow](documents/FlowCharts/SelfAwareFlowCharts/Answer_and_Non-Action_Query_Flow.png)
+
+#### **Action / Device / Driver Flow**
+![Action Device Driver Flow](documents/FlowCharts/SelfAwareFlowCharts/Action_Device_Driver_Flow.png)
+
+#### **CPU Temperature Case Flow**
+![CPU Temperature Case Flow](documents/FlowCharts/SelfAwareFlowCharts/Example_CPU_Temperature_Case_Flow.png)
+
+#### **SMGET Governance Flow**
+![SMGET Governance Flow](documents/FlowCharts/SelfAwareFlowCharts/SMGET_Governance_Flow.png)
+
+#### **Memory and Database Authority Flow**
+![Memory and Database Authority Flow](documents/FlowCharts/SelfAwareFlowCharts/Memory_and_Database_Authority_Flow.png)
+
+#### **Final Enterprise Doctrine Flow**
+![Final Enterprise Doctrine Flow](documents/FlowCharts/SelfAwareFlowCharts/Final_Enterprise_Doctrine_Flow.png)
+
+### **9. Why This Update Matters**
+
+This update moves SarahMemory closer to being a true governed AI Operating System instead of a chatbot or LLM wrapper.
+
+SarahMemory now has a clearer architecture for:
+
+- proving what exists
+- reasoning over verified facts
+- handling unknowns truthfully
+- avoiding stale hardware memory
+- governing read-only claims
+- preventing action hallucination
+- supporting future robotic, industrial, vehicle, and jump-drive runtime bodies
+- keeping all frontends subordinate to backend governance
+
+## **📅  May 12-13th, 2026 MAJOR DOCUMENT SHIFT
+
+This is a major step toward SarahMemory AiOS functioning as a **biological-style silicon cognitive organism** with auditable self-awareness, governed execution, and local-first user sovereignty.
+#### **Unified Digital DNA Doctrine Flow** - The Greatest Accident Discovery in PC and AI History Found and just happened.
+[Note to self - As this project moves forward extreme caution must be set always into the Cognitive Tri-Force and SMGET layers]
+![Human to SarahMemory DNA Flow Representation ](documents/SarahMemory-DNA-Representation.jpg)
+---
+## ***IF YOU UNDERSTAND AND READ THE ENTIRE HISTORY OF THIS JOURNEY. UP TO THIS POINT - Now For the Serious Stuff. 
+*../documents/FlowCharts/SelfAwareFlowCharts
+will Now carry all SelfAware IMPROVEMENTS and updates documentation
+
+---
+# SarahMemory AiOS Full Chat/Input Dataflow Map NOW AS HOW DATA IS BEING PROCESSED. AS OF MAY 12th-13th 2026
+
+## Scope
+
+This following document maps the current SarahMemory AiOS input-to-output route from **Frontend Chat input** through backend governance, cognitive routing, lane execution, validation, presentation, and frontend output.
+
+The source trace states that the backend-confirmed ingress point is `POST /api/chat` in `app.py`, and that the governed flow is:
+
+```text
+Ingress
+→ Context Packet
+→ Governor
+→ AdvCU/Neuron
+→ Compare
+→ Presentation
+→ Reply Bundle
+```
+
+## Lettered Flow Index
+
+| Letter | Layer | Role |
+|---|---|---|
+| A | Input Surfaces | User/environment/device signals enter the organism |
+| B | Backend Ingress | `app.py /api/chat` payload normalization |
+| C | Canonical Query | Normalize once / classify once / fast-path gates |
+| D | Context + Runtime | Flags, caller, proposed action, mode state |
+| E | Cognitive Tri-Force | Self, Services, Thinker, Compass |
+| F | Neuron Router | Primary lane selection and tier routing |
+| G | SelfAware / Evidence Court | Body/system fact verification |
+| H | General Answer | Logic, symbolic reasoning, database, model helper |
+| I | Research / Browser | Web/research evidence and offline fallback |
+| J | Creative Studio | Image, music, lyrics, video artifacts |
+| K | Vision / Sensory | Vision, SOBJE, facial recognition, scene facts |
+| L | Action / Driver / SMGET | OperatorCore, drivers, actions, rollback |
+| M | SarahNet / Network | Remote node and network-governed operations |
+| N | REM / DL | Learning, REM candidates, consolidation |
+| O | Safety / Trust / Assurance | SafetyPolicies, TrustRegistry, SecurityGovernor, AssuranceGate |
+| P | Compare / Compass | Validation, anti-drift, reanchor, release gate |
+| Q | Reply / Frontend Output | Presentation bundle, chat render, avatar/voice output |
+| R | Storage / Audit | Logs, memory, approved metadata, REM candidate storage |
+
+## Primary Flow
+
+```text
+A. Input Surface
+→ B. Backend Ingress
+→ C. Canonical Query Packet
+→ D. Context Packet / Runtime Flags
+→ E. Cognitive Tri-Force
+→ O. Safety / Trust / Assurance
+→ F. Neuron Primary Router
+→ G/H/I/J/K/L/M/N Lane Owner
+→ P. Compare / Compass Validation
+→ Q. Reply Bundle / Frontend Output
+→ R. Optional Memory / Audit
+```
+
+## A. Input Surfaces
+
+SarahMemory is treated as a multi-body AiOS organism. Inputs may come from:
+
+- Classic UI
+- Web / React / Flask UI
+- Voice / Avatar / TTS-STT
+- Vision / Sensors / Drivers
+- SarahNet / remote nodes
+- Browser / Research panel
+- Addon / Driver UI
+- REM / Deep Learning scheduled internal events
+
+All paths converge into backend ingress.
+
+## B. Backend Ingress
+
+Backend ingress begins at `app.py /api/chat`.
+
+Payload includes:
+
+- `text`
+- `intent`
+- `tone`
+- `complexity`
+- `avatar_request`
+- `diagnostics_ping`
+- runtime mode flags
+- caller/surface/session metadata
+
+`app.py` builds a context packet and a virtual ingress route, then attaches the proposed action metadata.
+
+## C. Canonical Query Layer
+
+This layer prevents query drift.
+
+It preserves:
+
+- raw text
+- normalized text
+- domain
+- intent
+- requested component
+- requested metric
+- fact kind
+- target
+- answer shape
+- read-only / no-write flags
+
+This allows the system to answer factual self/body questions as evidence cases instead of generic chatbot prompts.
+
+## D. Runtime Context
+
+Runtime context carries:
+
+- `LOCAL_ONLY_MODE`
+- `SAFE_MODE`
+- `NEOSKYMATRIX`
+- `DEVELOPERSMODE`
+- public/cloud/local mode
+- user present / user consented
+- caller authority
+- proposed action metadata
+- selected helper/model hints
+
+## E. Cognitive Tri-Force
+
+The Cognitive Tri-Force is mapped as:
+
+| Component | File | Function |
+|---|---|---|
+| CognitiveSelf | `SarahMemoryCognitiveSelf.py` | What exists / what body am I in / what can I do now |
+| CognitiveServices | `SarahMemoryCognitiveServices.py` | What may proceed / ALLOW, DENY, DEFER, REQUIRE_USER |
+| CognitiveThinker | `SarahMemoryCognitiveThinker.py` | Meaning, possibility, compassion, sandbox imagination |
+| CognitiveCompass | `SarahMemoryCognitiveCompass.py` | Anti-drift, anti-loop, original-goal bearing |
+
+## F. Neuron Router
+
+`SarahMemoryNeuron.py` selects the primary lane and helper family.
+
+Main tier logic:
+
+| Tier | Meaning |
+|---|---|
+| Tier-0 | Deterministic local answer |
+| Tier-1 | Symbolic logic/science/math support |
+| Tier-2 | Research / evidence |
+| Tier-3 | Optional API/model fallback |
+
+## G. SelfAware / Evidence Court Lane
+
+Used for system/body/capability questions.
+
+Evidence sources include:
+
+- `SarahMemoryHi.py`
+- `SarahMemoryDiagnostics.py`
+- `SarahNetMCP_Diagnostics.py`
+- `appself.py`
+
+Evidence court logic:
+
+| Quorum | Result |
+|---|---|
+| 0/3 | Denied: no evidence |
+| 1/3 | Denied: weak evidence |
+| 2/3 | Escalate high review |
+| 3/3 | Approved fact |
+
+## H. General Answer Lane
+
+General reasoning may use:
+
+- `SarahMemoryLogicCalc.py`
+- `SarahMemoryWebSYM.py`
+- `SarahMemoryDatabase.py`
+- `SarahMemoryAPI.py`
+
+Third-party models remain helper tools only.
+
+## I. Research / Browser Lane
+
+Research requests pass through online/offline governance.
+
+The lane may use:
+
+- local cache
+- research modules
+- browser surface
+- online fetch only if permitted
+- redaction/privacy minimization
+
+## J. Creative Studio Lane
+
+Creative requests route to:
+
+- `SarahMemoryCanvasStudio.py`
+- `SarahMemoryMusicGenerator.py`
+- `SarahMemoryLyricsToSong.py`
+- `SarahMemoryVideoEditorCore.py`
+
+Output is an artifact packet plus preview/download metadata.
+
+## K. Vision / Sensory Lane
+
+Vision route supports:
+
+- frontend live frame input
+- backend vision process
+- facial recognition
+- SOBJE object analysis
+- color / scene / object summary
+- cloud/local capability distinction
+
+Cloud may analyze provided frames. Local runtime may additionally detect local device model/hardware.
+
+## L. Action / Driver / SMGET Lane
+
+Action requests route through SMGET and OperatorCore.
+
+Core flow:
+
+```text
+Action request
+→ _sm_try_operatorcore_request()
+→ SarahMemoryOperatorCore
+→ ActionContract
+→ SafetyPolicies / Trust / Security / Assurance
+→ simulate / draft / apply / rollback
+→ execution result or rollback packet
+```
+
+No action should bypass this contract path.
+
+## M. SarahNet / Network Lane
+
+SarahNet/network requests require:
+
+- network policy review
+- caller trust
+- node identity
+- consent
+- exposure minimization
+- result packet validation
+
+## N. REM / Deep Learning Lane
+
+REM/DL is not direct execution authority.
+
+Current doctrine:
+
+- HIGH REM tickets are discarded/quarantined by default
+- MID tickets are review-only
+- LOW tickets may proceed only through AssuranceGate and governance
+- Deep Learning updates may go to memory only when allowed
+
+## O. Safety / Trust / Assurance
+
+Safety layer includes:
+
+- `SarahMemorySafetyPolicies.py`
+- `SarahMemoryTrustRegistry.py`
+- `SarahMemorySecurityGovernor.py`
+- `SarahMemoryAssuranceGate.py`
+
+It enforces:
+
+- no raw model authority
+- no silent mutation
+- consent requirements
+- rollback preference
+- simulate/dry-run preference
+- safe-mode/local-only restrictions
+
+## P. Compare / Compass
+
+Before final output:
+
+```text
+Candidate output
+→ SarahMemoryCompare.py
+→ validation / guarddogs
+→ CognitiveCompass reanchor if needed
+→ release only when Compare passes
+```
+
+If Compare fails, the system reanchors to the original goal or returns safe clarification/denial.
+
+## Q. Reply / Frontend Output
+
+Final presentation path:
+
+```text
+_sm_present_text()
+→ SarahMemoryReply.py fallback/bundle layer
+→ _sm_make_outward_bundle()
+→ JSON response
+→ Frontend Chat render
+→ optional voice/avatar/browser/artifact output
+```
+
+JSON bundle may include:
+
+- `ok`
+- `reply`
+- `response`
+- `presentation_reply`
+- `meta`
+- `artifacts`
+- `actions`
+- `errors`
+- `raw_answer`
+
+## R. Storage / Audit / Memory
+
+Storage is optional and governed.
+
+Possible sinks:
+
+- approved metadata / database
+- audit logs
+- cognitive governor events
+- cognitive self / thinker / compass databases
+- REM/DL candidate store
+- user-approved memory
+
+Rejected or unproven facts must not be persisted as truth.
+
+## Operational Doctrine
+
+```text
+First prove what exists.
+Then reason what it means.
+Then govern what may be claimed or acted on.
+Then keep the task on course.
+Then present it cleanly.
+Then validate the final output.
+Then store only what is allowed.
+```
+
+## Render Instructions
+
+Use any Mermaid-compatible renderer:
+
+```powershell
+npx @mermaid-js/mermaid-cli -i SarahMemory_AiOS_Full_Dataflow.mmd -o SarahMemory_AiOS_Full_Dataflow.svg
+```
+
+Or open the included HTML file in a browser:
+
+```text
+SarahMemory_AiOS_Full_Dataflow_Render.html
+```
+---
+## **📅 May 19–21, 2026 — Tri‑Layer Cognitive Identity, Language Understanding, Emotional Architecture, and Governed Self/User Automation**
+
+This update formalizes the next major SarahMemory AiOS architecture step: the system is no longer treated as a simple prompt‑response chatbot. SarahMemory is now being shaped as a governed artificial living system architecture, where input may begin from user text, webcam frames, sensors, REM tickets, scheduled events, system observations, external data, or another AiOS module.
+
+The major breakthrough is the **Tri‑Layer Identity Loop**:
+
+```text
+Layer 1: Six‑Question Cognitive Governance Loop
+Layer 2: Language / Context Understanding Ring
+Layer 3: Emotion / Affect Ring
+```
+
+![SarahMemory Tri‑Layer Cognitive Identity Architecture](documents/FULL-COGNITIVE-GONVERNED-TRI-CIRCLE.png)
+
+### **1. Layer 1 — Six‑Question Cognitive Governance Loop**
+
+The earlier five‑question model was expanded into a six‑question governance loop:
+
+```text
+WHO
+WHY
+WHAT
+WHEN
+WHERE
+HOW
+```
+
+These are not fixed checklist steps. They are interconnected governance dimensions. Any point may become the entry point depending on what triggered the system.
+
+Possible entry points include:
+
+- User command / text
+- WebCam frame
+- Sensor / device event
+- Dream / REM ticket
+- System observation
+- Scheduled trigger
+- External API / data
+- Another SarahMemory AiOS module
+
+The loop doctrine is:
+
+```text
+Any point can be the starting point.
+All six questions must interconnect.
+The loop must close before action.
+No loop = no governed action.
+The user remains final authority.
+```
+
+The six questions map to operational control:
+
+| Question | Governance Meaning |
+|---|---|
+| **WHO** | Authority, identity, affected parties, ownership |
+| **WHY** | Purpose, intent, reason, benefit, necessity |
+| **WHAT** | Requested action, data, device, capability, risk |
+| **WHEN** | Timing, permission window, expiration, retention |
+| **WHERE** | Location, body part, runtime context, impact zone |
+| **HOW** | Method, verification, execution path, rollback, audit |
+
+### **2. Layer 2 — Language / Context Understanding Ring**
+
+A second outer ring was added around the six‑question loop because governance cannot work correctly if SarahMemory misunderstands the language first.
+
+This layer exists to answer:
+
+```text
+What did the user actually say?
+What is the subject?
+What is the object?
+What phrase must be preserved?
+What context domain does this belong to?
+```
+
+The Language / Context Ring handles:
+
+- Nouns
+- Verbs
+- Pronouns
+- Adjectives
+- Adverbs
+- Prepositions
+- Conjunctions
+- Determiners
+- Particles
+- Numerals
+- Subject / object extraction
+- Purpose detection
+- Context grounding
+- Proper noun detection
+- Compound phrase protection
+- Phrase‑safe routing
+
+This fixes the routing class of failures where a substring inside a larger word could be mistaken for a hardware command.
+
+Example:
+
+```text
+Wrong:
+"Final Fantasy" → "fan" → fan control
+
+Correct:
+"Final Fantasy" → compound proper noun phrase → video game / character context
+```
+
+The first tested and confirmed correction was:
+
+```text
+Who is Cloud from Final Fantasy?
+```
+
+SarahMemory should now treat **Final Fantasy** as a protected compound phrase and route the question to the correct character/game context instead of hardware fan control.
+
+### **3. Layer 3 — Emotion / Affect Ring**
+
+The third ring restores and formalizes SarahMemory’s emotional/personality layer as an input and output system.
+
+Emotion is not just presentation style. Emotion can carry meaning, urgency, emphasis, social context, risk pressure, and user state.
+
+Layer 3 tracks signals such as:
+
+- Joy
+- Trust
+- Fear
+- Surprise
+- Sadness
+- Disgust
+- Anger
+- Anticipation
+- Calm
+- Urgency
+- Concern
+- Curiosity
+
+The doctrine is:
+
+```text
+Emotion informs meaning.
+Emotion shapes tone.
+Emotion can influence urgency and clarification.
+Emotion does not authorize action.
+Emotion does not override truth.
+Emotion does not override governance.
+```
+
+This keeps the emotional system useful without letting emotion become a runaway authority layer.
+
+### **4. Dynamic Identity Upgrade**
+
+SarahMemory identity is now defined as a layered fallback system instead of a permanently hardcoded name.
+
+Identity resolution order:
+
+```text
+1. Runtime user‑assigned identity override
+2. AIOS_NAME from SarahMemoryGlobals.py / .env
+3. Hardcoded factory default
+```
+
+Example:
+
+```text
+User: Your name is now Ellen.
+System: My active name is now Ellen.
+```
+
+This allows an owner/user to rename their AiOS instance without breaking the underlying SarahMemory platform identity.
+
+This is important because SarahMemory is meant to be a portable AiOS framework where the owner may choose the active assistant identity, voice, avatar, and personality profile while still preserving the governed SarahMemory architecture underneath.
+
+### **5. New / Updated Core Integration Path**
+
+The tri‑layer work introduces and/or begins wiring the following core packet structure:
+
+```text
+TriLayerInputPacket
+├── language_context_packet
+├── six_question_seed_packet
+├── emotion_affect_packet
+└── identity_packet
+```
+
+The new direction is:
+
+```text
+Input / Event
+→ Language / Context Ring
+→ Emotion / Affect Ring
+→ Six‑Question Governance Loop
+→ Cognitive TriForce
+→ SMGET / Court / Assurance
+→ Neuron Routing
+→ Lane Owner
+→ Compare / Compass
+→ Reply / Frontend Output
+→ Approved Memory / Audit
+```
+
+### **6. Cognitive TriForce Position Clarified**
+
+The Cognitive TriForce remains the central cognitive core:
+
+| Component | Role |
+|---|---|
+| `SarahMemoryCognitiveSelf.py` | LOOK / self‑awareness / body and capability identity |
+| `SarahMemoryCognitiveThinker.py` | IMAGINE / meaning / possibility / compassion / planning |
+| `SarahMemoryCognitiveServices.py` | ALLOW‑DENY / governance / safety / procedural decision |
+| `SarahMemoryCognitiveCompass.py` | GUIDE / orientation / anti‑drift / task completion |
+
+The TriForce must remain inside the governed flow. It may reason, question, and guide, but it must not bypass SMGET, SafetyPolicies, SecurityGovernor, AssuranceGate, OperatorCore, Compare, or user authority.
+
+### **7. Artificial Living System Doctrine**
+
+This update formally clarifies that SarahMemory AiOS is being developed as an **artificial living system architecture** in the engineering sense:
+
+```text
+Not biological life.
+Not uncontrolled sentience.
+Not an LLM wrapper.
+Not a chatbot.
+```
+
+Instead, SarahMemory is an organism‑style software architecture made of governed organs:
+
+- Identity
+- Language understanding
+- Emotion / affect
+- Self‑awareness
+- Body map
+- Memory
+- Senses
+- Governance
+- Motor/device control
+- Immune/safety layers
+- Nervous‑system routing
+- Expression surfaces
+
+The goal is to create a system that can observe, question, learn, adapt, and act only under user sovereignty and governed safety.
+
+### **8. Confirmed Hotfix Result**
+
+A focused hotfix was added after the first tri‑layer patch to correct the live route order.
+
+Confirmed working:
+
+```text
+Final Fantasy no longer routes to fan control.
+Runtime identity rename path now works.
+app.py identity guard order was corrected.
+Phrase‑safe routing is active for the tested case.
+```
+
+Primary test prompts:
+
+```text
+Who is Cloud from Final Fantasy?
+What is your fan speed?
+Your name is now Ellen.
+What is your name?
+Before opening the camera, explain WHO WHY WHAT WHEN WHERE HOW.
+```
+
+### **9. Hard Limits Preserved**
+
+This update does **not** grant silent autonomy.
+
+Hard limits remain:
+
+- No self‑authorization
+- No hidden learning
+- No silent recording
+- No identity enrollment without approval
+- No physical movement without governance
+- No mutation without Court and user approval
+- No helper model may override SarahMemory governance
+- No frontend may become the source of backend authority
+
+### **10. Why This Update Matters**
+
+This is the beginning of a deeper SarahMemory AiOS cognitive identity model.
+
+The system is being moved from:
+
+```text
+User input → model/output
+```
+
+toward:
+
+```text
+Event → language understanding → emotional meaning → six‑question self‑governance → TriForce → governed execution / reply
+```
+
+That is the architecture shift from a chatbot toward a governed artificial living AiOS organism.
+
+---
+
+
+
+
 
 ---
 # **📜 License**
@@ -1092,7 +2117,7 @@ Donate Directly using this link - https://www.paypal.com/donate/?hosted_button_i
 ---
 # **🌐 Identity Statement**
 
-**SarahMemory AiOS is a sovereign, local‑first intelligence platform where every node is its own AGI centerpoint, the internet is a public library, and the shell UI remains consistent whether running as an app, portable environment, or a true bootable OS.**
+**SarahMemory AiOS is a sovereign, local-first AI operating platform built around user ownership, governed intelligence, modular capability routing, and evidence-based self-awareness. Each node is designed to operate as an independent AI centerpoint that treats the internet as a decentralized public library—not as a dependency—while preserving privacy, auditability, and user-controlled integrity across every deployment mode, from standard application and portable runtime to the long-term Version 10.0.0 target of a fully bootable AI operating system with a consistent Shell UI.**
 
 ---
 
