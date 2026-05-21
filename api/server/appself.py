@@ -223,6 +223,11 @@ except Exception:
     _SOBJE = None
 
 try:
+    import SarahMemoryMSDC as _MSDC  # type: ignore
+except Exception:
+    _MSDC = None
+
+try:
     import SarahMemoryAiFunctions as _AiFunctions  # type: ignore
 except Exception:
     _AiFunctions = None
@@ -2706,6 +2711,27 @@ def _vision_artifact_fact(kind: str, target: str = "") -> Dict[str, Any]:
     return _probe_result("vision_artifact.system_logs", value if path.exists() else None, ok=path.exists(), error="vision_artifact_missing" if not path.exists() else "", kind=kind, source_family="vision_artifact", evidence_class="physical_artifact")
 
 
+def _msdc_vision_fact(kind: str, target: str = "") -> Dict[str, Any]:
+    """Read-only MSDC witness for eyes/camera body mapping.
+
+    MSDC does not open the camera here. It proves the motor/device-manager layer
+    can map body_part=eyes to the governed UVC camera driver.
+    """
+    if _MSDC is None:
+        return _probe_result("SarahMemoryMSDC", None, ok=False, error="module_unavailable", kind=kind, source_family="SarahMemoryMSDC", evidence_class="motor_device_manager_witness")
+    try:
+        if hasattr(_MSDC, "msdc_court_witness"):
+            value = _MSDC.msdc_court_witness(body_part="eyes", include_probe=False)  # type: ignore[attr-defined]
+        elif hasattr(_MSDC, "get_court_witness"):
+            value = _MSDC.get_court_witness("eyes")  # type: ignore[attr-defined]
+        else:
+            value = {"module_available": True, "body_part": "eyes", "limits": {"camera_opened": False}}
+        ok = bool(isinstance(value, dict) and (value.get("verified") or value.get("ok")))
+        return _probe_result("SarahMemoryMSDC.court_witness", value, ok=ok, error="msdc_unverified" if not ok else "", kind=kind, source_family="SarahMemoryMSDC", evidence_class="motor_device_manager_witness")
+    except Exception as exc:
+        return _probe_result("SarahMemoryMSDC", None, ok=False, error=f"msdc_witness_error:{exc}", kind=kind, source_family="SarahMemoryMSDC", evidence_class="motor_device_manager_witness")
+
+
 def _adaptive_fact(kind: str, target: str = "") -> Dict[str, Any]:
     if _Adaptive is None:
         return _probe_result("SarahMemoryAdaptive", None, ok=False, error="module_unavailable", kind=kind, source_family="SarahMemoryAdaptive", evidence_class="witness")
@@ -2868,6 +2894,7 @@ def _collect_fact_probes(kind: str, claim: str, target: str = "") -> List[Dict[s
         probes.extend([
             _vision_fact(kind, target),
             _sobje_fact(kind, target),
+            _msdc_vision_fact(kind, target),
             _vision_artifact_fact(kind, target),
         ])
         probes.append(_cognitive_self_fact(kind, target))
@@ -2933,6 +2960,16 @@ def _aggregate_vision_probe_values(probes: List[Dict[str, Any]], kind: str = "")
             _add_cap("scene summary")
             _add_cap("color detection")
             _add_cap("visual question answering")
+        if fam == "SarahMemoryMSDC":
+            _add_cap("motor/device manager body-map witness")
+            _add_cap("governed camera driver mapping")
+            rec = val.get("body_part_record") if isinstance(val.get("body_part_record"), dict) else {}
+            if rec:
+                driver_id = _safe_str(rec.get("driver_id"), 160)
+                if driver_id:
+                    _add_cap(f"driver mapped: {driver_id}")
+                if bool(rec.get("driver_present")) and "MSDC eyes driver present" not in devices:
+                    devices.append("MSDC eyes driver present: " + driver_id)
         if fam == "vision_artifact":
             artifact_present = True
             _add_cap("vision event logging")
@@ -3872,6 +3909,7 @@ def _module_matrix() -> Dict[str, Dict[str, Any]]:
         "SarahMemoryEvolution": {"available": _Evolution is not None, "role": "restricted monkey-patch proposal witness"},
         "SarahMemoryFacialRecognition": {"available": _FacialRecognition is not None, "role": "vision/face-vector witness"},
         "SarahMemorySOBJE": {"available": _SOBJE is not None, "role": "object/scene observation witness"},
+        "SarahMemoryMSDC": {"available": _MSDC is not None, "role": "motor/device manager witness for eyes/camera driver"},
         "SarahMemoryAiFunctions": {"available": _AiFunctions is not None, "role": "agent/context witness"},
         "SarahMemoryDL": {"available": _DL is not None, "role": "learning/model support witness"},
         "SarahMemoryAdaptive": {"available": _Adaptive is not None, "role": "adaptive behavior/emotion witness"},
@@ -4302,3 +4340,21 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
 # ============================================================================
 # END OF appself.py v8.0.0 EvidenceCourt V8 Topology-Aware
 # ============================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+@bp.route("/identity", methods=["GET", "POST"])
+def api_self_identity():
+    """Read or update runtime identity override through CognitiveSelf. POST requires explicit approved=true."""
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        if request.method == "POST":
+            payload = _j()
+            if not bool(payload.get("approved")):
+                return jsonify({"ok": False, "error": "approval_required", "hint": "POST {name, approved:true}"}), 400
+            name = str(payload.get("name") or payload.get("active_name") or "").strip()
+            result = _CogSelf.set_runtime_identity_name(name, approved_by=str(payload.get("approved_by") or "user"), source="appself.api")
+            return jsonify(_json_safe(result))
+        fn = getattr(_CogSelf, "resolve_active_identity", None)
+        return jsonify(_json_safe({"ok": True, "identity": fn({}) if callable(fn) else {}}))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500

@@ -123,27 +123,58 @@ except Exception as e:
 
 # Identity / branding (server-side source of truth)
 BRAND_NAME = "Sarah"
-PLATFORM_NAME = "SarahMemory AiOS"
+PLATFORM_NAME = "AiOS"
 CREATOR_NAME = "Brian Lee Baros"
 ORG_NAME = "SOFTDEV0 LLC"
 
 def _identity_payload():
+    """Active identity payload.
+
+    Resolution order is owned by CognitiveSelf:
+    runtime user override -> AIOS_NAME/.env/Globals -> factory default.
+    This function is intentionally placed before route definitions so script-mode
+    app.py uses it before app.run blocks.
+    """
+    ident = {}
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        fn = getattr(_CogSelf, "resolve_active_identity", None)
+        if callable(fn):
+            ident = fn({}) or {}
+    except Exception:
+        ident = {}
+    active_name = (ident or {}).get("active_name") or (ident or {}).get("name") or BRAND_NAME
     return {
-        "name": BRAND_NAME,
+        "name": active_name,
         "platform": PLATFORM_NAME,
         "version": PROJECT_VERSION,
         "creator": CREATOR_NAME,
         "organization": ORG_NAME,
         "build": "webui-server",
+        "identity_source": (ident or {}).get("identity_source", "factory_default"),
+        "fallback_chain": (ident or {}).get("fallback_chain", ["runtime_user_override", "AIOS_NAME", "factory_default"]),
     }
 
 def _is_identity_question(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
+
+    # Do not let generic version wording steal hardware/runtime version questions
+    # from SelfAware or system fact lanes.
+    version_blockers = (
+        "bios", "uefi", "firmware", "motherboard", "mainboard", "baseboard",
+        "cpu", "gpu", "driver", "windows", "linux", "python", "node",
+        "npm", "cuda", "torch", "pytorch", "chipset", "device", "adapter",
+    )
+    if "version" in t and any(b in t for b in version_blockers):
+        return False
+
     keys = [
         "what is your name", "who are you", "your name",
-        "version", "what version", "version number",
+        "what version are you", "what version are you running", "your version",
+        "server version", "program version", "app version", "sarahmemory version",
+        "version number",
         "who made you", "who created you", "creator",
         "who designed you", "designer", "engineer",
         "who engineered you", "who built you",
@@ -151,6 +182,72 @@ def _is_identity_question(text: str) -> bool:
     ]
 
     return any(k in t for k in keys)
+
+
+def _sm_try_runtime_identity_rename_bundle(text: str):
+    """Handle direct user-approved runtime identity rename before identity guard/Neuron.
+
+    Example:
+      "Your name is now Ellen."
+
+    This does not modify SarahMemoryGlobals.py. CognitiveSelf persists an audited
+    runtime override in cognitive_self.db.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        parse = getattr(_CogSelf, "parse_runtime_identity_rename", None)
+        setter = getattr(_CogSelf, "set_runtime_identity_name", None)
+        if not callable(parse) or not callable(setter):
+            return None
+        parsed = parse(raw)
+        if not isinstance(parsed, dict) or not parsed.get("matched"):
+            return None
+        new_name = str(parsed.get("new_name") or "").strip()
+        result = setter(
+            new_name,
+            approved_by="user",
+            source="api_chat.runtime_identity_rename",
+            reason="user_commanded_identity_name_change",
+        )
+        if not isinstance(result, dict) or not result.get("ok"):
+            raw_reply = "I could not update my active identity name from that command."
+            meta = {
+                "source": "identity_guard",
+                "engine": "runtime_identity_rename",
+                "intent": "identity_rename",
+                "identity_result": result if isinstance(result, dict) else {},
+                "version": PROJECT_VERSION,
+            }
+            return _sm_make_outward_bundle(_sm_present_text(raw_reply, intent="identity", meta=meta), meta=meta)
+        ident = result.get("identity") if isinstance(result.get("identity"), dict) else {}
+        active_name = str(ident.get("active_name") or new_name or "Sarah").strip()
+        raw_reply = f"My active name is now {active_name}."
+        meta = {
+            "source": "identity_guard",
+            "engine": "runtime_identity_rename",
+            "intent": "identity_rename",
+            "identity_source": ident.get("identity_source", "runtime_user_override"),
+            "version": PROJECT_VERSION,
+        }
+        bundle = _sm_make_outward_bundle(_sm_present_text(raw_reply, intent="identity", meta=meta), meta=meta)
+        bundle["identity"] = ident
+        bundle["identity_result"] = result
+        return bundle
+    except Exception as exc:
+        meta = {
+            "source": "identity_guard",
+            "engine": "runtime_identity_rename",
+            "intent": "identity_rename",
+            "error": str(exc),
+            "version": PROJECT_VERSION,
+        }
+        return _sm_make_outward_bundle(
+            _sm_present_text("I could not update my active identity name because the identity layer raised an error.", intent="identity", meta=meta),
+            meta=meta,
+        )
 
 # ---------------------------------------------------------------------------
 # SelfAware factual system-question bridge
@@ -183,7 +280,45 @@ def _sm_v9g_normalize_text(text: str) -> tuple[str, dict]:
 
 
 def _sm_v9g_contains_any(text: str, words: tuple[str, ...] | list[str]) -> bool:
-    return any(w in text for w in words)
+    """Phrase-safe matcher for self/body fact routing.
+
+    Critical fix:
+    - "fan" must match the standalone word "fan"
+    - "fan" must NOT match inside "Fantasy" / "Final Fantasy"
+    - short hardware tokens are matched with word boundaries
+    - locked language phrases can veto substring-style routing
+    """
+    source = str(text or "").lower()
+    if not source:
+        return False
+
+    language_packet = {}
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        language_packet = _CIL.build_language_context_packet(source)
+    except Exception:
+        language_packet = {}
+
+    for raw_word in (words or ()):
+        term = str(raw_word or "").strip().lower()
+        if not term:
+            continue
+
+        try:
+            import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+            verdict = _CIL.candidate_blocked_by_language_packet(term, language_packet)
+            if isinstance(verdict, dict) and verdict.get("blocked"):
+                continue
+        except Exception:
+            pass
+
+        # Use boundaries for both single-token and phrase terms. This protects:
+        # fan != fantasy, ram != programming, ai != final, os != those.
+        pattern = r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])"
+        if re.search(pattern, source):
+            return True
+
+    return False
 
 
 def _sm_v9g_component_from_text(norm: str) -> str:
@@ -191,8 +326,6 @@ def _sm_v9g_component_from_text(norm: str) -> str:
         return "cpu"
     if _sm_v9g_contains_any(norm, ("gpu", "graphics", "video card", "nvidia", "radeon")):
         return "gpu"
-    if _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "uvc", "imaging device", "video capture", "vision device")):
-        return "camera_vision"
     if _sm_v9g_contains_any(norm, ("motherboard", "mainboard", "baseboard", "system board", "board", "chipset", "vrm")):
         return "motherboard"
     if _sm_v9g_contains_any(norm, ("drive", "disk", "disc", "storage", "ssd", "hdd", "nvme")):
@@ -241,11 +374,6 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
         requested_metric = "body_map"
         fact_kind = "body_map"
         answer_shape = "summary"
-    elif _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "camera device", "camera devices", "vision capability", "vision capabilities", "vision system", "vision hardware", "video capture", "uvc", "imaging device")):
-        requested_metric = "camera_hardware" if _sm_v9g_contains_any(norm, ("webcam", "web cam", "camera", "camera device", "camera devices", "video capture", "uvc", "imaging device")) else "vision_capabilities"
-        fact_kind = "camera" if requested_metric == "camera_hardware" else "vision"
-        target = "webcam" if _sm_v9g_contains_any(norm, ("webcam", "web cam")) else (component or target or "camera_vision")
-        answer_shape = "direct_answer"
     elif _sm_v9g_contains_any(norm, ("network adapter", "network card", "ethernet", "wi-fi", "wifi", "lan", "bluetooth network")):
         requested_metric = "connectivity" if ("ethernet" in norm or "wi-fi" in norm or "wifi" in norm) and re.search(r"\bare\s+you\s+connected|\bconnected\b", norm) else "network_adapters"
         fact_kind = "network"
@@ -282,7 +410,6 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
         _sm_v9g_contains_any(norm, (
             "my ", "your ", "you using", "am i using", "are you using", "system", "machine", "computer", "pc",
             "runtime", "body map", "body-map", "hardware", "motherboard", "cpu", "processor", "gpu", "graphics",
-            "webcam", "web cam", "camera", "vision capability", "vision capabilities", "vision hardware", "video capture", "uvc",
             "ram", "memory", "fan", "rpm", "temperature", "temp", "thermal", "network adapter", "ethernet", "wi-fi",
             "python version", "node name", "hostname", "bios", "uefi", "firmware",
         ))
@@ -370,8 +497,6 @@ def _sm_v9g_clean_denial(kind: str, claim: str, ticket: dict) -> str:
         return "I can identify the motherboard only if evidence is available, but I do not currently have a verified BIOS/UEFI version witness."
     if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
         return "I cannot verify the requested network hardware state from the current evidence packet."
-    if kind in {"vision", "camera", "webcam", "visual", "face", "object", "scene"}:
-        return "I cannot verify a physical webcam/camera device from the current evidence packet. Vision software capability may still be present, but I will not guess the camera hardware type."
     return f"I cannot verify that {kind.replace('_', ' ')} fact from the current evidence packet. I will not guess."
 
 
@@ -456,18 +581,6 @@ def _sm_format_selfaware_fact_reply(ticket: dict) -> str:
                 return direct
             return str(presentation_text or f"My currently verified network adapter summary is: {_sm_compact_json_value(pv if pv not in (None, '') else value)}")
 
-        if kind in {"vision", "camera", "webcam", "visual", "face", "object", "scene"}:
-            if presentation_text:
-                return presentation_text
-            vv = pv if isinstance(pv, dict) else value
-            if isinstance(vv, dict):
-                devices = vv.get("camera_devices") if isinstance(vv.get("camera_devices"), list) else []
-                caps = vv.get("capabilities") if isinstance(vv.get("capabilities"), list) else []
-                if devices:
-                    return "My verified webcam/camera hardware is: " + "; ".join(str(x) for x in devices[:6]) + (". Vision capabilities online: " + ", ".join(str(x) for x in caps[:8]) + "." if caps else ".")
-                return "I have SarahMemory vision software capability available" + (": " + ", ".join(str(x) for x in caps[:8]) if caps else "") + ", but I do not currently have a verified physical webcam device in the body map."
-            return f"My currently verified vision capability is: {_sm_compact_json_value(vv)}."
-
         if kind == "motherboard":
             return f"My currently verified motherboard is {_sm_compact_json_value(value)}."
         if kind == "memory":
@@ -522,6 +635,12 @@ def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict
     fallback path and forces them through the same SelfAware 3-source evidence
     court used by /api/self/fact-check.
     """
+    # Identity is not body telemetry. Keep identity on the identity lane so
+    # SelfAware cannot hijack stable name/version/creator responses just because
+    # the wording contains "your" or "you".
+    if _is_identity_question(text):
+        return None
+
     canonical_packet = _sm_build_canonical_query_packet(text)
     if canonical_packet.get("domain") != "selfaware_body":
         return None
@@ -2889,9 +3008,6 @@ def api_chat():
             neoskymatrix=neoskymatrix,
             developersmode=developersmode,
         )
-        chat_classification_packet = _sm_build_canonical_query_packet(text, payload=payload, context_packet=context_packet)
-        context_packet["chat_classification_packet"] = chat_classification_packet
-        context_packet.setdefault("meta", {})["chat_classification_packet"] = chat_classification_packet
         ingress_route = _sm_build_virtual_ingress_route(text, payload=payload, context_packet=context_packet)
         context_packet.setdefault("meta", {})["ingress_route"] = ingress_route
         context_packet["meta"]["proposed_action"] = _sm_proposed_action_from_ingress(ingress_route)
@@ -2919,6 +3035,10 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
+        identity_rename_bundle = _sm_try_runtime_identity_rename_bundle(text)
+        if isinstance(identity_rename_bundle, dict):
+            return jsonify(identity_rename_bundle), 200
+
         handled, quick_bundle = _sm_execute_quick_route(text)
         if handled and quick_bundle is not None:
             return jsonify(quick_bundle), 200
@@ -2927,7 +3047,7 @@ def api_chat():
         if isinstance(selfaware_fact_bundle, dict):
             return jsonify(selfaware_fact_bundle), 200
 
-        if _sm_is_identity_intent(text):
+        if _is_identity_question(text):
             ident = _identity_payload()
             low = text.strip().lower()
             if "version" in low:
@@ -6186,6 +6306,30 @@ except Exception as _e:
     except Exception:
         pass
 
+# --- v8 appvision endpoints (Governed Vision / MSDC camera bridge) ---
+try:
+    try:
+        _ensure_api_import_paths()  # type: ignore[name-defined]
+    except Exception:
+        pass
+
+    try:
+        from . import appvision as _appvision  # type: ignore
+    except Exception:
+        import appvision as _appvision  # type: ignore
+
+    _appvision.init_app(app, _connect_sqlite, META_DB, _api_key_auth_ok, _sign_ok)
+    try:
+        app_logger.info("appvision mounted: /api/vision/policy, /api/vision/devices, /api/vision/analyze, /api/vision/local/*")
+    except Exception:
+        pass
+
+except Exception as _e:
+    try:
+        app_logger.error(f"appvision init failed: {_e}", exc_info=True)
+    except Exception:
+        pass
+
 # --- v8 appdevbridge endpoints (Developer Bridge / ChatGPT-assisted packet lane) ---
 try:
     try:
@@ -6739,3 +6883,24 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF app.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def _identity_payload():  # type: ignore[override]
+    """Server identity payload uses CognitiveSelf active identity when available."""
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        fn = getattr(_CogSelf, "resolve_active_identity", None)
+        ident = fn({}) if callable(fn) else {}
+    except Exception:
+        ident = {}
+    active_name = (ident or {}).get("active_name") or (ident or {}).get("name") or globals().get("BRAND_NAME", "Sarah")
+    return {
+        "name": active_name,
+        "platform": globals().get("PLATFORM_NAME", "SarahMemory AiOS"),
+        "version": PROJECT_VERSION,
+        "creator": globals().get("CREATOR_NAME", "Brian Lee Baros"),
+        "organization": globals().get("ORG_NAME", "SOFTDEV0 LLC"),
+        "build": "webui-server",
+        "identity_source": (ident or {}).get("identity_source", "fallback"),
+        "fallback_chain": (ident or {}).get("fallback_chain", []),
+    }
