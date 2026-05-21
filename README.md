@@ -1765,6 +1765,303 @@ Or open the included HTML file in a browser:
 SarahMemory_AiOS_Full_Dataflow_Render.html
 ```
 ---
+## **📅 May 19–21, 2026 — Tri‑Layer Cognitive Identity, Language Understanding, Emotional Architecture, and Governed Self/User Automation**
+
+This update formalizes the next major SarahMemory AiOS architecture step: the system is no longer treated as a simple prompt‑response chatbot. SarahMemory is now being shaped as a governed artificial living system architecture, where input may begin from user text, webcam frames, sensors, REM tickets, scheduled events, system observations, external data, or another AiOS module.
+
+The major breakthrough is the **Tri‑Layer Identity Loop**:
+
+```text
+Layer 1: Six‑Question Cognitive Governance Loop
+Layer 2: Language / Context Understanding Ring
+Layer 3: Emotion / Affect Ring
+```
+
+![SarahMemory Tri‑Layer Cognitive Identity Architecture](documents/FULL-COGNITIVE-GONVERNED-TRI-CIRCLE.png)
+
+### **1. Layer 1 — Six‑Question Cognitive Governance Loop**
+
+The earlier five‑question model was expanded into a six‑question governance loop:
+
+```text
+WHO
+WHY
+WHAT
+WHEN
+WHERE
+HOW
+```
+
+These are not fixed checklist steps. They are interconnected governance dimensions. Any point may become the entry point depending on what triggered the system.
+
+Possible entry points include:
+
+- User command / text
+- WebCam frame
+- Sensor / device event
+- Dream / REM ticket
+- System observation
+- Scheduled trigger
+- External API / data
+- Another SarahMemory AiOS module
+
+The loop doctrine is:
+
+```text
+Any point can be the starting point.
+All six questions must interconnect.
+The loop must close before action.
+No loop = no governed action.
+The user remains final authority.
+```
+
+The six questions map to operational control:
+
+| Question | Governance Meaning |
+|---|---|
+| **WHO** | Authority, identity, affected parties, ownership |
+| **WHY** | Purpose, intent, reason, benefit, necessity |
+| **WHAT** | Requested action, data, device, capability, risk |
+| **WHEN** | Timing, permission window, expiration, retention |
+| **WHERE** | Location, body part, runtime context, impact zone |
+| **HOW** | Method, verification, execution path, rollback, audit |
+
+### **2. Layer 2 — Language / Context Understanding Ring**
+
+A second outer ring was added around the six‑question loop because governance cannot work correctly if SarahMemory misunderstands the language first.
+
+This layer exists to answer:
+
+```text
+What did the user actually say?
+What is the subject?
+What is the object?
+What phrase must be preserved?
+What context domain does this belong to?
+```
+
+The Language / Context Ring handles:
+
+- Nouns
+- Verbs
+- Pronouns
+- Adjectives
+- Adverbs
+- Prepositions
+- Conjunctions
+- Determiners
+- Particles
+- Numerals
+- Subject / object extraction
+- Purpose detection
+- Context grounding
+- Proper noun detection
+- Compound phrase protection
+- Phrase‑safe routing
+
+This fixes the routing class of failures where a substring inside a larger word could be mistaken for a hardware command.
+
+Example:
+
+```text
+Wrong:
+"Final Fantasy" → "fan" → fan control
+
+Correct:
+"Final Fantasy" → compound proper noun phrase → video game / character context
+```
+
+The first tested and confirmed correction was:
+
+```text
+Who is Cloud from Final Fantasy?
+```
+
+SarahMemory should now treat **Final Fantasy** as a protected compound phrase and route the question to the correct character/game context instead of hardware fan control.
+
+### **3. Layer 3 — Emotion / Affect Ring**
+
+The third ring restores and formalizes SarahMemory’s emotional/personality layer as an input and output system.
+
+Emotion is not just presentation style. Emotion can carry meaning, urgency, emphasis, social context, risk pressure, and user state.
+
+Layer 3 tracks signals such as:
+
+- Joy
+- Trust
+- Fear
+- Surprise
+- Sadness
+- Disgust
+- Anger
+- Anticipation
+- Calm
+- Urgency
+- Concern
+- Curiosity
+
+The doctrine is:
+
+```text
+Emotion informs meaning.
+Emotion shapes tone.
+Emotion can influence urgency and clarification.
+Emotion does not authorize action.
+Emotion does not override truth.
+Emotion does not override governance.
+```
+
+This keeps the emotional system useful without letting emotion become a runaway authority layer.
+
+### **4. Dynamic Identity Upgrade**
+
+SarahMemory identity is now defined as a layered fallback system instead of a permanently hardcoded name.
+
+Identity resolution order:
+
+```text
+1. Runtime user‑assigned identity override
+2. AIOS_NAME from SarahMemoryGlobals.py / .env
+3. Hardcoded factory default
+```
+
+Example:
+
+```text
+User: Your name is now Ellen.
+System: My active name is now Ellen.
+```
+
+This allows an owner/user to rename their AiOS instance without breaking the underlying SarahMemory platform identity.
+
+This is important because SarahMemory is meant to be a portable AiOS framework where the owner may choose the active assistant identity, voice, avatar, and personality profile while still preserving the governed SarahMemory architecture underneath.
+
+### **5. New / Updated Core Integration Path**
+
+The tri‑layer work introduces and/or begins wiring the following core packet structure:
+
+```text
+TriLayerInputPacket
+├── language_context_packet
+├── six_question_seed_packet
+├── emotion_affect_packet
+└── identity_packet
+```
+
+The new direction is:
+
+```text
+Input / Event
+→ Language / Context Ring
+→ Emotion / Affect Ring
+→ Six‑Question Governance Loop
+→ Cognitive TriForce
+→ SMGET / Court / Assurance
+→ Neuron Routing
+→ Lane Owner
+→ Compare / Compass
+→ Reply / Frontend Output
+→ Approved Memory / Audit
+```
+
+### **6. Cognitive TriForce Position Clarified**
+
+The Cognitive TriForce remains the central cognitive core:
+
+| Component | Role |
+|---|---|
+| `SarahMemoryCognitiveSelf.py` | LOOK / self‑awareness / body and capability identity |
+| `SarahMemoryCognitiveThinker.py` | IMAGINE / meaning / possibility / compassion / planning |
+| `SarahMemoryCognitiveServices.py` | ALLOW‑DENY / governance / safety / procedural decision |
+| `SarahMemoryCognitiveCompass.py` | GUIDE / orientation / anti‑drift / task completion |
+
+The TriForce must remain inside the governed flow. It may reason, question, and guide, but it must not bypass SMGET, SafetyPolicies, SecurityGovernor, AssuranceGate, OperatorCore, Compare, or user authority.
+
+### **7. Artificial Living System Doctrine**
+
+This update formally clarifies that SarahMemory AiOS is being developed as an **artificial living system architecture** in the engineering sense:
+
+```text
+Not biological life.
+Not uncontrolled sentience.
+Not an LLM wrapper.
+Not a chatbot.
+```
+
+Instead, SarahMemory is an organism‑style software architecture made of governed organs:
+
+- Identity
+- Language understanding
+- Emotion / affect
+- Self‑awareness
+- Body map
+- Memory
+- Senses
+- Governance
+- Motor/device control
+- Immune/safety layers
+- Nervous‑system routing
+- Expression surfaces
+
+The goal is to create a system that can observe, question, learn, adapt, and act only under user sovereignty and governed safety.
+
+### **8. Confirmed Hotfix Result**
+
+A focused hotfix was added after the first tri‑layer patch to correct the live route order.
+
+Confirmed working:
+
+```text
+Final Fantasy no longer routes to fan control.
+Runtime identity rename path now works.
+app.py identity guard order was corrected.
+Phrase‑safe routing is active for the tested case.
+```
+
+Primary test prompts:
+
+```text
+Who is Cloud from Final Fantasy?
+What is your fan speed?
+Your name is now Ellen.
+What is your name?
+Before opening the camera, explain WHO WHY WHAT WHEN WHERE HOW.
+```
+
+### **9. Hard Limits Preserved**
+
+This update does **not** grant silent autonomy.
+
+Hard limits remain:
+
+- No self‑authorization
+- No hidden learning
+- No silent recording
+- No identity enrollment without approval
+- No physical movement without governance
+- No mutation without Court and user approval
+- No helper model may override SarahMemory governance
+- No frontend may become the source of backend authority
+
+### **10. Why This Update Matters**
+
+This is the beginning of a deeper SarahMemory AiOS cognitive identity model.
+
+The system is being moved from:
+
+```text
+User input → model/output
+```
+
+toward:
+
+```text
+Event → language understanding → emotional meaning → six‑question self‑governance → TriForce → governed execution / reply
+```
+
+That is the architecture shift from a chatbot toward a governed artificial living AiOS organism.
+
+---
 
 
 
