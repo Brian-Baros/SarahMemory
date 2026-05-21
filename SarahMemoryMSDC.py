@@ -50,7 +50,6 @@ import os
 import time
 import traceback
 import uuid
-import threading
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -104,9 +103,6 @@ if not logger.hasHandlers():
     _h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - [%(name)s] %(message)s"))
     logger.addHandler(_h)
 logger.propagate = False
-
-_VISION_CACHE_LOCK = threading.RLock()
-_VISION_OBSERVATION_DEDUPE: Dict[str, float] = {}
 
 MODULE_NAME = "SarahMemoryMSDC"
 MODULE_VERSION = "8.0.0"
@@ -186,22 +182,6 @@ def _body_map_path() -> Path:
 
 def _vision_policy_path() -> Path:
     return _registry_dir() / "vision_policy.json"
-
-
-def _vision_memory_dir() -> Path:
-    return (_data_dir() / "vision" / "msdc_cache").resolve()
-
-
-def _vision_observations_dir() -> Path:
-    return (_vision_memory_dir() / "observations").resolve()
-
-
-def _vision_patterns_path() -> Path:
-    return _vision_memory_dir() / "visual_patterns.json"
-
-
-def _vision_snapshots_dir() -> Path:
-    return (_vision_memory_dir() / "snapshots").resolve()
 
 
 def _safe_json_load(path: Path, default: Any = None) -> Any:
@@ -349,448 +329,6 @@ def _call_governance_probe(action_id: str, driver_id: str, payload: Dict[str, An
     return trace
 
 
-
-
-def _cfg_bool(name: str, default: bool = False) -> bool:
-    try:
-        return bool(getattr(config, name, default)) if config is not None else bool(default)
-    except Exception:
-        return bool(default)
-
-
-def _cfg_int(name: str, default: int = 0, *, minimum: Optional[int] = None, maximum: Optional[int] = None) -> int:
-    try:
-        value = int(getattr(config, name, default)) if config is not None else int(default)
-    except Exception:
-        value = int(default)
-    if minimum is not None:
-        value = max(minimum, value)
-    if maximum is not None:
-        value = min(maximum, value)
-    return value
-
-
-def _utc_now() -> datetime:
-    return datetime.utcnow()
-
-
-def _utc_now_iso() -> str:
-    return _utc_now().isoformat() + "Z"
-
-
-def _iso_to_epoch(value: Any) -> float:
-    try:
-        text = str(value or "").strip()
-        if not text:
-            return 0.0
-        if text.endswith("Z"):
-            text = text[:-1]
-        return datetime.fromisoformat(text).timestamp()
-    except Exception:
-        return 0.0
-
-
-def _canonical_json_hash(payload: Any) -> str:
-    try:
-        import hashlib
-        blob = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
-        return hashlib.sha256(blob.encode("utf-8", errors="ignore")).hexdigest()
-    except Exception:
-        return str(uuid.uuid4())
-
-
-def _limit_text(value: Any, limit: int = 512) -> str:
-    try:
-        text = str(value or "")
-        return text[:limit]
-    except Exception:
-        return ""
-
-
-def msdc_get_vision_governance_profile() -> Dict[str, Any]:
-    """Return the constitutional vision-retention and pattern-learning profile.
-
-    This is read-only policy plumbing. SarahMemoryGlobals.py owns the flags.
-    MSDC only reports and obeys them.
-    """
-    retention_days = _cfg_int("VISION_TEMP_CACHE_DAYS", 7, minimum=1, maximum=30)
-    profile = {
-        "ok": True,
-        "source": MODULE_NAME,
-        "schema": "SarahMemoryMSDC.vision_governance.v1",
-        "generated_at": _utc_now_iso(),
-        "flags": {
-            "VISION_OBSERVATION_LOGGING_ENABLED": _cfg_bool("VISION_OBSERVATION_LOGGING_ENABLED", False),
-            "VISION_TEMP_CACHE_ENABLED": _cfg_bool("VISION_TEMP_CACHE_ENABLED", False),
-            "VISION_TEMP_CACHE_DAYS": retention_days,
-            "VISION_PATTERN_LEARNING_ENABLED": _cfg_bool("VISION_PATTERN_LEARNING_ENABLED", False),
-            "VISION_PATTERN_HEALTH_WATCH_ENABLED": _cfg_bool("VISION_PATTERN_HEALTH_WATCH_ENABLED", False),
-            "VISION_RAW_FRAME_RETENTION_ENABLED": _cfg_bool("VISION_RAW_FRAME_RETENTION_ENABLED", False),
-            "VISION_APPROVED_LEARNING_REQUIRED": _cfg_bool("VISION_APPROVED_LEARNING_REQUIRED", True),
-        },
-        "capabilities": {
-            "temporary_visual_observation_cache": _cfg_bool("VISION_TEMP_CACHE_ENABLED", False),
-            "derived_pattern_detection": _cfg_bool("VISION_PATTERN_LEARNING_ENABLED", False),
-            "health_watch_signal_only": _cfg_bool("VISION_PATTERN_HEALTH_WATCH_ENABLED", False),
-            "raw_frame_retention": _cfg_bool("VISION_RAW_FRAME_RETENTION_ENABLED", False),
-            "approved_learning_gate": _cfg_bool("VISION_APPROVED_LEARNING_REQUIRED", True),
-            "permanent_observation_logging": _cfg_bool("VISION_OBSERVATION_LOGGING_ENABLED", False),
-        },
-        "retention": {
-            "temporary_cache_days": retention_days,
-            "raw_frames_retained_by_default": _cfg_bool("VISION_RAW_FRAME_RETENTION_ENABLED", False),
-            "observation_metadata_retained": _cfg_bool("VISION_TEMP_CACHE_ENABLED", False),
-            "frame_spam_allowed": False,
-        },
-        "paths": {
-            "vision_memory_dir": str(_vision_memory_dir()),
-            "observations_dir": str(_vision_observations_dir()),
-            "patterns_path": str(_vision_patterns_path()),
-            "snapshots_dir": str(_vision_snapshots_dir()),
-        },
-        "limits": {
-            "no_medical_diagnosis": True,
-            "no_hidden_identity_enrollment": True,
-            "no_frame_by_frame_learning": True,
-            "user_remains_final_authority": True,
-        },
-    }
-    return profile
-
-
-def _observation_ledger_path(dt: Optional[datetime] = None) -> Path:
-    d = dt or _utc_now()
-    return _vision_observations_dir() / f"visual_observations_{d.strftime('%Y%m%d')}.jsonl"
-
-
-def _append_jsonl(path: Path, payload: Dict[str, Any]) -> bool:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str) + "\n")
-        return True
-    except Exception as exc:
-        logger.warning("MSDC visual observation append failed: %s", exc)
-        return False
-
-
-def _iter_observation_paths(days: Optional[int] = None) -> List[Path]:
-    retention = days or _cfg_int("VISION_TEMP_CACHE_DAYS", 7, minimum=1, maximum=30)
-    root = _vision_observations_dir()
-    if not root.exists():
-        return []
-    cutoff = time.time() - (float(retention) * 86400.0)
-    out: List[Path] = []
-    try:
-        for path in sorted(root.glob("visual_observations_*.jsonl")):
-            try:
-                if path.stat().st_mtime >= cutoff:
-                    out.append(path)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return out
-
-
-def _extract_observation_features(observation: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract stable pattern features from a SOBJE/FaceRec/appvision packet.
-
-    This intentionally avoids storing raw images. Callers may pass richer packets;
-    MSDC keeps only lightweight, bounded metadata for pattern awareness.
-    """
-    obs = observation if isinstance(observation, dict) else {}
-    details = obs.get("details") if isinstance(obs.get("details"), dict) else {}
-    scene = obs.get("scene") if isinstance(obs.get("scene"), dict) else {}
-
-    def first_value(keys: List[str]) -> str:
-        for key in keys:
-            for src in (obs, details, scene):
-                try:
-                    val = src.get(key) if isinstance(src, dict) else None
-                except Exception:
-                    val = None
-                if val not in (None, "", [], {}):
-                    return _limit_text(val, 128).strip().lower()
-        return ""
-
-    labels: List[str] = []
-    for key in ("objects", "labels", "detected_objects", "visible_objects"):
-        raw = obs.get(key) if isinstance(obs, dict) else None
-        if raw is None and isinstance(details, dict):
-            raw = details.get(key)
-        if isinstance(raw, list):
-            for item in raw[:20]:
-                if isinstance(item, dict):
-                    label = item.get("label") or item.get("name") or item.get("class")
-                else:
-                    label = item
-                if label:
-                    labels.append(_limit_text(label, 64).strip().lower())
-        elif isinstance(raw, str):
-            labels.extend([x.strip().lower() for x in raw.split(",") if x.strip()][:20])
-
-    features = {
-        "person_label": first_value(["person", "person_label", "identity", "known_person", "user_label"]),
-        "shirt_color": first_value(["shirt_color", "upper_garment_color", "clothing_color", "dominant_clothing_color"]),
-        "hat_state": first_value(["hat", "wearing_hat", "headwear", "headwear_state"]),
-        "expression_state": first_value(["expression", "expression_state", "facial_expression", "fer_state", "mood_visible"]),
-        "posture_state": first_value(["posture", "posture_state", "body_language", "visible_posture"]),
-        "scene_label": first_value(["scene", "scene_label", "location_context"]),
-        "held_object": first_value(["held_object", "object_in_hand", "hand_object"]),
-        "object_labels": sorted(set([x for x in labels if x]))[:20],
-    }
-    return features
-
-
-def msdc_record_visual_observation(
-    observation: Dict[str, Any],
-    *,
-    source: str = "appvision",
-    approved: bool = False,
-    user_label: str = "",
-    raw_frame_path: str = "",
-    min_repeat_interval_seconds: int = 300,
-) -> Dict[str, Any]:
-    """Record one governed visual observation into the temporary MSDC cache.
-
-    This is not frame logging. It stores lightweight derived metadata only, unless
-    Globals explicitly allows raw frame retention and the caller supplies a path.
-    """
-    profile = msdc_get_vision_governance_profile()
-    flags = profile.get("flags", {}) if isinstance(profile.get("flags"), dict) else {}
-    if not bool(flags.get("VISION_TEMP_CACHE_ENABLED", False)):
-        return {"ok": False, "skipped": True, "reason": "VISION_TEMP_CACHE_ENABLED_FALSE", "source": MODULE_NAME}
-
-    if not isinstance(observation, dict):
-        return {"ok": False, "error": "observation_must_be_dict", "source": MODULE_NAME}
-
-    now = _utc_now()
-    features = _extract_observation_features(observation)
-    confidence = observation.get("confidence", observation.get("score", None))
-    try:
-        confidence_value = float(confidence) if confidence is not None else None
-    except Exception:
-        confidence_value = None
-
-    raw_retention_allowed = bool(flags.get("VISION_RAW_FRAME_RETENTION_ENABLED", False))
-    approved_required = bool(flags.get("VISION_APPROVED_LEARNING_REQUIRED", True))
-    permanent_logging_allowed = bool(flags.get("VISION_OBSERVATION_LOGGING_ENABLED", False))
-
-    compact_observation = {
-        "observation_id": str(uuid.uuid4()),
-        "ts": now.isoformat() + "Z",
-        "date": now.strftime("%Y-%m-%d"),
-        "weekday": now.strftime("%A"),
-        "hour": now.hour,
-        "source": _limit_text(source, 96),
-        "features": features,
-        "confidence": confidence_value,
-        "approved": bool(approved),
-        "user_label": _limit_text(user_label, 128),
-        "learning_status": "approved_candidate" if approved else "temporary_observation_only",
-        "permanent_logging_allowed": permanent_logging_allowed,
-        "approved_learning_required": approved_required,
-        "raw_frame_retained": bool(raw_retention_allowed and raw_frame_path),
-        "raw_frame_path": _limit_text(raw_frame_path, 512) if raw_retention_allowed and raw_frame_path else "",
-        "diagnostic_note": "metadata_only_no_frame_spam",
-    }
-
-    # Dedupe/throttle repeated same-feature observations inside one runtime.
-    dedupe_material = {
-        "weekday": compact_observation["weekday"],
-        "hour": compact_observation["hour"],
-        "source": compact_observation["source"],
-        "features": features,
-    }
-    dedupe_key = _canonical_json_hash(dedupe_material)
-    with _VISION_CACHE_LOCK:
-        last_ts = float(_VISION_OBSERVATION_DEDUPE.get(dedupe_key, 0.0) or 0.0)
-        now_epoch = time.time()
-        if last_ts and (now_epoch - last_ts) < max(30, int(min_repeat_interval_seconds)):
-            return {
-                "ok": True,
-                "skipped": True,
-                "reason": "duplicate_observation_throttled",
-                "dedupe_key": dedupe_key,
-                "source": MODULE_NAME,
-                "features": features,
-            }
-        _VISION_OBSERVATION_DEDUPE[dedupe_key] = now_epoch
-        if len(_VISION_OBSERVATION_DEDUPE) > 5000:
-            for k in list(_VISION_OBSERVATION_DEDUPE.keys())[:1000]:
-                _VISION_OBSERVATION_DEDUPE.pop(k, None)
-
-        msdc_prune_visual_cache()
-        ok = _append_jsonl(_observation_ledger_path(now), compact_observation)
-
-    return {
-        "ok": bool(ok),
-        "stored": bool(ok),
-        "observation_id": compact_observation["observation_id"],
-        "cache_scope": "temporary_visual_observation_cache",
-        "retention_days": int(flags.get("VISION_TEMP_CACHE_DAYS", 7) or 7),
-        "features": features,
-        "raw_frame_retained": compact_observation["raw_frame_retained"],
-        "source": MODULE_NAME,
-    }
-
-
-def msdc_load_visual_observations(days: Optional[int] = None, max_records: int = 1000) -> Dict[str, Any]:
-    """Load recent temporary visual observations from JSONL ledgers."""
-    records: List[Dict[str, Any]] = []
-    retention = days or _cfg_int("VISION_TEMP_CACHE_DAYS", 7, minimum=1, maximum=30)
-    cutoff = time.time() - (float(retention) * 86400.0)
-    for path in _iter_observation_paths(retention):
-        try:
-            with path.open("r", encoding="utf-8") as f:
-                for line in f:
-                    if len(records) >= max(1, int(max_records)):
-                        break
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        row = json.loads(line)
-                    except Exception:
-                        continue
-                    if _iso_to_epoch(row.get("ts")) >= cutoff:
-                        records.append(row)
-        except Exception:
-            continue
-        if len(records) >= max(1, int(max_records)):
-            break
-    records.sort(key=lambda r: str(r.get("ts") or ""))
-    return {"ok": True, "days": retention, "count": len(records), "records": records[-max(1, int(max_records)):]}
-
-
-def msdc_prune_visual_cache(days: Optional[int] = None) -> Dict[str, Any]:
-    """Delete expired temporary visual-observation cache artifacts."""
-    retention = days or _cfg_int("VISION_TEMP_CACHE_DAYS", 7, minimum=1, maximum=30)
-    cutoff = time.time() - (float(retention) * 86400.0)
-    removed: List[str] = []
-    for root in (_vision_observations_dir(), _vision_snapshots_dir()):
-        try:
-            if not root.exists():
-                continue
-            for path in root.glob("*"):
-                try:
-                    if path.is_file() and path.stat().st_mtime < cutoff:
-                        path.unlink()
-                        removed.append(str(path))
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    return {"ok": True, "retention_days": retention, "removed_count": len(removed), "removed": removed[:100], "source": MODULE_NAME}
-
-
-def _pattern_key_values(record: Dict[str, Any]) -> List[Tuple[str, str, str]]:
-    features = record.get("features") if isinstance(record.get("features"), dict) else {}
-    weekday = str(record.get("weekday") or "unknown")
-    out: List[Tuple[str, str, str]] = []
-    for feature_key in (
-        "person_label", "shirt_color", "hat_state", "expression_state",
-        "posture_state", "scene_label", "held_object",
-    ):
-        value = str(features.get(feature_key) or "").strip().lower()
-        if value:
-            out.append((weekday, feature_key, value))
-    for label in (features.get("object_labels") or [])[:20]:
-        value = str(label or "").strip().lower()
-        if value:
-            out.append((weekday, "object_label", value))
-    return out
-
-
-def msdc_detect_visual_patterns(days: Optional[int] = None, min_count: int = 2) -> Dict[str, Any]:
-    """Detect routine visual patterns and deviations from temporary observations.
-
-    No medical diagnosis is produced. Health watch remains a gated signal layer.
-    """
-    profile = msdc_get_vision_governance_profile()
-    flags = profile.get("flags", {}) if isinstance(profile.get("flags"), dict) else {}
-    if not bool(flags.get("VISION_PATTERN_LEARNING_ENABLED", False)):
-        return {"ok": False, "skipped": True, "reason": "VISION_PATTERN_LEARNING_ENABLED_FALSE", "source": MODULE_NAME}
-
-    loaded = msdc_load_visual_observations(days=days, max_records=2500)
-    records = loaded.get("records") if isinstance(loaded.get("records"), list) else []
-    counts: Dict[str, Dict[str, Any]] = {}
-    for rec in records:
-        for weekday, feature_key, value in _pattern_key_values(rec):
-            k = f"{weekday}::{feature_key}::{value}"
-            slot = counts.setdefault(k, {"weekday": weekday, "feature": feature_key, "value": value, "count": 0, "examples": []})
-            slot["count"] += 1
-            if len(slot["examples"]) < 3:
-                slot["examples"].append({"ts": rec.get("ts"), "observation_id": rec.get("observation_id")})
-
-    patterns = [v for v in counts.values() if int(v.get("count", 0)) >= max(2, int(min_count))]
-    patterns.sort(key=lambda x: int(x.get("count", 0)), reverse=True)
-
-    deviations: List[Dict[str, Any]] = []
-    if records:
-        latest = records[-1]
-        latest_values = {(w, f): value for (w, f, value) in _pattern_key_values(latest)}
-        for pattern in patterns:
-            key = (str(pattern.get("weekday")), str(pattern.get("feature")))
-            if key in latest_values and latest_values[key] != str(pattern.get("value")):
-                deviations.append({
-                    "kind": "routine_deviation",
-                    "weekday": pattern.get("weekday"),
-                    "feature": pattern.get("feature"),
-                    "expected_pattern": pattern.get("value"),
-                    "observed_latest": latest_values[key],
-                    "pattern_count": pattern.get("count"),
-                    "latest_observation_id": latest.get("observation_id"),
-                    "severity": "low" if int(pattern.get("count", 0)) < 4 else "medium",
-                    "action": "ask_user_if_relevant_no_diagnosis",
-                })
-
-    result = {
-        "ok": True,
-        "source": MODULE_NAME,
-        "schema": "SarahMemoryMSDC.visual_patterns.v1",
-        "generated_at": _utc_now_iso(),
-        "days": int(loaded.get("days") or flags.get("VISION_TEMP_CACHE_DAYS") or 7),
-        "record_count": int(loaded.get("count") or 0),
-        "patterns": patterns[:100],
-        "deviations": deviations[:50],
-        "health_watch_enabled": bool(flags.get("VISION_PATTERN_HEALTH_WATCH_ENABLED", False)),
-        "diagnostic_limits": {
-            "does_not_diagnose_health": True,
-            "may_flag_observable_deviation": True,
-            "requires_user_or_governance_before_escalation": True,
-        },
-    }
-    _safe_json_write(_vision_patterns_path(), result)
-    return result
-
-
-def msdc_visual_pattern_witness() -> Dict[str, Any]:
-    """Court-safe witness for visual pattern awareness readiness."""
-    profile = msdc_get_vision_governance_profile()
-    patterns = msdc_detect_visual_patterns() if profile.get("flags", {}).get("VISION_PATTERN_LEARNING_ENABLED") else {"ok": False, "skipped": True}
-    return {
-        "ok": True,
-        "source_family": "SarahMemoryMSDC",
-        "evidence_class": "visual_pattern_awareness_witness",
-        "verified": bool(profile.get("flags", {}).get("VISION_TEMP_CACHE_ENABLED")),
-        "governance_profile": profile,
-        "pattern_summary": {
-            "ok": bool(patterns.get("ok")),
-            "record_count": patterns.get("record_count", 0),
-            "pattern_count": len(patterns.get("patterns", []) or []),
-            "deviation_count": len(patterns.get("deviations", []) or []),
-            "patterns_path": str(_vision_patterns_path()),
-        },
-        "limits": {
-            "no_medical_diagnosis": True,
-            "no_frame_spam": True,
-            "no_hidden_identity_enrollment": True,
-            "user_final_authority": True,
-        },
-    }
-
 def msdc_driver_present(driver_id: str) -> bool:
     root = _driver_root_for(driver_id)
     return bool(root.exists() and (root / "driver.py").exists() and (root / "manifest.json").exists())
@@ -821,7 +359,6 @@ def msdc_get_device_capability(body_part: str = "eyes") -> DeviceCapabilityRecor
                 "permissions": manifest.get("permissions") if isinstance(manifest.get("permissions"), list) else [],
                 "device_classes": (manifest.get("platform") or {}).get("device_classes") if isinstance(manifest.get("platform"), dict) else [],
                 "backend_support": (manifest.get("platform") or {}).get("backend_support") if isinstance(manifest.get("platform"), dict) else [],
-                "vision_governance": msdc_get_vision_governance_profile(),
             },
         )
     return DeviceCapabilityRecord(
@@ -855,12 +392,9 @@ def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str
             "requires_smget_for_actions": True,
             "discovery_is_activation": False,
             "user_control_required_for_camera": True,
-            "vision_pattern_awareness_supported": True,
-            "vision_observations_are_metadata_not_frame_spam": True,
         },
         "body_parts": {"eyes": eyes},
         "support_buses": {"usb_host": usbhost},
-        "vision_memory": msdc_get_vision_governance_profile(),
     }
     if persist:
         _safe_json_write(_body_map_path(), body_map)
@@ -886,7 +420,6 @@ def msdc_court_witness(body_part: str = "eyes", include_probe: bool = False) -> 
             "msdc_self_authorizes": False,
         },
     }
-    witness["visual_pattern_witness"] = msdc_visual_pattern_witness()
     if include_probe:
         witness["driver_discovery"] = msdc_driver_action(CAMERA_DRIVER_ID, "discover_devices", payload={}, context={"read_only_probe": True})
     return witness
@@ -1030,9 +563,6 @@ def msdc_status() -> Dict[str, Any]:
         "boot_drivers_dir": str(_boot_drivers_dir()),
         "body_map_path": str(_body_map_path()),
         "vision_policy_path": str(_vision_policy_path()),
-        "vision_memory_dir": str(_vision_memory_dir()),
-        "vision_governance": msdc_get_vision_governance_profile(),
-        "visual_pattern_witness": msdc_visual_pattern_witness(),
         "body_map": msdc_map_body(persist=False),
     }
 
@@ -1050,21 +580,17 @@ def get_court_witness(body_part: str = "eyes") -> Dict[str, Any]:
     return msdc_court_witness(body_part=body_part, include_probe=False)
 
 
-def get_vision_governance_profile() -> Dict[str, Any]:
-    return msdc_get_vision_governance_profile()
-
-
-def get_visual_pattern_witness() -> Dict[str, Any]:
-    return msdc_visual_pattern_witness()
-
-
-def record_visual_observation(observation: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
-    return msdc_record_visual_observation(observation, **kwargs)
-
-
-def detect_visual_patterns(days: Optional[int] = None, min_count: int = 2) -> Dict[str, Any]:
-    return msdc_detect_visual_patterns(days=days, min_count=min_count)
-
-
 if __name__ == "__main__":
     print(json.dumps(msdc_status(), indent=2, default=str))
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def msdc_accept_tri_layer_context(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """MSDC may receive tri-layer context as evidence only; device action still requires OperatorCore/SMGET."""
+    pkt = packet if isinstance(packet, dict) else {}
+    return {
+        "ok": True,
+        "source": "SarahMemoryMSDC.tri_layer_context",
+        "packet_type": pkt.get("packet_type"),
+        "execution_authority": False,
+        "note": "Context accepted; no motor/device operation authorized by this packet.",
+    }

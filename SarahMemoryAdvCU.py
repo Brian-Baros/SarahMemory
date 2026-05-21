@@ -2983,18 +2983,135 @@ __all__ = [
 # -----------------------------------------------------------------------------
 # V10/V9G Canonical SelfAware Query Packet bridge
 # -----------------------------------------------------------------------------
+def _sm_word_or_phrase_match(norm: str, term: str, language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    """Safe token/phrase matcher: fan != fantasy, ram != programming."""
+    t = str(term or "").strip().lower()
+    if not t:
+        return False
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        verdict = _CIL.candidate_blocked_by_language_packet(t, language_packet or {})
+        if isinstance(verdict, dict) and verdict.get("blocked"):
+            return False
+    except Exception:
+        pass
+    return re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", str(norm or "").lower()) is not None
+
+
+def _sm_any_word_or_phrase(norm: str, terms: Tuple[str, ...], language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    return any(_sm_word_or_phrase_match(norm, term, language_packet) for term in (terms or ()))
+
+
 def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """AdvCU bridge to the deterministic PreToken SelfAware case frame."""
+    """AdvCU bridge to the deterministic PreToken SelfAware case frame.
+
+    Falls back to a phrase-safe local classifier when PreToken is unavailable.
+    """
     try:
         import SarahMemoryPreTokenAnalyzer as _PTA  # type: ignore
         fn = getattr(_PTA, 'build_selfaware_canonical_query_packet', None)
         if callable(fn):
-            return fn(text, context_packet=context_packet)
+            pkt = fn(text, context_packet=context_packet)
+            if isinstance(pkt, dict):
+                return pkt
     except Exception:
         pass
+
     raw = str(text or '')
     norm = re.sub(r'\s+', ' ', raw.strip().lower().replace('temperture', 'temperature'))
-    component = 'cpu' if any(x in norm for x in ('cpu','processor')) else 'gpu' if any(x in norm for x in ('gpu','graphics','video card')) else 'motherboard' if any(x in norm for x in ('motherboard','mainboard','baseboard','system board')) else ''
-    metric = 'temperature' if any(x in norm for x in ('temperature','temp','thermal','heat')) else 'fan_speed' if any(x in norm for x in ('fan','rpm')) else 'identity'
-    kind = 'temperature' if metric == 'temperature' else 'fan_speed' if metric == 'fan_speed' else component if component in ('cpu','gpu','motherboard') else 'network' if 'network' in norm or 'ethernet' in norm or 'wi-fi' in norm or 'wifi' in norm else 'general_system_fact'
-    return {'packet_type':'CanonicalQueryPacket','version':'V10_V9G_CANONICAL_QUERY_PACKET','raw_text':raw,'normalized_text':norm,'domain':'selfaware_body' if kind!='general_system_fact' else 'chat','intent':'body_fact_query','requested_component':component,'requested_metric':metric,'fact_kind':kind,'target':component if metric=='temperature' else '', 'read_only':True, 'action_taken':False}
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        lang = _CIL.build_language_context_packet(raw, context_packet=context_packet)
+    except Exception:
+        lang = {}
+
+    component = (
+        'cpu' if _sm_any_word_or_phrase(norm, ('cpu','processor'), lang) else
+        'gpu' if _sm_any_word_or_phrase(norm, ('gpu','graphics','video card'), lang) else
+        'motherboard' if _sm_any_word_or_phrase(norm, ('motherboard','mainboard','baseboard','system board'), lang) else
+        ''
+    )
+    if _sm_any_word_or_phrase(norm, ('temperature','temp','thermal','heat'), lang):
+        metric = 'temperature'
+    elif _sm_any_word_or_phrase(norm, ('fan','rpm'), lang):
+        metric = 'fan_speed'
+    else:
+        metric = 'identity'
+
+    kind = (
+        'temperature' if metric == 'temperature' else
+        'fan_speed' if metric == 'fan_speed' else
+        component if component in ('cpu','gpu','motherboard') else
+        'network' if _sm_any_word_or_phrase(norm, ('network','ethernet','wi-fi','wifi'), lang) else
+        'general_system_fact'
+    )
+    return {
+        'packet_type':'CanonicalQueryPacket',
+        'version':'V10_V9G_CANONICAL_QUERY_PACKET',
+        'raw_text':raw,
+        'normalized_text':norm,
+        'domain':'selfaware_body' if kind!='general_system_fact' else 'chat',
+        'intent':'body_fact_query' if kind!='general_system_fact' else 'general_chat',
+        'requested_component':component,
+        'requested_metric':metric,
+        'fact_kind':kind,
+        'target':component if metric=='temperature' else '',
+        'read_only':True,
+        'action_taken':False,
+        'language_context_packet': lang,
+    }
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+# Packet-aware context bridge. Existing classify_intent/parse_command remain intact.
+def build_contextual_intent_packet(
+    text: Any,
+    language_context_packet: Optional[Dict[str, Any]] = None,
+    context_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return AdvCU intent data with Layer-2 language/phrase-lock protection."""
+    raw = str(text or "")
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        lang = language_context_packet if isinstance(language_context_packet, dict) else _CIL.build_language_context_packet(raw, context_packet=context_packet)
+    except Exception:
+        lang = language_context_packet if isinstance(language_context_packet, dict) else {"raw_text": raw, "phrase_locks": [], "blocked_substring_matches": []}
+    label, confidence = classify_intent_with_confidence(raw)
+    parsed = parse_command(raw)
+    route_guard = {
+        "checked": True,
+        "no_substring_routing_inside_locked_phrases": True,
+        "blocked": [],
+    }
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        for candidate in ("fan", "ram", "ai", "ui", "os", "cpu", "gpu"):
+            verdict = _CIL.candidate_blocked_by_language_packet(candidate, lang)
+            if verdict.get("blocked"):
+                route_guard["blocked"].append(verdict)
+        # Specific protection: game-lore proper noun questions must not become hardware/system control.
+        if lang.get("context_domain") == "gaming_lore" and str(label).lower() in {"system_control", "device_query", "diagnostics"}:
+            route_guard["corrected_intent_from"] = label
+            label = "question"
+            confidence = max(float(confidence or 0.0), 0.76)
+    except Exception:
+        pass
+    out = parsed.to_dict() if hasattr(parsed, "to_dict") else dict(getattr(parsed, "__dict__", {}))
+    out.update({
+        "packet_type": "ContextualIntentPacket",
+        "schema": "SarahMemory.advcu.contextual_intent.v1",
+        "intent": label,
+        "confidence": float(confidence or 0.0),
+        "language_context_packet": lang,
+        "route_guard": route_guard,
+        "execution_authority": False,
+    })
+    return out
+
+
+def classify_intent_contextual(
+    text: Any,
+    language_context_packet: Optional[Dict[str, Any]] = None,
+    context_packet: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, float, Dict[str, Any]]:
+    pkt = build_contextual_intent_packet(text, language_context_packet=language_context_packet, context_packet=context_packet)
+    return str(pkt.get("intent") or "statement"), float(pkt.get("confidence") or 0.0), pkt

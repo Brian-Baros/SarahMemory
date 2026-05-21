@@ -888,3 +888,14 @@ def review_read_only_evidence_policy(evidence_contract: Dict[str, Any]) -> Dict[
     if allow:
         reasons.append('Read-only TIER_0 evidence claim is policy-allowed; presentation must still be source-aware and Compare-validated.')
     return {'ok': True, 'module': MODULE_NAME, 'decision': decision, 'allow': bool(allow), 'risk_level': risk, 'read_only': read_only, 'action_taken': action_taken, 'reasons': reasons, 'doctrine': 'No hallucinated actuation; read-only evidence claims may proceed only when bounded and source-aware.'}
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def tri_layer_safety_doctrine() -> Dict[str, Any]:
+    return {
+        "language_context_before_routing": True,
+        "six_questions_must_close_before_action": True,
+        "emotion_informs_but_never_authorizes": True,
+        "dynamic_identity_requires_user_approval": True,
+        "packets_are_evidence_not_authority": True,
+        "user_remains_final_authority": True,
+    }

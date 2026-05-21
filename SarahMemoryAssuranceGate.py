@@ -964,3 +964,18 @@ def evaluate_rem_candidate_assurance(candidate: Dict[str, Any], *, snapshot: Opt
     assurance_score = 0.92 if allow else 0.35
     if allow: reasons.append("REM candidate passed assurance for bounded sandbox/promotion handling.")
     return {"review_id":"rem-assure-" + uuid.uuid4().hex[:12],"ts":datetime.now().isoformat(),"decision":"ALLOW" if allow else "DENY","allow":bool(allow),"confidence":assurance_score,"assurance_score":assurance_score,"threshold":0.75,"verification_ready":bool(sandbox.get("passed", False)),"rollback_ready":bool(sandbox.get("rollback_ready", proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None))),"reasons":reasons,"risk_factors":risk_factors,"missing_requirements":missing,"protected_files":["SarahMemoryGlobals.py"]}
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def assure_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Assurance review for packet completeness; does not approve execution."""
+    pkt = packet if isinstance(packet, dict) else {}
+    missing = []
+    for k in ("language_context_packet", "emotion_affect_packet", "identity_packet"):
+        if not isinstance(pkt.get(k), dict):
+            missing.append(k)
+    return {
+        "ok": not missing,
+        "decision": "PACKET_COMPLETE" if not missing else "PACKET_INCOMPLETE",
+        "missing": missing,
+        "execution_authority": False,
+    }

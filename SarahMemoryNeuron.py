@@ -3402,3 +3402,22 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryNeuron.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def build_layered_cognition_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build Layer 2 language + Layer 3 emotion + identity packets for Neuron routing evidence."""
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        tri = _CIL.build_tri_layer_input_packet(text, context_packet=context_packet)
+    except Exception as e:
+        tri = {"packet_type": "TriLayerInputPacket", "error": str(e), "raw_text": str(text or "")}
+    try:
+        if _AdvCU and hasattr(_AdvCU, "build_contextual_intent_packet"):
+            tri["contextual_intent_packet"] = _AdvCU.build_contextual_intent_packet(
+                text,
+                language_context_packet=tri.get("language_context_packet"),
+                context_packet=context_packet,
+            )
+    except Exception as e:
+        tri.setdefault("errors", []).append({"advcu_contextual_intent": str(e)})
+    return tri

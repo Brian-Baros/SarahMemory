@@ -1538,3 +1538,17 @@ if __name__ == '__main__':
 # ====================================================================
 # END OF SarahMemoryPersonality.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+# Override identity response to respect CognitiveSelf dynamic identity resolution.
+def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ignore[override]
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        fn = getattr(_CogSelf, "resolve_active_identity", None)
+        if callable(fn):
+            ident = fn({}) or {}
+            name = ident.get("active_name") or ident.get("name") or "Sarah"
+            return f"I'm {name} — your SarahMemory AiOS companion."
+    except Exception:
+        pass
+    return "I'm Sarah — your SarahMemory AiOS companion."

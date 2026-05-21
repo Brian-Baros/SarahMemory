@@ -715,3 +715,27 @@ logger.info("[v8.0] SarahMemoryExpressOut module loaded successfully")
 # ====================================================================
 # END OF SarahMemoryExpressOust.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def format_output_with_emotion_packet(text: str, emotion_affect_packet: Optional[Dict[str, Any]] = None, channel: str = "text") -> Dict[str, Any]:
+    """Apply output-side emotional formatting constraints without changing factual content."""
+    pkt = emotion_affect_packet if isinstance(emotion_affect_packet, dict) else {}
+    mood = str(pkt.get("primary_emotion") or "neutral")
+    constraints = pkt.get("output_constraints") if isinstance(pkt.get("output_constraints"), dict) else {}
+    reduced = bool(constraints.get("avoid_humor"))
+    try:
+        formatted = format_expressive_output(str(text or ""), mood=mood, channel=channel, footer=False) if 'format_expressive_output' in globals() else str(text or "")
+    except Exception:
+        formatted = str(text or "")
+    try:
+        voice = voice_params_for_mood(mood, reduced=reduced) if 'voice_params_for_mood' in globals() else {}
+    except Exception:
+        voice = {}
+    return {
+        "text": formatted,
+        "mood": mood,
+        "channel": channel,
+        "voice": voice,
+        "constraints": constraints,
+        "factual_content_changed": False,
+    }

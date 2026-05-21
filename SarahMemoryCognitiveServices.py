@@ -1478,6 +1478,21 @@ def govern_request(
         except Exception:
             pass
 
+        try:
+            dec = _sm_attach_six_question_packet_to_decision(
+                dec,
+                request_text=request_text,
+                caller=caller,
+                caller_context=ctx,
+                proposed_action=pa,
+                user_present=user_present,
+                user_consented=user_consented,
+            )
+        except Exception as _six_e:
+            try:
+                dec.setdefault('trace', {})['six_question_attach_error'] = str(_six_e)
+            except Exception:
+                pass
         return dec
 
     # -------------------------------------------------------------------------
@@ -2242,3 +2257,150 @@ def govern_rem_candidate(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
 def govern_read_only_evidence_claim(claim: str = "", evidence_packet: Optional[Dict[str, Any]] = None, appeal_packet: Optional[Dict[str, Any]] = None, caller: str = "cognitive_services.read_only_evidence") -> Dict[str, Any]:
     proposed = {'action_type': 'read_sensor_evidence', 'capability_name': 'selfaware_evidence_claim', 'read_only': True, 'touches_filesystem': False, 'touches_network': False, 'physical_actuation': False, 'risk_level': 'TIER_0_INFO', 'rollback_plan': 'No state change; no rollback required.', 'truthfulness_evidence': bool(evidence_packet)}
     return govern_request('Read-only evidence claim: ' + str(claim or ''), caller=caller, caller_context={'read_only': True, 'evidence_packet': evidence_packet or {}, 'appeal_packet': appeal_packet or {}, 'skip_cognitive_thinker_consult': True}, user_present=True, user_consented=False, proposed_action=proposed)
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+_SIX_DIMENSIONS = ("WHO", "WHY", "WHAT", "WHEN", "WHERE", "HOW")
+
+
+def _sm_dimension(decision: str = "ALLOW", confidence: float = 0.5, evidence: Optional[Dict[str, Any]] = None, reason: str = "") -> Dict[str, Any]:
+    return {
+        "decision": str(decision or "DEFER").upper(),
+        "confidence": max(0.0, min(1.0, float(confidence or 0.0))),
+        "evidence": evidence or {},
+        "reason": reason,
+    }
+
+
+def _sm_entry_point_from_request(text: str, caller_context: Optional[Dict[str, Any]] = None) -> str:
+    ctx = caller_context or {}
+    event_type = str(ctx.get("event_type") or ctx.get("source") or "").lower()
+    if "webcam" in event_type or "sensor" in event_type:
+        return "WHAT"
+    if "dream" in event_type or "rem" in event_type:
+        return "WHY"
+    m = re.match(r"\s*(who|why|what|when|where|how)\b", str(text or ""), flags=re.I)
+    if m:
+        return m.group(1).upper()
+    return "WHAT"
+
+
+def merge_six_question_verdicts(dimensions: Dict[str, Dict[str, Any]], *, risk_tier: str = "") -> Dict[str, Any]:
+    """Strict AND merge: DENY > REQUIRE_USER > DEFER/UNKNOWN > ALLOW_WITH_CONSTRAINTS > ALLOW."""
+    order = ["DENY", "REQUIRE_USER", "DEFER", "UNKNOWN", "ALLOW_WITH_CONSTRAINTS", "ALLOW"]
+    found = []
+    for key in _SIX_DIMENSIONS:
+        d = dimensions.get(key) if isinstance(dimensions, dict) else {}
+        found.append(str((d or {}).get("decision") or "UNKNOWN").upper())
+    if "DENY" in found:
+        final = "DENY"
+    elif "REQUIRE_USER" in found:
+        final = "REQUIRE_USER"
+    elif "DEFER" in found or "UNKNOWN" in found:
+        final = "DEFER"
+    elif "ALLOW_WITH_CONSTRAINTS" in found:
+        final = "ALLOW_WITH_CONSTRAINTS"
+    else:
+        final = "ALLOW"
+    return {
+        "strategy": "STRICT_AND",
+        "decision": final,
+        "allow": final in {"ALLOW", "ALLOW_WITH_CONSTRAINTS"},
+        "require_user": final == "REQUIRE_USER",
+        "fail_closed": final in {"DENY", "DEFER"},
+        "dimension_decisions": dict(zip(_SIX_DIMENSIONS, found)),
+        "risk_tier": risk_tier or "TIER_UNKNOWN",
+    }
+
+
+def build_six_question_governance_packet(
+    request_text: str,
+    *,
+    caller: str = "unknown",
+    caller_context: Optional[Dict[str, Any]] = None,
+    proposed_action: Optional[Dict[str, Any]] = None,
+    user_present: Optional[bool] = None,
+    user_consented: bool = False,
+    base_decision: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ctx = caller_context if isinstance(caller_context, dict) else {}
+    pa = proposed_action if isinstance(proposed_action, dict) else {}
+    base = base_decision if isinstance(base_decision, dict) else {}
+    text = str(request_text or "")
+    entry = _sm_entry_point_from_request(text, ctx)
+    risk_score = int(base.get("risk_score") or 0)
+    risk_tier = "TIER_1_LOW" if risk_score <= 15 else "TIER_2_MEDIUM" if risk_score <= 45 else "TIER_3_HIGH"
+
+    who_decision = "ALLOW" if caller and str(caller).lower() != "unknown" else "REQUIRE_USER"
+    if user_present is False and risk_score > 15:
+        who_decision = "REQUIRE_USER"
+
+    why_decision = "ALLOW" if text.strip() else "DEFER"
+    what_decision = "ALLOW" if (text.strip() or pa) else "DEFER"
+    when_decision = "ALLOW" if (user_consented or risk_score <= 15) else ("REQUIRE_USER" if risk_score > 15 else "ALLOW")
+    where_decision = "ALLOW"
+    how_decision = "ALLOW"
+
+    if str(base.get("decision") or "").upper() == "DENY":
+        how_decision = "DENY"
+    elif str(base.get("decision") or "").upper() == "REQUIRE_USER":
+        when_decision = "REQUIRE_USER"
+    elif str(base.get("decision") or "").upper() == "DEFER":
+        how_decision = "DEFER"
+
+    dims = {
+        "WHO": _sm_dimension(who_decision, 0.80, {"caller": caller, "user_present": user_present, "user_consented": bool(user_consented)}, "Authority / affected party review."),
+        "WHY": _sm_dimension(why_decision, 0.72, {"purpose_hint": ctx.get("purpose_hint") or base.get("intent") or "general"}, "Purpose and intent review."),
+        "WHAT": _sm_dimension(what_decision, 0.78, {"intent": base.get("intent"), "proposed_action_present": bool(pa), "risk_score": risk_score}, "Scope, object, data, and risk review."),
+        "WHEN": _sm_dimension(when_decision, 0.70, {"user_consented": bool(user_consented), "risk_score": risk_score}, "Timing, confirmation, and permission window review."),
+        "WHERE": _sm_dimension(where_decision, 0.66, {"device_mode": ctx.get("device_mode"), "run_mode": ctx.get("run_mode"), "paths": pa.get("paths") or pa.get("target_files")}, "Location, surface, body, device, or environment review."),
+        "HOW": _sm_dimension(how_decision, 0.74, {"execution_mode": pa.get("execution_mode") or pa.get("mode"), "has_rollback": bool(pa.get("rollback") or pa.get("rollback_plan")), "base_decision": base.get("decision")}, "Execution, audit, verification, and rollback review."),
+    }
+    merge = merge_six_question_verdicts(dims, risk_tier=risk_tier)
+    return {
+        "packet_type": "SixQuestionGovernancePacket",
+        "schema": "SarahMemory.six_question_governance.v1",
+        "module": MODULE_NAME,
+        "module_version": "8.0.0",
+        "packet_id": "six-" + uuid.uuid4().hex[:12],
+        "ts": datetime.now().isoformat(),
+        "entry_point": entry,
+        "dimensions": dims,
+        "merge_strategy": "STRICT_AND",
+        "merge": merge,
+        "final_decision": merge.get("decision"),
+        "requires_user": bool(merge.get("require_user")),
+        "risk_tier": risk_tier,
+        "loop_closed": merge.get("decision") in {"ALLOW", "ALLOW_WITH_CONSTRAINTS"},
+        "execution_authority": False,
+        "doctrine": {
+            "any_point_can_start": True,
+            "all_six_questions_interconnect": True,
+            "parallel_evidence_sync_final_authorization": True,
+            "no_loop_no_action": True,
+        },
+    }
+
+
+def _sm_attach_six_question_packet_to_decision(
+    dec: Dict[str, Any],
+    *,
+    request_text: str,
+    caller: str,
+    caller_context: Optional[Dict[str, Any]],
+    proposed_action: Optional[Dict[str, Any]],
+    user_present: Optional[bool],
+    user_consented: bool,
+) -> Dict[str, Any]:
+    pkt = build_six_question_governance_packet(
+        request_text,
+        caller=caller,
+        caller_context=caller_context,
+        proposed_action=proposed_action,
+        user_present=user_present,
+        user_consented=user_consented,
+        base_decision=dec,
+    )
+    dec["six_question_governance"] = pkt
+    dec.setdefault("tri_layer", {})["six_question_governance_packet"] = pkt
+    dec.setdefault("trace", {})["six_question_final"] = pkt.get("final_decision")
+    return dec

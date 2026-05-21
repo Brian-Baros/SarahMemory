@@ -959,6 +959,10 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
 
     ctx = dict(context or {})
     runtime = _runtime_meta()
+    try:
+        active_identity = resolve_active_identity(ctx) if 'resolve_active_identity' in globals() else {}
+    except Exception:
+        active_identity = {}
     status = _build_status(ctx)
     body_map = _build_body_map()
     capability_map = _build_capability_map(ctx)
@@ -971,6 +975,10 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
         "identity": {
             **_IDENTITY_CONTRACT,
             "project_version": str(runtime.get("project_version") or getattr(config, "PROJECT_VERSION", MODULE_VERSION)),
+            "active_name": active_identity.get("active_name") or active_identity.get("name"),
+            "name": active_identity.get("active_name") or active_identity.get("name") or _IDENTITY_CONTRACT.get("entity_name"),
+            "identity_source": active_identity.get("identity_source"),
+            "fallback_chain": active_identity.get("fallback_chain"),
             "node_name": _node_name(),
             "hostname": _host_name(),
             "platform": platform.platform(),
@@ -1204,3 +1212,143 @@ def build_thermal_body_authority_packet(claim: str = "", hard_evidence_packet: O
         'rule': 'CognitiveSelf supplies body authority and capability context; it does not override CognitiveServices, SafetyPolicies, or SMGET.',
         'read_only': True, 'action_taken': False,
     }
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+# Dynamic identity layer: runtime override -> Globals/.env AIOS_NAME -> factory default.
+import re
+def _sm_identity_config_name() -> str:
+    try:
+        val = str(getattr(config, "AIOS_NAME", "") or "").strip()
+        if val:
+            return val
+    except Exception:
+        pass
+    try:
+        val = str(os.getenv("AIOS_NAME", "") or "").strip()
+        if val:
+            return val
+    except Exception:
+        pass
+    return "Sarah"
+
+
+def _sm_factory_identity_name() -> str:
+    try:
+        return str((_IDENTITY_CONTRACT or {}).get("entity_name") or "SarahMemory").strip() or "SarahMemory"
+    except Exception:
+        return "SarahMemory"
+
+
+def _sm_clean_identity_name(name: Any) -> str:
+    raw = str(name or "").strip()
+    raw = re.sub(r"[^A-Za-z0-9 _.'-]", "", raw).strip()
+    raw = re.sub(r"\s+", " ", raw)
+    return raw[:64]
+
+
+def resolve_active_identity(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve current AIOS identity without modifying Globals.py."""
+    override = _state_get("runtime_identity_override", {})
+    override_name = _sm_clean_identity_name(override.get("active_name") if isinstance(override, dict) else "")
+    config_name = _sm_clean_identity_name(_sm_identity_config_name())
+    factory_name = _sm_clean_identity_name(_sm_factory_identity_name())
+    if override_name and bool((override or {}).get("enabled", True)):
+        active = override_name
+        source = "runtime_user_override"
+    elif config_name:
+        active = config_name
+        source = "config_aios_name"
+    else:
+        active = factory_name
+        source = "factory_default"
+    return {
+        "packet_type": "ActiveIdentityPacket",
+        "schema": "SarahMemory.identity.active.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "active_name": active,
+        "name": active,
+        "platform_name": "SarahMemory AiOS",
+        "system_name": "SarahMemory AiOS",
+        "identity_source": source,
+        "runtime_override": override if isinstance(override, dict) else {},
+        "config_name": config_name,
+        "factory_default": factory_name,
+        "fallback_chain": ["runtime_user_override", "AIOS_NAME", "factory_default"],
+        "ts": _now_iso(),
+        "auditable": True,
+        "execution_authority": False,
+    }
+
+
+def set_runtime_identity_name(
+    new_name: str,
+    *,
+    approved_by: str = "user",
+    source: str = "user_command",
+    reason: str = "runtime_identity_rename",
+) -> Dict[str, Any]:
+    """Store a user-approved runtime identity override. Does not edit SarahMemoryGlobals.py."""
+    clean = _sm_clean_identity_name(new_name)
+    if not clean or len(clean) < 2:
+        return {"ok": False, "error": "invalid_identity_name", "requested_name": str(new_name or "")}
+    previous = resolve_active_identity({})
+    record = {
+        "enabled": True,
+        "active_name": clean,
+        "previous_name": previous.get("active_name"),
+        "approved_by": str(approved_by or "user")[:120],
+        "source": str(source or "user_command")[:120],
+        "reason": str(reason or "runtime_identity_rename")[:240],
+        "ts": _now_iso(),
+        "audit_id": "identity-" + uuid.uuid4().hex[:12],
+    }
+    _state_set("runtime_identity_override", record)
+    try:
+        _SELF_MODEL_CACHE["ts"] = 0.0
+        _SELF_MODEL_CACHE["model"] = None
+    except Exception:
+        pass
+    return {"ok": True, "identity": resolve_active_identity({}), "audit": record}
+
+
+def clear_runtime_identity_name(*, approved_by: str = "user", reason: str = "clear_runtime_identity") -> Dict[str, Any]:
+    prev = resolve_active_identity({})
+    record = {
+        "enabled": False,
+        "active_name": "",
+        "previous_name": prev.get("active_name"),
+        "approved_by": str(approved_by or "user")[:120],
+        "reason": str(reason or "clear_runtime_identity")[:240],
+        "ts": _now_iso(),
+        "audit_id": "identity-clear-" + uuid.uuid4().hex[:12],
+    }
+    _state_set("runtime_identity_override", record)
+    try:
+        _SELF_MODEL_CACHE["ts"] = 0.0
+        _SELF_MODEL_CACHE["model"] = None
+    except Exception:
+        pass
+    return {"ok": True, "identity": resolve_active_identity({}), "audit": record}
+
+
+def parse_runtime_identity_rename(text: str) -> Dict[str, Any]:
+    """Detect direct user-approved identity rename language."""
+    raw = str(text or "").strip()
+    patterns = [
+        r"\b(?:your name is now|you are now called|call yourself|rename yourself to|from now on your name is)\s+([A-Za-z0-9 _.'-]{2,64})\b",
+        r"\b(?:hey\s+)?[A-Za-z0-9 _.'-]{2,64}\s*,?\s+your name is now\s+([A-Za-z0-9 _.'-]{2,64})\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, raw, flags=re.I)
+        if m:
+            name = _sm_clean_identity_name(m.group(1).strip(" .,!?:;\"'"))
+            if name:
+                return {"matched": True, "new_name": name, "source_text": raw}
+    return {"matched": False, "new_name": "", "source_text": raw}
+
+
+def get_identity_response(user_input: Optional[str] = None) -> str:
+    ident = resolve_active_identity({})
+    name = ident.get("active_name") or "Sarah"
+    return f"I'm {name} — your SarahMemory AiOS companion."

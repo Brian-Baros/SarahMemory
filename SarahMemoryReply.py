@@ -1565,6 +1565,21 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
         "latency_ms": 0,
         "_prompt_text": original_text,
     }
+    try:
+        tri_packet = _sm_build_tri_layer_input_packet(original_text, {"source": "SarahMemoryReply.generate_reply"})
+        meta["tri_layer_input_packet"] = tri_packet
+        meta["language_context_packet"] = tri_packet.get("language_context_packet") if isinstance(tri_packet, dict) else {}
+        meta["emotion_affect_packet"] = tri_packet.get("emotion_affect_packet") if isinstance(tri_packet, dict) else {}
+        meta["identity_packet"] = tri_packet.get("identity_packet") if isinstance(tri_packet, dict) else {}
+        meta.setdefault("pipeline", []).append("tri_layer_input_packet")
+    except Exception as _tri_e:
+        meta["tri_layer_error"] = str(_tri_e)
+    try:
+        rename_bundle = _sm_try_runtime_identity_rename(original_text, meta)
+        if isinstance(rename_bundle, dict):
+            return _stamp_bundle(rename_bundle)
+    except Exception as _rename_e:
+        meta["identity_rename_error"] = str(_rename_e)
     followup_bundle, text_in = _sm_resolve_followup_input(text_in, meta)
     if isinstance(followup_bundle, dict):
         return _stamp_bundle(followup_bundle)
@@ -1650,7 +1665,8 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
         low_ident = (text_in or "").strip().lower()
         if "version" in low_ident:
             try:
-                ans = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0')}."
+                _ident = _sm_active_identity_payload()
+                ans = f"I am {_ident.get('active_name') or 'Sarah'} — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0')}."
             except Exception:
                 ans = "I am Sarah — your SarahMemory AiOS companion. Version: 8.0.0."
         elif re.search(r"\b(who\s+(made|created|built|developed|engineered|designed)\s+you|creator|engineer|designer)\b", low_ident):
@@ -2055,3 +2071,49 @@ def format_selfaware_thermal_reply(packet: Dict[str, Any]) -> str:
             bits.append(f"{str(row.get('component') or 'related').replace('_',' ')} {row.get('temperature_c')}°C")
     suffix = (" The related live thermal reading I can verify is " + ", ".join(bits) + ".") if bits else ""
     return f"I do not currently have a verified {component} temperature reading from a direct or mapped sensor." + suffix
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def _sm_active_identity_payload() -> Dict[str, Any]:
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        fn = getattr(_CogSelf, "resolve_active_identity", None)
+        if callable(fn):
+            return fn({}) or {}
+    except Exception:
+        pass
+    return {"active_name": "Sarah", "identity_source": "fallback"}
+
+
+def _sm_build_tri_layer_input_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        return _CIL.build_tri_layer_input_packet(text, context_packet=context_packet)
+    except Exception as e:
+        return {"packet_type": "TriLayerInputPacket", "error": str(e), "raw_text": str(text or "")}
+
+
+def _sm_try_runtime_identity_rename(text: str, meta: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    try:
+        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
+        parse = getattr(_CogSelf, "parse_runtime_identity_rename", None)
+        setter = getattr(_CogSelf, "set_runtime_identity_name", None)
+        if not callable(parse) or not callable(setter):
+            return None
+        parsed = parse(text)
+        if not parsed.get("matched"):
+            return None
+        result = setter(parsed.get("new_name"), approved_by="user", source="SarahMemoryReply.user_command")
+        if not result.get("ok"):
+            return ReplyBundle("I could not update my active name from that command.", meta={"intent": "identity_rename", "identity_result": result}).to_dict()
+        ident = result.get("identity") or {}
+        name = ident.get("active_name") or parsed.get("new_name")
+        out_meta = dict(meta or {})
+        out_meta.update({"intent": "identity_rename", "identity_result": result})
+        return ReplyBundle(f"My active name is now {name}.", meta=out_meta).to_dict()
+    except Exception:
+        return None
+
+
+def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ignore[override]
+    ident = _sm_active_identity_payload()
+    return f"I'm {ident.get('active_name') or 'Sarah'} — your SarahMemory AiOS companion."

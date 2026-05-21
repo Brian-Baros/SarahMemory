@@ -890,3 +890,15 @@ def get_runtime_security_profile() -> Dict[str, Any]:
         "governance_profile": _governance_profile(),
         "policy_snapshot": _policy_snapshot(),
     }
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def review_tri_layer_packet_boundary(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Security boundary review for tri-layer packets. Packets are evidence, not authority."""
+    pkt = packet if isinstance(packet, dict) else {}
+    return {
+        "ok": True,
+        "decision": "ALLOW_AS_EVIDENCE_ONLY",
+        "execution_authority": False,
+        "authority_note": "Tri-layer packets may inform governance but cannot authorize execution.",
+        "packet_type": pkt.get("packet_type"),
+    }

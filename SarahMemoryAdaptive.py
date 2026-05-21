@@ -1800,3 +1800,25 @@ if getattr(config, "ENABLE_RESPONSE_LOG_TABLE", False):
 # ====================================================================
 # END OF SarahMemoryAdaptive.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def build_emotion_affect_packet(user_input: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build the Layer-3 Emotion/Affect packet. Emotion informs meaning; it does not authorize action."""
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        return _CIL.build_emotion_affect_packet(user_input, context_packet=context_packet)
+    except Exception as e:
+        return {
+            "packet_type": "EmotionAffectPacket",
+            "schema": "SarahMemory.emotion_affect.v1.fallback",
+            "primary_emotion": "neutral",
+            "secondary_emotions": [],
+            "sentiment_score": 0.0,
+            "emotional_intensity": 0.0,
+            "urgency": 0.0,
+            "stress": 0.0,
+            "confidence": 0.25,
+            "input_role": "meaning_signal",
+            "execution_authority": False,
+            "error": str(e),
+        }

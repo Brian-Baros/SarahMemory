@@ -1400,3 +1400,14 @@ def review_read_only_evidence_contract(contract: Dict[str, Any]) -> Dict[str, An
     except Exception:
         pass
     return review
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def attach_tri_layer_packets_to_meta(meta: Optional[Dict[str, Any]], tri_layer_packet: Optional[Dict[str, Any]] = None, six_question_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Attach packet evidence to ActionContract metadata without granting execution authority."""
+    out = dict(meta or {})
+    if isinstance(tri_layer_packet, dict):
+        out["tri_layer_input_packet"] = tri_layer_packet
+    if isinstance(six_question_packet, dict):
+        out["six_question_governance_packet"] = six_question_packet
+    out["packet_metadata_is_evidence_only"] = True
+    return out

@@ -1592,8 +1592,31 @@ if __name__ == "__main__":
 # -----------------------------------------------------------------------------
 # V10/V9G Canonical SelfAware Query Packet helper
 # -----------------------------------------------------------------------------
+def _sm_word_or_phrase_match(norm: str, term: str, language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    """Safe token/phrase matcher: fan != fantasy, ram != programming."""
+    t = str(term or "").strip().lower()
+    if not t:
+        return False
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        verdict = _CIL.candidate_blocked_by_language_packet(t, language_packet or {})
+        if isinstance(verdict, dict) and verdict.get("blocked"):
+            return False
+    except Exception:
+        pass
+    return re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", str(norm or "").lower()) is not None
+
+
+def _sm_any_word_or_phrase(norm: str, terms: Sequence[str], language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    return any(_sm_word_or_phrase_match(norm, term, language_packet) for term in (terms or ()))
+
+
 def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Build a deterministic SelfAware body-fact case frame without executing anything."""
+    """Build a deterministic SelfAware body-fact case frame without executing anything.
+
+    This version is phrase-safe. It does not classify "Final Fantasy" as fan
+    telemetry and does not let short hardware tokens match inside larger words.
+    """
     raw = _coerce_text(text) if '_coerce_text' in globals() else str(text or '')
     norm = _normalize_text(raw).lower() if '_normalize_text' in globals() else str(raw).strip().lower()
     corrections = {}
@@ -1601,28 +1624,60 @@ def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[D
         if bad in norm:
             norm = norm.replace(bad, good)
             corrections[bad] = good
+
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        language_packet = _CIL.build_language_context_packet(raw, context_packet=context_packet)
+    except Exception:
+        language_packet = {}
+
     component = ''
-    if any(x in norm for x in ('cpu', 'processor')): component = 'cpu'
-    elif any(x in norm for x in ('gpu', 'graphics', 'video card')): component = 'gpu'
-    elif any(x in norm for x in ('motherboard', 'mainboard', 'baseboard', 'system board', 'board')): component = 'motherboard'
-    elif any(x in norm for x in ('drive', 'disk', 'ssd', 'hdd', 'nvme', 'storage')): component = 'drive'
+    if _sm_any_word_or_phrase(norm, ('cpu', 'processor'), language_packet):
+        component = 'cpu'
+    elif _sm_any_word_or_phrase(norm, ('gpu', 'graphics', 'video card'), language_packet):
+        component = 'gpu'
+    elif _sm_any_word_or_phrase(norm, ('motherboard', 'mainboard', 'baseboard', 'system board', 'board'), language_packet):
+        component = 'motherboard'
+    elif _sm_any_word_or_phrase(norm, ('drive', 'disk', 'disc', 'storage', 'ssd', 'hdd', 'nvme'), language_packet):
+        component = 'drive'
+    elif _sm_word_or_phrase_match(norm, 'battery', language_packet):
+        component = 'battery'
+    elif _sm_any_word_or_phrase(norm, ('motor', 'servo', 'actuator', 'controller'), language_packet):
+        component = 'motor_controller'
+    elif _sm_any_word_or_phrase(norm, ('ambient', 'room', 'environment'), language_packet):
+        component = 'ambient'
+
     metric = 'identity'
     kind = 'general_system_fact'
-    if any(x in norm for x in ('temperature', 'temp', 'thermal', 'heat', 'degrees c', 'degrees f')):
+    if _sm_any_word_or_phrase(norm, ('temperature', 'temp', 'thermal', 'heat', 'degrees c', 'degrees f'), language_packet):
         metric = 'temperature'; kind = 'temperature'
-    elif any(x in norm for x in ('fan', 'rpm')):
+    elif _sm_any_word_or_phrase(norm, ('fan', 'rpm'), language_packet):
         metric = 'fan_speed'; kind = 'fan_speed'
-    elif any(x in norm for x in ('bios', 'uefi', 'firmware')) and any(x in norm for x in ('version', 'revision', 'release')):
+    elif _sm_any_word_or_phrase(norm, ('bios', 'uefi', 'firmware'), language_packet) and _sm_any_word_or_phrase(norm, ('version', 'revision', 'release'), language_packet):
         metric = 'bios_version'; kind = 'bios_version'; component = component or 'motherboard'
-    elif any(x in norm for x in ('body map', 'body-map', 'runtime body', 'aios body')):
+    elif _sm_any_word_or_phrase(norm, ('body map', 'body-map', 'runtime body', 'aios body'), language_packet):
         metric = 'body_map'; kind = 'body_map'
-    elif component == 'cpu': kind = 'cpu'
-    elif component == 'gpu': kind = 'gpu'
-    elif component == 'motherboard': kind = 'motherboard'
-    elif component == 'drive': kind = 'disk_space'
-    elif any(x in norm for x in ('network', 'ethernet', 'wi-fi', 'wifi', 'adapter')):
-        component = 'network'; metric = 'connectivity' if 'connected' in norm else 'network_adapters'; kind = 'network'
-    domain = 'selfaware_body' if kind != 'general_system_fact' else 'chat'
+    elif _sm_any_word_or_phrase(norm, ('network adapter', 'network card', 'ethernet', 'wi-fi', 'wifi', 'lan', 'bluetooth network'), language_packet):
+        metric = 'connectivity' if re.search(r"(?<![a-z0-9])connected(?![a-z0-9])", norm) else 'network_adapters'
+        kind = 'network'
+    elif component in ('cpu', 'gpu', 'motherboard'):
+        metric = 'identity'; kind = component
+    elif _sm_any_word_or_phrase(norm, ('ram', 'memory'), language_packet):
+        metric = 'memory_status'; kind = 'memory'
+    elif _sm_any_word_or_phrase(norm, ('disk', 'disc', 'drive', 'storage', 'space', 'free gb', 'used gb'), language_packet):
+        metric = 'storage_status'; kind = 'disk_space'
+
+    self_scope = _sm_any_word_or_phrase(norm, (
+        'my', 'your', 'you using', 'am i using', 'are you using', 'system', 'machine', 'computer', 'pc',
+        'runtime', 'body map', 'body-map', 'hardware', 'motherboard', 'cpu', 'processor', 'gpu', 'graphics',
+        'ram', 'memory', 'fan', 'rpm', 'temperature', 'temp', 'thermal', 'network adapter', 'ethernet', 'wi-fi',
+        'python version', 'node name', 'hostname', 'bios', 'uefi', 'firmware'
+    ), language_packet)
+    domain = 'selfaware_body' if kind != 'general_system_fact' or self_scope else 'chat'
+
+    if _sm_any_word_or_phrase(norm, ('outside', 'weather', 'forecast', 'rain', 'humidity'), language_packet) and not _sm_any_word_or_phrase(norm, ('cpu','gpu','fan','drive','disk','system','motherboard'), language_packet):
+        domain = 'chat'
+
     return {
         'packet_type': 'CanonicalQueryPacket',
         'version': 'V10_V9G_CANONICAL_QUERY_PACKET',
@@ -1639,4 +1694,34 @@ def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[D
         'volatile_runtime_fact': domain == 'selfaware_body',
         'read_only': True,
         'action_taken': False,
+        'language_context_packet': language_packet,
     }
+
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+# Non-executing language/context identity ring bridge.
+def build_language_context_packet(raw_text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build the Layer-2 language/context packet used before governance routing."""
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        return _CIL.build_language_context_packet(raw_text, context_packet=context_packet)
+    except Exception as e:
+        return {
+            "packet_type": "LanguageContextPacket",
+            "schema": "SarahMemory.language_context.v1.fallback",
+            "raw_text": str(raw_text or ""),
+            "normalized_text": _normalize_text(str(raw_text or "")) if '_normalize_text' in globals() else str(raw_text or "").strip(),
+            "phrase_locks": [],
+            "blocked_substring_matches": [],
+            "requires_clarification": False,
+            "error": str(e),
+        }
+
+
+def candidate_blocked_by_language_packet(candidate: str, language_packet: Dict[str, Any]) -> Dict[str, Any]:
+    """Return whether a route keyword is blocked by a locked phrase, e.g. fan inside Final Fantasy."""
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        return _CIL.candidate_blocked_by_language_packet(candidate, language_packet)
+    except Exception:
+        return {"blocked": False, "candidate": str(candidate or "")}

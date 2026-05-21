@@ -978,3 +978,14 @@ try:
 except Exception:
     pass
 
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def trust_subject_for_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """TrustRegistry helper: tri-layer packet is an internal evidence subject, not execution authority."""
+    pkt = packet if isinstance(packet, dict) else {}
+    return {
+        "subject": "tri_layer_input_packet",
+        "packet_type": pkt.get("packet_type"),
+        "trust_tier": "internal_evidence_only",
+        "capability_grant": [],
+        "execution_authority": False,
+    }

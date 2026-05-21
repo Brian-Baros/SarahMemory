@@ -2716,3 +2716,21 @@ def _sm_sanitize_llm_text(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
     return t
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def build_packet_context_header(tri_layer_packet: Optional[Dict[str, Any]] = None) -> str:
+    """Build a compact helper-model context header. This grants no authority to the model."""
+    pkt = tri_layer_packet if isinstance(tri_layer_packet, dict) else {}
+    lang = pkt.get("language_context_packet") if isinstance(pkt.get("language_context_packet"), dict) else {}
+    emo = pkt.get("emotion_affect_packet") if isinstance(pkt.get("emotion_affect_packet"), dict) else {}
+    identity = pkt.get("identity_packet") if isinstance(pkt.get("identity_packet"), dict) else {}
+    bits = [
+        "SarahMemory packet context (helper model advisory only):",
+        f"- Active identity: {identity.get('active_name') or identity.get('name') or 'Sarah'}",
+        f"- Language domain: {lang.get('context_domain') or 'general'}",
+        f"- Purpose: {lang.get('purpose_hint') or 'unknown'}",
+        f"- Phrase locks: {', '.join(lang.get('phrase_locks') or []) or 'none'}",
+        f"- Emotion signal: {emo.get('primary_emotion') or 'neutral'} urgency={emo.get('urgency', 0)} stress={emo.get('stress', 0)}",
+        "- Governance, authorization, and execution remain outside the helper model.",
+    ]
+    return "\n".join(bits)

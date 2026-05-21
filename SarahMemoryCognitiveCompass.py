@@ -1542,3 +1542,43 @@ def review_selfaware_answer_bearing(original_goal: str = "", evidence_packet: Op
     if metric == 'bios_version' and ('server version' in reply or 'my name is' in reply):
         hold = True; status = STATUS_PROCEDURAL_GAP if 'STATUS_PROCEDURAL_GAP' in globals() else 'PROCEDURAL_GAP'; directives.append('REANCHOR_TO_HARDWARE_BIOS_VERSION')
     return {'ok': True, 'module': 'SarahMemoryCognitiveCompass', 'status': status, 'hold_reply': bool(hold), 'directives': directives, 'original_goal': original_goal, 'requested_metric': metric, 'requested_component': component}
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def assess_language_identity_drift(
+    original_goal: str,
+    current_route: str = "",
+    language_context_packet: Optional[Dict[str, Any]] = None,
+    emotion_affect_packet: Optional[Dict[str, Any]] = None,
+    six_question_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Detect phrase-lock, substring-route, identity, emotion-override, and open-loop drift."""
+    lang = language_context_packet if isinstance(language_context_packet, dict) else {}
+    emo = emotion_affect_packet if isinstance(emotion_affect_packet, dict) else {}
+    six = six_question_packet if isinstance(six_question_packet, dict) else {}
+    warnings: List[str] = []
+    status = STATUS_ON_COURSE
+    directive = DIRECTIVE_ALLOW_REPLY
+    route = str(current_route or "").lower()
+    for item in lang.get("blocked_substring_matches") or []:
+        if isinstance(item, dict) and route and str(item.get("candidate") or "").lower() in route:
+            warnings.append(f"route_substring_blocked:{item.get('candidate')} inside {item.get('inside_phrase')}")
+            status = STATUS_RED_ZONE
+            directive = DIRECTIVE_REANCHOR_PRETOKEN
+    if emo.get("output_constraints", {}).get("emotion_does_not_authorize_action") is not True:
+        warnings.append("emotion_packet_missing_no_authority_doctrine")
+        status = STATUS_MINOR_DRIFT if status == STATUS_ON_COURSE else status
+    if six and not bool(six.get("loop_closed")) and str(six.get("final_decision") or "").upper() in {"DEFER", "UNKNOWN"}:
+        warnings.append("six_question_loop_not_closed")
+        status = STATUS_PROCEDURAL_GAP if status == STATUS_ON_COURSE else status
+        directive = DIRECTIVE_REANCHOR_GOVERNOR
+    return {
+        "ok": not warnings,
+        "status": status,
+        "directive": directive,
+        "warnings": warnings,
+        "original_goal": _safe_text(original_goal, 500) if '_safe_text' in globals() else str(original_goal or '')[:500],
+        "current_route": current_route,
+        "reply_allowed": status not in {STATUS_RED_ZONE, STATUS_PROCEDURAL_GAP, STATUS_LOOP_RISK},
+        "execution_allowed": False,
+        "source": "CognitiveCompass.tri_layer_drift_guard",
+    }

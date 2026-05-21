@@ -1176,3 +1176,27 @@ def compare_selfaware_answer_contract(user_text: str, response_text: str, canoni
     if metric == 'connectivity' and 'network adapters =' in reply and ('ethernet' in raw or 'wi-fi' in raw or 'wifi' in raw):
         accepted = False; reasons.append('connectivity_question_received_adapter_dump')
     return {'accepted': bool(accepted), 'decision': 'ACCEPT' if accepted else 'REJECT_INTENT_ALIGNMENT', 'reasons': reasons, 'compare_mode': 'selfaware_answer_contract', 'sql_recorded': False}
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def validate_tri_layer_packet(packet: Dict[str, Any]) -> Dict[str, Any]:
+    """GuardDog validation for tri-layer input/governance packets before presentation/action."""
+    pkt = packet if isinstance(packet, dict) else {}
+    failures: List[str] = []
+    lang = pkt.get("language_context_packet") if isinstance(pkt.get("language_context_packet"), dict) else {}
+    emo = pkt.get("emotion_affect_packet") if isinstance(pkt.get("emotion_affect_packet"), dict) else {}
+    six = pkt.get("six_question_governance_packet") or pkt.get("six_question_governance")
+    six = six if isinstance(six, dict) else {}
+    if lang and lang.get("doctrine", {}).get("no_substring_routing_inside_locked_phrases") is not True:
+        failures.append("language_phrase_lock_doctrine_missing")
+    if emo and emo.get("doctrine", {}).get("emotion_never_overrides_governance") is not True:
+        failures.append("emotion_governance_doctrine_missing")
+    if six and six.get("doctrine", {}).get("no_loop_no_action") is not True:
+        failures.append("six_question_no_loop_no_action_missing")
+    return {
+        "ok": not failures,
+        "guard": "tri_layer_packet_guarddog",
+        "failures": failures,
+        "allow_presentation": not failures,
+        "allow_execution": False,
+        "notes": "Packet validation only; execution still requires SMGET/OperatorCore.",
+    }
