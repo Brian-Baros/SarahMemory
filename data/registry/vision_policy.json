@@ -1,0 +1,26 @@
+{
+  "enabled": true,
+  "accept_frontend_frames": true,
+  "backend_controls_fps": true,
+  "max_fps": 2,
+  "max_width": 640,
+  "max_height": 360,
+  "jpeg_quality": 0.7,
+  "frame_ttl_seconds": 10,
+  "max_frame_chars": 1800000,
+  "learning_default": "off",
+  "identity_learning_requires_user_approval": true,
+  "frontend_authority": [
+    "camera_on_off",
+    "preview_show_hide",
+    "submit"
+  ],
+  "backend_authority": [
+    "frame_acceptance",
+    "max_fps",
+    "max_resolution",
+    "analysis",
+    "learning_gate",
+    "driver_use"
+  ]
+}
