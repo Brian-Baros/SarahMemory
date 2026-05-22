@@ -1,0 +1,599 @@
+{
+  "ok": true,
+  "ts": "2026-05-06T22:40:55.790432",
+  "version": "8.0.0",
+  "runtime": {
+    "run_mode": "local",
+    "device_mode": "local_agent",
+    "device_profile": "Standard",
+    "safe_mode": false,
+    "local_only": false,
+    "neosky": true,
+    "developersmode": true
+  },
+  "os": {
+    "system": "Windows",
+    "release": "10",
+    "version": "10.0.19045",
+    "platform": "Windows-10-10.0.19045-SP0",
+    "machine": "AMD64",
+    "node": "BAROS-PC-MASTER",
+    "python": "3.13.9"
+  },
+  "motherboard": {
+    "available": true,
+    "manufacturer": "ASUSTeK COMPUTER INC.",
+    "product": "SABERTOOTH 990FX R2.0",
+    "serial": "140323944302693",
+    "source": "wmic_baseboard",
+    "version": "Rev 1.xx"
+  },
+  "cpu": {
+    "processor": "AMD64 Family 21 Model 2 Stepping 0, AuthenticAMD",
+    "architecture": "AMD64",
+    "physical_cores": 4,
+    "logical_cores": 8,
+    "source": "wmic_cpu",
+    "frequency_mhz": {
+      "current": 4013.0,
+      "min": 0.0,
+      "max": 4013.0
+    },
+    "name": "AMD FX(tm)-8350 Eight-Core Processor",
+    "manufacturer": "AuthenticAMD",
+    "max_clock_mhz": "4013"
+  },
+  "memory": {},
+  "gpu": {
+    "Type": "NVIDIA",
+    "Name": "NVIDIA GeForce RTX 3060",
+    "Memory": "12288 MiB",
+    "Driver": "581.80"
+  },
+  "network_adapters": [
+    {
+      "name": "Bluetooth Network Connection",
+      "is_up": false,
+      "speed_mbps": 3,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "70-32-17-54-42-3B",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "169.254.85.118",
+          "netmask": "255.255.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::dc47:9834:8733:7e0b",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0,
+      "hardware": {
+        "MACAddress": "70:32:17:54:42:3B",
+        "Manufacturer": "Microsoft",
+        "Name": "Bluetooth Device (Personal Area Network)",
+        "NetConnectionID": "Bluetooth Network Connection",
+        "NetEnabled": "FALSE",
+        "PNPDeviceID": "BTH\\MS_BTHPAN\\7&amp;1BCFF2FC&amp;0&amp;2"
+      }
+    },
+    {
+      "name": "Ethernet",
+      "is_up": true,
+      "speed_mbps": 100,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "40-16-7E-29-0F-70",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "192.168.42.5",
+          "netmask": "255.255.255.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b280:549f:2c89:e164:7a75",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b281:66c2:986a:b262:d066",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b280:20a0:5e75:b0c1:5a4e",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b280:5dc7:db79:2dad:9d53",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b280:95df:fc9:73e6:c9b5",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b280:d0fc:2a2f:6096:8bd2",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b281:20a0:5e75:b0c1:5a4e",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b281:5dc7:db79:2dad:9d53",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b281:95df:fc9:73e6:c9b5",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "2001:5b0:9ad1:b281:d0fc:2a2f:6096:8bd2",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::7e7c:9a47:dccf:2caa",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 1938716707,
+      "bytes_recv": 12699365297,
+      "packets_sent": 6777308,
+      "packets_recv": 11644621,
+      "hardware": {
+        "MACAddress": "",
+        "Manufacturer": "Microsoft",
+        "Name": "Hyper-V Virtual Ethernet Adapter",
+        "NetConnectionID": "vEthernet (Default Switch)",
+        "NetEnabled": "FALSE",
+        "PNPDeviceID": "ROOT\\VMS_MP\\0000"
+      }
+    },
+    {
+      "name": "Ethernet 2",
+      "is_up": false,
+      "speed_mbps": 1073,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "00-FF-F6-80-3B-BF",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "169.254.156.114",
+          "netmask": "255.255.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::8ac6:f80f:1be1:20be",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0
+    },
+    {
+      "name": "Local Area Connection* 1",
+      "is_up": false,
+      "speed_mbps": 0,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "70-32-17-54-42-38",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "169.254.211.55",
+          "netmask": "255.255.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::e576:8b9d:4c78:3831",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0
+    },
+    {
+      "name": "Local Area Connection* 2",
+      "is_up": false,
+      "speed_mbps": 0,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "72-32-17-54-42-37",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "169.254.141.159",
+          "netmask": "255.255.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::fe2:a37b:5459:74ff",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0
+    },
+    {
+      "name": "Loopback Pseudo-Interface 1",
+      "is_up": true,
+      "speed_mbps": 1073,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_INET",
+          "address": "127.0.0.1",
+          "netmask": "255.0.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "::1",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0
+    },
+    {
+      "name": "Radmin VPN",
+      "is_up": true,
+      "speed_mbps": 100,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "02-50-43-88-9C-87",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "26.122.14.183",
+          "netmask": "255.0.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fdfd::1a7a:eb7",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::2803:5bdb:ffb7:71ee",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 25796945,
+      "bytes_recv": 480,
+      "packets_sent": 60034,
+      "packets_recv": 8,
+      "hardware": {
+        "MACAddress": "02:50:43:88:9C:87",
+        "Manufacturer": "Famatech",
+        "Name": "Famatech Radmin VPN Ethernet Adapter",
+        "NetConnectionID": "Radmin VPN",
+        "NetEnabled": "TRUE",
+        "PNPDeviceID": "ROOT\\NET\\0001"
+      }
+    },
+    {
+      "name": "Wi-Fi",
+      "is_up": false,
+      "speed_mbps": 0,
+      "mtu": 1500,
+      "addresses": [
+        {
+          "family": "AF_LINK",
+          "address": "70-32-17-54-42-37",
+          "netmask": "",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET",
+          "address": "169.254.157.245",
+          "netmask": "255.255.0.0",
+          "broadcast": ""
+        },
+        {
+          "family": "AF_INET6",
+          "address": "fe80::ec35:a19:8007:b9f7",
+          "netmask": "",
+          "broadcast": ""
+        }
+      ],
+      "bytes_sent": 0,
+      "bytes_recv": 0,
+      "packets_sent": 0,
+      "packets_recv": 0,
+      "hardware": {
+        "MACAddress": "70:32:17:54:42:37",
+        "Manufacturer": "Intel Corporation",
+        "Name": "Intel(R) Wi-Fi 6 AX200 160MHz",
+        "NetConnectionID": "Wi-Fi",
+        "NetEnabled": "FALSE",
+        "PNPDeviceID": "PCI\\VEN_8086&amp;DEV_2723&amp;SUBSYS_00848086&amp;REV_1A\\4&amp;23984C36&amp;0&amp;0058"
+      }
+    }
+  ],
+  "io_devices": {
+    "cameras": [
+      {
+        "Manufacturer": "WD",
+        "Name": "WD-BLK_VideosBackup",
+        "PNPDeviceID": "SWD\\WPDBUSENUM\\{37B0A849-31BE-11F0-AF02-70321754423B}#0000000000100000"
+      }
+    ],
+    "microphones": [
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "HP-1314-CT Hands-Free AG Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;F6910F6&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Realtek",
+        "Name": "Realtek High Definition Audio",
+        "PNPDeviceID": "HDAUDIO\\FUNC_01&amp;VEN_10EC&amp;DEV_0892&amp;SUBSYS_10438436&amp;REV_1003\\4&amp;1DC8007C&amp;0&amp;0001"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "PBTHPFB Hands-Free AG Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;3A78B8CA&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "BRIANA-PC Hands-Free AG Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;1867AEC2&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "BAROS-PC-MINI Hands-Free HF Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;3AD2B7F7&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "BAROS-PC-MOBILE Hands-Free HF Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;2CE1E5E3&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Brian's S10 Hands-Free HF Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;36693341&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Realtek Digital Output (Realtek High Definition Audio)",
+        "PNPDeviceID": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{F11FFF33-C969-4FF5-AAC7-BA42D2394ECD}"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Headset Audio Gateway Service",
+        "PNPDeviceID": "BTHENUM\\{00001112-0000-1000-8000-00805F9B34FB}_VID&amp;00010075_PID&amp;0100\\8&amp;39EE36C5&amp;0&amp;FCDE902F33E0_C00000000"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "High Definition Audio Controller",
+        "PNPDeviceID": "PCI\\VEN_1002&amp;DEV_4383&amp;SUBSYS_84361043&amp;REV_40\\3&amp;267A616A&amp;0&amp;A2"
+      },
+      {
+        "Manufacturer": "(Generic USB Audio)",
+        "Name": "Logitech USB Microphone",
+        "PNPDeviceID": "USB\\VID_046D&amp;PID_0A03&amp;MI_00\\6&amp;73580A&amp;0&amp;0000"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Microphone (1080P Pro Stream)",
+        "PNPDeviceID": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{AFF4B781-6EF5-48E6-A757-9A36C3EB4938}"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Headset Audio Gateway Service",
+        "PNPDeviceID": "BTHENUM\\{00001112-0000-1000-8000-00805F9B34FB}_VID&amp;00010075_PID&amp;0100\\8&amp;39EE36C5&amp;0&amp;647BCE379B21_C00000000"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "JVC TV (NVIDIA High Definition Audio)",
+        "PNPDeviceID": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{ECF43B6D-96BF-4D0F-B178-07B8A81D59DE}"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Headset Audio Gateway Service",
+        "PNPDeviceID": "BTHENUM\\{00001112-0000-1000-8000-00805F9B34FB}_VID&amp;00010075_PID&amp;0100\\8&amp;39EE36C5&amp;0&amp;FCDE906FBAD8_C00000000"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Stereo Mix (Realtek High Definition Audio)",
+        "PNPDeviceID": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{877A75B9-1471-4145-AA0B-13336DBB2FE5}"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Realtek Digital Output(Optical) (Realtek High Definition Audio)",
+        "PNPDeviceID": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{1B05802A-3352-469D-B7A1-182288FB132E}"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "Galaxy S20+ 5G Hands-Free HF Audio",
+        "PNPDeviceID": "BTHHFENUM\\BTHHFPAUDIO\\9&amp;312461FB&amp;0&amp;97"
+      },
+      {
+        "Manufacturer": "NVIDIA",
+        "Name": "NVIDIA Virtual Audio Device (Wave Extensible) (WDM)",
+        "PNPDeviceID": "ROOT\\UNNAMED_DEVICE\\0000"
+      },
+      {
+        "Manufacturer": "Microsoft",
+        "Name": "High Definition Audio Controller",
+        "PNPDeviceID": "PCI\\VEN_10DE&amp;DEV_228E&amp;SUBSYS_88161043&amp;REV_A1\\4&amp;14E8F4CB&amp;0&amp;0110"
+      }
+    ],
+    "source": "best_effort",
+    "camera_count": 1,
+    "microphone_count": 20
+  },
+  "storage": [
+    {
+      "device": "C:\\",
+      "mountpoint": "C:\\ProgramData\\Microsoft\\Windows\\Containers\\BaseImages\\408ba3e9-4569-40ce-92bf-8411d8ba3dc3\\BaseLayer\\",
+      "fstype": "NTFS",
+      "opts": "rw"
+    },
+    {
+      "device": "C:\\",
+      "mountpoint": "C:\\",
+      "fstype": "NTFS",
+      "opts": "rw,fixed",
+      "total_bytes": 899867660288,
+      "used_bytes": 803606704128,
+      "free_bytes": 96260956160,
+      "used_percent": 89.3
+    },
+    {
+      "device": "D:\\",
+      "mountpoint": "D:\\",
+      "fstype": "",
+      "opts": "cdrom"
+    },
+    {
+      "device": "E:\\",
+      "mountpoint": "E:\\",
+      "fstype": "",
+      "opts": "removable"
+    },
+    {
+      "device": "F:\\",
+      "mountpoint": "F:\\",
+      "fstype": "NTFS",
+      "opts": "rw,fixed",
+      "total_bytes": 6001156681728,
+      "used_bytes": 4350695198720,
+      "free_bytes": 1650461483008,
+      "used_percent": 72.5
+    },
+    {
+      "device": "G:\\",
+      "mountpoint": "G:\\",
+      "fstype": "",
+      "opts": "cdrom"
+    },
+    {
+      "device": "H:\\",
+      "mountpoint": "H:\\",
+      "fstype": "NTFS",
+      "opts": "rw,fixed",
+      "total_bytes": 1500283662336,
+      "used_bytes": 406794309632,
+      "free_bytes": 1093489352704,
+      "used_percent": 27.1
+    },
+    {
+      "device": "I:\\",
+      "mountpoint": "I:\\",
+      "fstype": "FAT32",
+      "opts": "rw,fixed",
+      "total_bytes": 107374182400,
+      "used_bytes": 88259764224,
+      "free_bytes": 19114418176,
+      "used_percent": 82.2
+    },
+    {
+      "device": "J:\\",
+      "mountpoint": "J:\\",
+      "fstype": "",
+      "opts": "removable"
+    },
+    {
+      "device": "K:\\",
+      "mountpoint": "K:\\",
+      "fstype": "",
+      "opts": "removable"
+    },
+    {
+      "device": "W:\\",
+      "mountpoint": "W:\\",
+      "fstype": "NTFS",
+      "opts": "rw,fixed",
+      "total_bytes": 4000750497792,
+      "used_bytes": 2964189167616,
+      "free_bytes": 1036561330176,
+      "used_percent": 74.1
+    }
+  ],
+  "health": {
+    "overall_score": 26.14,
+    "cpu_health": 0,
+    "memory_health": 28.2,
+    "disk_health": 10.7,
+    "network_health": 100,
+    "status": "poor",
+    "timestamp": "2026-05-06T22:43:48.759246",
+    "version": "8.0.0"
+  }
+}

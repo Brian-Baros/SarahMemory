@@ -22,11 +22,10 @@
     "ts": null
   },
   "persona": {
-    "screen_name": "USERNAME",
-    "avatar_name": "YOUR AVATAR NAME",
-    "status": "Online",
-    "discoverable": true,
-    "allow_inbound_from": "TRUSTED_ONLY"
+  "screen_name": "Brian_Baros",
+  "avatar_name": "Brian Baros creator of The SarahMemory Project",
+  "status": "Online",
+  "discoverable": true,
+  "allow_inbound_from": "TRUSTED_ONLY"
   }
 }
-
