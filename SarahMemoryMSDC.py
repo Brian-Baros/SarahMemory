@@ -172,16 +172,42 @@ def _boot_drivers_dir() -> Path:
     return (_data_dir() / "boot" / "drivers").resolve()
 
 
+def _settings_dir() -> Path:
+    """Return the runtime settings directory.
+
+    Runtime-generated JSON such as body_map.json and vision_policy.json belongs
+    under data/settings, not data/registry. SarahMemoryGlobals.py remains the
+    preferred path authority when SETTINGS_DIR is available.
+    """
+    try:
+        return Path(str(getattr(config, "SETTINGS_DIR"))).expanduser().resolve()  # type: ignore[arg-type]
+    except Exception:
+        return (_data_dir() / "settings").resolve()
+
+
 def _registry_dir() -> Path:
+    """Legacy registry directory retained only for one-time migration fallback."""
     return (_data_dir() / "registry").resolve()
 
 
+def _migrate_legacy_json_once(primary: Path, legacy: Path) -> Path:
+    """Copy legacy JSON into data/settings once, then keep writes on primary."""
+    try:
+        if (not primary.exists()) and legacy.exists() and legacy.is_file():
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            primary.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+            logger.info("Migrated legacy runtime JSON %s -> %s", legacy, primary)
+    except Exception as exc:
+        logger.warning("Legacy runtime JSON migration skipped %s -> %s: %s", legacy, primary, exc)
+    return primary
+
+
 def _body_map_path() -> Path:
-    return _registry_dir() / "body_map.json"
+    return _migrate_legacy_json_once(_settings_dir() / "body_map.json", _registry_dir() / "body_map.json")
 
 
 def _vision_policy_path() -> Path:
-    return _registry_dir() / "vision_policy.json"
+    return _migrate_legacy_json_once(_settings_dir() / "vision_policy.json", _registry_dir() / "vision_policy.json")
 
 
 def _safe_json_load(path: Path, default: Any = None) -> Any:
