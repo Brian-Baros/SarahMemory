@@ -121,6 +121,29 @@ except Exception as e:
     PROJECT_VERSION = "8.0.0" # Ensure v8.0.0 as per spec
 
 
+# Runtime-generated JSON state belongs under data/settings.
+try:
+    SETTINGS_DIR = getattr(config, "SETTINGS_DIR", os.path.join(DATA_DIR, "settings"))  # type: ignore[name-defined]
+except Exception:
+    SETTINGS_DIR = os.path.join(DATA_DIR, "settings")
+
+
+def _settings_json_path(filename: str, legacy_path: str | None = None) -> str:
+    """Return data/settings/<filename>, migrating legacy root-data JSON once."""
+    primary = os.path.abspath(os.path.join(SETTINGS_DIR, filename))
+    legacy = os.path.abspath(legacy_path) if legacy_path else ""
+    try:
+        if legacy and (not os.path.exists(primary)) and os.path.exists(legacy):
+            os.makedirs(os.path.dirname(primary), exist_ok=True)
+            with open(legacy, "r", encoding="utf-8") as src:
+                data = src.read()
+            with open(primary, "w", encoding="utf-8") as dst:
+                dst.write(data)
+    except Exception:
+        pass
+    return primary
+
+
 # Identity / branding (server-side source of truth)
 BRAND_NAME = "Sarah"
 PLATFORM_NAME = "AiOS"
@@ -762,6 +785,7 @@ LOGS_DIR = os.path.join(DATA_DIR, "logs") # Default to DATA_DIR/logs
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(SETTINGS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(WALLETS_DIR, exist_ok=True)
@@ -772,8 +796,8 @@ os.makedirs(WALLETS_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 APP_VERSION = PROJECT_VERSION  # API/UI convenience alias
 
-# Persistent state file (safe JSON, kept in DATA_DIR)
-STATE_DB = os.path.join(DATA_DIR, "server_state.json")  # JSON, not sqlite
+# Persistent state file (safe JSON, kept in data/settings)
+STATE_DB = _settings_json_path("server_state.json", os.path.join(DATA_DIR, "server_state.json"))  # JSON, not sqlite
 WALLET_DB = os.path.join(DATA_DIR, "wallets.db")        # sqlite (created on demand)
 
 # Simple feature toggles (web UI can control these)
@@ -1012,9 +1036,9 @@ _UI_ACTION_MAX = int(os.getenv("SM_UI_ACTION_QUEUE_MAX", "300") or 300)
 
 def _browser_state_path() -> str:
     try:
-        return os.path.join(DATA_DIR, "browser_state.json")
+        return _settings_json_path("browser_state.json", os.path.join(DATA_DIR, "browser_state.json"))
     except Exception:
-        return os.path.join(os.getcwd(), "data", "browser_state.json")
+        return os.path.join(os.getcwd(), "data", "settings", "browser_state.json")
 
 def _read_browser_state() -> dict:
     try:

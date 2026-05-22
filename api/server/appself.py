@@ -535,6 +535,31 @@ def _data_dir() -> Path:
     return (_base_dir() / "data").resolve()
 
 
+def _settings_dir() -> Path:
+    """Return the runtime settings directory for generated JSON state."""
+    try:
+        if config is not None and hasattr(config, "SETTINGS_DIR"):
+            return Path(str(getattr(config, "SETTINGS_DIR"))).expanduser().resolve()
+    except Exception:
+        pass
+    return (_data_dir() / "settings").resolve()
+
+
+def _legacy_registry_dir() -> Path:
+    return (_data_dir() / "registry").resolve()
+
+
+def _migrate_legacy_json_once(primary: Path, legacy: Path) -> Path:
+    """Copy legacy JSON into data/settings once; future writes stay primary."""
+    try:
+        if (not primary.exists()) and legacy.exists() and legacy.is_file():
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            primary.write_text(legacy.read_text(encoding="utf-8", errors="ignore"), encoding="utf-8")
+    except Exception:
+        pass
+    return primary
+
+
 def _datasets_dir() -> Path:
     try:
         if config is not None and hasattr(config, "DATASETS_DIR"):
@@ -1014,7 +1039,10 @@ def _runtime_environment_snapshot_path() -> Path:
 
 
 def _server_state_path() -> Path:
-    return _data_dir() / "server_state.json"
+    return _migrate_legacy_json_once(
+        _settings_dir() / "server_state.json",
+        _data_dir() / "server_state.json",
+    )
 
 
 def _software_db_path() -> Path:
@@ -1046,7 +1074,10 @@ def _runtime_drivers_root() -> Path:
 
 
 def _driver_registry_path() -> Path:
-    return (_data_dir() / "registry" / "drivers.json").resolve()
+    return _migrate_legacy_json_once(
+        (_settings_dir() / "drivers.json").resolve(),
+        (_legacy_registry_dir() / "drivers.json").resolve(),
+    )
 
 
 def _boot_registry_candidates() -> List[Path]:

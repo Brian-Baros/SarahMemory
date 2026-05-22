@@ -108,8 +108,34 @@ def _data_dir() -> Path:
         return (Path.cwd() / "data").resolve()
 
 
+def _settings_dir() -> Path:
+    """Return the runtime settings directory for generated policy JSON."""
+    try:
+        return Path(str(getattr(config, "SETTINGS_DIR"))).expanduser().resolve()  # type: ignore[arg-type]
+    except Exception:
+        return (_data_dir() / "settings").resolve()
+
+
+def _legacy_registry_dir() -> Path:
+    return (_data_dir() / "registry").resolve()
+
+
+def _migrate_legacy_json_once(primary: Path, legacy: Path) -> Path:
+    """Copy legacy registry JSON into data/settings once; future writes stay primary."""
+    try:
+        if (not primary.exists()) and legacy.exists() and legacy.is_file():
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            primary.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+    return primary
+
+
 def _policy_path() -> Path:
-    return _data_dir() / "registry" / "vision_policy.json"
+    return _migrate_legacy_json_once(
+        _settings_dir() / "vision_policy.json",
+        _legacy_registry_dir() / "vision_policy.json",
+    )
 
 
 def _json_safe(value: Any, depth: int = 0) -> Any:

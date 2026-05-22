@@ -91,12 +91,37 @@ def _drivers_root() -> Path:
     return (_data_dir() / "drivers").resolve()
 
 
+def _settings_root() -> Path:
+    """Runtime driver registry state belongs under data/settings."""
+    try:
+        if config and hasattr(config, "SETTINGS_DIR"):
+            return Path(getattr(config, "SETTINGS_DIR")).expanduser().resolve()
+    except Exception:
+        pass
+    return (_data_dir() / "settings").resolve()
+
+
 def _registry_root() -> Path:
+    """Legacy registry directory retained only for one-time migration fallback."""
     return (_data_dir() / "registry").resolve()
 
 
+def _migrate_legacy_json_once(primary: Path, legacy: Path) -> Path:
+    """Copy legacy registry JSON into data/settings once; future writes stay primary."""
+    try:
+        if (not primary.exists()) and legacy.exists() and legacy.is_file():
+            primary.parent.mkdir(parents=True, exist_ok=True)
+            primary.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
+    except Exception:
+        pass
+    return primary
+
+
 def _drivers_registry_path() -> Path:
-    return (_registry_root() / "drivers.json").resolve()
+    return _migrate_legacy_json_once(
+        (_settings_root() / "drivers.json").resolve(),
+        (_registry_root() / "drivers.json").resolve(),
+    )
 
 
 def _boot_root() -> Path:
