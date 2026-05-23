@@ -121,61 +121,20 @@ except Exception as e:
     PROJECT_VERSION = "8.0.0" # Ensure v8.0.0 as per spec
 
 
-# Runtime-generated JSON state belongs under data/settings.
-try:
-    SETTINGS_DIR = getattr(config, "SETTINGS_DIR", os.path.join(DATA_DIR, "settings"))  # type: ignore[name-defined]
-except Exception:
-    SETTINGS_DIR = os.path.join(DATA_DIR, "settings")
-
-
-def _settings_json_path(filename: str, legacy_path: str | None = None) -> str:
-    """Return data/settings/<filename>, migrating legacy root-data JSON once."""
-    primary = os.path.abspath(os.path.join(SETTINGS_DIR, filename))
-    legacy = os.path.abspath(legacy_path) if legacy_path else ""
-    try:
-        if legacy and (not os.path.exists(primary)) and os.path.exists(legacy):
-            os.makedirs(os.path.dirname(primary), exist_ok=True)
-            with open(legacy, "r", encoding="utf-8") as src:
-                data = src.read()
-            with open(primary, "w", encoding="utf-8") as dst:
-                dst.write(data)
-    except Exception:
-        pass
-    return primary
-
-
 # Identity / branding (server-side source of truth)
 BRAND_NAME = "Sarah"
-PLATFORM_NAME = "AiOS"
+PLATFORM_NAME = "SarahMemory AiOS"
 CREATOR_NAME = "Brian Lee Baros"
 ORG_NAME = "SOFTDEV0 LLC"
 
 def _identity_payload():
-    """Active identity payload.
-
-    Resolution order is owned by CognitiveSelf:
-    runtime user override -> AIOS_NAME/.env/Globals -> factory default.
-    This function is intentionally placed before route definitions so script-mode
-    app.py uses it before app.run blocks.
-    """
-    ident = {}
-    try:
-        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-        fn = getattr(_CogSelf, "resolve_active_identity", None)
-        if callable(fn):
-            ident = fn({}) or {}
-    except Exception:
-        ident = {}
-    active_name = (ident or {}).get("active_name") or (ident or {}).get("name") or BRAND_NAME
     return {
-        "name": active_name,
+        "name": BRAND_NAME,
         "platform": PLATFORM_NAME,
         "version": PROJECT_VERSION,
         "creator": CREATOR_NAME,
         "organization": ORG_NAME,
         "build": "webui-server",
-        "identity_source": (ident or {}).get("identity_source", "factory_default"),
-        "fallback_chain": (ident or {}).get("fallback_chain", ["runtime_user_override", "AIOS_NAME", "factory_default"]),
     }
 
 def _is_identity_question(text: str) -> bool:
@@ -205,72 +164,6 @@ def _is_identity_question(text: str) -> bool:
     ]
 
     return any(k in t for k in keys)
-
-
-def _sm_try_runtime_identity_rename_bundle(text: str):
-    """Handle direct user-approved runtime identity rename before identity guard/Neuron.
-
-    Example:
-      "Your name is now Ellen."
-
-    This does not modify SarahMemoryGlobals.py. CognitiveSelf persists an audited
-    runtime override in cognitive_self.db.
-    """
-    raw = str(text or "").strip()
-    if not raw:
-        return None
-    try:
-        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-        parse = getattr(_CogSelf, "parse_runtime_identity_rename", None)
-        setter = getattr(_CogSelf, "set_runtime_identity_name", None)
-        if not callable(parse) or not callable(setter):
-            return None
-        parsed = parse(raw)
-        if not isinstance(parsed, dict) or not parsed.get("matched"):
-            return None
-        new_name = str(parsed.get("new_name") or "").strip()
-        result = setter(
-            new_name,
-            approved_by="user",
-            source="api_chat.runtime_identity_rename",
-            reason="user_commanded_identity_name_change",
-        )
-        if not isinstance(result, dict) or not result.get("ok"):
-            raw_reply = "I could not update my active identity name from that command."
-            meta = {
-                "source": "identity_guard",
-                "engine": "runtime_identity_rename",
-                "intent": "identity_rename",
-                "identity_result": result if isinstance(result, dict) else {},
-                "version": PROJECT_VERSION,
-            }
-            return _sm_make_outward_bundle(_sm_present_text(raw_reply, intent="identity", meta=meta), meta=meta)
-        ident = result.get("identity") if isinstance(result.get("identity"), dict) else {}
-        active_name = str(ident.get("active_name") or new_name or "Sarah").strip()
-        raw_reply = f"My active name is now {active_name}."
-        meta = {
-            "source": "identity_guard",
-            "engine": "runtime_identity_rename",
-            "intent": "identity_rename",
-            "identity_source": ident.get("identity_source", "runtime_user_override"),
-            "version": PROJECT_VERSION,
-        }
-        bundle = _sm_make_outward_bundle(_sm_present_text(raw_reply, intent="identity", meta=meta), meta=meta)
-        bundle["identity"] = ident
-        bundle["identity_result"] = result
-        return bundle
-    except Exception as exc:
-        meta = {
-            "source": "identity_guard",
-            "engine": "runtime_identity_rename",
-            "intent": "identity_rename",
-            "error": str(exc),
-            "version": PROJECT_VERSION,
-        }
-        return _sm_make_outward_bundle(
-            _sm_present_text("I could not update my active identity name because the identity layer raised an error.", intent="identity", meta=meta),
-            meta=meta,
-        )
 
 # ---------------------------------------------------------------------------
 # SelfAware factual system-question bridge
@@ -303,45 +196,7 @@ def _sm_v9g_normalize_text(text: str) -> tuple[str, dict]:
 
 
 def _sm_v9g_contains_any(text: str, words: tuple[str, ...] | list[str]) -> bool:
-    """Phrase-safe matcher for self/body fact routing.
-
-    Critical fix:
-    - "fan" must match the standalone word "fan"
-    - "fan" must NOT match inside "Fantasy" / "Final Fantasy"
-    - short hardware tokens are matched with word boundaries
-    - locked language phrases can veto substring-style routing
-    """
-    source = str(text or "").lower()
-    if not source:
-        return False
-
-    language_packet = {}
-    try:
-        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
-        language_packet = _CIL.build_language_context_packet(source)
-    except Exception:
-        language_packet = {}
-
-    for raw_word in (words or ()):
-        term = str(raw_word or "").strip().lower()
-        if not term:
-            continue
-
-        try:
-            import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
-            verdict = _CIL.candidate_blocked_by_language_packet(term, language_packet)
-            if isinstance(verdict, dict) and verdict.get("blocked"):
-                continue
-        except Exception:
-            pass
-
-        # Use boundaries for both single-token and phrase terms. This protects:
-        # fan != fantasy, ram != programming, ai != final, os != those.
-        pattern = r"(?<![a-z0-9])" + re.escape(term) + r"(?![a-z0-9])"
-        if re.search(pattern, source):
-            return True
-
-    return False
+    return any(w in text for w in words)
 
 
 def _sm_v9g_component_from_text(norm: str) -> str:
@@ -785,7 +640,6 @@ LOGS_DIR = os.path.join(DATA_DIR, "logs") # Default to DATA_DIR/logs
 
 # Ensure directories exist
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(SETTINGS_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(WALLETS_DIR, exist_ok=True)
@@ -796,8 +650,8 @@ os.makedirs(WALLETS_DIR, exist_ok=True)
 # ---------------------------------------------------------------------------
 APP_VERSION = PROJECT_VERSION  # API/UI convenience alias
 
-# Persistent state file (safe JSON, kept in data/settings)
-STATE_DB = _settings_json_path("server_state.json", os.path.join(DATA_DIR, "server_state.json"))  # JSON, not sqlite
+# Persistent state file (safe JSON, kept in DATA_DIR)
+STATE_DB = os.path.join(DATA_DIR, "server_state.json")  # JSON, not sqlite
 WALLET_DB = os.path.join(DATA_DIR, "wallets.db")        # sqlite (created on demand)
 
 # Simple feature toggles (web UI can control these)
@@ -1036,9 +890,9 @@ _UI_ACTION_MAX = int(os.getenv("SM_UI_ACTION_QUEUE_MAX", "300") or 300)
 
 def _browser_state_path() -> str:
     try:
-        return _settings_json_path("browser_state.json", os.path.join(DATA_DIR, "browser_state.json"))
+        return os.path.join(DATA_DIR, "browser_state.json")
     except Exception:
-        return os.path.join(os.getcwd(), "data", "settings", "browser_state.json")
+        return os.path.join(os.getcwd(), "data", "browser_state.json")
 
 def _read_browser_state() -> dict:
     try:
@@ -3059,10 +2913,6 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
-        identity_rename_bundle = _sm_try_runtime_identity_rename_bundle(text)
-        if isinstance(identity_rename_bundle, dict):
-            return jsonify(identity_rename_bundle), 200
-
         handled, quick_bundle = _sm_execute_quick_route(text)
         if handled and quick_bundle is not None:
             return jsonify(quick_bundle), 200
@@ -3778,6 +3628,179 @@ def set_user_setting():
     except IOError as e:
         app_logger.error(f"Error writing settings file {SETTINGS_FILE}: {e}", exc_info=True)
         return jsonify({"status":"error", "error": f"Failed to save setting: {e}"}), 500
+
+
+# ---------------------------------------------------------------------------
+# SarahMemory Model Manager API
+# ---------------------------------------------------------------------------
+# Frontend is a control surface only. SarahMemoryLLM.py owns discovery,
+# validation, classification, active model state, and downloads.
+
+def _sm_llm_manager():
+    try:
+        import SarahMemoryLLM as _SMLLM  # type: ignore
+        return _SMLLM
+    except Exception as exc:
+        app_logger.error("SarahMemoryLLM import failed for model manager API: %s", exc, exc_info=True)
+        return None
+
+
+def _model_payload() -> dict:
+    try:
+        data = request.get_json(silent=True) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+@app.route("/api/models/status", methods=["GET"])
+def api_models_status():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        refresh = str(request.args.get("refresh", "1")).strip().lower() not in ("0", "false", "no", "off")
+        fn = getattr(mod, "get_model_manager_status", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_manager_status_unavailable"}), 501
+        return jsonify(fn(refresh=refresh)), 200
+    except Exception as exc:
+        app_logger.exception("Model status failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/scan", methods=["POST"])
+def api_models_scan():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        fn = getattr(mod, "scan_model_registry", None)
+        status_fn = getattr(mod, "get_model_manager_status", None)
+        if callable(fn):
+            fn(persist=True)
+        if callable(status_fn):
+            return jsonify(status_fn(refresh=False)), 200
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        app_logger.exception("Model scan failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/select", methods=["POST"])
+def api_models_select():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "set_active_model", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_select_unavailable"}), 501
+        result = fn(
+            str(data.get("category") or ""),
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+            repo=str(data.get("repo") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model select failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/classify", methods=["POST"])
+def api_models_classify():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "classify_model", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_classify_unavailable"}), 501
+        result = fn(
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+            category=str(data.get("category") or "unknown"),
+            domain=str(data.get("domain") or "general"),
+            adapter_type=str(data.get("adapter_type") or ""),
+            display_name=str(data.get("display_name") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model classify failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/verify", methods=["POST"])
+def api_models_verify():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "verify_model_by_id", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_verify_unavailable"}), 501
+        result = fn(str(data.get("model_id") or data.get("id") or ""))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model verify failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/external-path", methods=["POST"])
+def api_models_external_path():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "add_external_model_path", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "external_path_unavailable"}), 501
+        result = fn(str(data.get("path") or data.get("folder") or ""))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("External model path add failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/reset", methods=["POST"])
+def api_models_reset():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "reset_active_model_to_recommended", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_reset_unavailable"}), 501
+        result = fn(str(data.get("category") or "reasoning"))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model reset failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/download", methods=["POST"])
+def api_models_download():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "download_model_to_registry", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_download_unavailable"}), 501
+        result = fn(
+            category=str(data.get("category") or "reasoning"),
+            repo=str(data.get("repo") or ""),
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model download failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # Themes routes are fine, pathing should be robust now.
@@ -6831,19 +6854,84 @@ def api_dlengine_auto():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@app.route("/api/dlengine/weights", methods=["POST"])
-@app.route("/api/dlengine/tuning_weights", methods=["POST"])
+@app.route("/api/dlengine/weights", methods=["GET", "POST"])
+@app.route("/api/dlengine/tuning_weights", methods=["GET", "POST"])
 def api_dlengine_weights():
     data = request.get_json(silent=True) or {}
-    weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
     dl = _dlengine_module()
+
+    if request.method == "GET":
+        try:
+            category = str(request.args.get("category") or "reasoning")
+            model_id = str(request.args.get("model_id") or request.args.get("id") or "")
+            if dl and hasattr(dl, "get_model_weight_profile"):
+                return jsonify(dl.get_model_weight_profile(category=category, model_id=model_id, refresh_models=False)), 200
+            return jsonify({
+                "ok": True,
+                "category": category,
+                "model_id": model_id,
+                "weights": load_state().get("DLENGINE_WEIGHTS", {}),
+                "raw_tensor_edit": False,
+            }), 200
+        except Exception as exc:
+            app_logger.error(f"DL Engine weights GET failed: {exc}", exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
+    category = str(data.get("category") or data.get("model_category") or "reasoning")
+    model_id = str(data.get("model_id") or data.get("id") or "")
+    dl_context = data.get("context") if isinstance(data.get("context"), dict) else data
+
     try:
         if dl and hasattr(dl, "set_dlengine_weights"):
-            return jsonify(dl.set_dlengine_weights(weights, source="flask:/api/dlengine/weights")), 200
+            try:
+                return jsonify(dl.set_dlengine_weights(
+                    weights,
+                    source="flask:/api/dlengine/weights",
+                    category=category,
+                    model_id=model_id,
+                    context=dl_context,
+                )), 200
+            except TypeError:
+                return jsonify(dl.set_dlengine_weights(weights, source="flask:/api/dlengine/weights")), 200
         save_state("DLENGINE_WEIGHTS", weights)
-        return jsonify({"ok": True, "saved": True, "weights": weights, "raw_tensor_edit": False}), 200
+        return jsonify({
+            "ok": True,
+            "saved": True,
+            "category": category,
+            "model_id": model_id,
+            "weights": weights,
+            "raw_tensor_edit": False,
+        }), 200
     except Exception as exc:
         app_logger.error(f"DL Engine weights failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/weights/reset", methods=["POST"])
+def api_dlengine_weights_reset():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    category = str(data.get("category") or data.get("model_category") or "reasoning")
+    model_id = str(data.get("model_id") or data.get("id") or "")
+    try:
+        if dl and hasattr(dl, "reset_model_weight_profile"):
+            return jsonify(dl.reset_model_weight_profile(category=category, model_id=model_id, source="flask:/api/dlengine/weights/reset")), 200
+        default_weights = {
+            "reasoning": 65,
+            "coding": 55,
+            "memory": 60,
+            "research": 55,
+            "creativity": 45,
+            "safety": 90,
+            "autonomy": 35,
+            "precision": 70,
+            "speed": 50,
+        }
+        save_state("DLENGINE_WEIGHTS", default_weights)
+        return jsonify({"ok": True, "saved": True, "category": category, "model_id": model_id, "weights": default_weights, "raw_tensor_edit": False}), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine weights reset failed: {exc}", exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
@@ -6907,24 +6995,3 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF app.py v8.0.0
 # ====================================================================
-
-# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
-def _identity_payload():  # type: ignore[override]
-    """Server identity payload uses CognitiveSelf active identity when available."""
-    try:
-        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
-        fn = getattr(_CogSelf, "resolve_active_identity", None)
-        ident = fn({}) if callable(fn) else {}
-    except Exception:
-        ident = {}
-    active_name = (ident or {}).get("active_name") or (ident or {}).get("name") or globals().get("BRAND_NAME", "Sarah")
-    return {
-        "name": active_name,
-        "platform": globals().get("PLATFORM_NAME", "SarahMemory AiOS"),
-        "version": PROJECT_VERSION,
-        "creator": globals().get("CREATOR_NAME", "Brian Lee Baros"),
-        "organization": globals().get("ORG_NAME", "SOFTDEV0 LLC"),
-        "build": "webui-server",
-        "identity_source": (ident or {}).get("identity_source", "fallback"),
-        "fallback_chain": (ident or {}).get("fallback_chain", []),
-    }
