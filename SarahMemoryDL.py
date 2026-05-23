@@ -64,6 +64,7 @@ import time
 import shutil
 import pickle
 import hashlib
+import re
 import threading
 import queue
 from collections import Counter, defaultdict, deque
@@ -1610,7 +1611,21 @@ def dl_patch_hints_from_issues(issues: List[Dict[str, Any]]) -> Dict[str, Any]:
 # - Does NOT mutate raw neural tensor weights, download models, or start unsafe training.
 # =============================================================================
 
-DL_ENGINE_STATE_PATH = os.path.join(getattr(config, "DATA_DIR", os.path.dirname(DATASETS_DIR)), "dlengine_state.json")
+def _dl_settings_dir() -> str:
+    """Return the runtime settings directory for DL Engine generated state."""
+    try:
+        d = getattr(config, "SETTINGS_DIR", os.path.join(getattr(config, "DATA_DIR", os.path.dirname(DATASETS_DIR)), "settings"))
+    except Exception:
+        d = os.path.join(os.path.dirname(DATASETS_DIR), "settings")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+DL_ENGINE_STATE_PATH = os.path.join(_dl_settings_dir(), "dlengine_state.json")
+DL_ENGINE_LEGACY_STATE_PATH = os.path.join(getattr(config, "DATA_DIR", os.path.dirname(DATASETS_DIR)), "dlengine_state.json")
 _DL_ENGINE_STATE_LOCK = threading.RLock()
 
 _DEFAULT_MODEL_WEIGHTS: Dict[str, int] = {
@@ -1633,6 +1648,176 @@ _DEFAULT_DL_CONTROLS: Dict[str, Any] = {
     "showOnlyHighSignal": False,
     "pollIntervalSec": 8,
 }
+
+_WEIGHT_CATEGORY_ALIASES = {
+    "code": "coder",
+    "coding": "coder",
+    "chat": "reasoning",
+    "logic": "reasoning",
+    "embedding": "embeddings",
+    "semantic": "embeddings",
+    "memory_search": "embeddings",
+    "image": "image_generation",
+    "imagegen": "image_generation",
+    "voice": "tts",
+    "speech": "tts",
+}
+_WEIGHT_CATEGORY_LABELS = {
+    "reasoning": "General Thinking",
+    "coder": "Coding Help",
+    "embeddings": "Memory Search",
+    "vision": "Vision / Camera",
+    "image_generation": "Image Creation",
+    "tts": "Voice / Speech",
+    "stt": "Speech Listening",
+    "unknown": "Unclassified",
+}
+_WEIGHT_ALLOWED_CATEGORIES = tuple(_WEIGHT_CATEGORY_LABELS.keys())
+
+
+def _normalize_weight_category(value: Any) -> str:
+    raw = str(value or "reasoning").strip().lower().replace("-", "_").replace(" ", "_")
+    raw = _WEIGHT_CATEGORY_ALIASES.get(raw, raw)
+    return raw if raw in _WEIGHT_ALLOWED_CATEGORIES else "unknown"
+
+
+def _safe_weight_model_id(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")[:160]
+
+
+def _weight_profile_key(category: Any, model_id: Any) -> str:
+    cat = _normalize_weight_category(category)
+    mid = _safe_weight_model_id(model_id) or "__category_default__"
+    return f"{cat}:{mid}"
+
+
+def _load_llm_model_status(refresh: bool = False) -> Dict[str, Any]:
+    """Read model-manager status without making SarahMemoryDL own model discovery."""
+    try:
+        import SarahMemoryLLM as _SMLLM  # type: ignore
+        fn = getattr(_SMLLM, "get_model_manager_status", None)
+        if callable(fn):
+            data = fn(refresh=bool(refresh))
+            return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        logger.debug(f"DL model-manager status bridge unavailable: {exc}")
+    return {}
+
+
+def _model_record_lookup(status: Dict[str, Any], model_id: str) -> Dict[str, Any]:
+    try:
+        for rec in status.get("models") or []:
+            if isinstance(rec, dict) and str(rec.get("id") or "") == str(model_id or ""):
+                return dict(rec)
+    except Exception:
+        pass
+    return {}
+
+
+def _category_default_weights(category: Any = "reasoning") -> Dict[str, int]:
+    """Return governed default routing/policy weights for a category.
+
+    These are UI/governance weights only. They do not touch raw model tensors.
+    Each category receives an independent seed so switching categories never
+    inherits the last selected model's live slider values.
+    """
+    cat = _normalize_weight_category(category)
+    weights = dict(_DEFAULT_MODEL_WEIGHTS)
+    presets: Dict[str, Dict[str, int]] = {
+        "reasoning": {"reasoning": 70, "coding": 35, "memory": 60, "research": 60, "creativity": 40, "safety": 90, "autonomy": 35, "precision": 75, "speed": 50},
+        "coder": {"reasoning": 55, "coding": 82, "memory": 55, "research": 55, "creativity": 35, "safety": 88, "autonomy": 30, "precision": 82, "speed": 55},
+        "embeddings": {"reasoning": 45, "coding": 25, "memory": 88, "research": 60, "creativity": 25, "safety": 90, "autonomy": 25, "precision": 78, "speed": 65},
+        "vision": {"reasoning": 55, "coding": 20, "memory": 65, "research": 45, "creativity": 35, "safety": 92, "autonomy": 25, "precision": 82, "speed": 60},
+        "image_generation": {"reasoning": 45, "coding": 20, "memory": 50, "research": 35, "creativity": 86, "safety": 92, "autonomy": 25, "precision": 70, "speed": 55},
+        "tts": {"reasoning": 40, "coding": 15, "memory": 45, "research": 25, "creativity": 55, "safety": 90, "autonomy": 20, "precision": 68, "speed": 72},
+        "stt": {"reasoning": 45, "coding": 15, "memory": 55, "research": 30, "creativity": 30, "safety": 90, "autonomy": 20, "precision": 82, "speed": 72},
+        "unknown": {"reasoning": 50, "coding": 35, "memory": 50, "research": 45, "creativity": 35, "safety": 95, "autonomy": 15, "precision": 70, "speed": 45},
+    }
+    weights.update(presets.get(cat, {}))
+    return _normalize_model_weights(weights)
+
+
+def _build_weight_context(category: Any = "", model_id: Any = "", *, refresh_models: bool = False) -> Dict[str, Any]:
+    status = _load_llm_model_status(refresh=refresh_models)
+    cat = _normalize_weight_category(category or "reasoning")
+    # IMPORTANT: empty model_id means the category-default profile.
+    # Do not silently substitute the active model here; the UI has a separate
+    # model profile dropdown and must be able to load category defaults.
+    mid = _safe_weight_model_id(model_id or "")
+    rec = _model_record_lookup(status, mid) if mid else {}
+    label = str(
+        rec.get("simple_label")
+        or rec.get("display_name")
+        or rec.get("repo")
+        or mid
+        or "Category default"
+    )
+    return {
+        "category": cat,
+        "category_label": _WEIGHT_CATEGORY_LABELS.get(cat, cat.title()),
+        "model_id": mid,
+        "model_label": label,
+        "profile_key": _weight_profile_key(cat, mid),
+        "model": rec,
+        "source": "SarahMemoryLLM.model_registry" if status else "dlengine_fallback",
+    }
+
+
+def _build_weight_contexts_from_model_status(status: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    status = status or _load_llm_model_status(refresh=False)
+    out: List[Dict[str, Any]] = []
+    active = status.get("active_models") if isinstance(status.get("active_models"), dict) else {}
+    for cat in ("reasoning", "coder", "embeddings", "vision", "image_generation", "tts", "stt", "unknown"):
+        mid = str(active.get(cat) or "")
+        ctx = _build_weight_context(cat, mid, refresh_models=False)
+        out.append(ctx)
+    return out
+
+
+def _normalize_weight_profiles(raw: Any) -> Dict[str, Dict[str, Any]]:
+    profiles: Dict[str, Dict[str, Any]] = {}
+    if not isinstance(raw, dict):
+        return profiles
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        weights = _normalize_model_weights(value.get("weights") if isinstance(value.get("weights"), dict) else value)
+        category = _normalize_weight_category(value.get("category") or str(key).split(":", 1)[0])
+        model_id = _safe_weight_model_id(value.get("model_id") or (str(key).split(":", 1)[1] if ":" in str(key) else ""))
+        profile_key = _weight_profile_key(category, model_id)
+        profiles[profile_key] = {
+            "profile_key": profile_key,
+            "category": category,
+            "category_label": _WEIGHT_CATEGORY_LABELS.get(category, category.title()),
+            "model_id": model_id,
+            "model_label": str(value.get("model_label") or model_id or _WEIGHT_CATEGORY_LABELS.get(category, category.title())),
+            "weights": weights,
+            "updated_at": str(value.get("updated_at") or ""),
+            "source": str(value.get("source") or "dlengine_state"),
+            "raw_tensor_edit": False,
+        }
+    return profiles
+
+
+def _profile_for_context(state: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    profiles = _normalize_weight_profiles(state.get("model_weight_profiles"))
+    key = str(context.get("profile_key") or _weight_profile_key(context.get("category"), context.get("model_id")))
+    if key not in profiles:
+        profiles[key] = {
+            "profile_key": key,
+            "category": _normalize_weight_category(context.get("category")),
+            "category_label": context.get("category_label") or _WEIGHT_CATEGORY_LABELS.get(_normalize_weight_category(context.get("category")), "General Thinking"),
+            "model_id": _safe_weight_model_id(context.get("model_id")),
+            "model_label": str(context.get("model_label") or context.get("model_id") or context.get("category_label") or "Default"),
+            "weights": _category_default_weights(context.get("category")),
+            "updated_at": "",
+            "source": "category_default_profile_seed",
+            "raw_tensor_edit": False,
+        }
+    return profiles[key]
 
 
 def _clamp_percent(value: Any, default: int = 0) -> int:
@@ -1680,6 +1865,8 @@ def _default_dlengine_state() -> Dict[str, Any]:
         "mode": "auto",
         "weights": dict(_DEFAULT_MODEL_WEIGHTS),
         "controls": dict(_DEFAULT_DL_CONTROLS),
+        "model_weight_profiles": {},
+        "current_weight_context": _build_weight_context("reasoning", "", refresh_models=False),
         "manual_runs": 0,
         "last_manual_run_at": None,
         "last_mode_change_at": now,
@@ -1693,16 +1880,33 @@ def _load_dlengine_state() -> Dict[str, Any]:
     with _DL_ENGINE_STATE_LOCK:
         state = _default_dlengine_state()
         try:
-            if os.path.exists(DL_ENGINE_STATE_PATH):
-                with open(DL_ENGINE_STATE_PATH, "r", encoding="utf-8") as f:
+            read_path = DL_ENGINE_STATE_PATH
+            if not os.path.exists(read_path) and os.path.exists(DL_ENGINE_LEGACY_STATE_PATH):
+                read_path = DL_ENGINE_LEGACY_STATE_PATH
+            if os.path.exists(read_path):
+                with open(read_path, "r", encoding="utf-8") as f:
                     disk = json.load(f)
                 if isinstance(disk, dict):
                     state.update(disk)
+                if read_path == DL_ENGINE_LEGACY_STATE_PATH and not os.path.exists(DL_ENGINE_STATE_PATH):
+                    try:
+                        os.makedirs(os.path.dirname(DL_ENGINE_STATE_PATH), exist_ok=True)
+                        with open(DL_ENGINE_STATE_PATH, "w", encoding="utf-8") as f:
+                            json.dump(state, f, indent=2, sort_keys=True)
+                    except Exception:
+                        pass
         except Exception as exc:
             logger.debug(f"DL Engine state load failed: {exc}")
         state["mode"] = _normalize_dl_mode(state.get("mode"))
         state["weights"] = _normalize_model_weights(state.get("weights"))
         state["controls"] = _normalize_dl_controls(state.get("controls"))
+        state["model_weight_profiles"] = _normalize_weight_profiles(state.get("model_weight_profiles"))
+        context = state.get("current_weight_context") if isinstance(state.get("current_weight_context"), dict) else {}
+        state["current_weight_context"] = _build_weight_context(
+            context.get("category") or "reasoning",
+            context.get("model_id") or "",
+            refresh_models=False,
+        )
         return state
 
 
@@ -1712,6 +1916,13 @@ def _save_dlengine_state(state: Dict[str, Any]) -> Dict[str, Any]:
         state["mode"] = _normalize_dl_mode(state.get("mode"))
         state["weights"] = _normalize_model_weights(state.get("weights"))
         state["controls"] = _normalize_dl_controls(state.get("controls"))
+        state["model_weight_profiles"] = _normalize_weight_profiles(state.get("model_weight_profiles"))
+        context = state.get("current_weight_context") if isinstance(state.get("current_weight_context"), dict) else {}
+        state["current_weight_context"] = _build_weight_context(
+            context.get("category") or "reasoning",
+            context.get("model_id") or "",
+            refresh_models=False,
+        )
         state["last_updated_at"] = datetime.now().isoformat()
         try:
             os.makedirs(os.path.dirname(DL_ENGINE_STATE_PATH), exist_ok=True)
@@ -1726,7 +1937,11 @@ def _save_dlengine_state(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def get_dlengine_runtime_state() -> Dict[str, Any]:
     """Return persisted DL Engine operator mode/weights/controls."""
-    return _load_dlengine_state()
+    state = _load_dlengine_state()
+    status = _load_llm_model_status(refresh=False)
+    state["model_weight_contexts"] = _build_weight_contexts_from_model_status(status)
+    state["model_manager_scan"] = status.get("scan") if isinstance(status.get("scan"), dict) else {}
+    return state
 
 
 def set_dlengine_mode(mode: Any = "auto", *, source: str = "api", payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1743,7 +1958,18 @@ def set_dlengine_mode(mode: Any = "auto", *, source: str = "api", payload: Optio
         if isinstance(payload.get("controls"), dict):
             state["controls"] = _normalize_dl_controls(payload.get("controls"))
         if isinstance(payload.get("weights"), dict):
-            state["weights"] = _normalize_model_weights(payload.get("weights"))
+            payload_context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+            ctx = _build_weight_context(
+                payload.get("category") or payload.get("model_category") or payload_context.get("category") or "reasoning",
+                payload.get("model_id") or payload_context.get("model_id") or "",
+                refresh_models=False,
+            )
+            # Delegate context/profile persistence to the shared weight path.
+            try:
+                set_dlengine_weights(payload.get("weights"), source=source, category=ctx.get("category"), model_id=ctx.get("model_id"), context=ctx)
+                state = _load_dlengine_state()
+            except Exception:
+                state["weights"] = _normalize_model_weights(payload.get("weights"))
     state = _save_dlengine_state(state)
     return {"ok": True, "saved": True, "mode": state["mode"], "state": state}
 
@@ -1757,20 +1983,87 @@ def set_dlengine_controls(controls: Optional[Dict[str, Any]] = None, *, source: 
     return {"ok": True, "saved": True, "controls": state["controls"], "state": state}
 
 
-def set_dlengine_weights(weights: Optional[Dict[str, Any]] = None, *, source: str = "api") -> Dict[str, Any]:
-    """Persist governed model routing/policy weights; never edits raw neural tensors."""
+def get_model_weight_profile(category: Any = "reasoning", model_id: Any = "", *, refresh_models: bool = False) -> Dict[str, Any]:
+    """Return the governed policy/routing weight profile for one model context."""
     state = _load_dlengine_state()
-    state["weights"] = _normalize_model_weights(weights or {})
+    context = _build_weight_context(category, model_id, refresh_models=refresh_models)
+    profile = _profile_for_context(state, context)
+    return {
+        "ok": True,
+        "category": context.get("category"),
+        "model_id": context.get("model_id"),
+        "context": context,
+        "profile": profile,
+        "weights": _normalize_model_weights(profile.get("weights")),
+        "state_path": DL_ENGINE_STATE_PATH,
+        "raw_tensor_edit": False,
+        "note": "Governed routing/policy weights only; raw model tensor weights are not modified.",
+    }
+
+
+def set_dlengine_weights(
+    weights: Optional[Dict[str, Any]] = None,
+    *,
+    source: str = "api",
+    category: Any = "",
+    model_id: Any = "",
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Persist governed model routing/policy weights for a category/model context.
+
+    This never edits raw neural tensors. It stores operator-facing policy weights
+    so the DL/REM/governance surfaces can treat each selected helper model
+    differently by category.
+    """
+    state = _load_dlengine_state()
+    context = context if isinstance(context, dict) else {}
+    ctx = _build_weight_context(
+        category or context.get("category") or context.get("model_category") or "reasoning",
+        model_id or context.get("model_id") or context.get("id") or "",
+        refresh_models=False,
+    )
+    normalized = _normalize_model_weights(weights or {})
+    profiles = _normalize_weight_profiles(state.get("model_weight_profiles"))
+    key = str(ctx.get("profile_key") or _weight_profile_key(ctx.get("category"), ctx.get("model_id")))
+    profiles[key] = {
+        "profile_key": key,
+        "category": ctx.get("category"),
+        "category_label": ctx.get("category_label"),
+        "model_id": ctx.get("model_id"),
+        "model_label": ctx.get("model_label"),
+        "weights": normalized,
+        "updated_at": datetime.now().isoformat(),
+        "source": str(source or "api"),
+        "raw_tensor_edit": False,
+    }
+    state["model_weight_profiles"] = profiles
+    state["current_weight_context"] = ctx
+    state["weights"] = normalized
     state["last_operator_source"] = str(source or "api")
     state = _save_dlengine_state(state)
     return {
         "ok": True,
         "saved": True,
-        "weights": state["weights"],
+        "category": ctx.get("category"),
+        "model_id": ctx.get("model_id"),
+        "context": ctx,
+        "profile": profiles[key],
+        "weights": normalized,
         "state": state,
         "raw_tensor_edit": False,
-        "note": "Governed routing/policy weights saved. Raw model tensor weights were not modified.",
+        "note": "Governed routing/policy weights saved for this model context. Raw model tensor weights were not modified.",
     }
+
+
+def reset_model_weight_profile(category: Any = "reasoning", model_id: Any = "", *, source: str = "api") -> Dict[str, Any]:
+    """Reset one model/category profile back to governed defaults."""
+    return set_dlengine_weights(
+        dict(_DEFAULT_MODEL_WEIGHTS),
+        source=f"{source}:reset",
+        category=category,
+        model_id=model_id,
+        context={"category": category, "model_id": model_id},
+    )
 
 
 def start_dlengine_manual(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1935,6 +2228,10 @@ def get_dlengine_status() -> Dict[str, Any]:
     """Return a compact, UI-friendly deep learning status payload."""
     state = _load_dlengine_state()
     model_hint = _sm_dl_active_model_hint()
+    model_status = _load_llm_model_status(refresh=False)
+    weight_contexts = _build_weight_contexts_from_model_status(model_status)
+    current_context = state.get("current_weight_context") if isinstance(state.get("current_weight_context"), dict) else _build_weight_context("reasoning", "", refresh_models=False)
+    current_profile = _profile_for_context(state, current_context)
     usage = _sm_dl_resource_usage_hint()
     jobs = _sm_dl_training_jobs_from_state(state)
     mode = _normalize_dl_mode(state.get("mode"))
@@ -1976,7 +2273,17 @@ def get_dlengine_status() -> Dict[str, Any]:
             "state_path": DL_ENGINE_STATE_PATH,
         },
         "controls": state.get("controls", _DEFAULT_DL_CONTROLS),
-        "weights": state.get("weights", _DEFAULT_MODEL_WEIGHTS),
+        "weights": _normalize_model_weights(current_profile.get("weights") if isinstance(current_profile, dict) else state.get("weights")),
+        "model_weight_controller": {
+            "contexts": weight_contexts,
+            "current_context": current_context,
+            "current_profile": current_profile,
+            "profiles_count": len(state.get("model_weight_profiles") or {}),
+            "state_path": DL_ENGINE_STATE_PATH,
+            "legacy_state_path": DL_ENGINE_LEGACY_STATE_PATH,
+            "raw_tensor_edit": False,
+            "note": "Governed routing/policy weights only. Raw neural tensors are not edited by the DL Engine UI.",
+        },
         "state": state,
     }
 

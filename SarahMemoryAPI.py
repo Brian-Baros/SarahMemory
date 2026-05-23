@@ -1572,7 +1572,12 @@ _LOCAL_LLM_CACHE = {
     "tokenizer": None,
     "device": None,
     "dtype": None,
+    "local_dir": None,
 }
+
+# repo -> explicit local path from SarahMemoryLLM model_registry.json.
+# This lets user-linked external model folders work without changing Globals.
+_LOCAL_LLM_PATH_OVERRIDES: Dict[str, str] = {}
 
 def _normalize_local_repo_to_dir(repo: str) -> str:
     """
@@ -1583,21 +1588,25 @@ def _normalize_local_repo_to_dir(repo: str) -> str:
 
 def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = None) -> Tuple[Optional[str], list, str]:
     """
-    Resolve best local 3rd-party *text generation* model repo using SarahMemoryGlobals MODEL_CATALOG + MODEL_CONFIG.
+    Resolve best local 3rd-party *text generation* model repo.
+
+    Priority:
+      1) SarahMemoryLLM dynamic model registry active selection
+      2) SarahMemoryGlobals.resolve_model(...)
+      3) SarahMemoryGlobals.get_stack_primary_repo(...)
 
     Returns (selected_repo, fallbacks, source_lane).
 
     IMPORTANT:
     - This resolver is for LOCAL_LLM text generation only.
-    - Embedding / vision / tts categories are explicitly rejected here so we do not accidentally
-      route an encoder-only model (e.g., sentence-transformers, e5) into a CausalLM loader.
+    - Embedding / vision / image / tts categories are rejected for CausalLM loading.
+    - External model paths are carried through _LOCAL_LLM_PATH_OVERRIDES.
     """
     try:
-        # Prefer the newer resolver if present
         category = None
         try:
             import SarahMemoryLLM as _SMLLM
-            category = _SMLLM.infer_category_from_text(user_text or "")
+            category = _SMLLM.infer_category_from_text(user_text or "", meta or {})
         except Exception:
             category = None
 
@@ -1617,6 +1626,21 @@ def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = 
                 category = "coder"
             else:
                 category = "reasoning"
+
+        # Dynamic registry override: user-selected model in Settings.
+        try:
+            import SarahMemoryLLM as _SMLLM
+            active_fn = getattr(_SMLLM, "get_active_model_for_api", None)
+            if callable(active_fn):
+                active = active_fn(category) or {}
+                if isinstance(active, dict) and active.get("repo") and active.get("local_dir"):
+                    repo = str(active.get("repo") or "").strip()
+                    local_dir = str(active.get("local_dir") or "").strip()
+                    if repo and local_dir and os.path.isdir(local_dir):
+                        _LOCAL_LLM_PATH_OVERRIDES[repo] = local_dir
+                        return repo, [], "model_registry"
+        except Exception:
+            pass
 
         if hasattr(config, "resolve_model") and callable(getattr(config, "resolve_model")):
             r = config.resolve_model(category, text=user_text or "", meta=meta or {}, models_dir=getattr(config, "MODELS_DIR", None))
@@ -1638,7 +1662,7 @@ def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = 
 
     return None, [], "none"
 
-def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
+def _load_local_llm(repo: str, local_dir_override: Optional[str] = None) -> Tuple[Optional[Any], Optional[Any], Optional[str]]:
     """
     Load (or reuse cached) local HF/Transformers *text generation* model from ./data/models/<repo_underscored>/.
 
@@ -1661,14 +1685,18 @@ def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[s
         except Exception:
             models_dir = os.path.join(os.getcwd(), "data", "models")
 
-    local_dir = os.path.join(models_dir, _normalize_local_repo_to_dir(repo))
+    local_dir = str(local_dir_override or _LOCAL_LLM_PATH_OVERRIDES.get(repo) or "").strip()
+    if not local_dir:
+        local_dir = os.path.join(models_dir, _normalize_local_repo_to_dir(repo))
+    local_dir = os.path.abspath(os.path.expanduser(local_dir))
 
     if not os.path.isdir(local_dir):
         return None, None, f"Local model directory not found: {local_dir}"
 
-    # Reuse cache if same repo
+    # Reuse cache if same repo + same physical path
     if (
         _LOCAL_LLM_CACHE.get("repo") == repo
+        and os.path.abspath(str(_LOCAL_LLM_CACHE.get("local_dir") or "")) == local_dir
         and _LOCAL_LLM_CACHE.get("model") is not None
         and _LOCAL_LLM_CACHE.get("tokenizer") is not None
     ):
@@ -1753,6 +1781,7 @@ def _load_local_llm(repo: str) -> Tuple[Optional[Any], Optional[Any], Optional[s
             "device": device,
             "dtype": str(dtype),
             "model_kind": model_kind,
+            "local_dir": local_dir,
         })
 
         return model, tok, None
@@ -2716,21 +2745,3 @@ def _sm_sanitize_llm_text(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
     return t
-
-# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
-def build_packet_context_header(tri_layer_packet: Optional[Dict[str, Any]] = None) -> str:
-    """Build a compact helper-model context header. This grants no authority to the model."""
-    pkt = tri_layer_packet if isinstance(tri_layer_packet, dict) else {}
-    lang = pkt.get("language_context_packet") if isinstance(pkt.get("language_context_packet"), dict) else {}
-    emo = pkt.get("emotion_affect_packet") if isinstance(pkt.get("emotion_affect_packet"), dict) else {}
-    identity = pkt.get("identity_packet") if isinstance(pkt.get("identity_packet"), dict) else {}
-    bits = [
-        "SarahMemory packet context (helper model advisory only):",
-        f"- Active identity: {identity.get('active_name') or identity.get('name') or 'Sarah'}",
-        f"- Language domain: {lang.get('context_domain') or 'general'}",
-        f"- Purpose: {lang.get('purpose_hint') or 'unknown'}",
-        f"- Phrase locks: {', '.join(lang.get('phrase_locks') or []) or 'none'}",
-        f"- Emotion signal: {emo.get('primary_emotion') or 'neutral'} urgency={emo.get('urgency', 0)} stress={emo.get('stress', 0)}",
-        "- Governance, authorization, and execution remain outside the helper model.",
-    ]
-    return "\n".join(bits)

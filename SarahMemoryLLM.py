@@ -53,6 +53,7 @@ import shutil
 import threading
 import queue
 import hashlib
+import re
 from typing import Dict, List, Tuple, Optional, Callable, Any
 
 # Optional deps (never hard-crash)
@@ -139,7 +140,7 @@ def model_files_valid(local_dir: str) -> bool:
             return False
 
         # common weights formats
-        weight_exts = (".bin", ".safetensors", ".pth", ".pt", ".onnx")
+        weight_exts = (".bin", ".safetensors", ".pth", ".pt", ".onnx", ".gguf")
         if any(f.endswith(weight_exts) for f in files):
             for f in files:
                 fp = os.path.join(local_dir, f)
@@ -152,7 +153,7 @@ def model_files_valid(local_dir: str) -> bool:
             return True
 
         # fall back: if config exists and directory is non-empty
-        if any(f in files for f in ("config.json", "tokenizer.json", "tokenizer_config.json")):
+        if any(f in files for f in ("config.json", "tokenizer.json", "tokenizer_config.json", "model_index.json")):
             return True
 
         return False
@@ -458,6 +459,693 @@ def download_category_model(category: str, repo: Optional[str] = None, progress_
     ))
 
 
+
+# ---------------------------------------------------------------------------
+# Dynamic Model Registry / Settings UI bridge
+# ---------------------------------------------------------------------------
+# Stored under data/settings so runtime choices are local machine state, not
+# SarahMemoryGlobals.py constitution and not shipped source truth.
+
+MODEL_REGISTRY_VERSION = 1
+MODEL_LIVE_SCAN_INTERVAL_SEC = 30
+_MODEL_REGISTRY_LOCK = threading.RLock()
+
+_CATEGORY_ALIASES = {
+    "embedding": "embeddings",
+    "semantic": "embeddings",
+    "memory": "embeddings",
+    "image": "image_generation",
+    "imagegen": "image_generation",
+    "voice": "tts",
+    "speech": "tts",
+    "audio": "tts",
+    "code": "coder",
+    "logic": "reasoning",
+    "chat": "reasoning",
+}
+_CATEGORY_UI_LABELS = {
+    "reasoning": "General Thinking",
+    "coder": "Coding Help",
+    "embeddings": "Memory Search",
+    "vision": "Vision / Camera",
+    "image_generation": "Image Creation",
+    "tts": "Voice / Speech",
+    "stt": "Speech Listening",
+    "audio": "Audio",
+    "reranker": "Search Ranking",
+    "ocr": "Text From Images",
+    "custom": "Custom",
+    "unknown": "Unclassified",
+}
+_DOMAIN_LABELS = {
+    "general": "General",
+    "medical": "Medical",
+    "legal": "Legal",
+    "engineering": "Engineering",
+    "finance": "Finance",
+    "robotics": "Robotics",
+    "manufacturing": "Manufacturing",
+    "education": "Education",
+    "creative": "Creative",
+    "custom": "Custom",
+    "unknown": "Unknown",
+}
+_ALLOWED_CATEGORIES = tuple(_CATEGORY_UI_LABELS.keys())
+
+
+def _settings_dir() -> str:
+    try:
+        d = getattr(G, "SETTINGS_DIR", os.path.join(getattr(G, "DATA_DIR", os.path.join(BASE_DIR, "data")), "settings"))
+    except Exception:
+        d = os.path.join(BASE_DIR, "data", "settings")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def model_registry_path() -> str:
+    return os.path.join(_settings_dir(), "model_registry.json")
+
+
+def _now_iso() -> str:
+    try:
+        from datetime import datetime
+        return datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    except Exception:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _normalize_category(category: str) -> str:
+    c = str(category or "").strip().lower().replace("-", "_").replace(" ", "_")
+    c = _CATEGORY_ALIASES.get(c, c)
+    return c if c in _ALLOWED_CATEGORIES else "unknown"
+
+
+def _safe_model_id(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raw = "model"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", raw).strip("._-")
+    return safe[:140] or "model"
+
+
+def _repo_basename(repo: str) -> str:
+    repo = str(repo or "").strip().strip("/")
+    return repo.split("/")[-1] if repo else ""
+
+
+def _display_name_from_repo_or_path(repo: str, path: str = "") -> str:
+    if repo:
+        return _repo_basename(repo) or repo
+    if path:
+        return os.path.basename(os.path.normpath(path)) or path
+    return "Unknown model"
+
+
+def _known_repos() -> List[str]:
+    out: List[str] = []
+    try:
+        for tiers in (MODEL_CATALOG or {}).values():
+            for arr in (tiers or {}).values():
+                for item in arr or []:
+                    repo = resolve_model_repo(item)
+                    if repo and repo not in out:
+                        out.append(repo)
+    except Exception:
+        pass
+    try:
+        for name in (MODEL_CONFIG or {}).keys():
+            repo = resolve_model_repo(name)
+            if repo and repo not in out:
+                out.append(repo)
+    except Exception:
+        pass
+    try:
+        for attr in (
+            "REASONING_MODEL_REPO", "CODER_MODEL_REPO", "EMBEDDING_EN_REPO",
+            "EMBEDDING_MULTI_REPO", "EMBEDDING_SCI_REPO", "EMBEDDING_RECALL_REPO",
+            "EMBEDDING_PARA_REPO", "VISION_PRIMARY_REPO", "VISION_BACKUP_REPO",
+            "VISION_ALT_REPO", "IMAGEGEN_MODEL_REPO", "TTS_MODEL_REPO",
+        ):
+            repo = getattr(G, attr, "")
+            repo = resolve_model_repo(repo)
+            if repo and repo not in out:
+                out.append(repo)
+    except Exception:
+        pass
+    return out
+
+
+def _repo_category_hint(repo: str) -> str:
+    repo = resolve_model_repo(repo)
+    try:
+        for category, tiers in (MODEL_CATALOG or {}).items():
+            for arr in (tiers or {}).values():
+                for item in arr or []:
+                    if resolve_model_repo(item) == repo:
+                        return _normalize_category(category)
+    except Exception:
+        pass
+    try:
+        for category, mapping in (getattr(G, "MODEL_CATEGORY_FLAG_REPO_MAP", {}) or {}).items():
+            for item in (mapping or {}).values():
+                if resolve_model_repo(item) == repo:
+                    return _normalize_category(category)
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _known_repo_for_folder(folder_name: str) -> str:
+    normalized = str(folder_name or "").strip()
+    for repo in _known_repos():
+        try:
+            if os.path.basename(repo_to_local_dir(repo)) == normalized:
+                return repo
+        except Exception:
+            pass
+    # If the user manually created a HF-style folder with slash replaced by "_",
+    # preserve the raw folder as display/source but do not pretend certainty.
+    return ""
+
+
+def _has_any_file(path: str, patterns: Tuple[str, ...]) -> bool:
+    try:
+        if not os.path.isdir(path):
+            return False
+        for root, _, files in os.walk(path):
+            rel_depth = os.path.relpath(root, path).count(os.sep)
+            if rel_depth > 2:
+                continue
+            lower_files = [f.lower() for f in files]
+            for pattern in patterns:
+                p = pattern.lower()
+                if p.startswith("*."):
+                    suffix = p[1:]
+                    if any(f.endswith(suffix) for f in lower_files):
+                        return True
+                elif p in lower_files:
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def infer_model_adapter(path: str) -> Tuple[str, str]:
+    """Return (adapter_type, detected_category). Best-effort only."""
+    if not os.path.isdir(path):
+        return "unknown", "unknown"
+
+    if _has_any_file(path, ("modules.json",)):
+        return "sentence_transformers", "embeddings"
+    if _has_any_file(path, ("*.gguf",)):
+        return "gguf", "reasoning"
+    if _has_any_file(path, ("*.onnx",)):
+        return "onnx", "unknown"
+    if _has_any_file(path, ("model_index.json",)):
+        return "diffusers", "image_generation"
+    if _has_any_file(path, ("yolo*.pt", "*.pt")):
+        # .pt can also be torch checkpoints, so keep category conservative unless the name hints YOLO.
+        try:
+            for root, _, files in os.walk(path):
+                for fn in files:
+                    lf = fn.lower()
+                    if lf.startswith("yolo") or "yolo" in lf or "ultralytics" in lf:
+                        return "ultralytics", "vision"
+        except Exception:
+            pass
+        return "pytorch", "unknown"
+    if _has_any_file(path, ("config.json", "tokenizer.json", "tokenizer_config.json")):
+        return "transformers", "reasoning"
+    if _has_any_file(path, ("*.safetensors", "*.bin")):
+        return "transformers", "unknown"
+    if _has_any_file(path, ("voice.json", "speaker.json", "audio_config.json")):
+        return "custom", "tts"
+    return "unknown", "unknown"
+
+
+def _load_model_registry() -> Dict[str, Any]:
+    path = model_registry_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            if isinstance(data, dict):
+                data.setdefault("version", MODEL_REGISTRY_VERSION)
+                data.setdefault("external_roots", [])
+                data.setdefault("models", {})
+                data.setdefault("active_models", {})
+                data.setdefault("updated_at", _now_iso())
+                return data
+    except Exception as exc:
+        logger.warning("Failed to load model registry %s: %s", path, exc)
+    return {
+        "version": MODEL_REGISTRY_VERSION,
+        "generated_at": _now_iso(),
+        "updated_at": _now_iso(),
+        "external_roots": [],
+        "models": {},
+        "active_models": {},
+    }
+
+
+def _save_model_registry(registry: Dict[str, Any]) -> None:
+    path = model_registry_path()
+    try:
+        registry["version"] = MODEL_REGISTRY_VERSION
+        registry["updated_at"] = _now_iso()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as exc:
+        logger.warning("Failed to save model registry %s: %s", path, exc)
+
+
+def _model_record_from_path(path: str, *, source: str, existing: Optional[Dict[str, Any]] = None, repo: str = "") -> Dict[str, Any]:
+    existing = dict(existing or {})
+    abs_path = os.path.abspath(os.path.expanduser(str(path or "")))
+    folder_name = os.path.basename(os.path.normpath(abs_path))
+    known_repo = resolve_model_repo(repo or _known_repo_for_folder(folder_name))
+    adapter, detected_category = infer_model_adapter(abs_path)
+    repo_value = known_repo or str(existing.get("repo") or "").strip()
+    category = _normalize_category(str(existing.get("category") or "") or (_repo_category_hint(repo_value) if repo_value else detected_category))
+    if category == "unknown" and str(existing.get("user_classified") or "").lower() == "true":
+        category = _normalize_category(str(existing.get("user_category") or "unknown"))
+
+    model_id = str(existing.get("id") or "").strip()
+    if not model_id:
+        model_id = _safe_model_id(repo_value or folder_name)
+
+    installed = bool(os.path.isdir(abs_path) and any(os.scandir(abs_path))) if os.path.isdir(abs_path) else False
+    verified = bool(existing.get("verified", False)) and installed
+    if installed and not verified:
+        # Fast structural validation; do not heavy-load the model.
+        verified = bool(model_files_valid(abs_path) or adapter in ("gguf", "onnx", "diffusers", "ultralytics", "pytorch"))
+
+    record = {
+        "id": model_id,
+        "display_name": str(existing.get("display_name") or _display_name_from_repo_or_path(repo_value, abs_path)),
+        "repo": repo_value,
+        "path": abs_path,
+        "source": source,
+        "known_repo": bool(known_repo),
+        "detected_category": detected_category,
+        "category": category,
+        "domain": str(existing.get("domain") or "general"),
+        "adapter_type": str(existing.get("adapter_type") or adapter),
+        "user_classified": bool(existing.get("user_classified", False)),
+        "verified": bool(verified),
+        "installed": bool(installed),
+        "missing": not bool(installed),
+        "active_allowed": bool(existing.get("active_allowed", True)),
+        "last_seen": _now_iso(),
+        "status": "ready" if verified else ("needs_review" if installed else "missing"),
+    }
+
+    # Preserve stable metadata that should not be erased by scan.
+    for key in ("notes", "hardware_warning", "risk_profile", "created_at"):
+        if key in existing and key not in record:
+            record[key] = existing[key]
+    return record
+
+
+def _iter_default_model_paths() -> List[str]:
+    out: List[str] = []
+    try:
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        for entry in os.scandir(MODELS_DIR):
+            if not entry.is_dir():
+                continue
+            if entry.name.startswith(".") or entry.name in {"__pycache__"}:
+                continue
+            out.append(os.path.abspath(entry.path))
+    except Exception:
+        pass
+    return sorted(set(out), key=lambda x: x.lower())
+
+
+def _iter_external_model_paths(external_roots: List[str]) -> List[str]:
+    out: List[str] = []
+    for root in external_roots or []:
+        try:
+            root_path = os.path.abspath(os.path.expanduser(str(root or "")))
+            if not os.path.isdir(root_path):
+                continue
+
+            # If the selected root itself looks like a model, include it.
+            adapter, _cat = infer_model_adapter(root_path)
+            if adapter != "unknown" or model_files_valid(root_path):
+                out.append(root_path)
+
+            # Also scan immediate child folders for model folders.
+            for entry in os.scandir(root_path):
+                if entry.is_dir() and not entry.name.startswith("."):
+                    out.append(os.path.abspath(entry.path))
+        except Exception:
+            continue
+    return sorted(set(out), key=lambda x: x.lower())
+
+
+def scan_model_registry(*, persist: bool = True) -> Dict[str, Any]:
+    """Scan default/external model folders and update data/settings/model_registry.json."""
+    with _MODEL_REGISTRY_LOCK:
+        registry = _load_model_registry()
+        existing_models = registry.get("models") if isinstance(registry.get("models"), dict) else {}
+        previous_model_ids = set(str(k) for k in existing_models.keys())
+        scan_started_at = _now_iso()
+        scanned: Dict[str, Dict[str, Any]] = {}
+
+        for path in _iter_default_model_paths():
+            folder_name = os.path.basename(os.path.normpath(path))
+            known_repo = _known_repo_for_folder(folder_name)
+            prior_id = _safe_model_id(known_repo or folder_name)
+            existing = dict(existing_models.get(prior_id) or {})
+            rec = _model_record_from_path(path, source="default_models_dir", existing=existing, repo=known_repo)
+            scanned[rec["id"]] = rec
+
+        external_roots = [str(x) for x in (registry.get("external_roots") or []) if str(x or "").strip()]
+        for path in _iter_external_model_paths(external_roots):
+            folder_name = os.path.basename(os.path.normpath(path))
+            prior_id = _safe_model_id(str(existing_models.get(folder_name, {}).get("id") or folder_name))
+            # Prefer exact path match from older registry entries.
+            existing = {}
+            for old_id, old in existing_models.items():
+                try:
+                    if os.path.abspath(str(old.get("path") or "")) == os.path.abspath(path):
+                        existing = dict(old)
+                        break
+                except Exception:
+                    pass
+            if not existing:
+                existing = dict(existing_models.get(prior_id) or {})
+            rec = _model_record_from_path(path, source="external_path", existing=existing, repo=str(existing.get("repo") or ""))
+            scanned[rec["id"]] = rec
+
+        # Preserve missing user-linked entries so the UI can show them as offline/missing.
+        for old_id, old in existing_models.items():
+            if old_id in scanned:
+                continue
+            if str(old.get("source") or "") == "external_path":
+                rec = dict(old)
+                rec["installed"] = False
+                rec["missing"] = True
+                rec["verified"] = False
+                rec["status"] = "missing"
+                rec["last_seen"] = rec.get("last_seen") or _now_iso()
+                scanned[old_id] = rec
+
+        registry["models"] = scanned
+
+        # Drop active pointers for missing models.
+        active = registry.get("active_models") if isinstance(registry.get("active_models"), dict) else {}
+        clean_active = {}
+        for cat, model_id in active.items():
+            mid = str(model_id or "")
+            if mid in scanned and not scanned[mid].get("missing"):
+                clean_active[_normalize_category(cat)] = mid
+        registry["active_models"] = clean_active
+
+        model_values = [rec for rec in scanned.values() if isinstance(rec, dict)]
+        ready_count = len([rec for rec in model_values if str(rec.get("status") or "") == "ready"])
+        missing_count = len([rec for rec in model_values if bool(rec.get("missing"))])
+        unclassified_count = len([
+            rec for rec in model_values
+            if _normalize_category(str(rec.get("category") or rec.get("detected_category") or "unknown")) == "unknown"
+        ])
+        current_model_ids = set(str(k) for k in scanned.keys())
+        registry["scan"] = {
+            "started_at": scan_started_at,
+            "completed_at": _now_iso(),
+            "live_interval_sec": MODEL_LIVE_SCAN_INTERVAL_SEC,
+            "models_dir": MODELS_DIR,
+            "model_count": len(model_values),
+            "ready_count": ready_count,
+            "missing_count": missing_count,
+            "unclassified_count": unclassified_count,
+            "active_count": len(clean_active),
+            "new_model_ids": sorted(current_model_ids - previous_model_ids),
+            "removed_model_ids": sorted(previous_model_ids - current_model_ids),
+            "source": "SarahMemoryLLM.scan_model_registry",
+        }
+
+        if persist:
+            _save_model_registry(registry)
+        return registry
+
+
+def _model_cards(registry: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    registry = registry or scan_model_registry(persist=True)
+    out: List[Dict[str, Any]] = []
+    active = registry.get("active_models") if isinstance(registry.get("active_models"), dict) else {}
+    active_ids = {str(v) for v in active.values()}
+    for rec in (registry.get("models") or {}).values():
+        if not isinstance(rec, dict):
+            continue
+        cat = _normalize_category(str(rec.get("category") or rec.get("detected_category") or "unknown"))
+        status = str(rec.get("status") or ("ready" if rec.get("verified") else "needs_review"))
+        label = _CATEGORY_UI_LABELS.get(cat, "Unclassified")
+        display_name = str(rec.get("display_name") or rec.get("repo") or rec.get("id") or "Unknown model")
+        card = dict(rec)
+        card.update({
+            "category": cat,
+            "category_label": label,
+            "domain_label": _DOMAIN_LABELS.get(str(rec.get("domain") or "general"), str(rec.get("domain") or "General").title()),
+            "simple_label": display_name,
+            "status_label": "Ready" if status == "ready" else ("Missing" if status == "missing" else "Needs review"),
+            "is_active": str(rec.get("id")) in active_ids,
+            "can_activate": bool(rec.get("installed")) and bool(rec.get("active_allowed", True)),
+            "size_gb": round(local_dir_size_gb(str(rec.get("path") or "")), 3) if os.path.isdir(str(rec.get("path") or "")) else 0.0,
+        })
+        out.append(card)
+    return sorted(out, key=lambda r: (str(r.get("category") or "unknown"), not bool(r.get("is_active")), str(r.get("display_name") or "").lower()))
+
+
+def get_model_manager_status(*, refresh: bool = True) -> Dict[str, Any]:
+    registry = scan_model_registry(persist=True) if refresh else _load_model_registry()
+    cards = _model_cards(registry)
+    active_records = {}
+    for cat, model_id in (registry.get("active_models") or {}).items():
+        rec = (registry.get("models") or {}).get(str(model_id))
+        if isinstance(rec, dict):
+            active_records[_normalize_category(cat)] = dict(rec)
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for card in cards:
+        groups.setdefault(str(card.get("category") or "unknown"), []).append(card)
+
+    try:
+        hardware = getattr(G, "hardware_score", lambda metrics=None: {})()
+    except Exception:
+        hardware = {}
+
+    scan_summary = registry.get("scan") if isinstance(registry.get("scan"), dict) else {}
+    model_count = len(cards)
+    ready_count = len([card for card in cards if str(card.get("status") or "") == "ready"])
+    missing_count = len([card for card in cards if bool(card.get("missing"))])
+    unclassified_count = len([card for card in cards if str(card.get("category") or "unknown") == "unknown"])
+
+    return {
+        "ok": True,
+        "version": "8.0.0",
+        "registry_path": model_registry_path(),
+        "models_dir": MODELS_DIR,
+        "external_roots": registry.get("external_roots") or [],
+        "live_scan_interval_sec": MODEL_LIVE_SCAN_INTERVAL_SEC,
+        "recommended_poll_interval_sec": MODEL_LIVE_SCAN_INTERVAL_SEC,
+        "model_count": model_count,
+        "ready_count": ready_count,
+        "missing_count": missing_count,
+        "unclassified_count": unclassified_count,
+        "active_count": len(registry.get("active_models") or {}),
+        "scan": scan_summary,
+        "categories": [
+            {"id": c, "label": _CATEGORY_UI_LABELS.get(c, c.title())}
+            for c in ("reasoning", "coder", "embeddings", "vision", "image_generation", "tts", "unknown")
+        ],
+        "domains": [{"id": k, "label": v} for k, v in _DOMAIN_LABELS.items()],
+        "adapter_types": ["transformers", "sentence_transformers", "ultralytics", "diffusers", "pytorch", "onnx", "gguf", "safetensors", "custom", "unknown"],
+        "models": cards,
+        "groups": groups,
+        "active_models": registry.get("active_models") or {},
+        "active_records": active_records,
+        "hardware": hardware,
+        "updated_at": registry.get("updated_at"),
+    }
+
+
+def get_active_model_record(category: str, *, refresh: bool = False) -> Dict[str, Any]:
+    cat = _normalize_category(category)
+    registry = scan_model_registry(persist=True) if refresh else _load_model_registry()
+    model_id = str((registry.get("active_models") or {}).get(cat) or "")
+    rec = (registry.get("models") or {}).get(model_id)
+    if isinstance(rec, dict) and rec.get("installed") and not rec.get("missing"):
+        return dict(rec)
+    return {}
+
+
+def get_active_model_for_api(category: str) -> Dict[str, Any]:
+    """Runtime bridge consumed by SarahMemoryAPI.py.
+
+    Returns the user-selected active model for a category when it exists and is
+    installed. Empty dict means fall back to Globals resolver.
+    """
+    cat = _normalize_category(category)
+    if cat not in ("reasoning", "coder"):
+        return {}
+    rec = get_active_model_record(cat, refresh=False)
+    if not rec:
+        # One refresh covers first-run generation or newly copied folders.
+        rec = get_active_model_record(cat, refresh=True)
+    if not rec:
+        return {}
+    # SarahMemoryAPI.py currently runs local text-generation through HF Transformers.
+    # Other adapters remain selectable/classifiable in Settings but are not handed to
+    # the in-process Local LLM runner until a matching runtime adapter exists.
+    if str(rec.get("adapter_type") or "").lower() not in ("transformers",):
+        return {}
+    return {
+        "ok": True,
+        "category": cat,
+        "model_id": rec.get("id"),
+        "repo": rec.get("repo") or rec.get("display_name") or rec.get("id"),
+        "local_dir": rec.get("path"),
+        "source": "model_registry",
+        "record": rec,
+    }
+
+
+def set_active_model(category: str, model_id: str = "", repo: str = "") -> Dict[str, Any]:
+    cat = _normalize_category(category)
+    with _MODEL_REGISTRY_LOCK:
+        registry = scan_model_registry(persist=True)
+        models = registry.get("models") if isinstance(registry.get("models"), dict) else {}
+        target_id = str(model_id or "").strip()
+
+        if not target_id and repo:
+            resolved = resolve_model_repo(repo)
+            for mid, rec in models.items():
+                if str(rec.get("repo") or "") == resolved or str(rec.get("display_name") or "") == repo:
+                    target_id = mid
+                    break
+
+        if not target_id or target_id not in models:
+            return {"ok": False, "error": "model_not_found", "category": cat, "model_id": target_id}
+
+        rec = models[target_id]
+        if rec.get("missing") or not rec.get("installed"):
+            return {"ok": False, "error": "model_missing", "model": rec}
+        if not bool(rec.get("active_allowed", True)):
+            return {"ok": False, "error": "activation_not_allowed", "model": rec}
+
+        rec_cat = _normalize_category(str(rec.get("category") or rec.get("detected_category") or "unknown"))
+        if rec_cat == "unknown":
+            return {"ok": False, "error": "model_unclassified", "message": "Classify this model before using it.", "model": rec}
+
+        registry.setdefault("active_models", {})[cat] = target_id
+        rec["category"] = cat
+        rec["last_activated"] = _now_iso()
+        models[target_id] = rec
+        registry["models"] = models
+        _save_model_registry(registry)
+        return {"ok": True, "category": cat, "model_id": target_id, "model": rec, "status": get_model_manager_status(refresh=False)}
+
+
+def classify_model(model_id: str, category: str, domain: str = "general", adapter_type: str = "", display_name: str = "") -> Dict[str, Any]:
+    with _MODEL_REGISTRY_LOCK:
+        registry = scan_model_registry(persist=True)
+        models = registry.get("models") if isinstance(registry.get("models"), dict) else {}
+        mid = str(model_id or "").strip()
+        if mid not in models:
+            return {"ok": False, "error": "model_not_found", "model_id": mid}
+        rec = dict(models[mid])
+        rec["category"] = _normalize_category(category)
+        rec["domain"] = str(domain or "general").strip().lower() or "general"
+        if adapter_type:
+            rec["adapter_type"] = str(adapter_type).strip().lower()
+        if display_name:
+            rec["display_name"] = str(display_name).strip()
+        rec["user_classified"] = True
+        rec["classified_at"] = _now_iso()
+        rec["status"] = "ready" if rec.get("verified") else "needs_review"
+        models[mid] = rec
+        registry["models"] = models
+        _save_model_registry(registry)
+        return {"ok": True, "model": rec, "status": get_model_manager_status(refresh=False)}
+
+
+def verify_model_by_id(model_id: str) -> Dict[str, Any]:
+    with _MODEL_REGISTRY_LOCK:
+        registry = scan_model_registry(persist=True)
+        models = registry.get("models") if isinstance(registry.get("models"), dict) else {}
+        mid = str(model_id or "").strip()
+        if mid not in models:
+            return {"ok": False, "error": "model_not_found", "model_id": mid}
+        rec = dict(models[mid])
+        path = str(rec.get("path") or "")
+        adapter, detected = infer_model_adapter(path)
+        verified = bool(os.path.isdir(path) and (model_files_valid(path) or adapter in ("gguf", "onnx", "diffusers", "ultralytics", "pytorch")))
+        rec["adapter_type"] = rec.get("adapter_type") or adapter
+        rec["detected_category"] = rec.get("detected_category") or detected
+        rec["verified"] = verified
+        rec["installed"] = bool(os.path.isdir(path))
+        rec["missing"] = not bool(os.path.isdir(path))
+        rec["status"] = "ready" if verified else ("missing" if rec["missing"] else "needs_review")
+        rec["verified_at"] = _now_iso()
+        models[mid] = rec
+        registry["models"] = models
+        _save_model_registry(registry)
+        return {"ok": True, "verified": verified, "model": rec, "status": get_model_manager_status(refresh=False)}
+
+
+def add_external_model_path(path: str) -> Dict[str, Any]:
+    raw = str(path or "").strip().strip('"')
+    if not raw:
+        return {"ok": False, "error": "path_required"}
+    abs_path = os.path.abspath(os.path.expanduser(raw))
+    if not os.path.isdir(abs_path):
+        return {"ok": False, "error": "path_not_found", "path": abs_path}
+    with _MODEL_REGISTRY_LOCK:
+        registry = _load_model_registry()
+        roots = [str(x) for x in (registry.get("external_roots") or []) if str(x or "").strip()]
+        if abs_path not in roots:
+            roots.append(abs_path)
+        registry["external_roots"] = roots
+        _save_model_registry(registry)
+    return {"ok": True, "path": abs_path, "status": get_model_manager_status(refresh=True)}
+
+
+def reset_active_model_to_recommended(category: str) -> Dict[str, Any]:
+    cat = _normalize_category(category)
+    registry = scan_model_registry(persist=True)
+    models = registry.get("models") if isinstance(registry.get("models"), dict) else {}
+    candidates = [
+        rec for rec in models.values()
+        if isinstance(rec, dict)
+        and _normalize_category(str(rec.get("category") or rec.get("detected_category") or "unknown")) == cat
+        and bool(rec.get("installed"))
+        and bool(rec.get("active_allowed", True))
+    ]
+    # Prefer known + verified + installed, then any installed.
+    candidates.sort(key=lambda r: (not bool(r.get("known_repo")), not bool(r.get("verified")), str(r.get("display_name") or "").lower()))
+    if not candidates:
+        return {"ok": False, "error": "no_installed_model_for_category", "category": cat, "status": get_model_manager_status(refresh=False)}
+    return set_active_model(cat, model_id=str(candidates[0].get("id") or ""))
+
+
+def download_model_to_registry(category: str, repo: str = "", model_id: str = "", progress_callback=None) -> Dict[str, Any]:
+    cat = _normalize_category(category)
+    selected_repo = str(repo or "").strip()
+    if not selected_repo and model_id:
+        rec = (scan_model_registry(persist=True).get("models") or {}).get(str(model_id))
+        if isinstance(rec, dict):
+            selected_repo = str(rec.get("repo") or "")
+    if not selected_repo:
+        return {"ok": False, "error": "repo_required", "category": cat}
+
+    ok = bool(download_category_model(cat, repo=selected_repo, progress_callback=progress_callback))
+    status = get_model_manager_status(refresh=True)
+    return {"ok": ok, "category": cat, "repo": resolve_model_repo(selected_repo), "status": status}
+
 # ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
@@ -645,6 +1333,12 @@ def infer_category_from_text(text: str, meta: Optional[dict] = None) -> str:
 
 def route_to_primary_model_repo(text: str, meta: Optional[dict] = None) -> Tuple[str, str]:
     category = infer_category_from_text(text, meta)
+    try:
+        active = get_active_model_for_api(category)
+        if active.get("repo"):
+            return category, str(active.get("repo") or "")
+    except Exception:
+        pass
     repo = get_stack_primary_repo(category, text=text, meta=meta) if MULTI_STACK_ENABLED else ""
     repo = resolve_model_repo(repo)
     return category, repo
