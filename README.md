@@ -2063,7 +2063,203 @@ That is the architecture shift from a chatbot toward a governed artificial livin
 
 ---
 
+---
+## **📅 May 22, 2026 — Live Model Hot‑Swap UI, Dynamic Model Discovery, and DL Governance Weight Profiles**
 
+This update adds one of the most important user-facing model-control upgrades in SarahMemory AiOS v8.0.0: the system can now discover local AI models from the UI, hot-swap active models by job category, and tune governed routing weights per model/category profile.
+
+![SarahMemory Hot-Swappable Models and DL Weight Governance](documents/SM_HotswapModels-FULLDESKTOP-05222026.jpg)
+
+### **1. AI Models Panel Added to Settings**
+
+The Settings screen now includes a beginner-friendly **AI Models** section designed for non-technical users.
+
+Instead of forcing users to understand raw model folders, adapters, tokenizer files, or backend runtime details, the UI asks the user what job they want SarahMemory to improve:
+
+- General Thinking
+- Coding Help
+- Memory Search
+- Vision / Camera
+- Image Creation
+- Voice / Speech
+- Unclassified / Unknown Models
+
+The frontend remains a control surface only. It does not decide model truth, inspect backend files directly, or become the authority layer. The backend owns discovery, classification, verification, and active model routing.
+
+### **2. SarahMemoryLLM.py Now Acts as the Model Manager**
+
+No separate model-manager file was created. The existing `SarahMemoryLLM.py` file now owns the SarahMemory-native model-management role.
+
+Core capabilities now include:
+
+- Scanning `../data/models/`
+- Detecting newly added model folders
+- Detecting missing/removed models
+- Supporting external model folder roots
+- Creating and updating `../data/settings/model_registry.json`
+- Classifying unknown models by category/domain/adapter
+- Verifying model folder structure
+- Setting active models per category
+- Resetting categories back to recommended models
+- Downloading selected Hugging Face model repositories into local model storage
+
+This keeps SarahMemory model-agnostic and user-controlled while avoiding hardcoded dependence on Ollama or any single third-party runtime.
+
+### **3. Live 30-Second Model Folder Refresh**
+
+The AI Models panel now refreshes live while the Settings window is open.
+
+Every 30 seconds, SarahMemory checks the model inventory so the UI can update automatically when a user adds or removes folders under:
+
+```text
+../data/models/
+```
+
+This means a user can manually place a model folder into `data/models`, return to Settings, and see the model count/dropdown update without restarting the entire AiOS.
+
+The UI now displays live model inventory values such as:
+
+- Models found
+- Ready models
+- Models needing review
+- Active model per category
+- Unclassified models
+
+### **4. User-Friendly Hot-Swap Model Control**
+
+Users can now hot-swap which local model SarahMemory uses for each AI job category.
+
+Example:
+
+```text
+General Thinking → Qwen3
+Coding Help      → Qwen2.5 Coder Instruct
+Vision / Camera  → a vision model
+Image Creation   → image generation model
+Memory Search    → embedding model
+```
+
+This allows SarahMemory to use different helper models for different roles while preserving the doctrine:
+
+```text
+Models are helper organs.
+SarahMemory AiOS remains the governed organism.
+```
+
+### **5. SarahMemoryAPI.py Uses Active Local Model Selection**
+
+`SarahMemoryAPI.py` remains the inference/API runtime bridge.
+
+For local text-generation paths, it now checks `SarahMemoryLLM.py` for the user-selected active model before falling back to default model resolution.
+
+The boundary is preserved:
+
+```text
+SarahMemoryLLM.py = model discovery, registry, selection, verification
+SarahMemoryAPI.py = local/API inference bridge
+app.py            = Flask route layer
+Settings UI       = user-facing control surface
+```
+
+### **6. DL Engine Governance + Model Weight Controller Upgrade**
+
+The DL Engine now includes a governed **Model Weight Controller** that can store and load weight profiles per category/model context.
+
+These sliders are governance/routing weights, not raw tensor edits.
+
+The sliders control policy emphasis such as:
+
+- Reasoning
+- Coding
+- Memory
+- Research
+- Creative
+- Safety
+- Autonomy
+- Precision
+- Speed
+
+### **7. Per-Category / Per-Model Weight Profiles**
+
+Weight profiles are now context-aware.
+
+Example:
+
+```text
+General Thinking:
+  Safety = 20
+  Precision = 70
+  Speed = 55
+
+Coding Help:
+  Safety = 50
+  Precision = 85
+  Speed = 45
+```
+
+When the user changes the **Model job/category** dropdown in the DL Engine screen, the sliders automatically switch to the profile assigned to that selected category/model.
+
+This allows SarahMemory to behave differently depending on the selected task lane without overwriting all model weights globally.
+
+### **8. Category Default Profiles**
+
+The DL Engine now supports real category-default profiles.
+
+If no specific model profile exists yet, SarahMemory loads governed defaults for that category. The user can then save adjusted values for that category or model.
+
+The backend stores these profiles under runtime settings instead of hardcoding them into the constitution layer.
+
+Primary storage:
+
+```text
+../data/settings/model_registry.json
+../data/settings/dlengine_state.json
+```
+
+### **9. Governance Boundary Preserved**
+
+This update does not give the frontend authority over SarahMemory’s backend truth.
+
+Hard limits preserved:
+
+- No raw model becomes self-authorizing
+- No frontend-only model truth
+- No hidden model activation
+- No tensor mutation through sliders
+- No model can override Cognitive TriForce / SMGET / Compare / Compass
+- No model is treated as the core organism
+- All model control remains user-visible and reversible
+
+### **10. Why This Update Matters**
+
+This update makes SarahMemory AiOS significantly easier for normal users while increasing expert-level control underneath.
+
+A non-technical user can now:
+
+```text
+Open Settings → AI Models → choose what SarahMemory uses for each job
+```
+
+An advanced user can:
+
+```text
+Add models manually → classify them → verify them → hot-swap categories → tune governed DL weights
+```
+
+This moves SarahMemory closer to a true AI Operating System where the user can customize the intelligence stack the same way an operating system user installs drivers, changes default apps, or adjusts performance settings.
+
+SarahMemory remains:
+
+```text
+Local-first.
+Model-agnostic.
+User-owned.
+Governed.
+Auditable.
+Swappable.
+Survivable without any single model provider.
+```
+---
 
 
 
