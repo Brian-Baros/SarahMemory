@@ -39,8 +39,6 @@ export interface MediaResult {
 export interface ChatResponse {
   ok?: boolean;
   reply?: string;
-  response?: string;
-  presentation_reply?: string;
   content: string;
   source: "sarah_backend" | "lovable_ai";
   audio_url?: string | null;
@@ -48,7 +46,6 @@ export interface ChatResponse {
   error?: string;
   web_augmented?: boolean;
   sources?: string[];
-  actions?: Array<Record<string, unknown>>;
   meta?: {
     source?: string;
     engine?: string;
@@ -120,6 +117,98 @@ export interface ThemeOption {
   name: string;
   filename: string;
   preview?: string;
+}
+
+export interface ModelManagerCategory {
+  id: string;
+  label: string;
+}
+
+export interface ModelManagerModel {
+  id: string;
+  display_name?: string;
+  simple_label?: string;
+  repo?: string;
+  path?: string;
+  source?: string;
+  category?: string;
+  category_label?: string;
+  detected_category?: string;
+  domain?: string;
+  domain_label?: string;
+  adapter_type?: string;
+  status?: string;
+  status_label?: string;
+  installed?: boolean;
+  verified?: boolean;
+  missing?: boolean;
+  is_active?: boolean;
+  can_activate?: boolean;
+  size_gb?: number;
+  known_repo?: boolean;
+  user_classified?: boolean;
+}
+
+export interface ModelManagerStatus {
+  ok: boolean;
+  version?: string;
+  registry_path?: string;
+  models_dir?: string;
+  external_roots?: string[];
+  categories?: ModelManagerCategory[];
+  domains?: ModelManagerCategory[];
+  adapter_types?: string[];
+  models?: ModelManagerModel[];
+  groups?: Record<string, ModelManagerModel[]>;
+  active_models?: Record<string, string>;
+  active_records?: Record<string, ModelManagerModel>;
+  hardware?: Record<string, unknown>;
+  live_scan_interval_sec?: number;
+  recommended_poll_interval_sec?: number;
+  model_count?: number;
+  ready_count?: number;
+  missing_count?: number;
+  unclassified_count?: number;
+  active_count?: number;
+  scan?: {
+    started_at?: string;
+    completed_at?: string;
+    live_interval_sec?: number;
+    model_count?: number;
+    ready_count?: number;
+    missing_count?: number;
+    unclassified_count?: number;
+    active_count?: number;
+    new_model_ids?: string[];
+    removed_model_ids?: string[];
+    source?: string;
+  };
+  updated_at?: string;
+  error?: string;
+}
+
+export interface DlEngineModelWeights {
+  reasoning: number;
+  coding: number;
+  memory: number;
+  research: number;
+  creativity: number;
+  safety: number;
+  autonomy: number;
+  precision: number;
+  speed: number;
+}
+
+export interface DlEngineWeightProfileResponse {
+  ok: boolean;
+  category?: string;
+  model_id?: string;
+  context?: Record<string, unknown>;
+  profile?: Record<string, unknown>;
+  weights?: DlEngineModelWeights;
+  raw_tensor_edit?: boolean;
+  note?: string;
+  error?: string;
 }
 
 export interface MediaResponse {
@@ -362,31 +451,18 @@ export const chatApi = {
       });
 
       const ok = isTruthySuccess(data) || Boolean(data.ok);
-      const reply = String(
-        data.presentation_reply ??
-          data.content ??
-          data.response ??
-          data.reply ??
-          data?.data?.presentation_reply ??
-          data?.data?.content ??
-          data?.data?.response ??
-          data?.data?.reply ??
-          ""
-      );
+      const reply = data.reply ?? data.content ?? "";
 
-      if (ok && reply.length) {
+      if (ok && typeof reply === "string" && reply.length) {
         return {
           ok: true,
           reply,
-          response: data.response,
-          presentation_reply: data.presentation_reply,
           content: reply,
           source: "sarah_backend",
           audio_url: data.audio_url ?? null,
           images: data.images,
           sources: data.sources,
           web_augmented: data.web_augmented,
-          actions: Array.isArray(data.actions) ? data.actions : [],
           meta: data.meta,
         };
       }
@@ -1155,6 +1231,113 @@ export const governanceApi = {
 };
 
 // ============================================================================
+// MODEL MANAGER API
+// ============================================================================
+
+export const modelsApi = {
+  async status(refresh = true): Promise<ModelManagerStatus> {
+    return directCall<ModelManagerStatus>(`/api/models/status?refresh=${refresh ? "1" : "0"}`, { method: "GET" });
+  },
+
+  async scan(): Promise<ModelManagerStatus> {
+    return directCall<ModelManagerStatus>("/api/models/scan", { method: "POST", body: JSON.stringify({}) });
+  },
+
+  async select(category: string, modelId: string): Promise<any> {
+    return directCall<any>("/api/models/select", {
+      method: "POST",
+      body: JSON.stringify({ category, model_id: modelId }),
+    });
+  },
+
+  async classify(
+    modelId: string,
+    category: string,
+    domain = "general",
+    adapterType = "",
+    displayName = "",
+  ): Promise<any> {
+    return directCall<any>("/api/models/classify", {
+      method: "POST",
+      body: JSON.stringify({
+        model_id: modelId,
+        category,
+        domain,
+        adapter_type: adapterType,
+        display_name: displayName,
+      }),
+    });
+  },
+
+  async verify(modelId: string): Promise<any> {
+    return directCall<any>("/api/models/verify", {
+      method: "POST",
+      body: JSON.stringify({ model_id: modelId }),
+    });
+  },
+
+  async addExternalPath(path: string): Promise<any> {
+    return directCall<any>("/api/models/external-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+  },
+
+  async reset(category: string): Promise<any> {
+    return directCall<any>("/api/models/reset", {
+      method: "POST",
+      body: JSON.stringify({ category }),
+    });
+  },
+
+  async download(category: string, repo: string, modelId = ""): Promise<any> {
+    return directCall<any>("/api/models/download", {
+      method: "POST",
+      body: JSON.stringify({ category, repo, model_id: modelId }),
+    });
+  },
+};
+
+
+// ============================================================================
+// DL ENGINE MODEL WEIGHT API
+// ============================================================================
+
+export const dlengineApi = {
+  async getWeightProfile(category = "reasoning", modelId = ""): Promise<DlEngineWeightProfileResponse> {
+    const qs = new URLSearchParams();
+    qs.set("category", category);
+    if (modelId) qs.set("model_id", modelId);
+    return directCall<DlEngineWeightProfileResponse>(`/api/dlengine/weights?${qs.toString()}`, { method: "GET" });
+  },
+
+  async saveWeightProfile(
+    category: string,
+    modelId: string,
+    weights: Partial<DlEngineModelWeights>,
+    context: Record<string, unknown> = {},
+  ): Promise<DlEngineWeightProfileResponse> {
+    return directCall<DlEngineWeightProfileResponse>("/api/dlengine/weights", {
+      method: "POST",
+      body: JSON.stringify({
+        category,
+        model_id: modelId,
+        context,
+        weights,
+        source: "frontend:dlengine_model_weight_controller",
+      }),
+    });
+  },
+
+  async resetWeightProfile(category: string, modelId = ""): Promise<DlEngineWeightProfileResponse> {
+    return directCall<DlEngineWeightProfileResponse>("/api/dlengine/weights/reset", {
+      method: "POST",
+      body: JSON.stringify({ category, model_id: modelId }),
+    });
+  },
+};
+
+// ============================================================================
 // PROXY API (legacy)
 // ============================================================================
 
@@ -1214,6 +1397,8 @@ export const api = {
   proxy: proxyApi,
   devbridge: devBridgeApi,
   governance: governanceApi,
+  models: modelsApi,
+  dlengine: dlengineApi,
 };
 
 export default api;
