@@ -1676,7 +1676,12 @@ def _decode_visual_frame(candidate: Any):
         pass
     try:
         if isinstance(candidate, dict):
-            for key in ("frame", "bgr", "ndarray", "image", "data", "base64", "bytes", "path"):
+            for key in (
+                "frame", "current_frame", "latest_frame", "vision_frame",
+                "bgr", "ndarray", "image", "image_data", "imageData",
+                "data", "data_url", "dataUrl", "image_b64", "imageBase64",
+                "base64", "bytes", "path",
+            ):
                 if key in candidate:
                     frame = _decode_visual_frame(candidate.get(key))
                     if frame is not None:
@@ -1706,16 +1711,99 @@ def _decode_visual_frame(candidate: Any):
     return None
 
 
+def _extract_appvision_frame_from_loaded_runtime():
+    """Read the mounted appvision frame cache if Chat metadata missed it.
+
+    This is read-only and only inspects already-loaded modules/Flask route globals.
+    It does not direct-load appvision.py and does not open camera hardware.
+    """
+    candidates: List[Any] = []
+    try:
+        for name in ("appvision", "api.server.appvision", "server.appvision"):
+            mod = sys.modules.get(name)
+            if mod is not None:
+                candidates.append(mod)
+    except Exception:
+        pass
+
+    try:
+        from flask import current_app, has_app_context  # type: ignore
+        if has_app_context():
+            for endpoint, fn in list((getattr(current_app, "view_functions", {}) or {}).items()):
+                g = getattr(fn, "__globals__", None)
+                if isinstance(g, dict) and (
+                    "appvision" in str(endpoint or "").lower()
+                    or (
+                        isinstance(g.get("_FRAME_CACHE"), dict)
+                        and str(g.get("SMHUD_SCHEMA_VERSION") or "") == "SMHUD_PACKET_V1"
+                    )
+                ):
+                    class _Proxy:
+                        def __init__(self, gd):
+                            self._gd = gd
+                        def __getattr__(self, item):
+                            if item in self._gd:
+                                return self._gd[item]
+                            raise AttributeError(item)
+                    candidates.append(_Proxy(g))
+    except Exception:
+        pass
+
+    seen = set()
+    for mod in candidates:
+        if mod is None or id(mod) in seen:
+            continue
+        seen.add(id(mod))
+        try:
+            helper = getattr(mod, "get_latest_cached_frame_for_chat", None)
+            if callable(helper):
+                rec = helper(max_age_s=45)
+                if isinstance(rec, dict):
+                    frame = _decode_visual_frame(rec.get("frame") or rec.get("data_url") or rec.get("image_b64"))
+                    if frame is not None:
+                        return frame
+        except Exception:
+            pass
+        try:
+            cache = getattr(mod, "_FRAME_CACHE", None)
+            lock = getattr(mod, "_FRAME_LOCK", None)
+            if isinstance(cache, dict):
+                if lock is not None and hasattr(lock, "__enter__"):
+                    with lock:
+                        rec = dict(cache)
+                else:
+                    rec = dict(cache)
+                if bool(rec.get("has_frame")):
+                    frame = _decode_visual_frame(rec.get("data_url") or rec.get("image_b64"))
+                    if frame is not None:
+                        return frame
+        except Exception:
+            pass
+    return None
+
+
 def _extract_visual_frame(meta: Optional[Dict[str, Any]]):
     meta = meta or {}
     payload_meta = _meta_payload_block(meta)
     candidates: List[Any] = []
-    for key in ("frame", "current_frame", "latest_frame", "image", "image_data"):
+    frame_keys = (
+        "frame", "current_frame", "latest_frame", "image", "image_data", "imageData",
+        "data_url", "dataUrl", "image_b64", "imageBase64", "vision_frame",
+    )
+    for key in frame_keys:
         if key in meta:
             candidates.append(meta.get(key))
-    for key in ("frame", "current_frame", "latest_frame", "image", "image_data"):
+    for key in frame_keys:
         if key in payload_meta:
             candidates.append(payload_meta.get(key))
+
+    # Common nested blocks used by app.py and appvision.py.
+    for block in (meta.get("vision_frame"), payload_meta.get("vision_frame"), meta.get("ingress_meta"), payload_meta.get("ingress_meta")):
+        if isinstance(block, dict):
+            for key in frame_keys:
+                if key in block:
+                    candidates.append(block.get(key))
+
     for key in ("images", "video", "files"):
         val = meta.get(key)
         if isinstance(val, list) and val:
@@ -1727,8 +1815,8 @@ def _extract_visual_frame(meta: Optional[Dict[str, Any]]):
         frame = _decode_visual_frame(cand)
         if frame is not None:
             return frame
-    return None
 
+    return _extract_appvision_frame_from_loaded_runtime()
 
 def _infer_visual_query_type(text: str) -> str:
     t = str(text or "").strip().lower()
