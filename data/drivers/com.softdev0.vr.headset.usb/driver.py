@@ -623,6 +623,30 @@ def driver_action(action_id: str, context: Optional[Dict[str, Any]] = None, payl
             return _set_resolution(payload)
         if action_id == "launch_scene_request":
             return _make_scene_request(payload)
+        if action_id == "operator_hud_status":
+            return {
+                "ok": True,
+                "driver": DRIVER_ID,
+                "mode": "OBSERVE_ONLY",
+                "movement_authority": False,
+                "telemetry_surface": True,
+                "secondary_display_support": bool((_SESSION.get("config") or {}).get("allow_secondary_display", True)),
+                "runtime_active": bool(_SESSION.get("runtime_active")),
+                "session": driver_status().get("session", {}),
+            }
+        if action_id == "build_operator_hud_request":
+            req_payload = dict(payload or {})
+            req_payload.setdefault("intent", "vr_operator_hud")
+            req_payload.setdefault("prompt", "SarahMemory VR Operator HUD: camera feed, SOBJE targets, MSDC telemetry, SMGET state")
+            req_payload.setdefault("secondary_display", True)
+            req_payload.setdefault("fullscreen", True)
+            req_payload.setdefault("avatar_enabled", False)
+            req_payload.setdefault("render_profile", "low_latency_hud")
+            scene = _make_scene_request(req_payload)
+            if isinstance(scene, dict):
+                scene["hud_mode"] = "OBSERVE_ONLY"
+                scene["movement_authority"] = False
+            return scene
         if action_id == "start_avatar_mode":
             _push_history("start_avatar_mode", payload)
             return {"ok": True, "avatar_mode": True, "note": "Avatar mode requested; rendering handled by runtime/application layer"}

@@ -64,10 +64,18 @@
     "start_avatar_mode",
     "stop_avatar_mode",
     "describe_capabilities",
-    "safe_stop"
+    "safe_stop",
+    "operator_hud_status",
+    "build_operator_hud_request"
   ],
   "notes": {
     "design_boundary": "This package is a hardware/runtime bridge, not a full scene-generation or render engine.",
     "primary_contract": "Use OpenXR-capable runtimes when present; export scene/avatar requests into the wider SarahMemory creative/runtime pipeline."
+  },
+  "capabilities": {
+    "vr_operator_hud": true,
+    "read_only_telemetry_surface": true,
+    "camera_feed_overlay": true,
+    "movement_authority": false
   }
 }

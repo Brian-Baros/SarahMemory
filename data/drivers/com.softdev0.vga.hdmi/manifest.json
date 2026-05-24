@@ -35,6 +35,11 @@
     "build_scene_request",
     "get_config",
     "set_config",
-    "safe_stop"
-  ]
+    "safe_stop",
+    "operator_hud_surface",
+    "build_hud_surface_request"
+  ],
+  "id": "com.softdev0.vga.hdmi",
+  "name": "VGA/HDMI Display Bridge Driver",
+  "category": "display"
 }
