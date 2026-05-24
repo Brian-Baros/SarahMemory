@@ -108,6 +108,8 @@ MODULE_NAME = "SarahMemoryMSDC"
 MODULE_VERSION = "8.0.0"
 CAMERA_DRIVER_ID = "com.softdev0.camera.uvc.usb"
 USBHOST_DRIVER_ID = "com.softdev0.boot.usbhost"
+VR_HEADSET_DRIVER_ID = "com.softdev0.vr.headset.usb"
+DISPLAY_DRIVER_ID = "com.softdev0.vga.hdmi"
 
 READ_ONLY_ACTIONS = {
     "status", "get_status", "discover", "discover_devices", "list_devices", "scan",
@@ -172,42 +174,16 @@ def _boot_drivers_dir() -> Path:
     return (_data_dir() / "boot" / "drivers").resolve()
 
 
-def _settings_dir() -> Path:
-    """Return the runtime settings directory.
-
-    Runtime-generated JSON such as body_map.json and vision_policy.json belongs
-    under data/settings, not data/registry. SarahMemoryGlobals.py remains the
-    preferred path authority when SETTINGS_DIR is available.
-    """
-    try:
-        return Path(str(getattr(config, "SETTINGS_DIR"))).expanduser().resolve()  # type: ignore[arg-type]
-    except Exception:
-        return (_data_dir() / "settings").resolve()
-
-
 def _registry_dir() -> Path:
-    """Legacy registry directory retained only for one-time migration fallback."""
     return (_data_dir() / "registry").resolve()
 
 
-def _migrate_legacy_json_once(primary: Path, legacy: Path) -> Path:
-    """Copy legacy JSON into data/settings once, then keep writes on primary."""
-    try:
-        if (not primary.exists()) and legacy.exists() and legacy.is_file():
-            primary.parent.mkdir(parents=True, exist_ok=True)
-            primary.write_text(legacy.read_text(encoding="utf-8"), encoding="utf-8")
-            logger.info("Migrated legacy runtime JSON %s -> %s", legacy, primary)
-    except Exception as exc:
-        logger.warning("Legacy runtime JSON migration skipped %s -> %s: %s", legacy, primary, exc)
-    return primary
-
-
 def _body_map_path() -> Path:
-    return _migrate_legacy_json_once(_settings_dir() / "body_map.json", _registry_dir() / "body_map.json")
+    return _registry_dir() / "body_map.json"
 
 
 def _vision_policy_path() -> Path:
-    return _migrate_legacy_json_once(_settings_dir() / "vision_policy.json", _registry_dir() / "vision_policy.json")
+    return _registry_dir() / "vision_policy.json"
 
 
 def _safe_json_load(path: Path, default: Any = None) -> Any:
@@ -387,6 +363,56 @@ def msdc_get_device_capability(body_part: str = "eyes") -> DeviceCapabilityRecor
                 "backend_support": (manifest.get("platform") or {}).get("backend_support") if isinstance(manifest.get("platform"), dict) else [],
             },
         )
+    if body_part in {"vr", "vr_hud", "operator_vr_surface", "operator_visual_surface", "headset", "hmd"}:
+        manifest = _read_driver_manifest(VR_HEADSET_DRIVER_ID)
+        actions = _action_list_from_manifest(manifest)
+        present = msdc_driver_present(VR_HEADSET_DRIVER_ID)
+        return DeviceCapabilityRecord(
+            body_part="operator_vr_surface",
+            device_class="immersive_operator_display",
+            driver_id=VR_HEADSET_DRIVER_ID,
+            transport="usb+hdmi",
+            risk_tier="TIER_1_HARMLESS_LOCAL_UI",
+            privacy_sensitive=False,
+            physical_safety_sensitive=False,
+            user_control_required=True,
+            driver_present=present,
+            manifest_valid=bool(manifest.get("id") == VR_HEADSET_DRIVER_ID and actions),
+            actions=actions,
+            status="driver_available" if present else "driver_missing",
+            evidence={
+                "manifest_name": manifest.get("name"),
+                "manifest_version": manifest.get("version"),
+                "category": manifest.get("category"),
+                "runtime": (manifest.get("platform") or {}).get("runtime") if isinstance(manifest.get("platform"), dict) else [],
+                "transport": (manifest.get("platform") or {}).get("transport") if isinstance(manifest.get("platform"), dict) else [],
+                "display_role": "read_only_operator_hud_surface",
+            },
+        )
+    if body_part in {"display", "display_bridge", "hdmi", "vga", "monitor", "secondary_display"}:
+        manifest = _read_driver_manifest(DISPLAY_DRIVER_ID)
+        actions = _action_list_from_manifest(manifest)
+        present = msdc_driver_present(DISPLAY_DRIVER_ID)
+        return DeviceCapabilityRecord(
+            body_part="display_bridge",
+            device_class="display_output_bridge",
+            driver_id=DISPLAY_DRIVER_ID,
+            transport="hdmi",
+            risk_tier="TIER_1_HARMLESS_LOCAL_UI",
+            privacy_sensitive=False,
+            physical_safety_sensitive=False,
+            user_control_required=True,
+            driver_present=present,
+            manifest_valid=bool((manifest.get("id") in (DISPLAY_DRIVER_ID, None, "")) and actions),
+            actions=actions,
+            status="driver_available" if present else "driver_missing",
+            evidence={
+                "manifest_name": manifest.get("name") or "VGA/HDMI Display Bridge",
+                "manifest_version": manifest.get("version"),
+                "transport": (manifest.get("platform") or {}).get("transport") if isinstance(manifest.get("platform"), dict) else [],
+                "display_role": "secondary_display_route_support",
+            },
+        )
     return DeviceCapabilityRecord(
         body_part=body_part,
         device_class="unknown",
@@ -419,8 +445,20 @@ def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str
             "discovery_is_activation": False,
             "user_control_required_for_camera": True,
         },
-        "body_parts": {"eyes": eyes},
+        "body_parts": {
+            "eyes": eyes,
+            "operator_vr_surface": asdict(msdc_get_device_capability("operator_vr_surface")),
+            "display_bridge": asdict(msdc_get_device_capability("display_bridge")),
+        },
         "support_buses": {"usb_host": usbhost},
+        "operator_view": {
+            "mode": "OBSERVE_ONLY",
+            "movement_lock": True,
+            "hud_surface": "operator_vr_surface",
+            "camera_source": "eyes",
+            "display_bridge": "display_bridge",
+            "doctrine": "VR HUD renders telemetry only; actions remain behind Cognitive TriForce, SMGET, OperatorCore, AssuranceGate, and MSDC.",
+        },
     }
     if persist:
         _safe_json_write(_body_map_path(), body_map)
@@ -429,15 +467,22 @@ def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str
 
 def msdc_court_witness(body_part: str = "eyes", include_probe: bool = False) -> Dict[str, Any]:
     body_map = msdc_map_body(persist=True)
-    eyes = body_map.get("body_parts", {}).get("eyes", {})
+    key = str(body_part or "eyes").strip().lower()
+    if key in {"vr", "vr_hud", "headset", "hmd"}:
+        key = "operator_vr_surface"
+    elif key in {"display", "hdmi", "monitor"}:
+        key = "display_bridge"
+    elif key in {"eye", "camera", "webcam", "vision"}:
+        key = "eyes"
+    record = body_map.get("body_parts", {}).get(key, body_map.get("body_parts", {}).get("eyes", {}))
     witness: Dict[str, Any] = {
         "ok": True,
         "source_family": "SarahMemoryMSDC",
         "evidence_class": "motor_device_manager_witness",
-        "verified": bool(eyes.get("driver_present") and eyes.get("manifest_valid")),
-        "capability_class": "vision_environment",
-        "body_part": body_part or "eyes",
-        "body_part_record": eyes,
+        "verified": bool(record.get("driver_present") and record.get("manifest_valid")),
+        "capability_class": "operator_visual_environment" if key == "operator_vr_surface" else "vision_environment",
+        "body_part": key,
+        "body_part_record": record,
         "body_map_path": str(_body_map_path()),
         "limits": {
             "camera_opened": False,
@@ -578,6 +623,29 @@ def msdc_camera_capture_b64(user_authorized: bool = False, payload: Optional[Dic
         return snap
 
 
+
+def msdc_vr_hud_status() -> Dict[str, Any]:
+    """Read-only body-map status for the VR Operator HUD surface."""
+    body_map = msdc_map_body(persist=True)
+    parts = body_map.get("body_parts", {}) if isinstance(body_map, dict) else {}
+    return {
+        "ok": True,
+        "module": MODULE_NAME,
+        "version": MODULE_VERSION,
+        "mode": "OBSERVE_ONLY",
+        "movement_lock": True,
+        "operator_vr_surface": parts.get("operator_vr_surface", {}),
+        "display_bridge": parts.get("display_bridge", {}),
+        "camera_eye_source": parts.get("eyes", {}),
+        "body_map": body_map,
+        "limits": {
+            "hud_can_execute_actions": False,
+            "hud_can_authorize_movement": False,
+            "requires_smget_for_actions": True,
+            "msdc_self_authorizes": False,
+        },
+    }
+
 def msdc_status() -> Dict[str, Any]:
     return {
         "ok": True,
@@ -608,15 +676,3 @@ def get_court_witness(body_part: str = "eyes") -> Dict[str, Any]:
 
 if __name__ == "__main__":
     print(json.dumps(msdc_status(), indent=2, default=str))
-
-# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
-def msdc_accept_tri_layer_context(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """MSDC may receive tri-layer context as evidence only; device action still requires OperatorCore/SMGET."""
-    pkt = packet if isinstance(packet, dict) else {}
-    return {
-        "ok": True,
-        "source": "SarahMemoryMSDC.tri_layer_context",
-        "packet_type": pkt.get("packet_type"),
-        "execution_authority": False,
-        "note": "Context accepted; no motor/device operation authorized by this packet.",
-    }
