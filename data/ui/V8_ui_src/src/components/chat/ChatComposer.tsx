@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
 import { Send, Mic, Paperclip, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -38,9 +38,10 @@ declare global {
 type Props = {
   onSendText: (text: string, files?: File[]) => Promise<void> | void;
   isSending?: boolean;
+  onMicStateChange?: (listening: boolean, reason: string) => void;
 };
 
-export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
+export function ChatComposer({ onSendText, isSending: isSendingProp, onMicStateChange }: Props) {
   const isMobile = useIsMobile();
 
   const [message, setMessage] = useState("");
@@ -53,6 +54,34 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
   const composerRef = useRef<HTMLDivElement>(null);
 
   const isSending = Boolean(isSendingProp) || localSending;
+
+  const emitMicState = useCallback(
+    (listening: boolean, reason: string) => {
+      setIsListening(listening);
+
+      try {
+        onMicStateChange?.(listening, reason);
+      } catch {
+        // non-critical parent bridge
+      }
+
+      try {
+        window.dispatchEvent(
+          new CustomEvent("sarah:chat-composer", {
+            detail: {
+              type: "mic_state",
+              listening,
+              reason,
+              ts: Date.now(),
+            },
+          })
+        );
+      } catch {
+        // non-critical browser event bridge
+      }
+    },
+    [onMicStateChange]
+  );
 
   // ---------------------------------------------------------------------------
   // Expose composer height to CSS for correct mobile scroll padding
@@ -88,6 +117,10 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
     recognition.interimResults = true;
     recognition.lang = "en-US";
 
+    recognition.onstart = () => {
+      emitMicState(true, "speech_recognition_start");
+    };
+
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let transcript = "";
       for (let i = event.results.length - 1; i >= 0; i--) {
@@ -106,11 +139,21 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.warn("[ChatComposer] Speech recognition error:", event.error);
-      setIsListening(false);
+      emitMicState(false, `speech_recognition_error:${event.error || "unknown"}`);
+      try {
+        api.avatar.setListening(false).catch(() => {});
+      } catch {
+        // non-critical avatar sync
+      }
     };
 
     recognition.onend = () => {
-      setIsListening(false);
+      emitMicState(false, "speech_recognition_end");
+      try {
+        api.avatar.setListening(false).catch(() => {});
+      } catch {
+        // non-critical avatar sync
+      }
     };
 
     recognitionRef.current = recognition;
@@ -120,8 +163,14 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
         recognition.stop();
       } catch {}
       recognitionRef.current = null;
+      emitMicState(false, "component_unmount");
+      try {
+        api.avatar.setListening(false).catch(() => {});
+      } catch {
+        // non-critical avatar sync
+      }
     };
-  }, []);
+  }, [emitMicState]);
 
   // ---------------------------------------------------------------------------
   // Handlers
@@ -136,16 +185,21 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
     try {
       if (isListening) {
         recognition.stop();
-        setIsListening(false);
+        emitMicState(false, "manual_stop");
         await api.avatar.setListening(false);
       } else {
         recognition.start();
-        setIsListening(true);
+        emitMicState(true, "manual_start");
         await api.avatar.setListening(true);
       }
     } catch (e) {
       console.warn("[ChatComposer] toggleListening failed:", e);
-      setIsListening(false);
+      emitMicState(false, "toggle_failed");
+      try {
+        await api.avatar.setListening(false);
+      } catch {
+        // non-critical avatar sync
+      }
     }
   };
 
@@ -176,7 +230,7 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
     try {
       recognitionRef.current?.stop();
     } catch {}
-    setIsListening(false);
+    emitMicState(false, "submit_stop");
 
     const payloadText = trimmed || "(file upload)";
 
@@ -194,6 +248,7 @@ export function ChatComposer({ onSendText, isSending: isSendingProp }: Props) {
       try {
         await api.avatar.setListening(false);
       } catch {}
+      emitMicState(false, "submit_complete");
     }
   };
 

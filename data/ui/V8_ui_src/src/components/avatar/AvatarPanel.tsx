@@ -159,6 +159,80 @@ function DesktopMirrorView({ apiBase, enabled }: { apiBase: string; enabled: boo
   );
 }
 
+
+function useCompactAvatarViewport(): boolean {
+  const [compact, setCompact] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 768px), (orientation: portrait)").matches;
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const query = window.matchMedia("(max-width: 768px), (orientation: portrait)");
+    const update = () => setCompact(query.matches);
+    update();
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", update);
+      return () => query.removeEventListener("change", update);
+    }
+    query.addListener(update);
+    return () => query.removeListener(update);
+  }, []);
+
+  return compact;
+}
+
+type AvatarSurfaceBoundaryProps = {
+  children: React.ReactNode;
+  fallback: React.ReactNode;
+};
+
+type AvatarSurfaceBoundaryState = {
+  hasError: boolean;
+};
+
+class AvatarSurfaceBoundary extends React.Component<AvatarSurfaceBoundaryProps, AvatarSurfaceBoundaryState> {
+  constructor(props: AvatarSurfaceBoundaryProps) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(): AvatarSurfaceBoundaryState {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    // Prevent a 3D/mobile render failure from taking down the whole mobile shell.
+    // The avatar falls back to the 2D surface and the backend remains authoritative.
+    // eslint-disable-next-line no-console
+    console.warn("[AvatarPanel] Render surface fallback activated:", error);
+  }
+
+
+  render() {
+    if (this.state.hasError) return this.props.fallback;
+    return this.props.children;
+  }
+}
+
+function Avatar2DImageSurface({ src, onLoad, onError }: { src: string; onLoad: () => void; onError: () => void }) {
+  return (
+    <div className="flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+      <img
+        src={src}
+        alt="Sarah AI Avatar"
+        fetchPriority="high"
+        width={1254}
+        height={1254}
+        className="h-full w-full max-h-full max-w-full object-contain opacity-100 transition-opacity duration-100"
+        draggable={false}
+        onLoad={onLoad}
+        onError={onError}
+      />
+    </div>
+  );
+}
+
 function ScreenHeader({ icon, title, right }: { icon: React.ReactNode; title: string; right?: React.ReactNode }) {
   return (
     <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex items-center justify-between">
@@ -185,7 +259,13 @@ export function AvatarPanel() {
     avatar_image_url?: string;
     emotion?: string;
     sequence?: number;
-    manifest?: { files?: string[]; base_url?: string; role_map?: Record<string, string> };
+    life_state?: string;
+    heartbeat_count?: number;
+    idle_seconds?: number;
+    night_mode?: boolean;
+    busy?: boolean;
+    diagnostics?: boolean;
+    manifest?: { files?: string[]; base_url?: string; role_map?: Record<string, string>; supports_dynamic_29?: boolean };
   };
 
   const [avatarState, setAvatarState] = useState<LiveAvatarState>({
@@ -219,6 +299,8 @@ export function AvatarPanel() {
   const isDesktopMirror = currentMode === "desktop_mirror";
   const isCallMode = currentMode === "media" && String(avatarState.current_action || "").toLowerCase().includes("call");
   const apiBase = bootstrapData?.env?.api_base || "";
+  const isCompactViewport = useCompactAvatarViewport();
+  const render3DInline = is3DMode && !isCompactViewport;
 
   const normalizeAvatarUrl = (url: string): string => {
     if (!url) return sarahAvatarPng;
@@ -226,17 +308,46 @@ export function AvatarPanel() {
     return joinUrl(apiBase || window.location.origin, url);
   };
 
+  const resolveRoleFile = (role: string, fallback: string): string => {
+    const key = String(role || "").toLowerCase();
+    const roleMap = avatarState.manifest?.role_map || {};
+    const mapped = roleMap[key];
+    return typeof mapped === "string" && mapped.trim() ? mapped : fallback;
+  };
+
   const localRoleFile = useMemo(() => {
     const expression = String(avatarState.expression || avatarState.emotion || "neutral").toLowerCase();
-    if (avatarState.speaking) return frameTick % 2 === 0 ? "07_speaking_soft.png" : "08_speaking_open.png";
-    if (avatarState.listening) return "09_listening_thinking.png";
-    if (expression === "joy" || expression === "happy") return "11_happy_open_smile.png";
-    if (expression === "surprise") return "13_surprised_open_mouth.png";
-    if (expression === "anger" || expression === "angry") return "16_angry_yelling.png";
-    if (expression === "sad" || expression === "sadness") return "05_sad_worried.png";
-    if (expression === "thinking") return "09_listening_thinking.png";
-    return "19_neutral_forward.png";
-  }, [avatarState.speaking, avatarState.listening, avatarState.expression, avatarState.emotion, frameTick]);
+    if (avatarState.speaking) {
+      return frameTick % 2 === 0
+        ? resolveRoleFile("speaking_soft", "07_speaking_soft.png")
+        : resolveRoleFile("speaking_open", "08_speaking_open.png");
+    }
+    if (avatarState.listening) return resolveRoleFile("listening", "09_listening_thinking.png");
+    if (expression === "joy" || expression === "happy") return resolveRoleFile("happy", "11_happy_open_smile.png");
+    if (expression === "surprise") return resolveRoleFile("surprise", "13_surprised_open_mouth.png");
+    if (expression === "anger" || expression === "angry") return resolveRoleFile("angry", "16_angry_yelling.png");
+    if (expression === "sad" || expression === "sadness") return resolveRoleFile("sad", "05_sad_worried.png");
+    if (expression === "thinking") return resolveRoleFile("thinking", "09_listening_thinking.png");
+    if (expression === "sleepy" || expression === "rem_dreaming") return resolveRoleFile("sleepy", "02_sleepy_half_lidded.png");
+    if (expression === "asleep" || expression === "rem_sleep") return resolveRoleFile("asleep", "01_relaxed_closed_eyes.png");
+    if (expression === "very_sleepy" || expression === "exhausted") return resolveRoleFile("very_sleepy", "25_exhausted_sleepy.png");
+    if (expression === "success" || expression === "victory") return resolveRoleFile("success", "26_victory_celebration.png");
+    if (expression === "thumbs_up" || expression === "approval") return resolveRoleFile("thumbs_up", "21_thumbs_up_smile.png");
+    if (expression === "pondering" || expression === "rem_sandbox" || expression === "rem_review") return resolveRoleFile("pondering", "24_pondering_stare.png");
+    if (expression === "wondering" || expression === "planning") return resolveRoleFile("wondering", "28_wondering_planning_stare.png");
+    if (expression === "state_29" || expression === "extra_29" || expression === "random_29") {
+      return resolveRoleFile("state_29", avatarState.current_image || "19_neutral_forward.png");
+    }
+    return resolveRoleFile("neutral", "19_neutral_forward.png");
+  }, [
+    avatarState.speaking,
+    avatarState.listening,
+    avatarState.expression,
+    avatarState.emotion,
+    avatarState.manifest?.role_map,
+    avatarState.current_image,
+    frameTick,
+  ]);
 
   const avatarImageSrc = useMemo(() => {
     if (imageLoadFailed) return sarahAvatarPng;
@@ -307,6 +418,51 @@ export function AvatarPanel() {
   }, [apiBase, avatarState.speaking]);
 
   useEffect(() => {
+    let alive = true;
+    const heartbeatUrl = joinUrl(apiBase || window.location.origin, "/api/avatar/heartbeat");
+
+    const sendHeartbeat = async (payload: Record<string, unknown> = {}) => {
+      try {
+        const res = await fetch(heartbeatUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          cache: "no-store",
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) return;
+        const state = (await res.json()) as Partial<LiveAvatarState>;
+        if (!alive) return;
+        setImageLoadFailed(false);
+        setAvatarState((prev) => ({
+          ...prev,
+          ...state,
+          mode: (state.mode as LocalAvatarState["mode"]) || prev.mode || "avatar_2d",
+          expression: String(state.expression || state.emotion || prev.expression || "neutral"),
+          speaking: Boolean(state.speaking ?? prev.speaking),
+          listening: Boolean(state.listening ?? prev.listening),
+          spec: (state.spec as AvatarSpec) || prev.spec || { renderMode: "procedural_holo" },
+        }));
+      } catch {
+        // Heartbeat is advisory. UI state polling above remains authoritative.
+      }
+    };
+
+    void sendHeartbeat({ event: "boot" });
+    const interval = window.setInterval(() => {
+      if (!avatarState.speaking && !avatarState.listening) {
+        void sendHeartbeat({ touch: false });
+      }
+    }, 2500);
+
+    return () => {
+      alive = false;
+      window.clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [apiBase, avatarState.speaking, avatarState.listening]);
+
+  useEffect(() => {
     if (!avatarState.speaking && !avatarState.listening) return;
     const interval = window.setInterval(() => setFrameTick((v) => v + 1), avatarState.speaking ? 180 : 420);
     return () => window.clearInterval(interval);
@@ -333,7 +489,7 @@ export function AvatarPanel() {
     setAvatarState((p) => ({ ...p, mode }));
 
     try {
-      const state = await postAvatarState({ mode });
+      const state = await postAvatarState({ mode, touch: true });
       setAvatarState((p) => ({ ...p, ...state, mode }));
     } catch {
       try {
@@ -346,12 +502,22 @@ export function AvatarPanel() {
 
   const openFullscreen = () => toast.info("Wire fullscreen to your layout manager when ready.");
   const openExternal = () => toast.info("Wire external view routing when ready.");
-  const statusLabel = avatarState.speaking ? "Speaking" : avatarState.listening ? "Listening" : "Ready";
+  const statusLabel = avatarState.speaking
+    ? "Speaking"
+    : avatarState.listening
+      ? "Listening"
+      : avatarState.busy
+        ? "Busy"
+        : avatarState.diagnostics
+          ? "Diagnostics"
+          : avatarState.life_state
+            ? String(avatarState.life_state).replaceAll("_", " ")
+            : "Ready";
 
   return (
-    <div className="flex h-full min-h-[520px] flex-col overflow-hidden rounded-xl border border-cyan-500/20 bg-slate-950 text-foreground shadow-[0_0_30px_rgba(0,148,255,0.10)]">
+    <div className="flex h-full min-h-0 max-h-[100svh] flex-col overflow-hidden rounded-none border border-cyan-500/20 bg-slate-950 text-foreground shadow-[0_0_30px_rgba(0,148,255,0.10)] sm:rounded-xl md:min-h-[520px]">
       {/* TOP SCREEN: Avatar / Desktop Mirror / Remote Conference Surface */}
-      <section className="relative min-h-[260px] flex-[0_0_54%] overflow-hidden border-b border-cyan-500/15 bg-slate-950">
+      <section className="relative min-h-[210px] flex-[0_0_52%] overflow-hidden border-b border-cyan-500/15 bg-slate-950 sm:min-h-[260px] md:flex-[0_0_54%]">
         <AvatarBackground />
 
         <ScreenHeader
@@ -378,41 +544,43 @@ export function AvatarPanel() {
 
         {!isDesktopMirror && (
           <div className="absolute inset-0 z-10 flex items-center justify-center">
-            {is3DMode ? (
-              <Suspense
+            {render3DInline ? (
+              <AvatarSurfaceBoundary
                 fallback={
-                  <div className="flex h-full items-center justify-center text-muted-foreground">Loading 3D Avatar…</div>
+                  <Avatar2DImageSurface
+                    src={avatarImageSrc}
+                    onLoad={() => setImageLoadFailed(false)}
+                    onError={() => setImageLoadFailed(true)}
+                  />
                 }
               >
-                <Avatar3D
-                  speaking={avatarState.speaking}
-                  listening={avatarState.listening}
-                  expression={avatarState.expression}
-                  spec={avatarState.spec}
-                />
-              </Suspense>
+                <Suspense
+                  fallback={
+                    <div className="flex h-full items-center justify-center text-muted-foreground">Loading 3D Avatar…</div>
+                  }
+                >
+                  <Avatar3D
+                    speaking={avatarState.speaking}
+                    listening={avatarState.listening}
+                    expression={avatarState.expression}
+                    spec={avatarState.spec}
+                  />
+                </Suspense>
+              </AvatarSurfaceBoundary>
             ) : (
-              <div className="flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
-                <img
-                  src={avatarImageSrc}
-                  alt="Sarah AI Avatar"
-                  fetchPriority="high"
-                  width={1254}
-                  height={1254}
-                  className="h-full w-full object-contain opacity-100 transition-opacity duration-100"
-                  draggable={false}
-                  onLoad={() => setImageLoadFailed(false)}
-                  onError={() => setImageLoadFailed(true)}
-                />
-              </div>
+              <Avatar2DImageSurface
+                src={avatarImageSrc}
+                onLoad={() => setImageLoadFailed(false)}
+                onError={() => setImageLoadFailed(true)}
+              />
             )}
           </div>
         )}
 
         {/* Opaque mode controls. Kept inside top screen but locked above all render layers. */}
-        <div className="absolute bottom-3 left-3 right-3 z-40 flex items-center gap-2">
+        <div className="absolute bottom-2 left-2 right-2 z-40 flex flex-wrap items-center gap-2 pb-[env(safe-area-inset-bottom)] sm:bottom-3 sm:left-3 sm:right-3 sm:flex-nowrap sm:pb-0">
           <Select value={currentMode} onValueChange={(v) => handleModeChange(v as LocalAvatarState["mode"])}>
-            <SelectTrigger className="h-10 flex-1 border-cyan-500/40 bg-slate-950 text-sm text-cyan-50 shadow-xl backdrop-blur-none hover:bg-slate-900 focus:ring-2 focus:ring-cyan-500">
+            <SelectTrigger className="h-10 min-w-0 flex-1 border-cyan-500/40 bg-slate-950 text-sm text-cyan-50 shadow-xl backdrop-blur-none hover:bg-slate-900 focus:ring-2 focus:ring-cyan-500">
               <SelectValue />
             </SelectTrigger>
             <SelectContent
@@ -431,6 +599,12 @@ export function AvatarPanel() {
               ))}
             </SelectContent>
           </Select>
+
+          {is3DMode && isCompactViewport && (
+            <div className="basis-full rounded-md border border-cyan-500/20 bg-slate-950/95 px-2 py-1 text-[11px] text-cyan-100 sm:hidden">
+              Mobile vertical view is using the stable 2D surface. Switch to landscape/desktop for inline 3D.
+            </div>
+          )}
 
           <Button
             variant="ghost"
@@ -452,7 +626,7 @@ export function AvatarPanel() {
       </section>
 
       {/* BOTTOM SCREEN: Local Webcam / Local Vision / User Conference Surface */}
-      <section className="relative min-h-[220px] flex-1 overflow-hidden bg-slate-950/95">
+      <section className="relative min-h-[180px] flex-1 overflow-hidden bg-slate-950/95 sm:min-h-[220px]">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(0,212,255,0.10),transparent_55%)]" />
         <ScreenHeader
           icon={<Camera className="h-3.5 w-3.5" />}

@@ -96,6 +96,10 @@ function buildFollowUpPrompt(
 ) {
   const a = (action || "").trim();
 
+  if (isControlledRepairFollowUp(a)) {
+    return normalizeControlledRepairFollowUp(a);
+  }
+
   const question = (priorUserPrompt || "").trim();
   const answer = (priorAssistantAnswer || "").trim();
 
@@ -118,6 +122,74 @@ function buildFollowUpPrompt(
   // Fallback if we cannot locate context
   return a;
 }
+
+
+const CONTROLLED_REPAIR_FOLLOWUPS = new Set([
+  "accept fix",
+  "accept",
+  "approve fix",
+  "reject fix",
+  "reject",
+  "yes",
+  "yes satisfied",
+  "no",
+  "no rollback",
+  "no - rollback",
+  "rollback",
+]);
+
+function normalizeControlledRepairFollowUp(action: string): string {
+  const normalized = (action || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+  switch (normalized) {
+    case "accept":
+    case "approve fix":
+    case "accept fix":
+      return "ACCEPT FIX";
+    case "reject":
+    case "reject fix":
+      return "REJECT FIX";
+    case "yes":
+    case "yes satisfied":
+      return "YES";
+    case "no":
+    case "no rollback":
+    case "no - rollback":
+    case "rollback":
+      return "NO - ROLLBACK";
+    default:
+      return action.trim();
+  }
+}
+
+function isControlledRepairFollowUp(action: string): boolean {
+  const normalized = (action || "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+
+  return CONTROLLED_REPAIR_FOLLOWUPS.has(normalized);
+}
+
+function followUpButtonClassName(action: string): string {
+  const normalized = normalizeControlledRepairFollowUp(action).toLowerCase();
+
+  if (normalized === "accept fix" || normalized === "yes") {
+    return "h-8 bg-emerald-500/20 border border-emerald-400/40 text-emerald-100 hover:bg-emerald-500/30";
+  }
+
+  if (normalized === "reject fix" || normalized === "no - rollback") {
+    return "h-8 bg-red-500/20 border border-red-400/40 text-red-100 hover:bg-red-500/30";
+  }
+
+  return "h-8 bg-white/5 border border-white/10 text-white/80 hover:bg-white/10";
+}
+
 
 // ------------------------------
 // Component
@@ -295,19 +367,23 @@ export function ChatMessage({ message, onSendFollowUp }: Props) {
               {/* Follow-ups */}
               {suggestionsToShow.length > 0 && (
                 <div className="flex flex-wrap gap-2 ml-auto">
-                  {suggestionsToShow.slice(0, 6).map((t) => (
-                    <Button
-                      key={t}
-                      variant="secondary"
-                      size="sm"
-                      className="h-8 bg-white/5 border border-white/10 text-white/80 hover:bg-white/10"
-                      onClick={() => handleFollowUp(t)}
-                      title={`Follow-up: ${t}`}
-                    >
-                      <CornerDownRight className="h-3.5 w-3.5 mr-2 opacity-70" />
-                      {t}
-                    </Button>
-                  ))}
+                  {suggestionsToShow.slice(0, 6).map((t) => {
+                    const label = isControlledRepairFollowUp(t) ? normalizeControlledRepairFollowUp(t) : t;
+
+                    return (
+                      <Button
+                        key={t}
+                        variant="secondary"
+                        size="sm"
+                        className={followUpButtonClassName(t)}
+                        onClick={() => handleFollowUp(label)}
+                        title={`Follow-up: ${label}`}
+                      >
+                        <CornerDownRight className="h-3.5 w-3.5 mr-2 opacity-70" />
+                        {label}
+                      </Button>
+                    );
+                  })}
                 </div>
               )}
             </div>

@@ -59,7 +59,7 @@ function AudioPreview({ url, base64, onClose }: { url?: string; base64?: string;
   };
 
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center bg-background/90 z-20">
+    <div className="absolute inset-0 z-20 flex flex-col items-center justify-center overflow-hidden bg-background/90 p-3">
       <audio
         ref={audioRef}
         onEnded={() => setIsPlaying(false)}
@@ -93,7 +93,7 @@ function ImagePreview({ url, base64, onClose }: { url?: string; base64?: string;
   const imgSrc = url ? normalizeMediaUrl(url) : base64 ? `data:image/png;base64,${base64}` : null;
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-20">
+    <div className="absolute inset-0 z-20 flex items-center justify-center overflow-hidden bg-background/90 p-3">
       {imgSrc ? (
         <img src={imgSrc} alt="Preview" className="max-w-full max-h-full object-contain" />
       ) : (
@@ -119,7 +119,7 @@ function VideoPreview({ url, onClose }: { url?: string; onClose: () => void }) {
   const videoSrc = normalizeMediaUrl(url);
 
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-background z-20">
+    <div className="absolute inset-0 z-20 flex items-center justify-center overflow-hidden bg-background p-3">
       {videoSrc ? (
         <video
           src={videoSrc}
@@ -211,7 +211,7 @@ export function PreviewSurface() {
 
   // Render based on current preview type
   return (
-    <div className="relative h-full min-h-0 w-full">
+    <div className="relative h-full min-h-0 w-full overflow-hidden">
       {/* Base layer: Always render AvatarPanel as the foundation */}
       <AvatarPanel />
 

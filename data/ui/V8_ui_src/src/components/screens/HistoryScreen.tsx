@@ -28,6 +28,7 @@ interface CachedConversationMessages {
 
 const HISTORY_CACHE_KEY = "sarahmemory:conversation-history:index";
 const HISTORY_MESSAGES_CACHE_KEY = "sarahmemory:conversation-history:messages";
+const HISTORY_PENDING_KEY = "sarahmemory:panel:pending:history";
 
 /**
  * History Screen - Chat history with date search
@@ -379,43 +380,73 @@ export function HistoryScreen() {
     ]
   );
 
+  const applyHistoryAction = useCallback(
+    (action: any) => {
+      const type = String(action?.type || "").trim().toLowerCase().replace(/\./g, "_");
+      const payload = action?.payload || {};
+
+      if (type === "navigate" || type === "set_screen" || type === "nav_set_screen") {
+        const screen = payload?.screen || payload?.route || payload?.app;
+        if (typeof screen === "string" && screen) {
+          const s = screen.replace(/^\//, "");
+          if (s) setCurrentScreen(s as any);
+        }
+        return;
+      }
+
+      if (type === "history_refresh") {
+        void fetchConversations();
+        return;
+      }
+
+      if (type === "history_search_date") {
+        const date = String(payload?.date || payload?.value || "").trim();
+        if (date) setSearchDate(date);
+        return;
+      }
+
+      if (type === "history_open" && payload?.id) {
+        const target = displayConversations.find((c) => c.id === payload.id);
+        if (target) void handleLoadConversation(target);
+      }
+    },
+    [displayConversations, fetchConversations, handleLoadConversation, setCurrentScreen]
+  );
+
+  const flushPendingHistoryActions = useCallback(() => {
+    try {
+      const raw = window.sessionStorage.getItem(HISTORY_PENDING_KEY);
+      if (!raw) return;
+      window.sessionStorage.removeItem(HISTORY_PENDING_KEY);
+      const actions = JSON.parse(raw);
+      if (Array.isArray(actions)) actions.forEach((a) => applyHistoryAction(a));
+    } catch {
+      // ignore invalid pending action payloads
+    }
+  }, [applyHistoryAction]);
+
   // ---------------------------------------------------------------------------
-  // SarahMemory UI Control Bus listener (Chat-driven automation)
+  // SarahMemory UI Control Bus listener (Chat/REM-driven automation)
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const handler = (ev: any) => {
       const actions = ev?.detail?.actions || [];
       if (!Array.isArray(actions) || actions.length === 0) return;
-
-      for (const a of actions) {
-        if (!a || !a.type) continue;
-
-        try {
-          if (a.type === "navigate" || a.type === "set_screen") {
-            const screen = a.payload?.screen || a.payload?.route;
-            if (typeof screen === "string" && screen) {
-              const s = screen.replace(/^\//, "");
-              if (s) setCurrentScreen(s as any);
-            }
-          }
-
-          if (a.type === "history_refresh") {
-            void fetchConversations();
-          }
-
-          if (a.type === "history_open" && a.payload?.id) {
-            const target = displayConversations.find((c) => c.id === a.payload.id);
-            if (target) void handleLoadConversation(target);
-          }
-        } catch (e) {
-          console.warn("[HistoryScreen] UI action failed:", a, e);
-        }
-      }
+      actions.forEach((a) => applyHistoryAction(a));
     };
 
     window.addEventListener("sarah:ui", handler as any);
-    return () => window.removeEventListener("sarah:ui", handler as any);
-  }, [displayConversations, fetchConversations, handleLoadConversation, setCurrentScreen]);
+    window.addEventListener("sarah:history", handler as any);
+    window.addEventListener("focus", flushPendingHistoryActions);
+    flushPendingHistoryActions();
+
+    return () => {
+      window.removeEventListener("sarah:ui", handler as any);
+      window.removeEventListener("sarah:history", handler as any);
+      window.removeEventListener("focus", flushPendingHistoryActions);
+    };
+  }, [applyHistoryAction, flushPendingHistoryActions]);
+
 
   return (
     <div className="flex flex-col h-full bg-background">

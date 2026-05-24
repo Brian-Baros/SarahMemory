@@ -108,6 +108,7 @@ export default function TerminalScreen() {
   const [isRunning, setIsRunning] = useState(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
   const [statusText, setStatusText] = useState("Terminal bridge ready.");
+  const [devBridgeGate, setDevBridgeGate] = useState<any>(null);
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
   const [commandHistory, setCommandHistory] = useState<string[]>(() =>
@@ -354,8 +355,12 @@ export default function TerminalScreen() {
 
   const checkBackend = useCallback(async () => {
     setStatusText("Checking terminal bridge...");
+    const devBridge = await tryBackendCall("/api/devbridge/status");
+    if (devBridge) setDevBridgeGate((devBridge as any)?.apply_gate || null);
+
     const response =
       (await tryBackendCall("/api/terminal/status")) ||
+      devBridge ||
       (await tryBackendCall("/api/health")) ||
       (await tryBackendCall("/api/ui/bootstrap"));
 
@@ -471,7 +476,7 @@ export default function TerminalScreen() {
                   <Shield className="h-3.5 w-3.5" />
                   Developer Mode
                 </span>
-                <span className="text-foreground font-medium">Enabled</span>
+                <span className="text-foreground font-medium">{devBridgeGate?.developer_mode ? "Backend gated" : "UI gated"}</span>
               </div>
 
               <div className="flex items-center justify-between rounded-lg border border-border bg-background/50 px-3 py-2">
@@ -546,7 +551,7 @@ export default function TerminalScreen() {
             </div>
 
             <p className="text-[11px] text-muted-foreground mt-2">
-              Built-in: <span className="font-mono">/screen</span>, <span className="font-mono">/refresh</span>, <span className="font-mono">/help</span>, <span className="font-mono">/clear</span>
+              Built-in: <span className="font-mono">/screen</span>, <span className="font-mono">/refresh</span>, <span className="font-mono">/help</span>, <span className="font-mono">/clear</span>. Raw OS execution remains backend-governed.
             </p>
           </div>
 

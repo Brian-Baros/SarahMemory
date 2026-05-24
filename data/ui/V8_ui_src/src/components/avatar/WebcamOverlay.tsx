@@ -3,11 +3,39 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Camera, EyeOff, Eye, AlertTriangle } from "lucide-react";
 
+type VisionPolicy = {
+  enabled?: boolean;
+  accept_frontend_frames?: boolean;
+  backend_controls_fps?: boolean;
+  max_fps?: number;
+  max_width?: number;
+  max_height?: number;
+  jpeg_quality?: number;
+  frame_ttl_seconds?: number;
+};
+
+const DEFAULT_VISION_POLICY: Required<Pick<VisionPolicy, "enabled" | "accept_frontend_frames" | "backend_controls_fps" | "max_fps" | "max_width" | "max_height" | "jpeg_quality">> = {
+  enabled: true,
+  accept_frontend_frames: true,
+  backend_controls_fps: true,
+  max_fps: 2,
+  max_width: 640,
+  max_height: 360,
+  jpeg_quality: 0.7,
+};
+
+function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? value : Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
+}
+
 /**
  * WebcamOverlay:
+ * - Frontend authority: camera ON/OFF, show/hide preview, and user submit only.
+ * - Backend authority: whether frames are accepted, max FPS, frame dimensions, learning policy.
  * - overlay layout: legacy corner camera overlay
  * - inline layout: full bottom-screen camera/vision pane for AvatarPanel dual-screen mode
- * - streams low-FPS frames to /api/vision/frame when streamToBackend is enabled
  */
 export function WebcamOverlay({
   enabled,
@@ -21,7 +49,9 @@ export function WebcamOverlay({
   enabled: boolean;
   visible: boolean;
   onToggleVisible: () => void;
+  /** Legacy prop retained for compatibility. Backend policy is authoritative. */
   streamToBackend?: boolean;
+  /** Legacy prop retained for compatibility. Backend policy max_fps is authoritative. */
   maxFps?: number;
   layout?: "overlay" | "inline";
   className?: string;
@@ -31,9 +61,39 @@ export function WebcamOverlay({
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [policy, setPolicy] = useState<VisionPolicy>(DEFAULT_VISION_POLICY);
 
   const isInline = layout === "inline";
-  const canStream = enabled && visible && streamToBackend;
+  const backendAcceptsFrames = policy.enabled !== false && policy.accept_frontend_frames !== false;
+  const canStream = enabled && visible && backendAcceptsFrames && streamToBackend;
+  const backendMaxFps = clampNumber(policy.max_fps, DEFAULT_VISION_POLICY.max_fps, 0.25, 10);
+  const effectiveMaxFps = policy.backend_controls_fps === false ? clampNumber(maxFps, DEFAULT_VISION_POLICY.max_fps, 0.25, 10) : backendMaxFps;
+  const targetWidth = Math.round(clampNumber(policy.max_width, DEFAULT_VISION_POLICY.max_width, 160, 1280));
+  const targetHeight = Math.round(clampNumber(policy.max_height, DEFAULT_VISION_POLICY.max_height, 90, 720));
+  const jpegQuality = clampNumber(policy.jpeg_quality, DEFAULT_VISION_POLICY.jpeg_quality, 0.35, 0.92);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadPolicy = async () => {
+      try {
+        const res = await fetch("/api/vision/policy", { credentials: "include" });
+        if (!res.ok) return;
+        const data = await res.json();
+        const next = data?.policy && typeof data.policy === "object" ? data.policy : data;
+        if (!cancelled && next && typeof next === "object") {
+          setPolicy({ ...DEFAULT_VISION_POLICY, ...next });
+        }
+      } catch {
+        // Policy endpoint is optional during transition; local defaults remain safe.
+      }
+    };
+    void loadPolicy();
+    const timer = window.setInterval(loadPolicy, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     let stream: MediaStream | null = null;
@@ -47,7 +107,7 @@ export function WebcamOverlay({
 
       try {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 360 }, facingMode: "user" },
+          video: { width: { ideal: targetWidth }, height: { ideal: targetHeight }, facingMode: "user" },
           audio: false,
         });
 
@@ -73,7 +133,7 @@ export function WebcamOverlay({
       cancelled = true;
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
-  }, [enabled]);
+  }, [enabled, targetWidth, targetHeight]);
 
   useEffect(() => {
     if (!canStream) return;
@@ -86,7 +146,7 @@ export function WebcamOverlay({
       raf = requestAnimationFrame(loop);
 
       const now = performance.now();
-      const minInterval = 1000 / Math.max(1, maxFps);
+      const minInterval = 1000 / Math.max(0.25, effectiveMaxFps);
       if (now - lastSent < minInterval) return;
       if (sending) return;
 
@@ -98,26 +158,44 @@ export function WebcamOverlay({
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      const w = 320;
-      const h = 180;
+      const sourceRatio = video.videoWidth / Math.max(1, video.videoHeight);
+      const policyRatio = targetWidth / Math.max(1, targetHeight);
+      let w = targetWidth;
+      let h = targetHeight;
+      if (Math.abs(sourceRatio - policyRatio) > 0.05) {
+        h = Math.round(w / sourceRatio);
+        if (h > targetHeight) {
+          h = targetHeight;
+          w = Math.round(h * sourceRatio);
+        }
+      }
+
       canvas.width = w;
       canvas.height = h;
       ctx.drawImage(video, 0, 0, w, h);
 
-      const dataUrl = canvas.toDataURL("image/jpeg", 0.7);
+      const dataUrl = canvas.toDataURL("image/jpeg", jpegQuality);
       lastSent = now;
       sending = true;
 
-      void fetch("/api/vision/frame", {
+      void fetch("/api/vision/frame/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           imageBase64: dataUrl,
+          data_url: dataUrl,
           source: "webcam_overlay",
+          analyze: false,
+          question: "VR HUD observation pass",
           width: w,
           height: h,
           mime: "image/jpeg",
+          backendPolicy: {
+            max_fps: effectiveMaxFps,
+            max_width: targetWidth,
+            max_height: targetHeight,
+          },
           ts: Date.now(),
         }),
       })
@@ -131,7 +209,7 @@ export function WebcamOverlay({
 
     raf = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf);
-  }, [canStream, maxFps, ready]);
+  }, [canStream, effectiveMaxFps, ready, targetWidth, targetHeight, jpegQuality]);
 
   if (!enabled) return null;
 
@@ -154,6 +232,11 @@ export function WebcamOverlay({
                 {!ready && (
                   <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                     Starting camera…
+                  </div>
+                )}
+                {ready && !backendAcceptsFrames && (
+                  <div className="absolute bottom-2 left-2 rounded bg-background/70 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur">
+                    Backend frame ingest off
                   </div>
                 )}
               </>
@@ -210,6 +293,11 @@ export function WebcamOverlay({
                 {!ready && (
                   <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">
                     Starting camera…
+                  </div>
+                )}
+                {ready && !backendAcceptsFrames && (
+                  <div className="absolute bottom-1 left-1 rounded bg-background/70 px-1.5 py-0.5 text-[9px] text-muted-foreground backdrop-blur">
+                    ingest off
                   </div>
                 )}
               </>
