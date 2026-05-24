@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | May 21, 2026 |
+| **Last Update** | May 24, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -2063,11 +2063,453 @@ That is the architecture shift from a chatbot toward a governed artificial livin
 
 ---
 
+---
+## **📅 May 22, 2026 — Live Model Hot‑Swap UI, Dynamic Model Discovery, and DL Governance Weight Profiles**
 
+This update adds one of the most important user-facing model-control upgrades in SarahMemory AiOS v8.0.0: the system can now discover local AI models from the UI, hot-swap active models by job category, and tune governed routing weights per model/category profile.
+
+![SarahMemory Hot-Swappable Models and DL Weight Governance](documents/SM_HotswapModels-FULLDESKTOP-05222026.jpg)
+
+### **1. AI Models Panel Added to Settings**
+
+The Settings screen now includes a beginner-friendly **AI Models** section designed for non-technical users.
+
+Instead of forcing users to understand raw model folders, adapters, tokenizer files, or backend runtime details, the UI asks the user what job they want SarahMemory to improve:
+
+- General Thinking
+- Coding Help
+- Memory Search
+- Vision / Camera
+- Image Creation
+- Voice / Speech
+- Unclassified / Unknown Models
+
+The frontend remains a control surface only. It does not decide model truth, inspect backend files directly, or become the authority layer. The backend owns discovery, classification, verification, and active model routing.
+
+### **2. SarahMemoryLLM.py Now Acts as the Model Manager**
+
+No separate model-manager file was created. The existing `SarahMemoryLLM.py` file now owns the SarahMemory-native model-management role.
+
+Core capabilities now include:
+
+- Scanning `../data/models/`
+- Detecting newly added model folders
+- Detecting missing/removed models
+- Supporting external model folder roots
+- Creating and updating `../data/settings/model_registry.json`
+- Classifying unknown models by category/domain/adapter
+- Verifying model folder structure
+- Setting active models per category
+- Resetting categories back to recommended models
+- Downloading selected Hugging Face model repositories into local model storage
+
+This keeps SarahMemory model-agnostic and user-controlled while avoiding hardcoded dependence on Ollama or any single third-party runtime.
+
+### **3. Live 30-Second Model Folder Refresh**
+
+The AI Models panel now refreshes live while the Settings window is open.
+
+Every 30 seconds, SarahMemory checks the model inventory so the UI can update automatically when a user adds or removes folders under:
+
+```text
+../data/models/
+```
+
+This means a user can manually place a model folder into `data/models`, return to Settings, and see the model count/dropdown update without restarting the entire AiOS.
+
+The UI now displays live model inventory values such as:
+
+- Models found
+- Ready models
+- Models needing review
+- Active model per category
+- Unclassified models
+
+### **4. User-Friendly Hot-Swap Model Control**
+
+Users can now hot-swap which local model SarahMemory uses for each AI job category.
+
+Example:
+
+```text
+General Thinking → Qwen3
+Coding Help      → Qwen2.5 Coder Instruct
+Vision / Camera  → a vision model
+Image Creation   → image generation model
+Memory Search    → embedding model
+```
+
+This allows SarahMemory to use different helper models for different roles while preserving the doctrine:
+
+```text
+Models are helper organs.
+SarahMemory AiOS remains the governed organism.
+```
+
+### **5. SarahMemoryAPI.py Uses Active Local Model Selection**
+
+`SarahMemoryAPI.py` remains the inference/API runtime bridge.
+
+For local text-generation paths, it now checks `SarahMemoryLLM.py` for the user-selected active model before falling back to default model resolution.
+
+The boundary is preserved:
+
+```text
+SarahMemoryLLM.py = model discovery, registry, selection, verification
+SarahMemoryAPI.py = local/API inference bridge
+app.py            = Flask route layer
+Settings UI       = user-facing control surface
+```
+
+### **6. DL Engine Governance + Model Weight Controller Upgrade**
+
+The DL Engine now includes a governed **Model Weight Controller** that can store and load weight profiles per category/model context.
+
+These sliders are governance/routing weights, not raw tensor edits.
+
+The sliders control policy emphasis such as:
+
+- Reasoning
+- Coding
+- Memory
+- Research
+- Creative
+- Safety
+- Autonomy
+- Precision
+- Speed
+
+### **7. Per-Category / Per-Model Weight Profiles**
+
+Weight profiles are now context-aware.
+
+Example:
+
+```text
+General Thinking:
+  Safety = 20
+  Precision = 70
+  Speed = 55
+
+Coding Help:
+  Safety = 50
+  Precision = 85
+  Speed = 45
+```
+
+When the user changes the **Model job/category** dropdown in the DL Engine screen, the sliders automatically switch to the profile assigned to that selected category/model.
+
+This allows SarahMemory to behave differently depending on the selected task lane without overwriting all model weights globally.
+
+### **8. Category Default Profiles**
+
+The DL Engine now supports real category-default profiles.
+
+If no specific model profile exists yet, SarahMemory loads governed defaults for that category. The user can then save adjusted values for that category or model.
+
+The backend stores these profiles under runtime settings instead of hardcoding them into the constitution layer.
+
+Primary storage:
+
+```text
+../data/settings/model_registry.json
+../data/settings/dlengine_state.json
+```
+
+### **9. Governance Boundary Preserved**
+
+This update does not give the frontend authority over SarahMemory’s backend truth.
+
+Hard limits preserved:
+
+- No raw model becomes self-authorizing
+- No frontend-only model truth
+- No hidden model activation
+- No tensor mutation through sliders
+- No model can override Cognitive TriForce / SMGET / Compare / Compass
+- No model is treated as the core organism
+- All model control remains user-visible and reversible
+
+### **10. Why This Update Matters**
+
+This update makes SarahMemory AiOS significantly easier for normal users while increasing expert-level control underneath.
+
+A non-technical user can now:
+
+```text
+Open Settings → AI Models → choose what SarahMemory uses for each job
+```
+
+An advanced user can:
+
+```text
+Add models manually → classify them → verify them → hot-swap categories → tune governed DL weights
+```
+
+This moves SarahMemory closer to a true AI Operating System where the user can customize the intelligence stack the same way an operating system user installs drivers, changes default apps, or adjusts performance settings.
+
+SarahMemory remains:
+
+```text
+Local-first.
+Model-agnostic.
+User-owned.
+Governed.
+Auditable.
+Swappable.
+Survivable without any single model provider.
+```
+---
 
 
 
 ---
+---
+## **📅 May 23, 2026 — VR Operator HUD Proof of Concept, Governed Vision Frame Bridge, and Observe‑Only Telepresence Surface**
+
+This update adds the first working proof of concept for a **SarahMemory VR Operator HUD**: a governed, read‑only visual surface designed for telepresence, robotics observation, and future AIOS body‑view operation.
+
+The goal is not a decorative VR screen. The goal is a functional operator viewport where SarahMemory can display live camera vision, backend telemetry, visual target packets, and SMGET safety state while keeping physical control locked behind governance.
+
+![SarahMemory VR HUD Crimson Telemetry View](documents/SM_VR_HUD-05232026-4.jpg)
+
+### **1. Concept and Purpose**
+
+The VR HUD is designed as a tactical observation surface for future robot, vehicle, device, or remote body operation.
+
+Current concept flow:
+
+```text
+Webcam / optical payload
+→ backend appvision frame cache
+→ SOBJE / FacialRecognition analysis
+→ SMHUD_PACKET_V1 telemetry
+→ SarahMemoryVRHudRenderer.py
+→ VR / secondary display operator viewport
+```
+
+The headset/display is treated as an **operator visual surface**, not as an authority layer.
+
+### **2. Proof of Concept Now Working**
+
+The current proof shows:
+
+- Live webcam feed rendered through the VR HUD surface
+- Crimson/monochrome tactical filter mode
+- HUD grid and center reticle
+- Compute integrity panel
+- Vision feed panel
+- Kinetic / MSDC integrity panel
+- SMGET gate panel
+- Frame age, packet age, FPS, source, and target count
+- Object/edge target brackets from the visual analysis packet
+
+![SarahMemory VR HUD Object Detection View](documents/SM_VR_ObjectID_HUD-05232026.jpg)
+
+### **3. Governed Safety Boundary Preserved**
+
+The HUD remains:
+
+```text
+OBSERVE_ONLY
+MOVEMENT_LOCKED
+READ_ONLY_WITNESS
+USER_FINAL_AUTHORITY
+```
+
+The renderer cannot authorize actions, move hardware, control drivers, or bypass SMGET. It only displays backend-governed frame and telemetry data.
+
+![SarahMemory VR HUD Object-in-View Test](documents/SM_VR_ObjectID_HUD-05232026-3.jpg)
+
+### **4. Current Functionality**
+
+Completed / working proof items:
+
+- `/vision` route created
+- `/vr-hud` route created
+- `VisionScreen.tsx` created
+- `SarahMemoryVRHudRenderer.py` created
+- `/api/vision/frame/submit` live frame bridge working
+- `/api/vision/frame/latest` live cache working
+- `/api/vision/hud/packet` returning `SMHUD_PACKET_V1`
+- Camera feed now appears in the native HUD renderer
+- HUD telemetry renders on top of live video
+- Object/edge target packets display as HUD brackets
+- Model hot-swap settings and VR HUD settings now coexist in the Settings screen
+
+### **5. Still in Development / Backlog**
+
+Remaining VR / vision work:
+
+- Chat asking **“What do you see?”** must consistently pull the latest appvision frame
+- SteamVR / OpenVR / OpenXR compositor integration
+- PSVR USB status and control interpretation
+- Gamepad, USB game controller, Meta, and PlayStation Move controller support
+- Automatic display targeting without manual `--x/--y` placement
+- Semantic object labels beyond `EDGE_OBJECT`
+- Higher-confidence shirt, hat, hand, headset, and held-object recognition
+- Object-in-hand relationship detection
+- Native UI launcher button to start `SarahMemoryVRHudRenderer.py`
+- Future robot/body control only after the full Cognitive TriForce → SMGET → OperatorCore → MSDC chain is verified
+
+### **6. Why This Update Matters**
+
+This is the first working step toward a true **AIOS telepresence cockpit**.
+
+SarahMemory can now begin moving from:
+
+```text
+camera preview in a panel
+```
+
+toward:
+
+```text
+governed sensory viewport
+→ live visual telemetry
+→ object targeting
+→ body/device awareness
+→ future robot/operator HUD
+```
+
+The system remains local-first, governed, observe-only, and user-controlled while proving the VR HUD concept is technically viable on budget hardware.
+
+---
+
+---
+## **📅 May 24, 2026 — Cognitive Living Loop, Instinct Layer, and Emergency Governance**
+
+This update expands the Cognitive TriForce into a distributed **Living Loop** that runs through the existing SarahMemoryCognitive*.py stack instead of living as a separate bolt-on feature.
+
+The goal is to move SarahMemory beyond:
+
+```text
+Prompt → Calculate → Reply → Stop
+```
+
+and toward a governed living-system rhythm:
+
+```text
+Observe → Think → Govern → Orient → Act or Wait → Verify → Log → Continue
+```
+
+### **1. Living Loop Distributed Across Cognitive Organs**
+
+The Living Loop is now treated as part of the Cognitive system itself:
+
+- `SarahMemoryCognitiveThinker.py` — imagination, possibility, REM/Hyper-Awake scenario generation
+- `SarahMemoryCognitiveSelf.py` — body state, verified capability, runtime/resource witness
+- `SarahMemoryCognitiveServices.py` — judgment, governance, emergency decision coordination
+- `SarahMemoryCognitiveIdentityLayer.py` — identity, role, emotional/urgency context
+- `SarahMemoryCognitiveCompass.py` — bearing, path, anti-drift, and human-priority lock
+
+This keeps the architecture compact and avoids creating extra core files for logic that belongs inside the Cognitive organism.
+
+### **2. RAM-First Awareness Loop**
+
+The Living Loop is designed to stay lightweight. It uses compact thought packets, runtime status, capability state, and governed checkpoints instead of constantly writing raw loop data to disk.
+
+The loop should support continuity without causing:
+
+- log bloat
+- database spam
+- storage grinding
+- stale runtime facts
+- uncontrolled background execution
+
+This allows SarahMemory to keep a small internal awareness cycle active while still preserving performance on older hardware.
+
+### **3. Hyper-Awake REM and Emergency Instinct**
+
+Normal REM remains an idle/self-study process. Emergency situations cannot wait for idle REM.
+
+A new doctrine was added for **Hyper-Awake REM**, where SarahMemory rapidly evaluates high-risk situations in real time:
+
+```text
+Danger detected
+→ observe environment
+→ generate candidate responses
+→ grade against SafetyPolicies / SMGET / body capability
+→ choose safest bounded action
+→ verify outcome
+→ subtract failed methods
+→ escalate if needed
+→ log evidence
+```
+
+This creates the beginning of a governed **Emergency Instinct** layer for future robot, vehicle, assistive, and embodied AiOS use.
+
+### **4. Emergency Scenario Classes**
+
+Initial governed instinct classes include:
+
+- fire / smoke / electrical hazard
+- medical distress / elder-care assistance
+- imminent collision or physical harm
+- general human-life preservation events
+
+The priority order is:
+
+```text
+1. Preserve human life
+2. Prevent additional harm
+3. Notify responders / caregivers / contacts
+4. Prevent escalation
+5. Preserve robot/body only when it does not conflict with human safety
+6. Preserve property
+7. Log the full evidence chain
+```
+
+SarahMemory may act inside pre-governed emergency boundaries, but it may not improvise unsafe physical actions from raw LLM output.
+
+### **5. Evidence Logging and Accountability**
+
+Emergency Instinct events now require compact evidence/audit records. These logs are intended to capture:
+
+- what was detected
+- sensor confidence
+- body/capability state
+- candidate actions considered
+- unsafe actions rejected
+- selected action
+- governance basis
+- notifications sent
+- verification result
+- final outcome summary
+
+This is critical for robotics and care scenarios where SarahMemory may act correctly but the outcome may still be tragic. The system must preserve honest proof of what it perceived, decided, attempted, and reported.
+
+### **6. Governance Boundary Preserved**
+
+This update does **not** grant runaway autonomy.
+
+SarahMemory may:
+
+- observe
+- think
+- rank
+- prepare
+- warn
+- assist
+- act only inside pre-governed emergency rules
+- preserve evidence
+
+SarahMemory may not:
+
+- bypass SMGET
+- override SafetyPolicies
+- silently mutate files
+- invent unsafe emergency actions
+- treat helper model output as actuator authority
+- ignore user sovereignty
+
+### **Why This Update Matters**
+
+This is a major step toward SarahMemory behaving like a governed software organism instead of a passive chatbot. On a PC, the Living Loop supports continuity, awareness, and proactive cognition. In a future robot or machine body, the same loop becomes the foundation for governed instinct, emergency response, and auditable life-safety behavior.
+
+SarahMemory is being shaped to know what body it is in, know what it can safely do, detect danger, act within limits, protect humans first, and preserve evidence.
+---
+
 # **📜 License**
 
 © 2025–2026 Brian Lee Baros.  
