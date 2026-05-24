@@ -119,98 +119,6 @@ export interface ThemeOption {
   preview?: string;
 }
 
-export interface ModelManagerCategory {
-  id: string;
-  label: string;
-}
-
-export interface ModelManagerModel {
-  id: string;
-  display_name?: string;
-  simple_label?: string;
-  repo?: string;
-  path?: string;
-  source?: string;
-  category?: string;
-  category_label?: string;
-  detected_category?: string;
-  domain?: string;
-  domain_label?: string;
-  adapter_type?: string;
-  status?: string;
-  status_label?: string;
-  installed?: boolean;
-  verified?: boolean;
-  missing?: boolean;
-  is_active?: boolean;
-  can_activate?: boolean;
-  size_gb?: number;
-  known_repo?: boolean;
-  user_classified?: boolean;
-}
-
-export interface ModelManagerStatus {
-  ok: boolean;
-  version?: string;
-  registry_path?: string;
-  models_dir?: string;
-  external_roots?: string[];
-  categories?: ModelManagerCategory[];
-  domains?: ModelManagerCategory[];
-  adapter_types?: string[];
-  models?: ModelManagerModel[];
-  groups?: Record<string, ModelManagerModel[]>;
-  active_models?: Record<string, string>;
-  active_records?: Record<string, ModelManagerModel>;
-  hardware?: Record<string, unknown>;
-  live_scan_interval_sec?: number;
-  recommended_poll_interval_sec?: number;
-  model_count?: number;
-  ready_count?: number;
-  missing_count?: number;
-  unclassified_count?: number;
-  active_count?: number;
-  scan?: {
-    started_at?: string;
-    completed_at?: string;
-    live_interval_sec?: number;
-    model_count?: number;
-    ready_count?: number;
-    missing_count?: number;
-    unclassified_count?: number;
-    active_count?: number;
-    new_model_ids?: string[];
-    removed_model_ids?: string[];
-    source?: string;
-  };
-  updated_at?: string;
-  error?: string;
-}
-
-export interface DlEngineModelWeights {
-  reasoning: number;
-  coding: number;
-  memory: number;
-  research: number;
-  creativity: number;
-  safety: number;
-  autonomy: number;
-  precision: number;
-  speed: number;
-}
-
-export interface DlEngineWeightProfileResponse {
-  ok: boolean;
-  category?: string;
-  model_id?: string;
-  context?: Record<string, unknown>;
-  profile?: Record<string, unknown>;
-  weights?: DlEngineModelWeights;
-  raw_tensor_edit?: boolean;
-  note?: string;
-  error?: string;
-}
-
 export interface MediaResponse {
   success: boolean;
   results?: MediaResult[];
@@ -278,6 +186,79 @@ export interface HealthResponse {
   version: string;
   ts: number;
   notes: string[];
+}
+
+
+export interface VisionHudTarget {
+  id?: string;
+  class?: string;
+  label?: string;
+  bbox?: number[];
+  bbox_px?: number[];
+  center?: number[];
+  confidence?: number;
+  vectors?: { dx?: number; dy?: number; dz_est?: number | string | null };
+  motion?: { angular_velocity?: number; velocity_px_s?: number[] };
+  color?: Record<string, unknown> | null;
+  model?: string;
+}
+
+export interface VisionHudPacket {
+  schema?: string;
+  packet_id?: string;
+  timestamp?: string;
+  ttl_ms?: number;
+  mode?: string;
+  display_profile?: string;
+  frame?: Record<string, any>;
+  active_targets?: VisionHudTarget[];
+  vision?: Record<string, any>;
+  compute_integrity?: Record<string, any>;
+  kinetic_integrity?: Record<string, any>;
+  smget_state?: Record<string, any>;
+  authority?: Record<string, any>;
+  source?: string;
+}
+
+export interface VisionFrameStatus {
+  ok: boolean;
+  session_id?: string;
+  has_frame?: boolean;
+  frame_id?: string;
+  ts?: string;
+  source?: string;
+  width?: number;
+  height?: number;
+  hud_schema?: string;
+  hud_packet_id?: string;
+  target_count?: number;
+  [key: string]: any;
+}
+
+export interface VisionFrameSubmitResponse {
+  ok: boolean;
+  frame?: Record<string, any>;
+  frame_status?: VisionFrameStatus;
+  hud_packet?: VisionHudPacket;
+  source?: string;
+  error?: string;
+  [key: string]: any;
+}
+
+export interface VisionFrameLatestResponse {
+  ok: boolean;
+  has_frame?: boolean;
+  frame_id?: string;
+  ts?: string;
+  source?: string;
+  width?: number;
+  height?: number;
+  mime?: string;
+  image_b64?: string;
+  data_url?: string;
+  image_cached_ts?: string;
+  error?: string;
+  [key: string]: any;
 }
 
 
@@ -1164,6 +1145,62 @@ function getDefaultCapabilities(): BackendCapabilities {
 }
 
 
+export const visionApi = {
+  async policy(): Promise<any> {
+    return directCall<any>("/api/vision/policy", { method: "GET" });
+  },
+
+  async frameStatus(): Promise<VisionFrameStatus> {
+    return directCall<VisionFrameStatus>("/api/vision/frame/status", { method: "GET" });
+  },
+
+  async frameLatest(): Promise<VisionFrameLatestResponse> {
+    return directCall<VisionFrameLatestResponse>("/api/vision/frame/latest", { method: "GET" });
+  },
+
+  async hudStatus(): Promise<any> {
+    return directCall<any>("/api/vision/hud/status", { method: "GET" });
+  },
+
+  async hudPacket(): Promise<{ ok: boolean; hud_packet?: VisionHudPacket; source?: string; [key: string]: any }> {
+    return directCall<{ ok: boolean; hud_packet?: VisionHudPacket; source?: string; [key: string]: any }>("/api/vision/hud/packet", { method: "GET" });
+  },
+
+  async submitFrame(
+    dataUrl: string,
+    options?: { source?: string; width?: number; height?: number; analyze?: boolean; question?: string; ts?: number },
+  ): Promise<VisionFrameSubmitResponse> {
+    return directCall<VisionFrameSubmitResponse>("/api/vision/frame/submit", {
+      method: "POST",
+      body: JSON.stringify({
+        imageBase64: dataUrl,
+        data_url: dataUrl,
+        source: options?.source || "frontend_frame_submit",
+        width: options?.width,
+        height: options?.height,
+        mime: "image/jpeg",
+        analyze: Boolean(options?.analyze),
+        question: options?.question || "VR HUD observation pass",
+        ts: options?.ts || Date.now(),
+      }),
+    });
+  },
+
+  async analyzeFrame(dataUrl: string, question = "VR HUD observation pass", learningAllowed = false): Promise<VisionFrameSubmitResponse> {
+    return directCall<VisionFrameSubmitResponse>("/api/vision/analyze", {
+      method: "POST",
+      body: JSON.stringify({
+        imageBase64: dataUrl,
+        data_url: dataUrl,
+        question,
+        learning_allowed: Boolean(learningAllowed),
+        source: "vision_screen_analyze",
+        ts: Date.now(),
+      }),
+    });
+  },
+};
+
 export const devBridgeApi = {
   async status(): Promise<DevBridgeStatusResponse> {
     return directCall<DevBridgeStatusResponse>("/api/devbridge/status", { method: "GET" });
@@ -1231,113 +1268,6 @@ export const governanceApi = {
 };
 
 // ============================================================================
-// MODEL MANAGER API
-// ============================================================================
-
-export const modelsApi = {
-  async status(refresh = true): Promise<ModelManagerStatus> {
-    return directCall<ModelManagerStatus>(`/api/models/status?refresh=${refresh ? "1" : "0"}`, { method: "GET" });
-  },
-
-  async scan(): Promise<ModelManagerStatus> {
-    return directCall<ModelManagerStatus>("/api/models/scan", { method: "POST", body: JSON.stringify({}) });
-  },
-
-  async select(category: string, modelId: string): Promise<any> {
-    return directCall<any>("/api/models/select", {
-      method: "POST",
-      body: JSON.stringify({ category, model_id: modelId }),
-    });
-  },
-
-  async classify(
-    modelId: string,
-    category: string,
-    domain = "general",
-    adapterType = "",
-    displayName = "",
-  ): Promise<any> {
-    return directCall<any>("/api/models/classify", {
-      method: "POST",
-      body: JSON.stringify({
-        model_id: modelId,
-        category,
-        domain,
-        adapter_type: adapterType,
-        display_name: displayName,
-      }),
-    });
-  },
-
-  async verify(modelId: string): Promise<any> {
-    return directCall<any>("/api/models/verify", {
-      method: "POST",
-      body: JSON.stringify({ model_id: modelId }),
-    });
-  },
-
-  async addExternalPath(path: string): Promise<any> {
-    return directCall<any>("/api/models/external-path", {
-      method: "POST",
-      body: JSON.stringify({ path }),
-    });
-  },
-
-  async reset(category: string): Promise<any> {
-    return directCall<any>("/api/models/reset", {
-      method: "POST",
-      body: JSON.stringify({ category }),
-    });
-  },
-
-  async download(category: string, repo: string, modelId = ""): Promise<any> {
-    return directCall<any>("/api/models/download", {
-      method: "POST",
-      body: JSON.stringify({ category, repo, model_id: modelId }),
-    });
-  },
-};
-
-
-// ============================================================================
-// DL ENGINE MODEL WEIGHT API
-// ============================================================================
-
-export const dlengineApi = {
-  async getWeightProfile(category = "reasoning", modelId = ""): Promise<DlEngineWeightProfileResponse> {
-    const qs = new URLSearchParams();
-    qs.set("category", category);
-    if (modelId) qs.set("model_id", modelId);
-    return directCall<DlEngineWeightProfileResponse>(`/api/dlengine/weights?${qs.toString()}`, { method: "GET" });
-  },
-
-  async saveWeightProfile(
-    category: string,
-    modelId: string,
-    weights: Partial<DlEngineModelWeights>,
-    context: Record<string, unknown> = {},
-  ): Promise<DlEngineWeightProfileResponse> {
-    return directCall<DlEngineWeightProfileResponse>("/api/dlengine/weights", {
-      method: "POST",
-      body: JSON.stringify({
-        category,
-        model_id: modelId,
-        context,
-        weights,
-        source: "frontend:dlengine_model_weight_controller",
-      }),
-    });
-  },
-
-  async resetWeightProfile(category: string, modelId = ""): Promise<DlEngineWeightProfileResponse> {
-    return directCall<DlEngineWeightProfileResponse>("/api/dlengine/weights/reset", {
-      method: "POST",
-      body: JSON.stringify({ category, model_id: modelId }),
-    });
-  },
-};
-
-// ============================================================================
 // PROXY API (legacy)
 // ============================================================================
 
@@ -1397,8 +1327,7 @@ export const api = {
   proxy: proxyApi,
   devbridge: devBridgeApi,
   governance: governanceApi,
-  models: modelsApi,
-  dlengine: dlengineApi,
+  vision: visionApi,
 };
 
 export default api;
