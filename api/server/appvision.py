@@ -39,6 +39,8 @@ import base64
 import json
 import os
 import time
+import uuid
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -100,6 +102,313 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "backend_authority": ["frame_acceptance", "max_fps", "max_resolution", "analysis", "learning_gate", "driver_use"],
 }
 
+SMHUD_SCHEMA_VERSION = "SMHUD_PACKET_V1"
+_FRAME_LOCK = threading.RLock()
+_FRAME_CACHE: Dict[str, Any] = {
+    "session_id": uuid.uuid4().hex,
+    "has_frame": False,
+    "frame_id": "",
+    "ts": None,
+    "source": None,
+    "width": None,
+    "height": None,
+    "analysis": None,
+    "hud_packet": None,
+    "image_b64": None,
+    "data_url": None,
+    "mime": None,
+    "image_cached_ts": None,
+}
+
+
+def _utc_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+
+def _clamp_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return v
+    except Exception:
+        return default
+
+
+def _frame_meta(frame: Any, source: str = "frontend") -> Dict[str, Any]:
+    shape = _frame_shape(frame) or []
+    height = int(shape[0]) if len(shape) >= 1 else None
+    width = int(shape[1]) if len(shape) >= 2 else None
+    return {
+        "frame_id": f"vis_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "timestamp": _utc_iso(),
+        "source": source,
+        "width": width,
+        "height": height,
+    }
+
+
+def _bbox_to_target(det: Dict[str, Any], idx: int, width: int, height: int) -> Optional[Dict[str, Any]]:
+    try:
+        bbox = det.get("bbox") or det.get("box") or []
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            return None
+        x1, y1, x2, y2 = [float(v) for v in bbox[:4]]
+        # Accept either xyxy pixel coordinates or normalized xywh/xyxy-ish values.
+        if max(abs(x1), abs(y1), abs(x2), abs(y2)) <= 1.5:
+            # Treat as normalized xyxy when possible.
+            nx1, ny1, nx2, ny2 = x1, y1, x2, y2
+            px1, py1, px2, py2 = nx1 * width, ny1 * height, nx2 * width, ny2 * height
+        else:
+            px1, py1, px2, py2 = x1, y1, x2, y2
+            nx1 = px1 / max(1, width)
+            ny1 = py1 / max(1, height)
+            nx2 = px2 / max(1, width)
+            ny2 = py2 / max(1, height)
+        if nx2 < nx1:
+            nx1, nx2 = nx2, nx1
+        if ny2 < ny1:
+            ny1, ny2 = ny2, ny1
+        nx1, ny1 = max(0.0, min(1.0, nx1)), max(0.0, min(1.0, ny1))
+        nx2, ny2 = max(0.0, min(1.0, nx2)), max(0.0, min(1.0, ny2))
+        cx = (nx1 + nx2) / 2.0
+        cy = (ny1 + ny2) / 2.0
+        area = max(0.0, (nx2 - nx1) * (ny2 - ny1))
+        dz_est = round(1.0 / max(0.05, area ** 0.5), 3) if area else None
+        return {
+            "id": str(det.get("id") or f"target_{idx:03d}"),
+            "class": str(det.get("domain") or det.get("class") or "object"),
+            "label": str(det.get("label") or det.get("raw_label") or "object"),
+            "bbox": [round(nx1, 5), round(ny1, 5), round(nx2, 5), round(ny2, 5)],
+            "bbox_px": [int(px1), int(py1), int(px2), int(py2)],
+            "center": [round(cx, 5), round(cy, 5)],
+            "confidence": round(_clamp_float(det.get("confidence"), 0.0), 4),
+            "vectors": {
+                "dx": round(cx - 0.5, 5),
+                "dy": round(0.5 - cy, 5),
+                "dz_est": dz_est,
+            },
+            "motion": {"angular_velocity": 0.0, "velocity_px_s": [0.0, 0.0]},
+            "color": det.get("color") if isinstance(det.get("color"), dict) else None,
+            "model": det.get("model"),
+        }
+    except Exception:
+        return None
+
+
+def _contour_targets(frame: Any, limit: int = 8) -> List[Dict[str, Any]]:
+    if _cv2 is None or frame is None:
+        return []
+    targets: List[Dict[str, Any]] = []
+    try:
+        h, w = frame.shape[:2]
+        gray = _cv2.cvtColor(frame, _cv2.COLOR_BGR2GRAY)
+        blur = _cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = _cv2.Canny(blur, 80, 180)
+        contours, _ = _cv2.findContours(edges, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+        candidates = []
+        for c in contours:
+            area = float(_cv2.contourArea(c))
+            if area < max(300.0, (w * h) * 0.002):
+                continue
+            x, y, bw, bh = _cv2.boundingRect(c)
+            candidates.append((area, {"label": "edge_object", "domain": "object", "bbox": [x, y, x + bw, y + bh], "confidence": 0.35, "model": "contour"}))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        for idx, (_, det) in enumerate(candidates[:limit]):
+            target = _bbox_to_target(det, idx, w, h)
+            if target:
+                targets.append(target)
+    except Exception:
+        pass
+    return targets
+
+
+def _extract_hud_targets(analysis: Dict[str, Any], frame: Any) -> List[Dict[str, Any]]:
+    try:
+        h, w = frame.shape[:2]
+    except Exception:
+        h, w = 0, 0
+    if not w or not h:
+        return []
+
+    sobje = analysis.get("sobje") if isinstance(analysis, dict) else None
+    details = sobje.get("details") if isinstance(sobje, dict) else None
+    detections = []
+    if isinstance(details, dict):
+        detections = details.get("detections") if isinstance(details.get("detections"), list) else []
+        if not detections:
+            findings = details.get("findings") if isinstance(details.get("findings"), dict) else {}
+            detections = findings.get("detections") if isinstance(findings.get("detections"), list) else []
+    targets: List[Dict[str, Any]] = []
+    for idx, det in enumerate(detections[:16] if isinstance(detections, list) else []):
+        if isinstance(det, dict):
+            target = _bbox_to_target(det, idx, w, h)
+            if target:
+                targets.append(target)
+    if targets:
+        return targets
+    return _contour_targets(frame)
+
+
+def _compute_integrity_packet() -> Dict[str, Any]:
+    packet: Dict[str, Any] = {
+        "ok": True,
+        "token_throughput": None,
+        "pretok_latency_ms": None,
+        "memory_pool_mb": None,
+        "thread_state": {},
+        "source": "appvision.local_runtime",
+    }
+    try:
+        import threading as _threading
+        packet["thread_state"] = {
+            "active_threads": int(_threading.active_count()),
+            "vision": "RUNNING",
+            "hud": "RUNNING",
+        }
+    except Exception:
+        pass
+    try:
+        import resource as _resource  # not available on all Windows builds, safe fallback
+        usage = _resource.getrusage(_resource.RUSAGE_SELF)
+        # ru_maxrss is KB on Linux, bytes on macOS; this is advisory only.
+        packet["memory_pool_mb"] = round(float(getattr(usage, "ru_maxrss", 0) or 0) / 1024.0, 2)
+    except Exception:
+        packet["memory_pool_mb"] = None
+    return packet
+
+
+def _kinetic_integrity_packet() -> Dict[str, Any]:
+    packet: Dict[str, Any] = {
+        "ok": True,
+        "body_state": "OBSERVE_ONLY",
+        "movement_lock": True,
+        "devices": [],
+        "source": "SarahMemoryMSDC",
+    }
+    try:
+        if _MSDC is not None and hasattr(_MSDC, "msdc_vr_hud_status"):
+            status = _MSDC.msdc_vr_hud_status()  # type: ignore[attr-defined]
+        elif _MSDC is not None and hasattr(_MSDC, "msdc_status"):
+            status = _MSDC.msdc_status()  # type: ignore[attr-defined]
+        else:
+            status = {"ok": False, "error": "msdc_unavailable"}
+        packet["msdc"] = status
+        body = status.get("body_map", {}).get("body_parts", {}) if isinstance(status, dict) else {}
+        for name, record in (body or {}).items():
+            if isinstance(record, dict):
+                packet["devices"].append({
+                    "part": name,
+                    "driver_id": record.get("driver_id"),
+                    "status": record.get("status"),
+                    "privacy_sensitive": bool(record.get("privacy_sensitive")),
+                    "physical_safety_sensitive": bool(record.get("physical_safety_sensitive")),
+                    "fault": None,
+                })
+    except Exception as exc:
+        packet.update({"ok": False, "error": str(exc)})
+    return packet
+
+
+def _smget_packet() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "contract_id": None,
+        "execution_mode": "observe_only",
+        "state": "NO_ACTIVE_ACTION_CONTRACT",
+        "movement_lock": True,
+        "six_question_loop": {
+            "WHO": "STANDBY",
+            "WHY": "STANDBY",
+            "WHAT": "STANDBY",
+            "WHEN": "STANDBY",
+            "WHERE": "STANDBY",
+            "HOW": "STANDBY",
+        },
+        "decision": "READ_ONLY_WITNESS",
+        "rollback_ready": True,
+        "reason": "VR HUD is observing camera/telemetry only. Movement and device actions remain behind SMGET/OperatorCore.",
+        "source": "appvision.smget_snapshot",
+    }
+
+
+def _build_hud_packet(frame: Any = None, analysis: Optional[Dict[str, Any]] = None, frame_meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    frame_meta = dict(frame_meta or _frame_meta(frame, source="unknown"))
+    analysis = analysis if isinstance(analysis, dict) else {}
+    targets = _extract_hud_targets(analysis, frame) if frame is not None else []
+    packet = {
+        "schema": SMHUD_SCHEMA_VERSION,
+        "packet_id": f"hud_{uuid.uuid4().hex}",
+        "timestamp": _utc_iso(),
+        "ttl_ms": 2500,
+        "mode": "OBSERVE_ONLY",
+        "display_profile": "vr_operator_hud",
+        "frame": frame_meta,
+        "active_targets": targets,
+        "vision": {
+            "ok": bool(analysis.get("ok", True)) if isinstance(analysis, dict) else True,
+            "source": "SOBJE_FacialRecognition",
+            "answer": (analysis.get("sobje") or {}).get("answer") if isinstance(analysis.get("sobje"), dict) else None,
+            "confidence": ((analysis.get("sobje") or {}).get("details") or {}).get("confidence") if isinstance(analysis.get("sobje"), dict) else None,
+            "errors": analysis.get("errors", []) if isinstance(analysis, dict) else [],
+        },
+        "compute_integrity": _compute_integrity_packet(),
+        "kinetic_integrity": _kinetic_integrity_packet(),
+        "smget_state": _smget_packet(),
+        "authority": {
+            "hud_can_execute_actions": False,
+            "hud_can_authorize_movement": False,
+            "movement_locked": True,
+            "user_final_authority": True,
+        },
+        "source": "appvision.smhud",
+    }
+    return packet
+
+
+def _cache_frame(frame: Any, source: str, analysis: Optional[Dict[str, Any]] = None, hud_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    meta = _frame_meta(frame, source=source)
+    encoded: Dict[str, Any] = {}
+    try:
+        policy = _read_policy()
+        encoded = _encode_frame_jpeg(frame, quality=float(policy.get("jpeg_quality", 0.7) or 0.7))
+    except Exception:
+        encoded = {"ok": False, "error": "frame_cache_encode_failed"}
+    with _FRAME_LOCK:
+        _FRAME_CACHE.update({
+            "has_frame": True,
+            "frame_id": meta.get("frame_id"),
+            "ts": meta.get("timestamp"),
+            "source": source,
+            "width": meta.get("width"),
+            "height": meta.get("height"),
+            "analysis": analysis,
+            "hud_packet": hud_packet,
+            "image_b64": encoded.get("image_b64") if isinstance(encoded, dict) and encoded.get("ok") else _FRAME_CACHE.get("image_b64"),
+            "data_url": encoded.get("data_url") if isinstance(encoded, dict) and encoded.get("ok") else _FRAME_CACHE.get("data_url"),
+            "mime": encoded.get("mime") if isinstance(encoded, dict) and encoded.get("ok") else _FRAME_CACHE.get("mime"),
+            "image_cached_ts": _utc_iso() if isinstance(encoded, dict) and encoded.get("ok") else _FRAME_CACHE.get("image_cached_ts"),
+        })
+    return meta
+
+
+def _frame_status_payload() -> Dict[str, Any]:
+    with _FRAME_LOCK:
+        packet = _FRAME_CACHE.get("hud_packet") if isinstance(_FRAME_CACHE.get("hud_packet"), dict) else None
+        return {
+            "ok": True,
+            "session_id": _FRAME_CACHE.get("session_id"),
+            "has_frame": bool(_FRAME_CACHE.get("has_frame")),
+            "frame_id": _FRAME_CACHE.get("frame_id"),
+            "ts": _FRAME_CACHE.get("ts"),
+            "source": _FRAME_CACHE.get("source"),
+            "width": _FRAME_CACHE.get("width"),
+            "height": _FRAME_CACHE.get("height"),
+            "hud_schema": SMHUD_SCHEMA_VERSION,
+            "hud_packet_id": packet.get("packet_id") if packet else None,
+            "target_count": len(packet.get("active_targets") or []) if packet else 0,
+        }
+
 
 def _data_dir() -> Path:
     try:
@@ -109,7 +418,7 @@ def _data_dir() -> Path:
 
 
 def _settings_dir() -> Path:
-    """Return the runtime settings directory for generated policy JSON."""
+    """Runtime-generated vision settings live under data/settings."""
     try:
         return Path(str(getattr(config, "SETTINGS_DIR"))).expanduser().resolve()  # type: ignore[arg-type]
     except Exception:
@@ -117,6 +426,7 @@ def _settings_dir() -> Path:
 
 
 def _legacy_registry_dir() -> Path:
+    """Legacy registry path retained only for one-time migration fallback."""
     return (_data_dir() / "registry").resolve()
 
 
@@ -351,6 +661,168 @@ def api_vision_policy_update():
     return _response({"ok": True, "policy": current, "source": "appvision"})
 
 
+
+@bp.get("/api/vision/frame/status")
+def api_vision_frame_status():
+    return _response(_frame_status_payload())
+
+
+@bp.get("/api/vision/frame/latest")
+def api_vision_frame_latest():
+    """Return the latest backend-accepted frame for read-only HUD renderers.
+
+    This endpoint exists so SarahMemoryVRHudRenderer.py can render the same
+    governed frame stream that appvision accepted from the camera/frontend path.
+    It does not open hardware and does not authorize actions.
+    """
+    with _FRAME_LOCK:
+        has_frame = bool(_FRAME_CACHE.get("has_frame"))
+        data_url = _FRAME_CACHE.get("data_url")
+        image_b64 = _FRAME_CACHE.get("image_b64")
+        payload = {
+            "ok": bool(has_frame and data_url),
+            "has_frame": has_frame,
+            "frame_id": _FRAME_CACHE.get("frame_id"),
+            "ts": _FRAME_CACHE.get("ts"),
+            "source": _FRAME_CACHE.get("source"),
+            "width": _FRAME_CACHE.get("width"),
+            "height": _FRAME_CACHE.get("height"),
+            "mime": _FRAME_CACHE.get("mime") or "image/jpeg",
+            "image_b64": image_b64,
+            "data_url": data_url,
+            "image_cached_ts": _FRAME_CACHE.get("image_cached_ts"),
+            "hud_schema": SMHUD_SCHEMA_VERSION,
+            "source_endpoint": "appvision.frame_latest",
+        }
+    if not payload["ok"]:
+        payload["error"] = "no_cached_frame"
+    return _response(payload, 200)
+
+
+@bp.post("/api/vision/frame/submit")
+def api_vision_frame_submit():
+    policy = _read_policy()
+    if not bool(policy.get("enabled", True)):
+        return _response({"ok": False, "error": "vision_disabled_by_backend_policy", "policy": policy}, 403)
+    data = _payload()
+    frame, status = _decode_frame(data)
+    if frame is None:
+        return _response({"ok": False, "error": "no_decodable_frame", "decode_status": status}, 400)
+    analyze = bool(data.get("analyze"))
+    analysis = _analyze_frame(str(data.get("question") or "VR HUD observation pass"), frame, learning_allowed=False) if analyze else {"ok": True, "errors": [], "sobje": None, "facial": None}
+    meta = _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=None, hud_packet=None)
+    hud_packet = _build_hud_packet(frame, analysis, meta)
+    _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=analysis, hud_packet=hud_packet)
+    return _response({"ok": True, "frame": meta, "frame_status": _frame_status_payload(), "hud_packet": hud_packet, "source": "appvision.frame_submit"})
+
+
+@bp.get("/api/vision/hud/status")
+def api_vision_hud_status():
+    status = _frame_status_payload()
+    policy = _read_policy()
+    msdc_status = None
+    try:
+        if _MSDC is not None and hasattr(_MSDC, "msdc_vr_hud_status"):
+            msdc_status = _MSDC.msdc_vr_hud_status()  # type: ignore[attr-defined]
+        elif _MSDC is not None and hasattr(_MSDC, "msdc_status"):
+            msdc_status = _MSDC.msdc_status()  # type: ignore[attr-defined]
+    except Exception as exc:
+        msdc_status = {"ok": False, "error": str(exc)}
+    return _response({
+        "ok": True,
+        "schema": SMHUD_SCHEMA_VERSION,
+        "mode": "OBSERVE_ONLY",
+        "movement_lock": True,
+        "policy": policy,
+        "frame_status": status,
+        "msdc": msdc_status,
+        "source": "appvision.hud_status",
+    })
+
+
+@bp.get("/api/vision/hud/packet")
+def api_vision_hud_packet():
+    with _FRAME_LOCK:
+        packet = _FRAME_CACHE.get("hud_packet") if isinstance(_FRAME_CACHE.get("hud_packet"), dict) else None
+    if not packet:
+        packet = _build_hud_packet(None, {}, {"frame_id": "none", "timestamp": _utc_iso(), "source": "no_frame", "width": None, "height": None})
+    return _response({"ok": True, "hud_packet": packet, "source": "appvision.hud_packet"})
+
+
+def _smhud_chat_ts_epoch(value: Any) -> float:
+    """Best-effort epoch timestamp parser for chat/Neuron frame handoff."""
+    if value in (None, ""):
+        return 0.0
+    try:
+        return float(value)
+    except Exception:
+        pass
+    try:
+        s = str(value).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s).timestamp()
+    except Exception:
+        return 0.0
+
+
+def get_latest_cached_frame_for_chat(max_age_s: Optional[int] = None) -> Dict[str, Any]:
+    """Return the latest governed frame cache for /api/chat.
+
+    This is a read-only bridge for app.py. It returns the same backend-owned
+    frame accepted by /api/vision/frame/submit and exposed through
+    /api/vision/frame/latest so Chat, Neuron, SOBJE, and the VR HUD use one
+    vision truth source.
+
+    It does not open camera hardware, does not probe Windows, does not authorize
+    driver actions, and does not mutate policy/global state.
+    """
+    max_age = int(max_age_s or _read_policy().get("frame_ttl_seconds") or DEFAULT_POLICY.get("frame_ttl_seconds") or 10)
+    max_age = max(1, max_age)
+    with _FRAME_LOCK:
+        rec = dict(_FRAME_CACHE)
+
+    if not bool(rec.get("has_frame")):
+        return {"ok": False, "has_frame": False, "error": "no_cached_frame", "source": "appvision.chat_frame_bridge"}
+
+    data_url = rec.get("data_url")
+    image_b64 = rec.get("image_b64")
+    if not data_url and image_b64:
+        data_url = "data:image/jpeg;base64," + str(image_b64)
+    if not data_url and not image_b64:
+        return {"ok": False, "has_frame": True, "error": "cached_frame_missing_encoded_image", "source": "appvision.chat_frame_bridge"}
+
+    ts_epoch = _smhud_chat_ts_epoch(rec.get("image_cached_ts") or rec.get("ts"))
+    age_s = (time.time() - ts_epoch) if ts_epoch else None
+    if age_s is not None and age_s > max_age:
+        return {
+            "ok": False,
+            "has_frame": True,
+            "error": "cached_frame_stale",
+            "age_s": round(float(age_s), 3),
+            "max_age_s": max_age,
+            "source": "appvision.chat_frame_bridge",
+        }
+
+    hud_packet = rec.get("hud_packet") if isinstance(rec.get("hud_packet"), dict) else {}
+    return {
+        "ok": True,
+        "has_frame": True,
+        "frame": data_url or image_b64,
+        "data_url": data_url,
+        "image_b64": image_b64,
+        "mime": rec.get("mime") or "image/jpeg",
+        "ts": ts_epoch or time.time(),
+        "source": rec.get("source") or "appvision.frame_latest",
+        "width": rec.get("width"),
+        "height": rec.get("height"),
+        "frame_id": rec.get("frame_id"),
+        "image_cached_ts": rec.get("image_cached_ts"),
+        "backend_cache": "appvision",
+        "hud_packet_id": hud_packet.get("packet_id"),
+        "source_endpoint": "appvision.get_latest_cached_frame_for_chat",
+    }
+
 @bp.get("/api/vision/devices")
 def api_vision_devices():
     """Return camera/body-map device status without blocking on live probes.
@@ -450,7 +922,10 @@ def api_vision_analyze():
     if frame is None:
         return _response({"ok": False, "error": "no_decodable_frame", "decode_status": status}, 400)
     analysis = _analyze_frame(question, frame, learning_allowed=learning_allowed)
-    return _response({"ok": bool(analysis.get("ok")), "analysis": analysis, "policy": policy, "source": "appvision.analysis"})
+    frame_meta = _cache_frame(frame, str(data.get("source") or "vision_analyze"), analysis=None, hud_packet=None)
+    hud_packet = _build_hud_packet(frame, analysis, frame_meta)
+    _cache_frame(frame, str(data.get("source") or "vision_analyze"), analysis=analysis, hud_packet=hud_packet)
+    return _response({"ok": bool(analysis.get("ok")), "analysis": analysis, "hud_packet": hud_packet, "frame": frame_meta, "policy": policy, "source": "appvision.analysis"})
 
 
 @bp.post("/api/vision/learning/approve")
