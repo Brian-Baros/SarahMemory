@@ -1,0 +1,16 @@
+/* SarahMemory Unified Theme — TRON (v7.7.5) */
+:root{
+  --bg:#0b0f1a; --panel:#0f1422; --text:#e9fbff; --muted:#8ac7d8;
+  --accent:#19d4ff; --border:#1b2435; --btn:#102238; --btnText:#e9fbff;
+  --bubble-user:rgba(0,70,110,.55); --bubble-sarah:rgba(20,30,46,.75);
+}
+html,body{background:radial-gradient(ellipse at top,#0b0f1a,#070a12) fixed;color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+.bubble.user{background:var(--bubble-user);box-shadow:0 0 14px rgba(25,212,255,.12);border:1px solid var(--border)}
+.bubble.sarah{background:var(--bubble-sarah);box-shadow:0 0 16px rgba(25,212,255,.08);border:1px solid var(--border)}
+.btn{background:#103252;color:#e9fbff;border:1px solid #1e3b57}
+.small,.muted{color:var(--muted)}
+
+.TFrame { background-color:#0f1422; }
+.TLabel { background-color:transparent; color:#e9fbff; foreground:#e9fbff; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; }
+.TButton{ background-color:#103252; color:#e9fbff; foreground:#e9fbff; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; bordercolor:#1e3b57; }
+.ChatText{ background-color:#0b0f1a; color:#e9fbff; font-family:"Consolas","Lucida Console",monospace; font-size:10pt; }
