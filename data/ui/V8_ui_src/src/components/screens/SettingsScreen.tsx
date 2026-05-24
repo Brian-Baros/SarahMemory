@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, Cpu, ShieldCheck, AlertTriangle, Eye } from 'lucide-react';
+import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, Cpu, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
@@ -30,6 +30,30 @@ const DEFAULT_THEMES = [
   { id: 'vibrant', name: 'Vibrant', filename: 'Vibrant_Theme.css' },
 ];
 
+const MODEL_FRIENDLY_CATEGORIES = [
+  { id: 'reasoning', label: 'General Thinking', hint: 'Everyday questions and reasoning' },
+  { id: 'coder', label: 'Coding Help', hint: 'Programming, debugging, and patch work' },
+  { id: 'embeddings', label: 'Memory Search', hint: 'Finding meaning across local memory' },
+  { id: 'vision', label: 'Vision / Camera', hint: 'Camera, object detection, and visual tasks' },
+  { id: 'image_generation', label: 'Image Creation', hint: 'Drawing and image generation models' },
+  { id: 'tts', label: 'Voice / Speech', hint: 'Spoken output models' },
+] as const;
+
+const MODEL_DOMAIN_OPTIONS = [
+  { id: 'general', label: 'General' },
+  { id: 'medical', label: 'Medical' },
+  { id: 'legal', label: 'Legal' },
+  { id: 'engineering', label: 'Engineering' },
+  { id: 'finance', label: 'Finance' },
+  { id: 'robotics', label: 'Robotics' },
+  { id: 'manufacturing', label: 'Manufacturing' },
+  { id: 'education', label: 'Education' },
+  { id: 'creative', label: 'Creative' },
+  { id: 'custom', label: 'Custom' },
+] as const;
+
+const MODEL_LIVE_SCAN_INTERVAL_MS = 30_000;
+
 type SettingsPanelProps = {
   /** When true, renders as a regular screen (no Dialog wrapper) */
   embedded?: boolean;
@@ -55,14 +79,35 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
   const [devBridgeStatus, setDevBridgeStatus] = useState<any>(null);
   const [devBridgeError, setDevBridgeError] = useState<string>("");
 
-  // Load voices/themes/mode on mount (screen) OR when modal opens (handled by SettingsModal)
+  const [modelStatus, setModelStatus] = useState<any>(null);
+  const [modelError, setModelError] = useState<string>("");
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [isModelBusy, setIsModelBusy] = useState(false);
+  const [selectedModelCategory, setSelectedModelCategory] = useState("reasoning");
+  const [advancedModelControls, setAdvancedModelControls] = useState(false);
+  const [externalModelPath, setExternalModelPath] = useState("");
+  const [customModelRepo, setCustomModelRepo] = useState("");
+  const [selectedModelDomain, setSelectedModelDomain] = useState("general");
+  const [lastModelScanAt, setLastModelScanAt] = useState<string>("");
+
+  // Load voices/themes/mode/model status on mount. Modal remounts when opened.
   useEffect(() => {
-    if (!embedded) return;
     loadVoices();
     loadThemes();
     loadMode();
     loadDevBridgeStatus();
+    loadModelStatus(true);
     setSelectedMode(settings.mode || 'any');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [embedded]);
+
+  // Keep the local model dropdown live while Settings is open.
+  // Backend owns discovery; this UI only asks for refreshed status every 30 seconds.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      void loadModelStatus(true, true);
+    }, MODEL_LIVE_SCAN_INTERVAL_MS);
+    return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [embedded]);
 
@@ -148,6 +193,138 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     } catch (error: any) {
       setDevBridgeStatus(null);
       setDevBridgeError(String(error?.message || error || "DevBridge unavailable"));
+    }
+  };
+
+  const loadModelStatus = async (refresh = true, silent = false) => {
+    if (!silent) setIsLoadingModels(true);
+    try {
+      const status = await api.models.status(refresh);
+      setModelStatus(status);
+      setLastModelScanAt(new Date().toISOString());
+      setModelError(status?.ok ? "" : String(status?.error || "Model manager unavailable"));
+    } catch (error: any) {
+      if (!silent) setModelStatus(null);
+      setModelError(String(error?.message || error || "Model manager unavailable"));
+    } finally {
+      if (!silent) setIsLoadingModels(false);
+    }
+  };
+
+  const handleModelScan = async () => {
+    setIsModelBusy(true);
+    try {
+      const status = await api.models.scan();
+      setModelStatus(status);
+      setLastModelScanAt(new Date().toISOString());
+      setModelError("");
+      toast.success("Model folders scanned");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Scan failed"));
+      toast.error("Could not scan model folders");
+    } finally {
+      setIsModelBusy(false);
+    }
+  };
+
+  const handleModelSelect = async (modelId: string) => {
+    if (!modelId || modelId === "__none") return;
+    const model = (modelStatus?.models || []).find((m: any) => String(m?.id) === String(modelId));
+    setIsModelBusy(true);
+    try {
+      if (model && String(model.category || model.detected_category || "unknown") === "unknown") {
+        await api.models.classify(
+          modelId,
+          selectedModelCategory,
+          selectedModelDomain,
+          String(model.adapter_type || ""),
+          String(model.display_name || model.simple_label || ""),
+        );
+      }
+      const result = await api.models.select(selectedModelCategory, modelId);
+      if (result?.status) setModelStatus(result.status);
+      else await loadModelStatus(false);
+      toast.success("Active model updated");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Model selection failed"));
+      toast.error("Could not set active model");
+    } finally {
+      setIsModelBusy(false);
+    }
+  };
+
+  const handleModelVerify = async () => {
+    const activeId = String(modelStatus?.active_models?.[selectedModelCategory] || "");
+    if (!activeId) {
+      toast.info("Pick a model first");
+      return;
+    }
+    setIsModelBusy(true);
+    try {
+      const result = await api.models.verify(activeId);
+      if (result?.status) setModelStatus(result.status);
+      else await loadModelStatus(false);
+      toast.success(result?.verified ? "Model verified" : "Model needs review");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Verification failed"));
+      toast.error("Could not verify model");
+    } finally {
+      setIsModelBusy(false);
+    }
+  };
+
+  const handleModelReset = async () => {
+    setIsModelBusy(true);
+    try {
+      const result = await api.models.reset(selectedModelCategory);
+      if (result?.status) setModelStatus(result.status);
+      else await loadModelStatus(false);
+      toast.success("Reset to recommended installed model");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Reset failed"));
+      toast.error("No installed recommended model found");
+    } finally {
+      setIsModelBusy(false);
+    }
+  };
+
+  const handleAddExternalPath = async () => {
+    if (!externalModelPath.trim()) {
+      toast.info("Enter a folder path first");
+      return;
+    }
+    setIsModelBusy(true);
+    try {
+      const result = await api.models.addExternalPath(externalModelPath.trim());
+      if (result?.status) setModelStatus(result.status);
+      else await loadModelStatus(true);
+      setExternalModelPath("");
+      setModelError("");
+      toast.success("External model folder linked");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Could not link folder"));
+      toast.error("Could not link that folder");
+    } finally {
+      setIsModelBusy(false);
+    }
+  };
+
+  const handleDownloadCustomModel = async () => {
+    if (!customModelRepo.trim()) {
+      toast.info("Enter a Hugging Face model name first");
+      return;
+    }
+    setIsModelBusy(true);
+    try {
+      const result = await api.models.download(selectedModelCategory, customModelRepo.trim());
+      if (result?.status) setModelStatus(result.status);
+      else await loadModelStatus(true);
+      toast.success("Model download requested");
+    } catch (error: any) {
+      setModelError(String(error?.message || error || "Download failed"));
+      toast.error("Could not download model");
+    } finally {
+      setIsModelBusy(false);
     }
   };
 
@@ -302,6 +479,28 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
   // Display themes - prefer loaded themes, fallback to defaults
   const displayThemes = themes.length > 0 ? themes : DEFAULT_THEMES;
 
+  const modelCategories = (modelStatus?.categories?.length ? modelStatus.categories : MODEL_FRIENDLY_CATEGORIES) as any[];
+  const allModels = Array.isArray(modelStatus?.models) ? modelStatus.models : [];
+  const liveScanSeconds = Number(modelStatus?.recommended_poll_interval_sec || modelStatus?.live_scan_interval_sec || 30);
+  const modelCount = Number(modelStatus?.model_count ?? allModels.length);
+  const readyModelCount = Number(modelStatus?.ready_count ?? allModels.filter((m: any) => String(m?.status || "") === "ready").length);
+  const unclassifiedModelCount = Number(modelStatus?.unclassified_count ?? allModels.filter((m: any) => String(m?.category || "unknown") === "unknown").length);
+  const lastModelScanLabel =
+    lastModelScanAt ? new Date(lastModelScanAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }) : "waiting";
+  const activeModelId = String(modelStatus?.active_models?.[selectedModelCategory] || "");
+  const activeModel =
+    modelStatus?.active_records?.[selectedModelCategory] ||
+    allModels.find((m: any) => String(m?.id) === activeModelId) ||
+    null;
+  const selectedCategoryHint =
+    MODEL_FRIENDLY_CATEGORIES.find((c) => c.id === selectedModelCategory)?.hint ||
+    modelCategories.find((c: any) => c.id === selectedModelCategory)?.label ||
+    "Choose what this model should help SarahMemory do.";
+  const visibleModelOptions = allModels.filter((m: any) => {
+    const c = String(m?.category || m?.detected_category || "unknown");
+    return c === selectedModelCategory || c === "unknown" || String(m?.id) === activeModelId;
+  });
+
   return (
     <div className={embedded ? "p-4" : "space-y-6 py-4"}>
       {/* Mode Selection */}
@@ -332,6 +531,178 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
         <p className="text-xs text-muted-foreground">
           {MODES.find((m) => m.id === selectedMode)?.description}
         </p>
+      </div>
+
+      {/* AI Model Manager */}
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <Label className="flex items-center gap-2 text-sm font-medium">
+              <Cpu className="h-4 w-4 text-muted-foreground" />
+              AI Models
+            </Label>
+            <p className="text-xs text-muted-foreground mt-1">
+              Choose what local model SarahMemory uses for each job. The backend scans and verifies the folders.
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Live folder watch: every {liveScanSeconds}s · Last scan: {lastModelScanLabel}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void handleModelScan()} disabled={isLoadingModels || isModelBusy}>
+            {isLoadingModels || isModelBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+            Scan Now
+          </Button>
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">What should SarahMemory be better at?</Label>
+            <Select value={selectedModelCategory} onValueChange={setSelectedModelCategory}>
+              <SelectTrigger className="bg-secondary border-border">
+                <SelectValue placeholder="Choose a job" />
+              </SelectTrigger>
+              <SelectContent className="z-[100000]">
+                {modelCategories.map((cat: any) => (
+                  <SelectItem key={cat.id} value={cat.id}>
+                    {cat.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{selectedCategoryHint}</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Active model</Label>
+            <Select value={activeModelId || "__none"} onValueChange={(value) => void handleModelSelect(value)} disabled={isModelBusy || isLoadingModels}>
+              <SelectTrigger className="bg-secondary border-border">
+                <SelectValue placeholder="Pick a model" />
+              </SelectTrigger>
+              <SelectContent className="z-[100000]">
+                <SelectItem value="__none">No model selected</SelectItem>
+                {visibleModelOptions.map((model: any) => (
+                  <SelectItem key={model.id} value={String(model.id)}>
+                    {(model.simple_label || model.display_name || model.id)}
+                    {model.status_label ? ` · ${model.status_label}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {activeModel
+                ? `${activeModel.simple_label || activeModel.display_name || activeModel.id} · ${activeModel.status_label || activeModel.status || "Ready"}`
+                : "No active model selected for this job yet."}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Models Found</div>
+            <div className="font-medium">{modelCount}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Ready</div>
+            <div className="font-medium">{readyModelCount}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Review</div>
+            <div className={modelError || unclassifiedModelCount > 0 ? "font-medium text-yellow-500" : "font-medium"}>
+              {modelError ? "Error" : unclassifiedModelCount > 0 ? unclassifiedModelCount : "Clear"}
+            </div>
+          </div>
+        </div>
+
+        {modelError ? (
+          <div className="flex items-start gap-2 text-xs text-yellow-500">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
+            <span>{modelError}</span>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Unknown models can be assigned to a job before use. New folders added to data/models appear automatically while this panel is open.
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" onClick={() => void handleModelVerify()} disabled={isModelBusy || !activeModelId}>
+            Verify Active Model
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void handleModelReset()} disabled={isModelBusy}>
+            Reset to Recommended
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setAdvancedModelControls(!advancedModelControls)}>
+            {advancedModelControls ? "Hide Advanced" : "Advanced"}
+          </Button>
+        </div>
+
+        {advancedModelControls && (
+          <div className="rounded-lg border border-border bg-background/40 p-3 space-y-3">
+            <div className="grid gap-2 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Domain</Label>
+                <Select value={selectedModelDomain} onValueChange={setSelectedModelDomain}>
+                  <SelectTrigger className="bg-secondary border-border">
+                    <SelectValue placeholder="Choose a domain" />
+                  </SelectTrigger>
+                  <SelectContent className="z-[100000]">
+                    {MODEL_DOMAIN_OPTIONS.map((domain) => (
+                      <SelectItem key={domain.id} value={domain.id}>
+                        {domain.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Registry</Label>
+                <div className="rounded-md border border-border bg-secondary px-3 py-2 text-xs truncate">
+                  {modelStatus?.registry_path || "data/settings/model_registry.json"}
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Link a model folder from another drive</Label>
+              <div className="flex gap-2">
+                <input
+                  value={externalModelPath}
+                  onChange={(e) => setExternalModelPath(e.target.value)}
+                  placeholder="D:\\AIModels\\Gemma4"
+                  className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none"
+                />
+                <Button variant="outline" size="sm" onClick={() => void handleAddExternalPath()} disabled={isModelBusy}>
+                  Link
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Download a Hugging Face model into data/models</Label>
+              <div className="flex gap-2">
+                <input
+                  value={customModelRepo}
+                  onChange={(e) => setCustomModelRepo(e.target.value)}
+                  placeholder="google/gemma-2-2b-it"
+                  className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none"
+                />
+                <Button variant="outline" size="sm" onClick={() => void handleDownloadCustomModel()} disabled={isModelBusy}>
+                  Download
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Large downloads may be blocked by backend storage policy or require local confirmation.
+              </p>
+            </div>
+
+            {activeModel?.path && (
+              <div className="rounded-md border border-border bg-secondary px-3 py-2 text-xs break-all">
+                Active folder: {activeModel.path}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Voice Selection */}
@@ -405,25 +776,33 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
       </div>
 
 
-
       {/* Vision / VR Operator HUD */}
       <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-2">
         <Label className="flex items-center gap-2 text-sm font-medium">
-          <Eye className="h-4 w-4 text-muted-foreground" />
+          <ShieldCheck className="h-4 w-4 text-muted-foreground" />
           Vision / VR Operator HUD
         </Label>
         <p className="text-xs text-muted-foreground">
-          Opens the dedicated camera telemetry surface. Use this for webcam-to-VR HUD testing; it is read-only and movement locked.
+          Open the dedicated camera telemetry surface for webcam-to-VR HUD testing. This is a read-only operator viewport and keeps movement locked.
         </p>
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}
+          >
             Open Vision HUD
           </Button>
-          <Button variant="outline" size="sm" onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}
+          >
             Open VR HUD Route
           </Button>
         </div>
       </div>
+
 
       {/* DeveloperMode / DevBridge Visibility */}
       <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-2">
