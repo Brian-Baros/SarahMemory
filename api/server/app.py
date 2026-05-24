@@ -23,7 +23,7 @@
 # - Safe fallbacks against missing core modules
 
 from __future__ import annotations
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error
 from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
@@ -796,14 +796,8 @@ def _get_latest_vision_frame(session_id: str, *, max_age_s: int | None = None) -
     except Exception:
         return None
 
-
 def _sm_text_looks_like_visual_request(text: str, payload: dict | None = None, context_packet: dict | None = None) -> bool:
-    """Cheap visual-request gate for chat-to-appvision frame bridging.
-
-    This prevents the chat lane from attaching a large live camera frame to every
-    normal text request while still letting questions such as "what do you see?"
-    pull from the backend-owned appvision frame cache.
-    """
+    """Return True when chat text needs the newest backend vision frame."""
     payload = payload if isinstance(payload, dict) else {}
     context_packet = context_packet if isinstance(context_packet, dict) else {}
     meta = context_packet.get("meta") if isinstance(context_packet.get("meta"), dict) else {}
@@ -813,7 +807,7 @@ def _sm_text_looks_like_visual_request(text: str, payload: dict | None = None, c
     if str(payload.get("intent") or meta.get("intent") or "").strip().lower() in {"vision", "visual", "camera", "scene"}:
         return True
 
-    t = str(text or payload.get("text") or "").strip().lower()
+    t = str(text or payload.get("text") or payload.get("message") or payload.get("q") or "").strip().lower()
     if not t:
         return False
 
@@ -837,7 +831,7 @@ def _sm_parse_appvision_ts(value: object) -> float:
     if value in (None, ""):
         return 0.0
     try:
-        return float(value)  # epoch seconds if already numeric
+        return float(value)
     except Exception:
         pass
     try:
@@ -849,12 +843,49 @@ def _sm_parse_appvision_ts(value: object) -> float:
         return 0.0
 
 
-def _sm_get_appvision_module_for_chat():
-    """Return the live appvision module already mounted into this Flask process.
+class _SMAppVisionGlobalsProxy:
+    """Attribute proxy around mounted appvision.py blueprint globals."""
+    def __init__(self, globals_dict: dict):
+        self._globals_dict = globals_dict
 
-    Do not direct-load appvision.py here. A direct file load would create a second
-    module instance with an empty frame cache. Chat must read the same in-process
-    cache used by /api/vision/frame/latest and the VR HUD renderer.
+    def __getattr__(self, name: str):
+        if name in self._globals_dict:
+            return self._globals_dict[name]
+        raise AttributeError(name)
+
+
+def _sm_get_appvision_proxy_from_flask_routes():
+    """Find the mounted appvision blueprint globals from Flask's URL map."""
+    try:
+        from flask import current_app, has_app_context  # type: ignore
+        if not has_app_context():
+            return None
+        view_functions = getattr(current_app, "view_functions", {}) or {}
+        for endpoint, fn in list(view_functions.items()):
+            endpoint_s = str(endpoint or "").lower()
+            g = getattr(fn, "__globals__", None)
+            if not isinstance(g, dict):
+                continue
+            if (
+                "appvision" in endpoint_s
+                or (
+                    isinstance(g.get("_FRAME_CACHE"), dict)
+                    and str(g.get("SMHUD_SCHEMA_VERSION") or "") == "SMHUD_PACKET_V1"
+                )
+            ):
+                if isinstance(g.get("_FRAME_CACHE"), dict) or callable(g.get("get_latest_cached_frame_for_chat")):
+                    return _SMAppVisionGlobalsProxy(g)
+    except Exception:
+        return None
+    return None
+
+
+def _sm_get_appvision_module_for_chat():
+    """Return the live appvision module/proxy mounted in this Flask process.
+
+    This avoids direct-loading appvision.py, which would create a second module
+    instance with an empty frame cache. Chat must read the same cache used by
+    /api/vision/frame/latest and the VR HUD renderer.
     """
     candidates = []
     try:
@@ -871,6 +902,10 @@ def _sm_get_appvision_module_for_chat():
         except Exception:
             pass
 
+    proxy = _sm_get_appvision_proxy_from_flask_routes()
+    if proxy is not None:
+        candidates.append(proxy)
+
     seen = set()
     for mod in candidates:
         if mod is None:
@@ -884,25 +919,64 @@ def _sm_get_appvision_module_for_chat():
     return None
 
 
-def _get_latest_appvision_frame_for_chat(*, max_age_s: int | None = None) -> dict | None:
-    """Bridge Chat to appvision.py's governed frame cache.
+def _sm_get_appvision_frame_latest_http_fallback(*, max_age_s: int | None = None) -> dict | None:
+    """Last-resort local read of /api/vision/frame/latest.
 
-    app.py has its older per-session cache at /api/vision/frame. The VR HUD uses
-    appvision.py's cache at /api/vision/frame/submit -> /api/vision/frame/latest.
-    This helper lets /api/chat attach the same backend-owned live frame without
-    opening camera hardware, using Windows detection, or bypassing SOBJE/MSDC.
+    Used only if the in-process module/proxy cannot be resolved. It remains
+    read-only and does not open camera hardware.
     """
-    mod = _sm_get_appvision_module_for_chat()
-    if mod is None:
+    try:
+        base_url = ""
+        try:
+            base_url = str(request.host_url or "").rstrip("/")
+        except Exception:
+            base_url = ""
+        if not base_url:
+            base_url = str(os.getenv("SARAHMEMORY_LOCAL_API_BASE") or "http://127.0.0.1:8000").rstrip("/")
+        url = base_url + "/api/vision/frame/latest"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=0.75) as resp:
+            raw = resp.read(2_200_000)
+        data = json.loads(raw.decode("utf-8", errors="replace"))
+        if not isinstance(data, dict) or not bool(data.get("has_frame")):
+            return None
+        frame_value = data.get("data_url") or data.get("image_b64")
+        if not frame_value:
+            return None
+        if data.get("image_b64") and not str(frame_value).startswith("data:image"):
+            frame_value = "data:image/jpeg;base64," + str(frame_value)
+        ts_epoch = _sm_parse_appvision_ts(data.get("image_cached_ts") or data.get("ts"))
+        max_age = int(max_age_s or _VISION_FRAME_MAX_AGE_S)
+        if ts_epoch and (time.time() - ts_epoch) > max(1, max_age):
+            return None
+        return {
+            "frame": frame_value,
+            "ts": ts_epoch or time.time(),
+            "source": str(data.get("source") or "appvision.frame_latest_http"),
+            "width": data.get("width"),
+            "height": data.get("height"),
+            "mime": str(data.get("mime") or "image/jpeg"),
+            "frame_id": data.get("frame_id"),
+            "backend_cache": "appvision_http",
+        }
+    except Exception:
         return None
 
-    # Preferred public helper if appvision.py provides one in future patches.
+
+def _get_latest_appvision_frame_for_chat(*, max_age_s: int | None = None) -> dict | None:
+    """Bridge Chat to appvision.py's governed live frame cache."""
+    mod = _sm_get_appvision_module_for_chat()
+    if mod is None:
+        return _sm_get_appvision_frame_latest_http_fallback(max_age_s=max_age_s)
+
     try:
         helper = getattr(mod, "get_latest_cached_frame_for_chat", None)
         if callable(helper):
             rec = helper(max_age_s=max_age_s)
             if isinstance(rec, dict) and (rec.get("frame") or rec.get("data_url") or rec.get("image_b64")):
                 frame_value = rec.get("frame") or rec.get("data_url") or rec.get("image_b64")
+                if rec.get("image_b64") and not str(frame_value).startswith("data:image"):
+                    frame_value = "data:image/jpeg;base64," + str(frame_value)
                 return {
                     "frame": frame_value,
                     "ts": rec.get("ts") or rec.get("image_cached_ts") or time.time(),
@@ -912,30 +986,32 @@ def _get_latest_appvision_frame_for_chat(*, max_age_s: int | None = None) -> dic
                     "mime": rec.get("mime") or "image/jpeg",
                     "frame_id": rec.get("frame_id"),
                     "backend_cache": "appvision",
+                    "hud_packet_id": rec.get("hud_packet_id"),
                 }
     except Exception:
         pass
 
-    # Current deployed appvision.py stores its live HUD/camera frame in _FRAME_CACHE.
     try:
         lock = getattr(mod, "_FRAME_LOCK", None)
         cache = getattr(mod, "_FRAME_CACHE", None)
         if not isinstance(cache, dict):
-            return None
+            return _sm_get_appvision_frame_latest_http_fallback(max_age_s=max_age_s)
         if lock is not None and hasattr(lock, "__enter__"):
             with lock:
                 rec = dict(cache)
         else:
             rec = dict(cache)
     except Exception:
-        return None
+        return _sm_get_appvision_frame_latest_http_fallback(max_age_s=max_age_s)
 
     if not bool(rec.get("has_frame")):
-        return None
+        return _sm_get_appvision_frame_latest_http_fallback(max_age_s=max_age_s)
 
     frame_value = rec.get("data_url") or rec.get("image_b64")
     if not frame_value:
-        return None
+        return _sm_get_appvision_frame_latest_http_fallback(max_age_s=max_age_s)
+    if rec.get("image_b64") and not str(frame_value).startswith("data:image"):
+        frame_value = "data:image/jpeg;base64," + str(frame_value)
 
     ts_value = rec.get("image_cached_ts") or rec.get("ts")
     ts_epoch = _sm_parse_appvision_ts(ts_value)
@@ -961,9 +1037,8 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
 
     Priority:
     1) Inline frame/image in the chat payload.
-    2) app.py's older session-scoped cache (/api/vision/frame).
-    3) appvision.py's governed backend cache (/api/vision/frame/submit -> /api/vision/frame/latest)
-       only when the text is a visual request.
+    2) app.py's older session-scoped /api/vision/frame cache.
+    3) appvision.py's governed /api/vision/frame/submit cache, only for visual prompts.
     """
     payload = payload if isinstance(payload, dict) else {}
     context_packet = context_packet if isinstance(context_packet, dict) else {}
@@ -976,8 +1051,10 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
     elif session_id:
         frame_rec = _get_latest_vision_frame(session_id)
 
+    bridge = "inline_or_session"
     if not frame_rec and _sm_text_looks_like_visual_request(user_text, payload=payload, context_packet=context_packet):
         frame_rec = _get_latest_appvision_frame_for_chat(max_age_s=_VISION_FRAME_MAX_AGE_S)
+        bridge = str((frame_rec or {}).get("backend_cache") or "appvision")
         if frame_rec is not None and session_id:
             try:
                 frame_rec = _store_latest_vision_frame(session_id, frame_rec)
@@ -985,10 +1062,17 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
                 pass
 
     if not frame_rec:
+        meta_block["vision_frame_bridge"] = {
+            "attached": False,
+            "reason": "no_cached_or_inline_frame",
+            "visual_request": _sm_text_looks_like_visual_request(user_text, payload=payload, context_packet=context_packet),
+        }
+        context_packet["meta"] = meta_block
         return context_packet, None
 
-    meta_block["frame"] = frame_rec.get("frame")
-    meta_block["latest_frame"] = frame_rec.get("frame")
+    frame_value = frame_rec.get("frame")
+    meta_block["frame"] = frame_value
+    meta_block["latest_frame"] = frame_value
     meta_block["vision_frame"] = {
         "ts": frame_rec.get("ts"),
         "source": frame_rec.get("source"),
@@ -996,18 +1080,25 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
         "height": frame_rec.get("height"),
         "mime": frame_rec.get("mime"),
         "frame_id": frame_rec.get("frame_id"),
-        "backend_cache": frame_rec.get("backend_cache") or "app.py",
+        "backend_cache": frame_rec.get("backend_cache") or bridge,
         "hud_packet_id": frame_rec.get("hud_packet_id"),
+    }
+    meta_block["vision_frame_bridge"] = {
+        "attached": True,
+        "bridge": frame_rec.get("backend_cache") or bridge,
+        "source": frame_rec.get("source"),
+        "frame_id": frame_rec.get("frame_id"),
     }
     images = meta_block.get("images") if isinstance(meta_block.get("images"), list) else []
     if not images:
-        images = [frame_rec.get("frame")]
-    elif frame_rec.get("frame") not in images:
-        images = [frame_rec.get("frame")] + list(images)
-    meta_block["images"] = images[:3]
+        images = [frame_value]
+    elif frame_value not in images:
+        images = [frame_value] + list(images)
+    meta_block["images"] = [img for img in images[:3] if img]
     context_packet["meta"] = meta_block
     context_packet["session_id"] = session_id
     return context_packet, frame_rec
+
 def _cache_get(key: str):
     item = _CACHE.get(key)
     if not item:
@@ -3040,7 +3131,7 @@ def api_chat():
         complexity = str(payload.get("complexity") or "").strip()
         avatar_request = bool(payload.get("avatar_request") or payload.get("avatar") or False)
         diagnostics_ping = bool(payload.get("diagnostics_ping") or payload.get("diag_ping") or False)
-        text = (payload.get("text") or "").strip()
+        text = (payload.get("text") or payload.get("message") or payload.get("q") or "").strip()
 
         try:
             import SarahMemoryGlobals as G  # type: ignore
@@ -3810,6 +3901,179 @@ def set_user_setting():
     except IOError as e:
         app_logger.error(f"Error writing settings file {SETTINGS_FILE}: {e}", exc_info=True)
         return jsonify({"status":"error", "error": f"Failed to save setting: {e}"}), 500
+
+
+# ---------------------------------------------------------------------------
+# SarahMemory Model Manager API
+# ---------------------------------------------------------------------------
+# Frontend is a control surface only. SarahMemoryLLM.py owns discovery,
+# validation, classification, active model state, and downloads.
+
+def _sm_llm_manager():
+    try:
+        import SarahMemoryLLM as _SMLLM  # type: ignore
+        return _SMLLM
+    except Exception as exc:
+        app_logger.error("SarahMemoryLLM import failed for model manager API: %s", exc, exc_info=True)
+        return None
+
+
+def _model_payload() -> dict:
+    try:
+        data = request.get_json(silent=True) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+@app.route("/api/models/status", methods=["GET"])
+def api_models_status():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        refresh = str(request.args.get("refresh", "1")).strip().lower() not in ("0", "false", "no", "off")
+        fn = getattr(mod, "get_model_manager_status", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_manager_status_unavailable"}), 501
+        return jsonify(fn(refresh=refresh)), 200
+    except Exception as exc:
+        app_logger.exception("Model status failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/scan", methods=["POST"])
+def api_models_scan():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        fn = getattr(mod, "scan_model_registry", None)
+        status_fn = getattr(mod, "get_model_manager_status", None)
+        if callable(fn):
+            fn(persist=True)
+        if callable(status_fn):
+            return jsonify(status_fn(refresh=False)), 200
+        return jsonify({"ok": True}), 200
+    except Exception as exc:
+        app_logger.exception("Model scan failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/select", methods=["POST"])
+def api_models_select():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "set_active_model", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_select_unavailable"}), 501
+        result = fn(
+            str(data.get("category") or ""),
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+            repo=str(data.get("repo") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model select failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/classify", methods=["POST"])
+def api_models_classify():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "classify_model", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_classify_unavailable"}), 501
+        result = fn(
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+            category=str(data.get("category") or "unknown"),
+            domain=str(data.get("domain") or "general"),
+            adapter_type=str(data.get("adapter_type") or ""),
+            display_name=str(data.get("display_name") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model classify failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/verify", methods=["POST"])
+def api_models_verify():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "verify_model_by_id", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_verify_unavailable"}), 501
+        result = fn(str(data.get("model_id") or data.get("id") or ""))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model verify failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/external-path", methods=["POST"])
+def api_models_external_path():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "add_external_model_path", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "external_path_unavailable"}), 501
+        result = fn(str(data.get("path") or data.get("folder") or ""))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("External model path add failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/reset", methods=["POST"])
+def api_models_reset():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "reset_active_model_to_recommended", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_reset_unavailable"}), 501
+        result = fn(str(data.get("category") or "reasoning"))
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model reset failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/models/download", methods=["POST"])
+def api_models_download():
+    mod = _sm_llm_manager()
+    if mod is None:
+        return jsonify({"ok": False, "error": "SarahMemoryLLM unavailable"}), 503
+    try:
+        data = _model_payload()
+        fn = getattr(mod, "download_model_to_registry", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "error": "model_download_unavailable"}), 501
+        result = fn(
+            category=str(data.get("category") or "reasoning"),
+            repo=str(data.get("repo") or ""),
+            model_id=str(data.get("model_id") or data.get("id") or ""),
+        )
+        return jsonify(result), (200 if result.get("ok") else 400)
+    except Exception as exc:
+        app_logger.exception("Model download failed")
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 # Themes routes are fine, pathing should be robust now.
@@ -6863,19 +7127,84 @@ def api_dlengine_auto():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@app.route("/api/dlengine/weights", methods=["POST"])
-@app.route("/api/dlengine/tuning_weights", methods=["POST"])
+@app.route("/api/dlengine/weights", methods=["GET", "POST"])
+@app.route("/api/dlengine/tuning_weights", methods=["GET", "POST"])
 def api_dlengine_weights():
     data = request.get_json(silent=True) or {}
-    weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
     dl = _dlengine_module()
+
+    if request.method == "GET":
+        try:
+            category = str(request.args.get("category") or "reasoning")
+            model_id = str(request.args.get("model_id") or request.args.get("id") or "")
+            if dl and hasattr(dl, "get_model_weight_profile"):
+                return jsonify(dl.get_model_weight_profile(category=category, model_id=model_id, refresh_models=False)), 200
+            return jsonify({
+                "ok": True,
+                "category": category,
+                "model_id": model_id,
+                "weights": load_state().get("DLENGINE_WEIGHTS", {}),
+                "raw_tensor_edit": False,
+            }), 200
+        except Exception as exc:
+            app_logger.error(f"DL Engine weights GET failed: {exc}", exc_info=True)
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    weights = data.get("weights") if isinstance(data.get("weights"), dict) else data
+    category = str(data.get("category") or data.get("model_category") or "reasoning")
+    model_id = str(data.get("model_id") or data.get("id") or "")
+    dl_context = data.get("context") if isinstance(data.get("context"), dict) else data
+
     try:
         if dl and hasattr(dl, "set_dlengine_weights"):
-            return jsonify(dl.set_dlengine_weights(weights, source="flask:/api/dlengine/weights")), 200
+            try:
+                return jsonify(dl.set_dlengine_weights(
+                    weights,
+                    source="flask:/api/dlengine/weights",
+                    category=category,
+                    model_id=model_id,
+                    context=dl_context,
+                )), 200
+            except TypeError:
+                return jsonify(dl.set_dlengine_weights(weights, source="flask:/api/dlengine/weights")), 200
         save_state("DLENGINE_WEIGHTS", weights)
-        return jsonify({"ok": True, "saved": True, "weights": weights, "raw_tensor_edit": False}), 200
+        return jsonify({
+            "ok": True,
+            "saved": True,
+            "category": category,
+            "model_id": model_id,
+            "weights": weights,
+            "raw_tensor_edit": False,
+        }), 200
     except Exception as exc:
         app_logger.error(f"DL Engine weights failed: {exc}", exc_info=True)
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/dlengine/weights/reset", methods=["POST"])
+def api_dlengine_weights_reset():
+    data = request.get_json(silent=True) or {}
+    dl = _dlengine_module()
+    category = str(data.get("category") or data.get("model_category") or "reasoning")
+    model_id = str(data.get("model_id") or data.get("id") or "")
+    try:
+        if dl and hasattr(dl, "reset_model_weight_profile"):
+            return jsonify(dl.reset_model_weight_profile(category=category, model_id=model_id, source="flask:/api/dlengine/weights/reset")), 200
+        default_weights = {
+            "reasoning": 65,
+            "coding": 55,
+            "memory": 60,
+            "research": 55,
+            "creativity": 45,
+            "safety": 90,
+            "autonomy": 35,
+            "precision": 70,
+            "speed": 50,
+        }
+        save_state("DLENGINE_WEIGHTS", default_weights)
+        return jsonify({"ok": True, "saved": True, "category": category, "model_id": model_id, "weights": default_weights, "raw_tensor_edit": False}), 200
+    except Exception as exc:
+        app_logger.error(f"DL Engine weights reset failed: {exc}", exc_info=True)
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
