@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | May 23, 2026 |
+| **Last Update** | May 24, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -2374,6 +2374,140 @@ governed sensory viewport
 
 The system remains local-first, governed, observe-only, and user-controlled while proving the VR HUD concept is technically viable on budget hardware.
 
+---
+
+---
+## **📅 May 24, 2026 — Cognitive Living Loop, Instinct Layer, and Emergency Governance**
+
+This update expands the Cognitive TriForce into a distributed **Living Loop** that runs through the existing SarahMemoryCognitive*.py stack instead of living as a separate bolt-on feature.
+
+The goal is to move SarahMemory beyond:
+
+```text
+Prompt → Calculate → Reply → Stop
+```
+
+and toward a governed living-system rhythm:
+
+```text
+Observe → Think → Govern → Orient → Act or Wait → Verify → Log → Continue
+```
+
+### **1. Living Loop Distributed Across Cognitive Organs**
+
+The Living Loop is now treated as part of the Cognitive system itself:
+
+- `SarahMemoryCognitiveThinker.py` — imagination, possibility, REM/Hyper-Awake scenario generation
+- `SarahMemoryCognitiveSelf.py` — body state, verified capability, runtime/resource witness
+- `SarahMemoryCognitiveServices.py` — judgment, governance, emergency decision coordination
+- `SarahMemoryCognitiveIdentityLayer.py` — identity, role, emotional/urgency context
+- `SarahMemoryCognitiveCompass.py` — bearing, path, anti-drift, and human-priority lock
+
+This keeps the architecture compact and avoids creating extra core files for logic that belongs inside the Cognitive organism.
+
+### **2. RAM-First Awareness Loop**
+
+The Living Loop is designed to stay lightweight. It uses compact thought packets, runtime status, capability state, and governed checkpoints instead of constantly writing raw loop data to disk.
+
+The loop should support continuity without causing:
+
+- log bloat
+- database spam
+- storage grinding
+- stale runtime facts
+- uncontrolled background execution
+
+This allows SarahMemory to keep a small internal awareness cycle active while still preserving performance on older hardware.
+
+### **3. Hyper-Awake REM and Emergency Instinct**
+
+Normal REM remains an idle/self-study process. Emergency situations cannot wait for idle REM.
+
+A new doctrine was added for **Hyper-Awake REM**, where SarahMemory rapidly evaluates high-risk situations in real time:
+
+```text
+Danger detected
+→ observe environment
+→ generate candidate responses
+→ grade against SafetyPolicies / SMGET / body capability
+→ choose safest bounded action
+→ verify outcome
+→ subtract failed methods
+→ escalate if needed
+→ log evidence
+```
+
+This creates the beginning of a governed **Emergency Instinct** layer for future robot, vehicle, assistive, and embodied AiOS use.
+
+### **4. Emergency Scenario Classes**
+
+Initial governed instinct classes include:
+
+- fire / smoke / electrical hazard
+- medical distress / elder-care assistance
+- imminent collision or physical harm
+- general human-life preservation events
+
+The priority order is:
+
+```text
+1. Preserve human life
+2. Prevent additional harm
+3. Notify responders / caregivers / contacts
+4. Prevent escalation
+5. Preserve robot/body only when it does not conflict with human safety
+6. Preserve property
+7. Log the full evidence chain
+```
+
+SarahMemory may act inside pre-governed emergency boundaries, but it may not improvise unsafe physical actions from raw LLM output.
+
+### **5. Evidence Logging and Accountability**
+
+Emergency Instinct events now require compact evidence/audit records. These logs are intended to capture:
+
+- what was detected
+- sensor confidence
+- body/capability state
+- candidate actions considered
+- unsafe actions rejected
+- selected action
+- governance basis
+- notifications sent
+- verification result
+- final outcome summary
+
+This is critical for robotics and care scenarios where SarahMemory may act correctly but the outcome may still be tragic. The system must preserve honest proof of what it perceived, decided, attempted, and reported.
+
+### **6. Governance Boundary Preserved**
+
+This update does **not** grant runaway autonomy.
+
+SarahMemory may:
+
+- observe
+- think
+- rank
+- prepare
+- warn
+- assist
+- act only inside pre-governed emergency rules
+- preserve evidence
+
+SarahMemory may not:
+
+- bypass SMGET
+- override SafetyPolicies
+- silently mutate files
+- invent unsafe emergency actions
+- treat helper model output as actuator authority
+- ignore user sovereignty
+
+### **Why This Update Matters**
+
+This is a major step toward SarahMemory behaving like a governed software organism instead of a passive chatbot. On a PC, the Living Loop supports continuity, awareness, and proactive cognition. In a future robot or machine body, the same loop becomes the foundation for governed instinct, emergency response, and auditable life-safety behavior.
+
+SarahMemory is being shaped to know what body it is in, know what it can safely do, detect danger, act within limits, protect humans first, and preserve evidence.
 ---
 
 # **📜 License**
