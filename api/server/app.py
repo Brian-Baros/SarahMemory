@@ -7261,7 +7261,12 @@ def api_cognitive_living_start():
     try:
         payload = request.get_json(silent=True) or {}
         import SarahMemoryCognitiveServices as _CogServices  # type: ignore
-        result = _CogServices.start_cognitive_living_loop(str(payload.get("reason") or "api_start"))
+        interval = payload.get("interval_seconds", payload.get("interval"))
+        result = _CogServices.start_cognitive_living_loop(
+            str(payload.get("reason") or "api_start"),
+            interval_seconds=interval,
+            daemon=True,
+        )
         return jsonify(result), 200
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.start"}), 500
