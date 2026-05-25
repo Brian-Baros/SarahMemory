@@ -699,6 +699,62 @@ def api_vision_frame_latest():
     return _response(payload, 200)
 
 
+
+# --- SM V8.0 Cognitive Instinct Vision Bridge ---
+def _maybe_evaluate_emergency_instinct_from_vision(data: Dict[str, Any], analysis: Dict[str, Any], hud_packet: Dict[str, Any], frame_meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Bridge vision observations into CognitiveServices emergency instinct evaluation.
+
+    This function does not execute physical actions. It only prepares/logs a
+    governed emergency-instinct evaluation when explicit emergency hints or
+    hazard-like labels are present.
+    """
+    try:
+        question = str(data.get("question") or data.get("text") or data.get("observation") or "")
+        explicit = bool(data.get("emergency") or data.get("emergency_mode") or data.get("hazard_type") or data.get("emergency_type"))
+        labels: list[str] = []
+        for t in (hud_packet.get("active_targets") or []):
+            if isinstance(t, dict):
+                labels.append(str(t.get("label") or ""))
+                labels.append(str(t.get("class") or ""))
+        flat = " ".join([question] + labels).lower()
+        hazard_words = ("fire", "smoke", "flame", "burning", "fall", "fallen", "unconscious", "choking", "inhaler", "asthma", "car", "vehicle", "collision")
+        if not explicit and not any(w in flat for w in hazard_words):
+            return None
+
+        hazard_type = str(data.get("hazard_type") or data.get("emergency_type") or "")
+        if not hazard_type:
+            if any(w in flat for w in ("fire", "smoke", "flame", "burning")):
+                hazard_type = "fire"
+            elif any(w in flat for w in ("inhaler", "asthma", "choking", "unconscious", "fallen", "fall")):
+                hazard_type = "medical"
+            elif any(w in flat for w in ("car", "vehicle", "collision")):
+                hazard_type = "collision"
+            else:
+                hazard_type = "unknown"
+
+        confidence = data.get("confidence") or data.get("sensor_confidence") or (0.82 if explicit else 0.58)
+        payload = {
+            "source": "appvision",
+            "hazard_type": hazard_type,
+            "confidence": confidence,
+            "human_risk": bool(data.get("human_risk") or data.get("person_at_risk")),
+            "observation": question or flat[:1000],
+            "sensor_evidence": {
+                "frame": frame_meta,
+                "hud_target_count": len(hud_packet.get("active_targets") or []),
+                "labels": labels[:40],
+                "analysis_ok": bool(analysis.get("ok", False)),
+            },
+            "capabilities": data.get("capabilities") if isinstance(data.get("capabilities"), dict) else {},
+            "environment": data.get("environment") if isinstance(data.get("environment"), dict) else {},
+            "failed_methods": data.get("failed_methods") if isinstance(data.get("failed_methods"), list) else [],
+        }
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        return _CogServices.evaluate_emergency_instinct(payload, caller="appvision.frame_bridge")
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "source": "appvision.emergency_instinct_bridge"}
+
+
 @bp.post("/api/vision/frame/submit")
 def api_vision_frame_submit():
     policy = _read_policy()
@@ -713,7 +769,11 @@ def api_vision_frame_submit():
     meta = _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=None, hud_packet=None)
     hud_packet = _build_hud_packet(frame, analysis, meta)
     _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=analysis, hud_packet=hud_packet)
-    return _response({"ok": True, "frame": meta, "frame_status": _frame_status_payload(), "hud_packet": hud_packet, "source": "appvision.frame_submit"})
+    emergency_instinct = _maybe_evaluate_emergency_instinct_from_vision(data, analysis, hud_packet, meta)
+    payload = {"ok": True, "frame": meta, "frame_status": _frame_status_payload(), "hud_packet": hud_packet, "source": "appvision.frame_submit"}
+    if emergency_instinct is not None:
+        payload["emergency_instinct"] = emergency_instinct
+    return _response(payload)
 
 
 @bp.get("/api/vision/hud/status")
@@ -925,7 +985,11 @@ def api_vision_analyze():
     frame_meta = _cache_frame(frame, str(data.get("source") or "vision_analyze"), analysis=None, hud_packet=None)
     hud_packet = _build_hud_packet(frame, analysis, frame_meta)
     _cache_frame(frame, str(data.get("source") or "vision_analyze"), analysis=analysis, hud_packet=hud_packet)
-    return _response({"ok": bool(analysis.get("ok")), "analysis": analysis, "hud_packet": hud_packet, "frame": frame_meta, "policy": policy, "source": "appvision.analysis"})
+    emergency_instinct = _maybe_evaluate_emergency_instinct_from_vision(data, analysis, hud_packet, frame_meta)
+    payload = {"ok": bool(analysis.get("ok")), "analysis": analysis, "hud_packet": hud_packet, "frame": frame_meta, "policy": policy, "source": "appvision.analysis"}
+    if emergency_instinct is not None:
+        payload["emergency_instinct"] = emergency_instinct
+    return _response(payload)
 
 
 @bp.post("/api/vision/learning/approve")

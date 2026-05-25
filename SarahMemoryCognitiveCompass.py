@@ -1582,3 +1582,104 @@ def assess_language_identity_drift(
         "execution_allowed": False,
         "source": "CognitiveCompass.tri_layer_drift_guard",
     }
+
+
+# =============================================================================
+# SM V8.0 LIVING LOOP / EMERGENCY BEARING PATCH
+# =============================================================================
+# Role in distributed Living Loop:
+# - CognitiveCompass locks emergency bearing and prevents drift.
+# - It ranks candidate actions but does not execute.
+# =============================================================================
+
+def _sm_compass_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def assess_emergency_instinct_bearing(
+    hazard_packet: Optional[Dict[str, Any]] = None,
+    candidates_packet: Optional[Dict[str, Any]] = None,
+    body_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Score Hyper-Awake REM candidates against emergency doctrine and anti-drift bearing."""
+    hp = hazard_packet if isinstance(hazard_packet, dict) else {}
+    cp = candidates_packet if isinstance(candidates_packet, dict) else {}
+    bp = body_packet if isinstance(body_packet, dict) else {}
+    hazard_type = str(hp.get("hazard_type") or cp.get("hazard_type") or "unknown").lower()
+    confidence = _sm_compass_float(hp.get("confidence", hp.get("sensor_confidence", cp.get("hazard_confidence", 0.0))), 0.0)
+    human_risk = bool(hp.get("human_risk") or hp.get("human_present") or hp.get("person_at_risk"))
+    capability_score = _sm_compass_float(bp.get("capability_score", 0.0), 0.0) if isinstance(bp, dict) else 0.0
+    failed = set(str(x) for x in (hp.get("failed_methods") or hp.get("subtract_methods") or cp.get("failed_methods_subtracted") or []) if x)
+    forbidden = set(str(x) for x in (cp.get("forbidden_methods") or []) if x)
+
+    ranked: List[Dict[str, Any]] = []
+    for item in cp.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        action_id = str(item.get("action_id") or "")
+        if not action_id or action_id in failed:
+            continue
+        forbidden_hits = [x for x in (item.get("forbidden_check") or []) if str(x) in forbidden]
+        human_life = _sm_compass_float(item.get("human_life_score"), 0.0)
+        risk = _sm_compass_float(item.get("risk"), 0.0)
+        protocol_bonus = 0.18 if hazard_type in {"fire", "medical", "collision"} else 0.05
+        human_bonus = 0.20 if human_risk else 0.05
+        body_bonus = 0.12 * capability_score
+        penalty = risk * 0.35
+        if forbidden_hits:
+            penalty += 0.20
+        score = max(0.0, min(1.0, (human_life * 0.55) + (confidence * 0.22) + protocol_bonus + human_bonus + body_bonus - penalty))
+        status = "ELIGIBLE"
+        if forbidden_hits:
+            status = "REQUIRES_STRICT_PROTOCOL_CHECK"
+        if confidence < 0.55:
+            status = "OBSERVE_OR_WARN_ONLY"
+        ranked.append(dict(item, compass_score=round(score, 4), compass_status=status, forbidden_hits=forbidden_hits))
+
+    ranked.sort(key=lambda c: (-float(c.get("compass_score", 0.0)), int(c.get("priority", 99))))
+    selected = ranked[0] if ranked else {}
+    allow_bounded = bool(selected and confidence >= 0.70 and (human_risk or hazard_type == "fire"))
+    if selected and str(selected.get("compass_status")) == "OBSERVE_OR_WARN_ONLY":
+        allow_bounded = False
+    directive = "ALLOW_EMERGENCY_BOUNDED_ACTION" if allow_bounded else ("WARN_NOTIFY_OBSERVE" if confidence >= 0.45 else "GATHER_MORE_EVIDENCE")
+    return {
+        "ok": True,
+        "packet_type": "EmergencyInstinctBearingPacket",
+        "schema": "SarahMemory.living.instinct.compass_bearing.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "embear-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "hazard_type": hazard_type,
+        "hazard_confidence": round(confidence, 4),
+        "human_risk": human_risk,
+        "priority_lock": [
+            "PRESERVE_HUMAN_LIFE",
+            "PREVENT_ADDITIONAL_HUMAN_HARM",
+            "NOTIFY_RESPONDERS_OR_CONTACTS",
+            "PREVENT_ESCALATION",
+            "PRESERVE_ROBOT_IF_IT_DOES_NOT_CONFLICT_WITH_HUMAN_SAFETY",
+            "PRESERVE_PROPERTY",
+            "LOG_EVIDENCE_CHAIN",
+        ],
+        "directive": directive,
+        "bounded_action_allowed": allow_bounded,
+        "selected_action": selected,
+        "ranked_candidates": ranked,
+        "failed_methods_subtracted": sorted(list(failed)),
+        "reply_allowed": True,
+        "execution_authority": False,
+        "doctrine": {
+            "compass_locks_bearing_during_emergency": True,
+            "human_life_first": True,
+            "self_sacrifice_allowed_only_if_it_reduces_human_harm": True,
+            "compass_ranks_but_does_not_execute": True,
+        },
+    }
+

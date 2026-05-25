@@ -3094,16 +3094,41 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
             return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"motherboard": motherboard}, trace=trace)
 
         if system_kind == "ram":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            r = body.get("ram") if isinstance(body.get("ram"), dict) else {}
-            ok = bool(r)
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.RAM", "ok": ok})
-            if ok:
-                reply = f"I have {r.get('total_gb', 'unknown')} GB RAM total, with {r.get('available_gb', 'unknown')} GB currently available ({r.get('usage_pct', 'unknown')}% used)."
-            else:
-                reply = "RAM details are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"ram": r}, trace=trace)
+            _trace_primary_lane(trace, 'system', 'CognitiveSelf.MemoryWitness')
+            try:
+                import SarahMemoryCognitiveSelf as _SMCognitiveSelf  # type: ignore
+
+                ram_answer = _SMCognitiveSelf.answer_ram_question(user_text)
+                ok = bool(ram_answer.get("ok", False))
+                packet = ram_answer.get("packet") if isinstance(ram_answer.get("packet"), dict) else {}
+                trace["tiers"].append({
+                    "tier": 0,
+                    "engine": "CognitiveSelf.MemoryWitness.RAM",
+                    "ok": ok,
+                    "type_verified": bool(packet.get("type_verified", False)),
+                    "capacity_source": packet.get("capacity_source"),
+                    "layout": "distributed_cognitive_living_loop",
+                })
+                return NeuronResult(
+                    ok=ok,
+                    reply=str(ram_answer.get("reply") or "RAM details are not currently verified."),
+                    intent="device_query",
+                    source=str(ram_answer.get("source") or "cognitive_self.memory_witness"),
+                    confidence=float(ram_answer.get("confidence") or (0.9 if ok else 0.6)),
+                    artifacts={"ram": packet},
+                    trace=trace,
+                )
+            except Exception as e:
+                # Fail-soft fallback: use the existing boot environment RAM snapshot.
+                body = _environment_body()
+                r = body.get("ram") if isinstance(body.get("ram"), dict) else {}
+                ok = bool(r)
+                trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.RAM.Fallback", "ok": ok, "error": str(e)})
+                if ok:
+                    reply = f"Memory = capacity: {r.get('total_gb', 'unknown')} GB; available now: {r.get('available_gb', 'unknown')} GB; usage: {r.get('usage_pct', 'unknown')}%. RAM type is unverified from this runtime body."
+                else:
+                    reply = "RAM details are not available in my unified environment snapshot."
+                return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.82 if ok else 0.55, artifacts={"ram": r}, trace=trace)
 
         if system_kind == "network":
             _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')

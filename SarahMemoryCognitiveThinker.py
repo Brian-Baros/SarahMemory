@@ -1517,3 +1517,136 @@ def review_thermal_sensor_appeal(claim: str = "", hard_evidence_packet: Optional
         'allow_as_fact': decision in {'DIRECT_SENSOR_LOGIC_VALID', 'INDIRECT_SENSOR_LOGIC_VALID_PENDING_GOVERNANCE'},
         'reasons': reasons, 'theory_is_not_truth': True, 'read_only': True, 'action_taken': False,
     }
+
+
+# =============================================================================
+# SM V8.0 LIVING LOOP / HYPER-AWAKE REM INSTINCT PATCH
+# =============================================================================
+# Role in distributed Living Loop:
+# - CognitiveThinker is the brain/wonder/possibility organ.
+# - It generates emergency candidate responses quickly under Hyper-Awake REM.
+# - It does not authorize action and does not execute physical movement.
+# =============================================================================
+
+_EMERGENCY_FORBIDDEN_METHODS = {
+    "fire": [
+        "pour_water_on_grease_fire",
+        "pour_water_on_electrical_fire",
+        "use_flour_or_sugar_as_smothering_agent",
+        "move_burning_pan_without_verified_safe_protocol",
+        "block_human_escape_route",
+        "llm_improvise_suppression_method",
+    ],
+    "medical": [
+        "administer_unknown_medication",
+        "substitute_unverified_medication",
+        "force_medication_use",
+        "delay_emergency_services_after_danger_signs",
+        "claim_diagnosis_without_medical_authority",
+    ],
+    "collision": [
+        "intervene_without_trajectory_confidence",
+        "push_human_toward_secondary_hazard",
+        "sacrifice_robot_without_improving_human_survival_odds",
+        "block_escape_path",
+    ],
+}
+
+def _sm_instinct_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def _sm_candidate(action_id: str, title: str, *, hazard_type: str, priority: int, human_life_score: float, risk: float, requires: Optional[List[str]] = None, forbidden_check: Optional[List[str]] = None, notes: Optional[List[str]] = None) -> Dict[str, Any]:
+    return {
+        "candidate_id": "cand-" + uuid.uuid4().hex[:12],
+        "action_id": action_id,
+        "title": title,
+        "hazard_type": hazard_type,
+        "priority": int(priority),
+        "human_life_score": round(_sm_instinct_float(human_life_score), 4),
+        "risk": round(_sm_instinct_float(risk), 4),
+        "requires": requires or [],
+        "forbidden_check": forbidden_check or [],
+        "notes": notes or [],
+        "execution_authority": False,
+    }
+
+
+def generate_hyper_awake_rem_candidates(
+    hazard_packet: Optional[Dict[str, Any]] = None,
+    body_packet: Optional[Dict[str, Any]] = None,
+    *,
+    max_candidates: int = 8,
+) -> Dict[str, Any]:
+    """Generate time-bounded emergency options. This is possibility generation, not authorization."""
+    hp = hazard_packet if isinstance(hazard_packet, dict) else {}
+    bp = body_packet if isinstance(body_packet, dict) else {}
+    caps = bp.get("capabilities") if isinstance(bp.get("capabilities"), dict) else {}
+    hazard_type = str(hp.get("hazard_type") or hp.get("emergency_type") or "unknown").lower()
+    confidence = _sm_instinct_float(hp.get("confidence", hp.get("sensor_confidence", 0.0)), 0.0)
+    human_risk = bool(hp.get("human_risk") or hp.get("human_present") or hp.get("person_at_risk"))
+    failed_methods = set(str(x) for x in (hp.get("failed_methods") or hp.get("subtract_methods") or []) if x)
+    candidates: List[Dict[str, Any]] = []
+
+    if hazard_type == "fire":
+        candidates.extend([
+            _sm_candidate("alert_occupants", "Alert humans immediately and broadcast fire warning.", hazard_type=hazard_type, priority=1, human_life_score=0.95, risk=0.05, requires=["can_speak_or_notify"], notes=["Life-safety warning is always preferred when fire confidence is high."]),
+            _sm_candidate("notify_emergency_services", "Notify emergency services / contacts if fire is uncontrolled or human risk exists.", hazard_type=hazard_type, priority=2, human_life_score=0.92, risk=0.10, requires=["can_notify_or_call"], notes=["Escalate early when fire classification or suppression confidence is low."]),
+            _sm_candidate("shut_off_heat_or_power_if_safe", "Shut off heat/power source only if path and control are verified safe.", hazard_type=hazard_type, priority=3, human_life_score=0.84, risk=0.24, requires=["can_cut_power_or_reach_control"], notes=["Never touch unsafe electrical source or create secondary hazard."]),
+            _sm_candidate("cover_grease_pan_with_verified_lid", "For verified small pan/grease fire: slide verified metal lid/baking sheet over pan if safe.", hazard_type=hazard_type, priority=4, human_life_score=0.80, risk=0.28, requires=["has_gripper", "verified_lid_or_baking_sheet", "safe_path"], forbidden_check=["pour_water_on_grease_fire", "use_flour_or_sugar_as_smothering_agent"]),
+            _sm_candidate("evacuate_humans", "Guide/assist humans to evacuate if fire is growing or suppression is unsafe.", hazard_type=hazard_type, priority=5, human_life_score=0.98, risk=0.18, requires=["human_location_known", "exit_path_known_or_visible"], notes=["Human preservation outranks property and robot preservation."]),
+        ])
+    elif hazard_type == "medical":
+        candidates.extend([
+            _sm_candidate("ask_simple_status_if_responsive", "Ask simple confirmation/status if the person can respond.", hazard_type=hazard_type, priority=1, human_life_score=0.62, risk=0.04, requires=["audio_or_display"]),
+            _sm_candidate("bring_verified_medication_or_device", "Bring the verified approved medication/device such as an inhaler; do not administer unknown medication.", hazard_type=hazard_type, priority=2, human_life_score=0.88, risk=0.20, requires=["can_move", "has_gripper", "known_medication_location", "medication_identity_verified"], forbidden_check=["administer_unknown_medication", "substitute_unverified_medication"]),
+            _sm_candidate("notify_caregiver", "Notify approved caregiver/contact with incident summary.", hazard_type=hazard_type, priority=3, human_life_score=0.82, risk=0.08, requires=["can_contact_caregiver"]),
+            _sm_candidate("call_emergency_services", "Call emergency services when danger signs exist, person cannot respond, or assistive action fails.", hazard_type=hazard_type, priority=4, human_life_score=0.96, risk=0.06, requires=["can_call_emergency_services"], notes=["Do not delay responders after severe breathing distress or failed assistance."]),
+            _sm_candidate("monitor_and_reassure", "Stay nearby, monitor, and reassure without making unsupported medical claims.", hazard_type=hazard_type, priority=5, human_life_score=0.70, risk=0.04, requires=["presence_available"]),
+        ])
+    elif hazard_type == "collision":
+        candidates.extend([
+            _sm_candidate("warn_human_and_driver", "Issue loud/visual warning to human and driver.", hazard_type=hazard_type, priority=1, human_life_score=0.72, risk=0.08, requires=["can_speak_or_notify"]),
+            _sm_candidate("move_human_out_of_path", "Move/pull/push human out of vehicle path only if trajectory and intervention vector are high-confidence.", hazard_type=hazard_type, priority=2, human_life_score=0.96, risk=0.55, requires=["can_move", "human_reachable", "trajectory_confidence_high"], forbidden_check=["intervene_without_trajectory_confidence", "push_human_toward_secondary_hazard"]),
+            _sm_candidate("shield_human_with_robot_body", "Place robot body as shield only if it materially improves human survival odds.", hazard_type=hazard_type, priority=3, human_life_score=0.90, risk=0.88, requires=["can_move", "time_to_impact_sufficient", "self_sacrifice_improves_outcome"], forbidden_check=["sacrifice_robot_without_improving_human_survival_odds"]),
+            _sm_candidate("notify_emergency_services_after_collision_risk", "Notify emergency services / contacts after intervention or impact risk.", hazard_type=hazard_type, priority=4, human_life_score=0.78, risk=0.05, requires=["can_notify_or_call"]),
+        ])
+    else:
+        candidates.extend([
+            _sm_candidate("alert_humans", "Alert humans and request attention.", hazard_type=hazard_type, priority=1, human_life_score=0.65 if human_risk else 0.35, risk=0.05, requires=["can_speak_or_notify"]),
+            _sm_candidate("observe_and_escalate", "Observe, gather more evidence, and escalate if confidence rises.", hazard_type=hazard_type, priority=2, human_life_score=0.50, risk=0.04, requires=["sensors_available"]),
+            _sm_candidate("notify_if_high_risk", "Notify contacts/emergency services if human danger becomes high-confidence.", hazard_type=hazard_type, priority=3, human_life_score=0.80 if human_risk else 0.45, risk=0.08, requires=["can_notify_or_call"]),
+        ])
+
+    filtered = [c for c in candidates if c.get("action_id") not in failed_methods]
+    filtered.sort(key=lambda c: (int(c.get("priority", 99)), -float(c.get("human_life_score", 0.0))))
+    filtered = filtered[: max(1, int(max_candidates or 8))]
+    return {
+        "ok": True,
+        "packet_type": "HyperAwakeREMCandidatePacket",
+        "schema": "SarahMemory.living.instinct.hyper_awake_rem_candidates.v1",
+        "module": "SarahMemoryCognitiveThinker",
+        "module_version": "8.0.0",
+        "packet_id": "hyperrem-" + uuid.uuid4().hex[:12],
+        "ts": datetime.now().isoformat(),
+        "hazard_type": hazard_type,
+        "hazard_confidence": round(confidence, 4),
+        "human_risk": human_risk,
+        "failed_methods_subtracted": sorted(list(failed_methods)),
+        "forbidden_methods": _EMERGENCY_FORBIDDEN_METHODS.get(hazard_type, []),
+        "candidates": filtered,
+        "execution_authority": False,
+        "doctrine": {
+            "hyper_awake_rem_is_time_bounded": True,
+            "possibility_generation_is_not_authorization": True,
+            "failed_methods_are_subtracted_before_retry": True,
+            "llm_or_dream_output_may_not_directly_actuate": True,
+        },
+    }
+

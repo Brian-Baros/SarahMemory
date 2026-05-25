@@ -1352,3 +1352,210 @@ def get_identity_response(user_input: Optional[str] = None) -> str:
     ident = resolve_active_identity({})
     name = ident.get("active_name") or "Sarah"
     return f"I'm {name} — your SarahMemory AiOS companion."
+
+
+# =============================================================================
+# SM V8.0 LIVING LOOP / COGNITIVE INSTINCT BODY PATCH
+# =============================================================================
+# Role in distributed Living Loop:
+# - CognitiveSelf is the body/capability witness.
+# - It verifies what body SarahMemory is in and what can be safely claimed.
+# - It does not execute emergency actions and does not bypass CognitiveServices.
+# =============================================================================
+
+def _sm_living_settings_dir() -> str:
+    try:
+        return str(getattr(config, "SETTINGS_DIR", os.path.join(_data_dir(), "settings")))
+    except Exception:
+        return os.path.join(_data_dir(), "settings")
+
+
+def _sm_living_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def _sm_living_memory_snapshot() -> Dict[str, Any]:
+    """RAM witness with no PDH dependency. Uses psutil first, then fail-soft."""
+    out: Dict[str, Any] = {
+        "ok": False,
+        "total_mb": None,
+        "available_mb": None,
+        "used_pct": None,
+        "type": "unverified",
+        "type_verified": False,
+        "capacity_source": "unavailable",
+        "notes": [],
+    }
+    try:
+        import psutil  # type: ignore
+        vm = psutil.virtual_memory()
+        out.update({
+            "ok": True,
+            "total_mb": int(round(float(vm.total) / (1024 * 1024))),
+            "available_mb": int(round(float(vm.available) / (1024 * 1024))),
+            "used_pct": round(float(vm.percent), 2),
+            "capacity_source": "psutil.virtual_memory",
+        })
+    except Exception as exc:
+        out["notes"].append("psutil_unavailable:" + str(exc)[:160])
+
+    # Windows CIM fallback for physical memory type/capacity. No PDH counters.
+    try:
+        if platform.system().lower().startswith("win"):
+            import subprocess
+            cmd = [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                "-Command",
+                "Get-CimInstance Win32_PhysicalMemory | "
+                "Select-Object Capacity,SMBIOSMemoryType,MemoryType,Speed,Manufacturer,PartNumber | ConvertTo-Json -Depth 4"
+            ]
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=4)
+            if res.returncode == 0 and res.stdout.strip():
+                raw = json.loads(res.stdout)
+                rows = raw if isinstance(raw, list) else [raw]
+                rows = [r for r in rows if isinstance(r, dict)]
+                type_map = {
+                    20: "DDR", 21: "DDR2", 22: "DDR2 FB-DIMM", 24: "DDR3",
+                    26: "DDR4", 27: "LPDDR", 28: "LPDDR2", 29: "LPDDR3",
+                    30: "LPDDR4", 32: "HBM", 33: "HBM2", 34: "DDR5", 35: "LPDDR5",
+                }
+                types = []
+                total = 0
+                speeds = []
+                for r in rows:
+                    cap = r.get("Capacity")
+                    try:
+                        total += int(cap or 0)
+                    except Exception:
+                        pass
+                    tcode = r.get("SMBIOSMemoryType") or r.get("MemoryType")
+                    try:
+                        tname = type_map.get(int(tcode), "")
+                        if tname:
+                            types.append(tname)
+                    except Exception:
+                        pass
+                    if r.get("Speed"):
+                        speeds.append(r.get("Speed"))
+                if total and not out.get("total_mb"):
+                    out["total_mb"] = int(round(total / (1024 * 1024)))
+                    out["ok"] = True
+                    out["capacity_source"] = "Win32_PhysicalMemory"
+                if types:
+                    out["type"] = sorted(set(types))[0] if len(set(types)) == 1 else ", ".join(sorted(set(types)))
+                    out["type_verified"] = True
+                if speeds:
+                    out["speed_mhz"] = sorted(set(str(s) for s in speeds))
+                out["slot_count"] = len(rows)
+    except Exception as exc:
+        out["notes"].append("cim_memory_probe_failed:" + str(exc)[:160])
+
+    return out
+
+
+def answer_ram_question(question: str = "What type of RAM do you have?") -> Dict[str, Any]:
+    """Truthful RAM answer used by Neuron/system fact lanes. Does not use PDH counters."""
+    pkt = _sm_living_memory_snapshot()
+    ok = bool(pkt.get("ok"))
+    total_gb = round(float(pkt.get("total_mb") or 0) / 1024.0, 2) if pkt.get("total_mb") else None
+    avail_gb = round(float(pkt.get("available_mb") or 0) / 1024.0, 2) if pkt.get("available_mb") else None
+    ram_type = str(pkt.get("type") or "unverified")
+    verified_phrase = "verified" if pkt.get("type_verified") else "unverified from this runtime body"
+    if ok:
+        reply = f"Memory = capacity: {total_gb if total_gb is not None else 'unknown'} GB; available now: {avail_gb if avail_gb is not None else 'unknown'} GB; usage: {pkt.get('used_pct', 'unknown')}%; RAM type: {ram_type} ({verified_phrase})."
+    else:
+        reply = "Memory = unavailable from the current runtime body. I will not guess the RAM type or capacity."
+    return {
+        "ok": ok,
+        "reply": reply,
+        "packet": pkt,
+        "source": "cognitive_self.memory_witness",
+        "confidence": 0.92 if ok and pkt.get("type_verified") else (0.78 if ok else 0.25),
+        "question": str(question or ""),
+    }
+
+
+def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build body/resource/capability witness packet for PC, robot, vehicle, cloud, or headless bodies."""
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    device_mode = str(ctx.get("device_mode") or ctx.get("body_mode") or getattr(config, "DEVICE_MODE", "pc") if config else "pc").lower()
+    run_mode = str(ctx.get("run_mode") or getattr(config, "RUN_MODE", "local") if config else "local").lower()
+    explicit_caps = ctx.get("capabilities") if isinstance(ctx.get("capabilities"), dict) else {}
+    ram = _sm_living_memory_snapshot()
+    body_class = "robot" if device_mode in {"robot", "robotic", "mobile_robot", "house_robot"} else ("vehicle" if device_mode in {"vehicle", "car", "automotive"} else ("cloud" if run_mode == "cloud" else "pc"))
+    default_caps = {
+        "can_speak": bool(explicit_caps.get("can_speak", True)),
+        "can_notify": bool(explicit_caps.get("can_notify", True)),
+        "can_move": bool(explicit_caps.get("can_move", body_class in {"robot", "vehicle"})),
+        "has_gripper": bool(explicit_caps.get("has_gripper", False)),
+        "has_camera": bool(explicit_caps.get("has_camera", ctx.get("has_camera", False))),
+        "has_microphone": bool(explicit_caps.get("has_microphone", ctx.get("has_microphone", False))),
+        "can_call_emergency_services": bool(explicit_caps.get("can_call_emergency_services", False)),
+        "can_contact_caregiver": bool(explicit_caps.get("can_contact_caregiver", False)),
+        "can_cut_power": bool(explicit_caps.get("can_cut_power", False)),
+        "has_fire_extinguisher_access": bool(explicit_caps.get("has_fire_extinguisher_access", False)),
+        "knows_medication_location": bool(explicit_caps.get("knows_medication_location", False)),
+    }
+    return {
+        "packet_type": "LivingBodyCapabilityPacket",
+        "schema": "SarahMemory.living.body_capability.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "bodycap-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "body_class": body_class,
+        "device_mode": device_mode,
+        "run_mode": run_mode,
+        "host": _host_name(),
+        "node_name": _node_name(),
+        "safe_mode": _flag("SAFE_MODE", True),
+        "local_only": _flag("LOCAL_ONLY_MODE", False),
+        "developersmode": _flag("DEVELOPERSMODE", False),
+        "neoskymatrix": _flag("NEOSKYMATRIX", False),
+        "capabilities": default_caps,
+        "resource_witness": {"ram": ram},
+        "execution_authority": False,
+        "doctrine": {
+            "cognitive_self_witnesses_body": True,
+            "discovery_is_not_activation": True,
+            "capability_presence_is_not_action_authority": True,
+        },
+    }
+
+
+def build_emergency_body_capability_packet(hazard_packet: Optional[Dict[str, Any]] = None, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Emergency-specific body capability witness used by CognitiveServices."""
+    hp = hazard_packet if isinstance(hazard_packet, dict) else {}
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    merged = dict(ctx)
+    if isinstance(hp.get("capabilities"), dict):
+        merged["capabilities"] = hp.get("capabilities")
+    body = build_living_body_capability_packet(merged)
+    caps = body.get("capabilities") if isinstance(body.get("capabilities"), dict) else {}
+    hazard_type = str(hp.get("hazard_type") or hp.get("emergency_type") or "unknown").lower()
+    needed: List[str] = []
+    if hazard_type == "fire":
+        needed = ["has_camera", "can_notify", "can_move", "has_gripper", "has_fire_extinguisher_access", "can_cut_power"]
+    elif hazard_type == "medical":
+        needed = ["has_camera", "has_microphone", "can_move", "has_gripper", "knows_medication_location", "can_contact_caregiver", "can_call_emergency_services"]
+    elif hazard_type == "collision":
+        needed = ["has_camera", "can_move", "can_notify"]
+    ready = {k: bool(caps.get(k)) for k in needed}
+    body.update({
+        "packet_type": "EmergencyBodyCapabilityPacket",
+        "schema": "SarahMemory.living.instinct.body_capability.v1",
+        "hazard_type": hazard_type,
+        "needed_capabilities": needed,
+        "ready_capabilities": ready,
+        "capability_score": round(sum(1 for v in ready.values() if v) / max(1, len(ready)), 4),
+        "self_sacrifice_allowed_if_human_life_risk": bool(body.get("body_class") in {"robot", "vehicle"}),
+        "execution_authority": False,
+    })
+    return body
+

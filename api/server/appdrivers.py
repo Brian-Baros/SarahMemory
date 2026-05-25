@@ -971,6 +971,42 @@ def apply(app):
 
 # ------------------------------ app.py Integration ------------------------------
 
+
+
+# =============================================================================
+# SM V8.0 Cognitive Instinct Driver Contract Bridge
+# =============================================================================
+# Driver bridge validates emergency action contracts for future robot bodies.
+# It does not execute hardware actions by itself.
+# =============================================================================
+
+@bp.post("/api/drivers/emergency/contract/validate")
+def api_drivers_emergency_contract_validate():
+    if not _verify_auth():
+        return _err("unauthorized", 401)
+    data = request.get_json(silent=True) or {}
+    try:
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.evaluate_emergency_instinct(data, caller="appdrivers.emergency_contract_validate")
+        contract = result.get("action_contract") if isinstance(result.get("action_contract"), dict) else {}
+        return _ok(
+            validation={
+                "contract_present": bool(contract),
+                "contract_id": contract.get("contract_id"),
+                "operator_core_dispatch_required": True,
+                "msdc_body_dispatch_required_for_physical_action": True,
+                "driver_bridge_executes_directly": False,
+                "bounded_action_allowed": bool(result.get("bounded_action_allowed")),
+                "decision": result.get("decision"),
+            },
+            instinct=result,
+            source="appdrivers.emergency_contract_validate",
+        )
+    except Exception as exc:
+        return _err(str(exc), 500, source="appdrivers.emergency_contract_validate")
+
+
+
 def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, sign_ok=None):
     global _CONNECT_SQLITE, _META_DB, _API_KEY_AUTH_OK, _SIGN_OK
 

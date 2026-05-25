@@ -7226,6 +7226,93 @@ def api_terminal_execute():
     result = smterm.terminal_api_execute(payload, caller="Flask:/api/terminal/execute")
     return jsonify(result), (200 if result.get("ok") else 403 if result.get("blocked") else 400)
 
+
+# =============================================================================
+# SM V8.0 Cognitive Living Loop / Emergency Instinct API
+# =============================================================================
+# These endpoints expose the distributed Cognitive Living Loop and Emergency
+# Instinct governance surface. They do not directly actuate hardware; physical
+# action still requires SMGET/OperatorCore/MSDC dispatch.
+# =============================================================================
+
+@app.get("/api/cognitive/living/status")
+def api_cognitive_living_status():
+    try:
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.cognitive_living_loop_status()
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.status"}), 500
+
+
+@app.post("/api/cognitive/living/tick")
+def api_cognitive_living_tick():
+    try:
+        payload = request.get_json(silent=True) or {}
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.run_cognitive_living_tick(payload)
+        return jsonify(result), 200 if result.get("ok") else 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.tick"}), 500
+
+
+@app.post("/api/cognitive/living/start")
+def api_cognitive_living_start():
+    try:
+        payload = request.get_json(silent=True) or {}
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.start_cognitive_living_loop(str(payload.get("reason") or "api_start"))
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.start"}), 500
+
+
+@app.post("/api/cognitive/living/stop")
+def api_cognitive_living_stop():
+    try:
+        payload = request.get_json(silent=True) or {}
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.stop_cognitive_living_loop(str(payload.get("reason") or "api_stop"))
+        return jsonify(result), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.stop"}), 500
+
+
+@app.post("/api/cognitive/instinct/evaluate")
+def api_cognitive_instinct_evaluate():
+    try:
+        payload = request.get_json(silent=True) or {}
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.evaluate_emergency_instinct(payload, caller="Flask:/api/cognitive/instinct/evaluate")
+        return jsonify(result), 200 if result.get("ok") else 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.instinct.evaluate"}), 500
+
+
+@app.post("/api/cognitive/instinct/trigger")
+def api_cognitive_instinct_trigger():
+    try:
+        payload = request.get_json(silent=True) or {}
+        execute = bool(payload.get("execute", False))
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.run_emergency_instinct(payload, execute=execute, caller="Flask:/api/cognitive/instinct/trigger")
+        return jsonify(result), 200 if result.get("ok") else 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.instinct.trigger"}), 500
+
+
+@app.get("/api/cognitive/instinct/logs")
+def api_cognitive_instinct_logs():
+    try:
+        limit = int(request.args.get("limit", "25") or 25)
+        incident_id = str(request.args.get("incident_id", "") or "")
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        result = _CogServices.list_emergency_instinct_logs(limit=limit, incident_id=incident_id)
+        return jsonify(result), 200 if result.get("ok") else 400
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.instinct.logs"}), 500
+
+
 def _start_autonomous_services():
     try:
         import SarahMemoryGlobals as config

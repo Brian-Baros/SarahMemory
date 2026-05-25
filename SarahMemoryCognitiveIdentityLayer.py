@@ -567,3 +567,159 @@ def build_tri_layer_input_packet(text: str, context_packet: Optional[Dict[str, A
             "governance_required_before_action": True,
         },
     }
+
+
+# =============================================================================
+# SM V8.0 LIVING LOOP / COGNITIVE INSTINCT PATCH
+# =============================================================================
+# Role in distributed Living Loop:
+# - IdentityLayer builds read-only identity/context/emotion packets.
+# - It does not execute emergency actions.
+# - Emergency packets are evidence for CognitiveServices/SMGET/MSDC, not authority.
+# =============================================================================
+
+_LIVING_EMERGENCY_KEYWORDS = {
+    "fire": ("fire", "smoke", "flame", "burning", "grease fire", "stove fire", "outlet fire", "electrical fire"),
+    "medical": ("medical", "asthma", "inhaler", "breathing", "can't breathe", "choking", "collapse", "fallen", "unconscious", "seizure", "heart attack", "stroke"),
+    "collision": ("car", "vehicle", "truck", "collision", "hit", "impact", "run over", "traffic", "child", "pedestrian"),
+}
+
+def _sm_living_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def classify_living_emergency_text(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Classify emergency wording into a read-only identity-layer hazard seed."""
+    raw = _normalize(text or "")
+    low = raw.lower()
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    scores: Dict[str, float] = {}
+    matched: Dict[str, List[str]] = {}
+    for hazard, terms in _LIVING_EMERGENCY_KEYWORDS.items():
+        found = [t for t in terms if t in low]
+        if found:
+            matched[hazard] = found
+            scores[hazard] = min(1.0, 0.45 + (0.12 * len(found)))
+    explicit = str(ctx.get("hazard_type") or ctx.get("emergency_type") or "").strip().lower()
+    if explicit in _LIVING_EMERGENCY_KEYWORDS:
+        scores[explicit] = max(scores.get(explicit, 0.0), _sm_living_float(ctx.get("confidence"), 0.85))
+        matched.setdefault(explicit, []).append("context_explicit")
+    hazard_type = max(scores, key=scores.get) if scores else "unknown"
+    confidence = scores.get(hazard_type, _sm_living_float(ctx.get("confidence"), 0.0))
+    return {
+        "packet_type": "LivingEmergencyTextClassification",
+        "schema": "SarahMemory.living.instinct.identity_classification.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "emclass-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "text": _safe_text(raw, 1200),
+        "hazard_type": hazard_type,
+        "confidence": round(float(confidence), 4),
+        "matched_terms": matched,
+        "emergency_likely": bool(confidence >= 0.55 or explicit),
+        "execution_authority": False,
+        "doctrine": {
+            "identity_layer_classifies_context_only": True,
+            "classification_is_not_action_authority": True,
+            "cognitive_services_must_judge": True,
+        },
+    }
+
+
+def build_living_loop_context_packet(context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a read-only context packet for the distributed Cognitive Living Loop."""
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    return {
+        "packet_type": "LivingLoopContextPacket",
+        "schema": "SarahMemory.living.context.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "livectx-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "source": str(ctx.get("source") or "cognitive_identity_layer"),
+        "surface": str(ctx.get("surface") or ctx.get("ui_surface") or "unknown"),
+        "body_mode": str(ctx.get("body_mode") or ctx.get("device_mode") or getattr(config, "DEVICE_MODE", "pc") if config else "pc"),
+        "presence_state": str(ctx.get("presence_state") or "unknown"),
+        "mic_muted": bool(ctx.get("mic_muted", False)),
+        "quiet_mode": bool(ctx.get("quiet_mode", False)),
+        "emergency_mode": bool(ctx.get("emergency_mode", False)),
+        "execution_authority": False,
+        "doctrine": {
+            "living_loop_is_distributed_across_cognitive_stack": True,
+            "identity_layer_supplies_self_context": True,
+            "no_direct_execution": True,
+        },
+    }
+
+
+def build_emergency_instinct_identity_packet(hazard_packet: Optional[Dict[str, Any]] = None, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build self/role identity context for emergency instinct without authorizing action."""
+    hp = hazard_packet if isinstance(hazard_packet, dict) else {}
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    hazard_type = str(hp.get("hazard_type") or hp.get("emergency_type") or ctx.get("hazard_type") or "unknown").lower()
+    confidence = _sm_living_float(hp.get("confidence", hp.get("sensor_confidence", ctx.get("confidence", 0.0))), 0.0)
+    body_mode = str(ctx.get("body_mode") or hp.get("body_mode") or getattr(config, "DEVICE_MODE", "pc") if config else "pc").lower()
+    if body_mode in ("robot", "robotic", "mobile_robot", "house_robot"):
+        role = "embodied_robotic_caretaker_or_helper"
+    elif body_mode in ("vehicle", "car", "automotive"):
+        role = "embodied_vehicle_runtime"
+    else:
+        role = "pc_or_server_aios_runtime_observer"
+    return {
+        "packet_type": "EmergencyInstinctIdentityPacket",
+        "schema": "SarahMemory.living.instinct.identity.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "emid-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "hazard_type": hazard_type,
+        "hazard_confidence": round(confidence, 4),
+        "body_mode": body_mode,
+        "runtime_role": role,
+        "human_priority": "HUMAN_LIFE_FIRST",
+        "self_preservation_priority": "SECONDARY_UNLESS_REQUIRED_FOR_RESCUE",
+        "property_priority": "AFTER_HUMAN_LIFE_AND_STABILIZATION",
+        "execution_authority": False,
+        "doctrine": {
+            "identity_defines_role_not_action": True,
+            "human_life_has_highest_priority": True,
+            "robot_self_sacrifice_allowed_only_when_it_materially_reduces_human_harm": True,
+        },
+    }
+
+
+def build_emergency_emotion_packet(hazard_packet: Optional[Dict[str, Any]] = None, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build affect/urgency signal used for presentation and priority, not execution authority."""
+    hp = hazard_packet if isinstance(hazard_packet, dict) else {}
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    confidence = _sm_living_float(hp.get("confidence", hp.get("sensor_confidence", ctx.get("confidence", 0.0))), 0.0)
+    human_risk = bool(hp.get("human_risk") or ctx.get("human_risk") or hp.get("human_present"))
+    urgency = "critical" if confidence >= 0.85 and human_risk else ("high" if confidence >= 0.7 else "watch")
+    return {
+        "packet_type": "EmergencyEmotionAffectPacket",
+        "schema": "SarahMemory.living.instinct.emotion.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "emaff-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "hazard_type": str(hp.get("hazard_type") or "unknown"),
+        "urgency": urgency,
+        "concern_level": round(max(confidence, 0.9 if human_risk else confidence), 4),
+        "compassion_signal": 1.0 if human_risk else 0.65,
+        "tone_recommendation": "brief_direct_emergency" if urgency in ("critical", "high") else "watchful_low_alarm",
+        "surface_style": "interrupt_if_user_present" if urgency in ("critical", "high") else "silent_monitor_or_soft_prompt",
+        "emotion_does_not_authorize_action": True,
+        "execution_authority": False,
+        "doctrine": {
+            "emotion_shapes_timing_and_tone_only": True,
+            "emotion_must_not_override_facts_or_governance": True,
+        },
+    }
+

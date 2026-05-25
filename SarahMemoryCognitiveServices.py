@@ -916,7 +916,7 @@ def _lane_family_for_intent(intent: str) -> str:
         return "ACTION"
     if label in ("CREATIVE_REQUEST",):
         return "CREATIVE"
-    if label in ("DIAGNOSTICS", "SYSTEM_INFO", "PATCH_OR_UPDATE"):
+    if label in ("DIAGNOSTICS", "SYSTEM_INFO", "PATCH_OR_UPDATE", "EMERGENCY_INSTINCT"):
         return "SYSTEM"
     if label in ("NETWORK_ACCESS",):
         return "NETWORK"
@@ -998,6 +998,7 @@ def _validate_scope_modules(target_files: list, subsystems: list) -> Dict[str, A
 # and NETWORK_ACCESS before FILESYSTEM_WRITE so phrases like "run diagnostics" and
 # "download from the internet" classify correctly.
 _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
+    ("EMERGENCY_INSTINCT", r"\b(fire|smoke|flame|grease\s+fire|electrical\s+fire|asthma|inhaler|choking|can\'t\s+breathe|cannot\s+breathe|unconscious|collision|about\s+to\s+hit|hit\s+by\s+(?:a\s+)?car|vehicle\s+impact|emergency)\b"),
     ("PATCH_OR_UPDATE", r"\b(update|upgrade|patch|monkey\s*patch|self[-\s]*repair|fix\s+code)\b"),
     ("DIAGNOSTICS", r"\b(diagnose|diagnostics|health\s*check|self\s*check|log\s*scan)\b"),
     ("SYSTEM_INFO", r"\b(gpu|vram|cuda|disk\s*space|free\s*space|drive\s*space|storage|cpu\s*usage|ram\s*usage|memory\s*usage|hardware\s*stats|system\s*stats)\b"),
@@ -2111,6 +2112,28 @@ def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     user_present = payload.get("user_present", True)
     user_consented = payload.get("user_consented", False)
 
+    if classify_intent(str(text or "")) == "EMERGENCY_INSTINCT" or bool(payload.get("emergency") or payload.get("hazard_type") or payload.get("emergency_type")):
+        instinct_payload = dict(ctx) if isinstance(ctx, dict) else {}
+        instinct_payload.update(payload)
+        instinct_payload.setdefault("text", text)
+        instinct = evaluate_emergency_instinct(instinct_payload, caller=str(caller or "process_cognitive_request"))
+        response = {
+            "ok": True,
+            "governance": {
+                "decision": instinct.get("decision"),
+                "allow": bool(instinct.get("bounded_action_allowed")),
+                "require_user": bool(instinct.get("requires_user")),
+                "intent": "EMERGENCY_INSTINCT",
+                "execution_allowed": False,
+                "emergency_instinct": instinct,
+            },
+            "lane_family": "SYSTEM",
+            "primary_lane": "SYSTEM",
+            "emergency_instinct": instinct,
+            "version": "8.0.0",
+        }
+        return response
+
     dec = govern_request(
         text,
         caller=caller,
@@ -2359,7 +2382,7 @@ def build_six_question_governance_packet(
     return {
         "packet_type": "SixQuestionGovernancePacket",
         "schema": "SarahMemory.six_question_governance.v1",
-        "module": MODULE_NAME,
+        "module": "SarahMemoryCognitiveServices",
         "module_version": "8.0.0",
         "packet_id": "six-" + uuid.uuid4().hex[:12],
         "ts": datetime.now().isoformat(),
@@ -2404,3 +2427,456 @@ def _sm_attach_six_question_packet_to_decision(
     dec.setdefault("tri_layer", {})["six_question_governance_packet"] = pkt
     dec.setdefault("trace", {})["six_question_final"] = pkt.get("final_decision")
     return dec
+
+
+# =============================================================================
+# SM V8.0 DISTRIBUTED LIVING LOOP / COGNITIVE INSTINCT PATCH
+# =============================================================================
+# Role in distributed Living Loop:
+# - CognitiveServices is the judgment/governance coordinator.
+# - Emergency Instinct is a bounded autonomy envelope, not free-form autonomy.
+# - This module evaluates and logs; physical execution remains SMGET/OperatorCore/MSDC.
+# =============================================================================
+
+import hashlib as _sm_living_hashlib
+
+_LIVING_LOOP_STATE: Dict[str, Any] = {
+    "started": False,
+    "started_ts": "",
+    "last_tick_ts": "",
+    "tick_count": 0,
+    "last_decision": {},
+}
+_LIVING_LOOP_LOCK = threading.RLock()
+
+_EMERGENCY_INSTINCT_TYPES = {"fire", "medical", "collision", "unknown"}
+_EMERGENCY_MIN_CONFIDENCE = 0.70
+_EMERGENCY_HUMAN_PRIORITY = [
+    "PRESERVE_HUMAN_LIFE",
+    "PREVENT_ADDITIONAL_HUMAN_HARM",
+    "NOTIFY_RESPONDERS_OR_CONTACTS",
+    "PREVENT_ESCALATION",
+    "PRESERVE_ROBOT_IF_IT_DOES_NOT_CONFLICT_WITH_HUMAN_SAFETY",
+    "PRESERVE_PROPERTY",
+    "LOG_EVIDENCE_CHAIN",
+]
+
+def _sm_living_now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+
+
+def _sm_living_float(value: Any, default: float = 0.0) -> float:
+    try:
+        v = float(value)
+        if v != v:
+            return default
+        return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def _sm_living_safe(value: Any, limit: int = 2000) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, dict):
+        return {str(k)[:120]: _sm_living_safe(v, limit=limit) for k, v in list(value.items())[:120]}
+    if isinstance(value, (list, tuple, set)):
+        return [_sm_living_safe(v, limit=limit) for v in list(value)[:150]]
+    return str(value)[:limit]
+
+
+def _sm_emergency_dir() -> str:
+    try:
+        root = str(getattr(config, "DATASETS_DIR", _datasets_dir()))
+    except Exception:
+        root = _datasets_dir()
+    path = os.path.join(root, "emergency_instinct")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+    return path
+
+
+def _sm_emergency_chain_path() -> str:
+    return os.path.join(_sm_emergency_dir(), "emergency_instinct_ledger.jsonl")
+
+
+def _sm_emergency_index_path() -> str:
+    return os.path.join(_sm_emergency_dir(), "emergency_instinct_index.json")
+
+
+def _sm_read_last_emergency_hash() -> str:
+    path = _sm_emergency_index_path()
+    try:
+        if os.path.isfile(path):
+            data = json.loads(open(path, "r", encoding="utf-8").read() or "{}")
+            return str(data.get("last_hash") or "")
+    except Exception:
+        pass
+    return ""
+
+
+def _sm_write_last_emergency_hash(last_hash: str, incident_id: str = "") -> None:
+    path = _sm_emergency_index_path()
+    try:
+        payload = {
+            "schema": "SarahMemory.emergency_instinct.index.v1",
+            "updated_ts": _sm_living_now_iso(),
+            "last_hash": str(last_hash or ""),
+            "last_incident_id": str(incident_id or ""),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def log_emergency_instinct_event(
+    event_kind: str,
+    incident_id: str,
+    details: Optional[Dict[str, Any]] = None,
+    *,
+    severity: str = "INFO",
+) -> Dict[str, Any]:
+    """Append a compact tamper-evident emergency event. This is evidence, not success fabrication."""
+    incident_id = str(incident_id or ("emergency_" + uuid.uuid4().hex))
+    prev = _sm_read_last_emergency_hash()
+    rec = {
+        "schema": "SarahMemory.emergency_instinct.ledger_event.v1",
+        "event_id": "emev-" + uuid.uuid4().hex[:16],
+        "incident_id": incident_id,
+        "ts": _sm_living_now_iso(),
+        "severity": str(severity or "INFO"),
+        "event_kind": str(event_kind or "EVENT"),
+        "details": _sm_living_safe(details or {}, limit=4000),
+        "previous_hash": prev,
+    }
+    raw = json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str)
+    rec["event_hash"] = _sm_living_hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()
+    try:
+        with open(_sm_emergency_chain_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str) + "\n")
+        _sm_write_last_emergency_hash(rec["event_hash"], incident_id=incident_id)
+    except Exception as exc:
+        # Also try the ordinary governor event log; emergency evidence should fail-soft, not crash.
+        try:
+            log_cognitive_event("EMERGENCY_LEDGER_WRITE_FAILED", str(exc), severity="ERROR", meta=rec)
+        except Exception:
+            pass
+    return rec
+
+
+def list_emergency_instinct_logs(limit: int = 25, incident_id: str = "") -> Dict[str, Any]:
+    """Read recent emergency ledger events for authorized review/export surfaces."""
+    rows: List[Dict[str, Any]] = []
+    path = _sm_emergency_chain_path()
+    try:
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()[-max(1, int(limit or 25)) * 4:]
+            for line in lines:
+                try:
+                    obj = json.loads(line)
+                    if incident_id and str(obj.get("incident_id")) != str(incident_id):
+                        continue
+                    rows.append(obj)
+                except Exception:
+                    continue
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "events": []}
+    rows = rows[-max(1, int(limit or 25)):]
+    return {
+        "ok": True,
+        "schema": "SarahMemory.emergency_instinct.ledger_export.v1",
+        "count": len(rows),
+        "events": rows,
+        "ledger_path": path,
+        "tamper_evident": True,
+        "notes": ["Hash chain verifies ordering/integrity if previous_hash/event_hash chain is preserved."],
+    }
+
+
+def _sm_classify_emergency_from_text(text: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = context if isinstance(context, dict) else {}
+    raw = str(text or ctx.get("text") or ctx.get("observation") or "")
+    low = raw.lower()
+    explicit = str(ctx.get("hazard_type") or ctx.get("emergency_type") or "").lower().strip()
+    scores = {"fire": 0.0, "medical": 0.0, "collision": 0.0}
+    fire_terms = ("fire", "smoke", "flame", "burning", "grease", "stove", "outlet", "electrical fire")
+    medical_terms = ("asthma", "inhaler", "can't breathe", "cannot breathe", "breathing", "choking", "collapsed", "unconscious", "medical", "heart attack", "stroke", "seizure")
+    collision_terms = ("car", "vehicle", "truck", "collision", "hit", "impact", "run over", "pedestrian", "child in road", "traffic")
+    for t in fire_terms:
+        if t in low:
+            scores["fire"] += 0.15
+    for t in medical_terms:
+        if t in low:
+            scores["medical"] += 0.15
+    for t in collision_terms:
+        if t in low:
+            scores["collision"] += 0.15
+    if explicit in scores:
+        scores[explicit] = max(scores[explicit], _sm_living_float(ctx.get("confidence", 0.85), 0.85))
+    hazard = max(scores, key=scores.get)
+    confidence = _sm_living_float(ctx.get("confidence", ctx.get("sensor_confidence", scores[hazard])), scores[hazard])
+    if scores[hazard] <= 0 and explicit not in scores:
+        hazard = "unknown"
+    human_risk = bool(ctx.get("human_risk") or ctx.get("human_present") or ctx.get("person_at_risk") or any(x in low for x in ("child", "person", "elderly", "human", "occupant", "baby", "parent", "caregiver")))
+    return {
+        "hazard_type": hazard,
+        "confidence": round(confidence, 4),
+        "human_risk": human_risk,
+        "raw_text": raw[:1200],
+        "classification_scores": {k: round(min(1.0, v), 4) for k, v in scores.items()},
+    }
+
+
+def normalize_emergency_hazard_packet(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Normalize emergency payloads from PC, robot, vision, audio, driver, or user surfaces."""
+    payload = payload if isinstance(payload, dict) else {}
+    base = dict(payload.get("hazard_packet") if isinstance(payload.get("hazard_packet"), dict) else payload)
+    text = str(base.get("text") or base.get("observation") or base.get("claim") or payload.get("text") or "")
+    classified = _sm_classify_emergency_from_text(text, base)
+    hazard_type = str(base.get("hazard_type") or base.get("emergency_type") or classified.get("hazard_type") or "unknown").lower()
+    if hazard_type not in _EMERGENCY_INSTINCT_TYPES:
+        hazard_type = "unknown"
+    confidence = _sm_living_float(base.get("confidence", base.get("sensor_confidence", classified.get("confidence", 0.0))), 0.0)
+    return {
+        "packet_type": "EmergencyHazardPacket",
+        "schema": "SarahMemory.living.instinct.hazard.v1",
+        "packet_id": str(base.get("packet_id") or "hazard-" + uuid.uuid4().hex[:12]),
+        "incident_id": str(base.get("incident_id") or payload.get("incident_id") or "emergency_" + uuid.uuid4().hex),
+        "ts": _sm_living_now_iso(),
+        "source": str(base.get("source") or payload.get("source") or "unknown"),
+        "hazard_type": hazard_type,
+        "confidence": round(confidence, 4),
+        "sensor_confidence": round(confidence, 4),
+        "human_risk": bool(base.get("human_risk") or classified.get("human_risk")),
+        "human_present": bool(base.get("human_present") or base.get("human_risk") or classified.get("human_risk")),
+        "person_at_risk": bool(base.get("person_at_risk") or base.get("human_risk") or classified.get("human_risk")),
+        "time_to_impact_seconds": base.get("time_to_impact_seconds"),
+        "environment": base.get("environment") if isinstance(base.get("environment"), dict) else {},
+        "sensor_evidence": base.get("sensor_evidence") if isinstance(base.get("sensor_evidence"), dict) else {},
+        "capabilities": base.get("capabilities") if isinstance(base.get("capabilities"), dict) else {},
+        "failed_methods": list(base.get("failed_methods") or base.get("subtract_methods") or []),
+        "observation": text[:1600],
+        "classification": classified,
+        "read_only": True,
+        "action_taken": False,
+    }
+
+
+def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, caller: str = "CognitiveServices.evaluate_emergency_instinct") -> Dict[str, Any]:
+    """Evaluate emergency instinct, produce selected bounded action contract, and log evidence."""
+    payload = payload if isinstance(payload, dict) else {}
+    hazard = normalize_emergency_hazard_packet(payload)
+    incident_id = hazard["incident_id"]
+    log_emergency_instinct_event("INCIDENT_DETECTED", incident_id, {"caller": caller, "hazard": hazard}, severity="CRITICAL" if hazard.get("human_risk") else "WARNING")
+
+    # Identity and affect packets
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _Identity  # type: ignore
+        identity_packet = _Identity.build_emergency_instinct_identity_packet(hazard, payload)
+        emotion_packet = _Identity.build_emergency_emotion_packet(hazard, payload)
+    except Exception as exc:
+        identity_packet = {"ok": False, "error": str(exc), "execution_authority": False}
+        emotion_packet = {"ok": False, "error": str(exc), "execution_authority": False}
+
+    # Body/capability witness
+    try:
+        import SarahMemoryCognitiveSelf as _Self  # type: ignore
+        body_packet = _Self.build_emergency_body_capability_packet(hazard, payload)
+    except Exception as exc:
+        body_packet = {"ok": False, "error": str(exc), "capabilities": {}, "execution_authority": False}
+
+    # Hyper-awake REM candidates
+    try:
+        import SarahMemoryCognitiveThinker as _Thinker  # type: ignore
+        candidates_packet = _Thinker.generate_hyper_awake_rem_candidates(hazard, body_packet)
+    except Exception as exc:
+        candidates_packet = {"ok": False, "error": str(exc), "candidates": [], "execution_authority": False}
+
+    # Compass bearing/ranking
+    try:
+        import SarahMemoryCognitiveCompass as _Compass  # type: ignore
+        bearing_packet = _Compass.assess_emergency_instinct_bearing(hazard, candidates_packet, body_packet)
+    except Exception as exc:
+        bearing_packet = {"ok": False, "error": str(exc), "bounded_action_allowed": False, "selected_action": {}, "execution_authority": False}
+
+    confidence = _sm_living_float(hazard.get("confidence"), 0.0)
+    human_risk = bool(hazard.get("human_risk") or hazard.get("human_present") or hazard.get("person_at_risk"))
+    selected = bearing_packet.get("selected_action") if isinstance(bearing_packet.get("selected_action"), dict) else {}
+    selected_action_id = str(selected.get("action_id") or "")
+    bounded_allowed = bool(bearing_packet.get("bounded_action_allowed")) and bool(selected_action_id)
+    if confidence < _EMERGENCY_MIN_CONFIDENCE and selected_action_id not in {"alert_humans", "warn_human_and_driver", "observe_and_escalate"}:
+        bounded_allowed = False
+
+    # Build SMGET-style emergency action contract preview. This is not direct execution.
+    action_contract = {
+        "contract_type": "EmergencyInstinctActionContract",
+        "schema": "SarahMemory.smget.emergency_action_contract.v1",
+        "contract_id": "emcontract-" + uuid.uuid4().hex[:12],
+        "incident_id": incident_id,
+        "hazard_type": hazard.get("hazard_type"),
+        "selected_action": selected,
+        "execution_mode": "emergency_bounded",
+        "requires_user": False if bounded_allowed and human_risk else True,
+        "user_delay_override": bool(bounded_allowed and human_risk),
+        "operator_core_dispatch_required": True,
+        "msdc_body_dispatch_required_for_physical_action": True,
+        "read_only_until_operator_dispatch": True,
+        "rollback_plan": "Stop action, mark failed method, escalate notify/evacuate/call help, preserve audit ledger.",
+        "verification_required": True,
+        "evidence_logging_required": True,
+        "execution_authority": False,
+    }
+
+    decision = "ALLOW_EMERGENCY_BOUNDED_ACTION" if bounded_allowed else ("WARN_NOTIFY_OBSERVE" if confidence >= 0.45 else "DEFER_GATHER_MORE_EVIDENCE")
+    result = {
+        "ok": True,
+        "packet_type": "EmergencyInstinctGovernancePacket",
+        "schema": "SarahMemory.living.instinct.governance.v1",
+        "module": "SarahMemoryCognitiveServices",
+        "module_version": "8.0.0",
+        "packet_id": "emgov-" + uuid.uuid4().hex[:12],
+        "ts": _sm_living_now_iso(),
+        "incident_id": incident_id,
+        "decision": decision,
+        "bounded_action_allowed": bounded_allowed,
+        "requires_user": bool(action_contract.get("requires_user")),
+        "hazard_packet": hazard,
+        "identity_packet": identity_packet,
+        "emotion_packet": emotion_packet,
+        "body_packet": body_packet,
+        "candidates_packet": candidates_packet,
+        "bearing_packet": bearing_packet,
+        "action_contract": action_contract,
+        "notifications_recommended": bool(human_risk or hazard.get("hazard_type") in {"fire", "medical", "collision"}),
+        "human_priority": _EMERGENCY_HUMAN_PRIORITY,
+        "execution_authority": False,
+        "doctrine": {
+            "living_loop_initializes_cognitive_instinct": True,
+            "hyper_awake_rem_is_for_live_danger_not_idle_dreaming": True,
+            "raw_llm_output_cannot_directly_actuate": True,
+            "human_life_first": True,
+            "self_sacrifice_allowed_only_if_it_materially_reduces_human_harm": True,
+            "emergency_evidence_ledger_required": True,
+        },
+    }
+    log_emergency_instinct_event("CANDIDATES_GRADED", incident_id, {"selected_action": selected, "decision": decision, "bounded_action_allowed": bounded_allowed, "failed_methods": hazard.get("failed_methods")}, severity="INFO")
+    log_emergency_instinct_event("ACTION_CONTRACT_PREPARED", incident_id, {"action_contract": action_contract, "governance_decision": decision}, severity="CRITICAL" if bounded_allowed else "WARNING")
+    return result
+
+
+def run_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, execute: bool = False, caller: str = "CognitiveServices.run_emergency_instinct") -> Dict[str, Any]:
+    """Run emergency instinct. Physical execution is deliberately delegated to OperatorCore/MSDC when wired."""
+    evaluation = evaluate_emergency_instinct(payload, caller=caller)
+    incident_id = str(evaluation.get("incident_id") or "")
+    if not execute:
+        evaluation["execution_result"] = {
+            "executed": False,
+            "reason": "execute_false; action contract prepared only",
+            "operator_core_required": True,
+        }
+        log_emergency_instinct_event("EXECUTION_NOT_REQUESTED", incident_id, evaluation["execution_result"], severity="INFO")
+        return evaluation
+
+    # Optional future dispatch hook. We do not guess OperatorCore function names beyond safe discovery.
+    dispatch = {"executed": False, "reason": "operator_core_dispatch_unavailable_or_not_wired", "attempted": False}
+    try:
+        contract = evaluation.get("action_contract") if isinstance(evaluation.get("action_contract"), dict) else {}
+        import SarahMemoryOperatorCore as _Op  # type: ignore
+        for fname in ("process_action_contract", "execute_action_contract", "operator_execute_contract", "dispatch_action_contract"):
+            fn = getattr(_Op, fname, None)
+            if callable(fn):
+                dispatch = fn(contract)  # type: ignore[misc]
+                if not isinstance(dispatch, dict):
+                    dispatch = {"executed": True, "raw_result": str(dispatch), "function": fname}
+                dispatch["attempted"] = True
+                dispatch["function"] = fname
+                break
+    except Exception as exc:
+        dispatch = {"executed": False, "reason": "operator_core_dispatch_error", "error": str(exc), "attempted": True}
+
+    evaluation["execution_result"] = dispatch
+    log_emergency_instinct_event("EXECUTION_DISPATCH_RESULT", incident_id, {"dispatch": dispatch}, severity="CRITICAL" if dispatch.get("executed") else "WARNING")
+    return evaluation
+
+
+def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """One bounded Living Loop tick. Emergency context is routed into Cognitive Instinct."""
+    ctx = context if isinstance(context, dict) else {}
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["tick_count"] = int(_LIVING_LOOP_STATE.get("tick_count") or 0) + 1
+        _LIVING_LOOP_STATE["last_tick_ts"] = _sm_living_now_iso()
+    text = str(ctx.get("text") or ctx.get("observation") or "")
+    emergency_hint = bool(ctx.get("emergency") or ctx.get("emergency_mode") or ctx.get("hazard_type") or ctx.get("emergency_type"))
+    classified = _sm_classify_emergency_from_text(text, ctx)
+    if emergency_hint or float(classified.get("confidence") or 0.0) >= 0.55:
+        payload = dict(ctx)
+        payload.setdefault("hazard_type", classified.get("hazard_type"))
+        payload.setdefault("confidence", classified.get("confidence"))
+        payload.setdefault("human_risk", classified.get("human_risk"))
+        instinct = evaluate_emergency_instinct(payload, caller="CognitiveServices.run_cognitive_living_tick")
+        decision = {"ok": True, "mode": "EMERGENCY_INSTINCT", "instinct": instinct}
+    else:
+        decision = {
+            "ok": True,
+            "mode": "LIVING_LOOP_IDLE",
+            "tick_ts": _sm_living_now_iso(),
+            "emergency_detected": False,
+            "action_taken": False,
+            "execution_authority": False,
+        }
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["last_decision"] = decision
+    return decision
+
+
+def start_cognitive_living_loop(reason: str = "manual_start") -> Dict[str, Any]:
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["started"] = True
+        _LIVING_LOOP_STATE["started_ts"] = _sm_living_now_iso()
+        _LIVING_LOOP_STATE["reason"] = str(reason or "manual_start")
+    try:
+        log_cognitive_event("COGNITIVE_LIVING_LOOP_STARTED", str(reason), severity="INFO", meta=dict(_LIVING_LOOP_STATE))
+    except Exception:
+        pass
+    return cognitive_living_loop_status()
+
+
+def stop_cognitive_living_loop(reason: str = "manual_stop") -> Dict[str, Any]:
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["started"] = False
+        _LIVING_LOOP_STATE["stopped_ts"] = _sm_living_now_iso()
+        _LIVING_LOOP_STATE["stop_reason"] = str(reason or "manual_stop")
+    try:
+        log_cognitive_event("COGNITIVE_LIVING_LOOP_STOPPED", str(reason), severity="INFO", meta=dict(_LIVING_LOOP_STATE))
+    except Exception:
+        pass
+    return cognitive_living_loop_status()
+
+
+def cognitive_living_loop_status() -> Dict[str, Any]:
+    with _LIVING_LOOP_LOCK:
+        state = dict(_LIVING_LOOP_STATE)
+    return {
+        "ok": True,
+        "schema": "SarahMemory.living.loop.status.v1",
+        "module": "SarahMemoryCognitiveServices",
+        "state": state,
+        "emergency_instinct_available": True,
+        "evidence_ledger_path": _sm_emergency_chain_path(),
+        "execution_authority": False,
+        "doctrine": {
+            "living_loop_distributed_across_cognitive_stack": True,
+            "normal_idle_loop_is_ram_first": True,
+            "emergency_instinct_is_a_bounded_autonomy_envelope": True,
+            "physical_execution_requires_smget_operatorcore_msdc": True,
+        },
+    }
+
