@@ -624,6 +624,112 @@ def msdc_camera_capture_b64(user_authorized: bool = False, payload: Optional[Dic
 
 
 
+def msdc_dispatch_emergency_contract(contract: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Bounded MSDC emergency dispatcher for OperatorCore-owned contracts.
+
+    This function intentionally does not invent body abilities. If SarahMemory is
+    only in a PC/server body, it stages notify/warn/observe actions and reports
+    exactly what is missing. Physical movement/device action requires a real driver,
+    a valid contract, and explicit allow_physical_dispatch from OperatorCore.
+    """
+    c = dict(contract or {}) if isinstance(contract, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    selected = c.get("selected_action") if isinstance(c.get("selected_action"), dict) else {}
+    action_id = str(selected.get("action_id") or c.get("selected_action_id") or "").strip()
+    incident_id = str(c.get("incident_id") or "")
+    allow_physical = bool(c.get("allow_physical_dispatch"))
+    body_map = msdc_map_body(persist=True)
+
+    if str(c.get("schema") or "") != "SarahMemory.smget.emergency_action_contract.v1":
+        return {
+            "ok": False,
+            "executed": False,
+            "error": "invalid_emergency_contract_schema",
+            "source": MODULE_NAME,
+            "incident_id": incident_id,
+        }
+
+    if not action_id:
+        return {
+            "ok": False,
+            "executed": False,
+            "error": "missing_selected_action_id",
+            "source": MODULE_NAME,
+            "incident_id": incident_id,
+        }
+
+    notification_actions = {
+        "alert_humans",
+        "warn_human_and_driver",
+        "notify_caregiver",
+        "call_emergency_services",
+        "notify_emergency_services_after_collision_risk",
+        "notify_if_high_risk",
+        "observe_and_escalate",
+        "monitor_and_reassure",
+        "evacuate_or_alert",
+    }
+    physical_actions = {
+        "cut_power_if_verified_safe",
+        "suppress_with_correct_extinguisher",
+        "retrieve_verified_inhaler",
+        "move_human_out_of_path",
+        "shield_human_with_robot_body",
+    }
+
+    if action_id in notification_actions:
+        return {
+            "ok": True,
+            "executed": False,
+            "staged": True,
+            "notification_required": True,
+            "action_id": action_id,
+            "incident_id": incident_id,
+            "reason": "Emergency notification/warning action staged; communications executor is required for outbound calls/messages.",
+            "body_map": body_map,
+            "source": MODULE_NAME,
+            "execution_authority": False,
+        }
+
+    if action_id in physical_actions and not allow_physical:
+        return {
+            "ok": True,
+            "executed": False,
+            "staged": True,
+            "action_id": action_id,
+            "incident_id": incident_id,
+            "reason": "Physical emergency action blocked until OperatorCore contract explicitly allows physical dispatch.",
+            "body_map": body_map,
+            "source": MODULE_NAME,
+            "execution_authority": False,
+        }
+
+    if action_id in physical_actions and allow_physical:
+        return {
+            "ok": False,
+            "executed": False,
+            "action_id": action_id,
+            "incident_id": incident_id,
+            "error": "no_verified_physical_body_driver_for_selected_emergency_action",
+            "reason": "MSDC is wired, but no matching robot/vehicle/actuator driver is present in this Project Folder snapshot.",
+            "body_map": body_map,
+            "source": MODULE_NAME,
+            "execution_authority": False,
+        }
+
+    return {
+        "ok": True,
+        "executed": False,
+        "staged": True,
+        "action_id": action_id,
+        "incident_id": incident_id,
+        "reason": "Emergency action accepted as staged evidence; no specific MSDC driver route is declared for this action_id.",
+        "body_map": body_map,
+        "source": MODULE_NAME,
+        "execution_authority": False,
+    }
+
+
 def msdc_vr_hud_status() -> Dict[str, Any]:
     """Read-only body-map status for the VR Operator HUD surface."""
     body_map = msdc_map_body(persist=True)

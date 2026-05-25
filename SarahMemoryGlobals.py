@@ -494,6 +494,27 @@ EMOTION_TTS_MAP = {
 SAFE_MODE = _env_flag("SARAH_SAFE_MODE", "false")
 LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "false")  # When True, bypass all external network research and use local data only.
 
+# Cognitive Living Loop / Instinct runtime controls.
+# The loop is internal, bounded, read-mostly, and does not grant physical authority.
+def _env_float(name, default, minimum=None, maximum=None):
+    try:
+        value = float(os.getenv(name, default))
+    except Exception:
+        value = float(default)
+    try:
+        if minimum is not None:
+            value = max(float(minimum), value)
+        if maximum is not None:
+            value = min(float(maximum), value)
+    except Exception:
+        pass
+    return value
+
+SARAHMEMORY_LIVING_LOOP_ENABLED = _env_flag("SARAHMEMORY_LIVING_LOOP_ENABLED", "true")
+SARAHMEMORY_LIVING_LOOP_AUTOSTART = _env_flag("SARAHMEMORY_LIVING_LOOP_AUTOSTART", "true")
+SARAHMEMORY_LIVING_LOOP_INTERVAL_SECONDS = _env_float("SARAHMEMORY_LIVING_LOOP_INTERVAL_SECONDS", "5", minimum=1, maximum=300)
+SARAHMEMORY_LIVING_LOOP_EMERGENCY_EXECUTE_DEFAULT = _env_flag("SARAHMEMORY_LIVING_LOOP_EMERGENCY_EXECUTE_DEFAULT", "false")
+
 # SarahMemory AI-Agent may control your PC, Move,open,close,windows execute programs, and operate as if a they were a standard operator they are not allowed to delete files. or move files.
 
 #This is a SafeGuard incase it attempts to do to much or do tasks when other issues are needing to be taken care of

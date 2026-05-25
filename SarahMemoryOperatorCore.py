@@ -134,6 +134,11 @@ try:
 except Exception:
     _SafetyPolicies = None
 
+try:
+    import SarahMemoryMSDC as _MSDC  # type: ignore
+except Exception:
+    _MSDC = None
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -590,10 +595,106 @@ class SoftwareControlExecutor(BaseExecutor):
         return f"Application action '{contract.action_type}' failed for target '{contract.target}' ({reason})."
 
 
+class EmergencyInstinctExecutor(BaseExecutor):
+    """Bounded executor for EmergencyInstinctActionContract packets.
+
+    This executor makes the emergency path operational without granting raw physical
+    authority. By default it stages/verifies the contract in simulate mode. Physical
+    body/device dispatch only occurs when the contract explicitly carries
+    allow_physical_dispatch=True and MSDC exposes a compatible dispatcher.
+    """
+
+    name = "emergency_instinct_executor"
+    capability = "emergency_instinct"
+
+    def preflight_check(self, contract: ActionContract) -> Tuple[bool, Dict[str, Any]]:
+        meta = dict(contract.metadata or {})
+        em_contract = meta.get("emergency_action_contract") if isinstance(meta.get("emergency_action_contract"), dict) else {}
+        selected = em_contract.get("selected_action") if isinstance(em_contract.get("selected_action"), dict) else meta.get("selected_action")
+        selected = selected if isinstance(selected, dict) else {}
+        action_id = str(selected.get("action_id") or em_contract.get("selected_action_id") or contract.target or "").strip()
+        if not action_id:
+            return False, {"ok": False, "reason": "missing_emergency_selected_action"}
+        if str(em_contract.get("schema") or "") != "SarahMemory.smget.emergency_action_contract.v1":
+            return False, {"ok": False, "reason": "invalid_or_missing_emergency_contract_schema"}
+        return True, {
+            "ok": True,
+            "reason": "emergency_contract_preflight_ready",
+            "action_id": action_id,
+            "allow_physical_dispatch": bool(em_contract.get("allow_physical_dispatch")),
+        }
+
+    def execute(self, contract: ActionContract) -> Dict[str, Any]:
+        meta = dict(contract.metadata or {})
+        em_contract = meta.get("emergency_action_contract") if isinstance(meta.get("emergency_action_contract"), dict) else {}
+        selected = em_contract.get("selected_action") if isinstance(em_contract.get("selected_action"), dict) else {}
+        action_id = str(selected.get("action_id") or em_contract.get("selected_action_id") or contract.target or "").strip()
+        allow_physical = bool(em_contract.get("allow_physical_dispatch") or meta.get("allow_physical_dispatch"))
+
+        # Default operational behavior: contract is accepted/staged, no physical actuation.
+        if contract.execution_mode != MODE_APPLY or not allow_physical:
+            return {
+                "ok": True,
+                "executed": False,
+                "staged": True,
+                "simulated": True,
+                "action_id": action_id,
+                "reason": "emergency_contract_staged; physical dispatch requires explicit allow_physical_dispatch and apply mode",
+                "operator_core_active": True,
+                "msdc_required_for_physical_action": True,
+            }
+
+        if _MSDC is None:
+            return {
+                "ok": True,
+                "executed": False,
+                "staged": True,
+                "action_id": action_id,
+                "reason": "MSDC unavailable; emergency contract retained as staged evidence",
+            }
+
+        try:
+            fn = getattr(_MSDC, "msdc_dispatch_emergency_contract", None)
+            if callable(fn):
+                out = fn(em_contract, context={"operator_contract": contract.to_dict(), "caller": MODULE_NAME})
+                return out if isinstance(out, dict) else {"ok": bool(out), "executed": bool(out), "raw_result": str(out)}
+        except Exception as exc:
+            return {"ok": False, "executed": False, "reason": "msdc_emergency_dispatch_exception", "error": str(exc)}
+
+        return {
+            "ok": True,
+            "executed": False,
+            "staged": True,
+            "action_id": action_id,
+            "reason": "MSDC emergency dispatcher not exposed; emergency contract retained as staged evidence",
+        }
+
+    def verify(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+        ok = bool(execution_result.get("ok"))
+        if execution_result.get("staged") or execution_result.get("simulated"):
+            return ok, {"ok": ok, "verification": "emergency_contract_staged_and_auditable", "physical_action_verified": False}
+        return ok, {"ok": ok, "verification": "emergency_dispatch_result_status", "physical_action_verified": bool(execution_result.get("executed"))}
+
+    def rollback(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Dict[str, Any]:
+        if execution_result.get("staged") or execution_result.get("simulated"):
+            return {"ok": True, "rolled_back": False, "reason": "No physical action occurred; rollback not required."}
+        return {"ok": False, "rolled_back": False, "reason": "Physical rollback must be handled by the owning MSDC driver."}
+
+    def summarize_result(self, contract: ActionContract, result: ActionResult) -> str:
+        action_id = str(contract.target or contract.action_type or "emergency_action")
+        if result.success and (result.execution_result or {}).get("staged"):
+            return f"Emergency instinct action '{action_id}' was accepted by OperatorCore and staged safely. No physical actuation was performed."
+        if result.success and (result.execution_result or {}).get("executed"):
+            return f"Emergency instinct action '{action_id}' was dispatched through MSDC and verified by OperatorCore result status."
+        reason = str((result.execution_result or {}).get("reason") or (result.verification_result or {}).get("reason") or "verification_failed")
+        return f"Emergency instinct action '{action_id}' did not complete ({reason})."
+
+
 _EXECUTOR_LOCK = threading.RLock()
 _EXECUTORS: Dict[str, BaseExecutor] = {
     NoOpExecutor.name: NoOpExecutor(),
     SoftwareControlExecutor.name: SoftwareControlExecutor(),
+    EmergencyInstinctExecutor.name: EmergencyInstinctExecutor(),
 }
 
 
@@ -1344,6 +1445,87 @@ def process_action_request(
         proposed_action=proposed_action,
         execution_mode=execution_mode,
     )
+
+
+def _coerce_emergency_contract_to_action_contract(contract: Dict[str, Any]) -> ActionContract:
+    c = dict(contract or {})
+    selected = c.get("selected_action") if isinstance(c.get("selected_action"), dict) else {}
+    action_id = str(selected.get("action_id") or c.get("selected_action_id") or c.get("target") or c.get("hazard_type") or "emergency_action").strip()
+    mode = MODE_APPLY if bool(c.get("allow_physical_dispatch")) else MODE_SIMULATE
+    risk = str(c.get("risk_level") or RISK_TIER_2)
+    return ActionContract(
+        contract_id=str(c.get("contract_id") or "emcontract-" + uuid.uuid4().hex[:12]),
+        intent_id=str(c.get("incident_id") or uuid.uuid4().hex),
+        session_id=str(c.get("incident_id") or uuid.uuid4().hex),
+        user_goal=str(selected.get("title") or f"Emergency instinct action: {action_id}"),
+        normalized_text=str(selected.get("title") or action_id).strip().lower(),
+        primary_lane="action",
+        action_type="emergency_instinct",
+        target=action_id,
+        target_ref=str(c.get("hazard_type") or action_id),
+        capability_name="emergency_instinct",
+        executor_name=EmergencyInstinctExecutor.name,
+        required_permissions=["emergency.instinct.stage"] + (["msdc.physical.dispatch"] if mode == MODE_APPLY else []),
+        risk_level=risk,
+        execution_mode=mode,
+        requires_confirmation=bool(c.get("requires_user") and not c.get("user_delay_override")),
+        preconditions=["emergency_contract_schema_valid", "selected_action_present", "operator_core_choke_point"],
+        expected_result="Emergency action contract is staged or dispatched through MSDC when explicitly allowed.",
+        verification_checks=[VerificationCheck(name="emergency_contract_auditable", description="Emergency contract must remain auditable and bounded.", expected=True)],
+        rollback_plan=[RollbackStep(name="emergency_safe_stop_or_report", description=str(c.get("rollback_plan") or "Stop/report/escalate; no silent rollback."), required=False)],
+        origin="CognitiveServices.EmergencyInstinct",
+        source_surface="living_loop",
+        trust_context={"source": "CognitiveServices", "contract_schema": c.get("schema"), "decision": c.get("decision")},
+        metadata={
+            "emergency_action_contract": c,
+            "selected_action": selected,
+            "allow_physical_dispatch": bool(c.get("allow_physical_dispatch")),
+            "bounded_action_allowed": bool(c.get("bounded_action_allowed")),
+            "execution_authority": False,
+        },
+    )
+
+
+def process_action_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a prebuilt governed action contract through OperatorCore.
+
+    Currently supports EmergencyInstinctActionContract packets from the Cognitive
+    Living Loop. This gives CognitiveServices a stable SMGET entry point without
+    bypassing the OperatorCore lifecycle, verification, or audit database.
+    """
+    c = dict(contract or {}) if isinstance(contract, dict) else {}
+    if str(c.get("schema") or "") == "SarahMemory.smget.emergency_action_contract.v1" or str(c.get("contract_type") or "") == "EmergencyInstinctActionContract":
+        core = get_operator_core()
+        action_contract = _coerce_emergency_contract_to_action_contract(c)
+        result = core.process_contract(action_contract)
+        core._transition(action_contract, STATE_REPORTED, "Emergency contract result packaged for caller.", meta={"success": result.success, "audit_id": result.audit_id})
+        core._persist_action(action_contract, result)
+        result_dict = result.to_dict()
+        execution_result = result_dict.get("execution_result") if isinstance(result_dict.get("execution_result"), dict) else {}
+        return {
+            "ok": bool(result.success),
+            "executed": bool(execution_result.get("executed")),
+            "attempted": True,
+            "function": "process_action_contract",
+            "contract": action_contract.to_dict(),
+            "result": result_dict,
+            "reason": execution_result.get("reason") or result.summary,
+        }
+    return {
+        "ok": False,
+        "executed": False,
+        "attempted": False,
+        "reason": "unsupported_action_contract_schema",
+        "schema": c.get("schema"),
+        "contract_type": c.get("contract_type"),
+    }
+
+
+# Backward-compatible aliases for contract-oriented callers.
+process_emergency_action_contract = process_action_contract
+execute_action_contract = process_action_contract
+operator_execute_contract = process_action_contract
+dispatch_action_contract = process_action_contract
 
 
 # ---------------------------------------------------------------------------

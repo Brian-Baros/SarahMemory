@@ -424,6 +424,14 @@ def main_process_cleanup(reason: str = "shutdown") -> None:
     except Exception:
         pass
 
+    # COGNITIVE_LIVING_LOOP_STOP_ON_MAIN_CLEANUP
+    try:
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+        if hasattr(_CogServices, "stop_cognitive_living_loop"):
+            _CogServices.stop_cognitive_living_loop(reason=f"main_cleanup:{reason}")
+    except Exception:
+        pass
+
     try:
         stop_local_api_server(timeout=4.0)
     except Exception:
@@ -729,6 +737,24 @@ try:
         raise Exception("[v8.0] System initialization failed.")
     
     logger.info("[v8.0][PHASE 4] System diagnostics completed successfully")
+
+    # COGNITIVE_LIVING_LOOP_BOOT_AUTOSTART
+    # Start the bounded backend cognitive heartbeat after diagnostics have proven
+    # the core runtime is stable. The loop is read-mostly and cannot self-authorize
+    # physical/device action; emergency dispatch remains behind OperatorCore/MSDC.
+    try:
+        if bool(getattr(config, "SARAHMEMORY_LIVING_LOOP_AUTOSTART", True)):
+            living_status = cognitive.autostart_cognitive_living_loop(reason="boot_phase4_autostart")
+            logger.info(
+                "[v8.0][PHASE 4] Cognitive Living Loop status: started=%s thread_alive=%s interval=%s",
+                bool(((living_status or {}).get("state") or {}).get("started")),
+                bool(((living_status or {}).get("state") or {}).get("thread_alive")),
+                (((living_status or {}).get("state") or {}).get("interval_seconds")),
+            )
+        else:
+            logger.info("[v8.0][PHASE 4] Cognitive Living Loop autostart disabled by config.")
+    except Exception as living_err:
+        logger.warning(f"[v8.0][PHASE 4] Cognitive Living Loop autostart skipped: {living_err}")
 
     # ==========================================================================
     # PHASE 5: SYNCHRONIZATION SEQUENCE

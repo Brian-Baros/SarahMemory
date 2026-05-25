@@ -2430,24 +2430,45 @@ def _sm_attach_six_question_packet_to_decision(
 
 
 # =============================================================================
-# SM V8.0 DISTRIBUTED LIVING LOOP / COGNITIVE INSTINCT PATCH
+# SM V8.0 DISTRIBUTED LIVING LOOP / COGNITIVE INSTINCT RUNTIME
 # =============================================================================
 # Role in distributed Living Loop:
 # - CognitiveServices is the judgment/governance coordinator.
-# - Emergency Instinct is a bounded autonomy envelope, not free-form autonomy.
+# - The Living Loop is a bounded daemon heartbeat, not runaway autonomy.
+# - Idle ticks collect volatile self/body/context packets across Cognitive*.py.
+# - Emergency Instinct is a bounded autonomy envelope, not free-form action.
 # - This module evaluates and logs; physical execution remains SMGET/OperatorCore/MSDC.
 # =============================================================================
 
 import hashlib as _sm_living_hashlib
 
+_LIVING_LOOP_SCHEMA_VERSION = "SarahMemory.living.loop.runtime.v2"
+_LIVING_LOOP_DEFAULT_INTERVAL_SECONDS = 5.0
+_LIVING_LOOP_MIN_INTERVAL_SECONDS = 1.0
+_LIVING_LOOP_MAX_INTERVAL_SECONDS = 300.0
+
 _LIVING_LOOP_STATE: Dict[str, Any] = {
     "started": False,
+    "enabled": True,
+    "thread_alive": False,
+    "thread_name": "",
     "started_ts": "",
+    "stopped_ts": "",
     "last_tick_ts": "",
+    "last_heartbeat_ts": "",
     "tick_count": 0,
+    "interval_seconds": _LIVING_LOOP_DEFAULT_INTERVAL_SECONDS,
+    "reason": "not_started",
+    "stop_reason": "",
     "last_decision": {},
+    "last_error": "",
+    "last_error_ts": "",
+    "boot_autostart": False,
+    "execution_authority": False,
 }
 _LIVING_LOOP_LOCK = threading.RLock()
+_LIVING_LOOP_STOP_EVENT = threading.Event()
+_LIVING_LOOP_THREAD: Optional[threading.Thread] = None
 
 _EMERGENCY_INSTINCT_TYPES = {"fire", "medical", "collision", "unknown"}
 _EMERGENCY_MIN_CONFIDENCE = 0.70
@@ -2460,6 +2481,7 @@ _EMERGENCY_HUMAN_PRIORITY = [
     "PRESERVE_PROPERTY",
     "LOG_EVIDENCE_CHAIN",
 ]
+
 
 def _sm_living_now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
@@ -2475,16 +2497,152 @@ def _sm_living_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _sm_living_interval(value: Any = None) -> float:
+    if value is None:
+        value = _sm_living_cfg_float(
+            "SARAHMEMORY_LIVING_LOOP_INTERVAL_SECONDS",
+            _LIVING_LOOP_DEFAULT_INTERVAL_SECONDS,
+            minimum=_LIVING_LOOP_MIN_INTERVAL_SECONDS,
+            maximum=_LIVING_LOOP_MAX_INTERVAL_SECONDS,
+        )
+    try:
+        v = float(value)
+    except Exception:
+        v = _LIVING_LOOP_DEFAULT_INTERVAL_SECONDS
+    return max(_LIVING_LOOP_MIN_INTERVAL_SECONDS, min(_LIVING_LOOP_MAX_INTERVAL_SECONDS, v))
+
+
 def _sm_living_safe(value: Any, limit: int = 2000) -> Any:
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, str):
         return value[:limit]
     if isinstance(value, dict):
-        return {str(k)[:120]: _sm_living_safe(v, limit=limit) for k, v in list(value.items())[:120]}
+        return {str(k)[:120]: _sm_living_safe(v, limit=limit) for k, v in list(value.items())[:160]}
     if isinstance(value, (list, tuple, set)):
-        return [_sm_living_safe(v, limit=limit) for v in list(value)[:150]]
+        return [_sm_living_safe(v, limit=limit) for v in list(value)[:200]]
     return str(value)[:limit]
+
+
+def _sm_living_cfg_bool(name: str, default: bool = False) -> bool:
+    """Read a SarahMemory flag from Globals or environment without hard-failing."""
+    try:
+        if hasattr(config, name):
+            value = getattr(config, name)
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
+    except Exception:
+        pass
+    env_names = [name]
+    if name.startswith("SARAHMEMORY_"):
+        env_names.append("SARAH_" + name[len("SARAHMEMORY_"):])
+    elif name.startswith("SARAH_"):
+        env_names.append("SARAHMEMORY_" + name[len("SARAH_"):])
+    for env_name in env_names:
+        try:
+            raw = os.getenv(env_name)
+            if raw is not None and str(raw).strip() != "":
+                return str(raw).strip().lower() in ("1", "true", "yes", "on", "enabled")
+        except Exception:
+            pass
+    return bool(default)
+
+
+def _sm_living_cfg_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    try:
+        if hasattr(config, name):
+            return max(minimum, min(maximum, float(getattr(config, name))))
+    except Exception:
+        pass
+    env_names = [name]
+    if name.startswith("SARAHMEMORY_"):
+        env_names.append("SARAH_" + name[len("SARAHMEMORY_"):])
+    for env_name in env_names:
+        try:
+            raw = os.getenv(env_name)
+            if raw is not None and str(raw).strip() != "":
+                return max(minimum, min(maximum, float(raw)))
+        except Exception:
+            pass
+    return max(minimum, min(maximum, float(default)))
+
+
+def _sm_living_loop_enabled() -> bool:
+    return _sm_living_cfg_bool("SARAHMEMORY_LIVING_LOOP_ENABLED", True)
+
+
+def _sm_living_loop_autostart_enabled() -> bool:
+    return _sm_living_cfg_bool("SARAHMEMORY_LIVING_LOOP_AUTOSTART", True)
+
+
+def _sm_living_root_dir() -> str:
+    try:
+        root = str(getattr(config, "DATASETS_DIR", _datasets_dir()))
+    except Exception:
+        root = _datasets_dir()
+    path = os.path.join(root, "cognitive_living_loop")
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        pass
+    return path
+
+
+def _sm_living_snapshot_path() -> str:
+    return os.path.join(_sm_living_root_dir(), "living_loop_runtime_snapshot.json")
+
+
+def _sm_living_heartbeat_path() -> str:
+    return os.path.join(_sm_living_root_dir(), "living_loop_heartbeat.jsonl")
+
+
+def _sm_write_living_snapshot(extra: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        with _LIVING_LOOP_LOCK:
+            state = dict(_LIVING_LOOP_STATE)
+        payload = {
+            "ok": True,
+            "schema": _LIVING_LOOP_SCHEMA_VERSION,
+            "ts": _sm_living_now_iso(),
+            "module": "SarahMemoryCognitiveServices",
+            "state": _sm_living_safe(state, limit=6000),
+            "extra": _sm_living_safe(extra or {}, limit=6000),
+            "execution_authority": False,
+            "doctrine": {
+                "volatile_runtime_snapshot": True,
+                "snapshot_is_evidence_not_authority": True,
+                "physical_execution_requires_operatorcore_msdc": True,
+            },
+        }
+        path = _sm_living_snapshot_path()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True, ensure_ascii=False, default=str)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _sm_append_living_heartbeat(decision: Dict[str, Any]) -> None:
+    try:
+        with _LIVING_LOOP_LOCK:
+            tick_count = int(_LIVING_LOOP_STATE.get("tick_count") or 0)
+        rec = {
+            "schema": "SarahMemory.living.loop.heartbeat.v1",
+            "ts": _sm_living_now_iso(),
+            "tick_count": tick_count,
+            "mode": str((decision or {}).get("mode") or "UNKNOWN"),
+            "emergency_detected": bool((decision or {}).get("emergency_detected") or (decision or {}).get("mode") == "EMERGENCY_INSTINCT"),
+            "action_taken": False,
+            "execution_authority": False,
+        }
+        with open(_sm_living_heartbeat_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str) + "\n")
+        with _LIVING_LOOP_LOCK:
+            _LIVING_LOOP_STATE["last_heartbeat_ts"] = rec["ts"]
+    except Exception:
+        pass
 
 
 def _sm_emergency_dir() -> str:
@@ -2563,7 +2721,6 @@ def log_emergency_instinct_event(
             f.write(json.dumps(rec, ensure_ascii=False, sort_keys=True, default=str) + "\n")
         _sm_write_last_emergency_hash(rec["event_hash"], incident_id=incident_id)
     except Exception as exc:
-        # Also try the ordinary governor event log; emergency evidence should fail-soft, not crash.
         try:
             log_cognitive_event("EMERGENCY_LEDGER_WRITE_FAILED", str(exc), severity="ERROR", meta=rec)
         except Exception:
@@ -2670,6 +2827,80 @@ def normalize_emergency_hazard_packet(payload: Optional[Dict[str, Any]] = None) 
     }
 
 
+def _sm_build_idle_context(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    ctx.setdefault("source", "cognitive_living_loop")
+    ctx.setdefault("surface", "backend")
+    try:
+        ctx.setdefault("run_mode", str(getattr(config, "RUN_MODE", "local")))
+        ctx.setdefault("device_mode", str(getattr(config, "DEVICE_MODE", "local_agent")))
+        ctx.setdefault("safe_mode", bool(getattr(config, "SAFE_MODE", False)))
+        ctx.setdefault("local_only", bool(getattr(config, "LOCAL_ONLY_MODE", False)))
+    except Exception:
+        pass
+    ctx.setdefault("ts", _sm_living_now_iso())
+    ctx.setdefault("execution_authority", False)
+    return ctx
+
+
+def _sm_collect_living_idle_packets(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    ctx = _sm_build_idle_context(context)
+    packets: Dict[str, Any] = {"context": ctx, "organs_available": {}, "errors": {}}
+
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _Identity  # type: ignore
+        packets["identity_context_packet"] = _Identity.build_living_loop_context_packet(ctx)
+        packets["organs_available"]["identity_layer"] = True
+    except Exception as exc:
+        packets["organs_available"]["identity_layer"] = False
+        packets["errors"]["identity_layer"] = str(exc)
+
+    try:
+        import SarahMemoryCognitiveSelf as _Self  # type: ignore
+        packets["body_capability_packet"] = _Self.build_living_body_capability_packet(ctx)
+        packets["organs_available"]["cognitive_self"] = True
+    except Exception as exc:
+        packets["organs_available"]["cognitive_self"] = False
+        packets["errors"]["cognitive_self"] = str(exc)
+
+    try:
+        import SarahMemoryCognitiveThinker as _Thinker  # type: ignore
+        packets["organs_available"]["cognitive_thinker"] = bool(_Thinker is not None)
+        packets["thinker_packet"] = {
+            "ok": True,
+            "packet_type": "LivingLoopThinkerIdlePacket",
+            "schema": "SarahMemory.living.thinker_idle.v1",
+            "module": "SarahMemoryCognitiveThinker",
+            "ts": _sm_living_now_iso(),
+            "mode": "idle_possibility_guard",
+            "notes": ["No emergency hypothesis selected on this tick.", "Possibility generation remains sandbox/review-only."],
+            "execution_authority": False,
+        }
+    except Exception as exc:
+        packets["organs_available"]["cognitive_thinker"] = False
+        packets["errors"]["cognitive_thinker"] = str(exc)
+
+    try:
+        import SarahMemoryCognitiveCompass as _Compass  # type: ignore
+        packets["organs_available"]["cognitive_compass"] = bool(_Compass is not None)
+        packets["compass_packet"] = {
+            "ok": True,
+            "packet_type": "LivingLoopCompassIdleBearingPacket",
+            "schema": "SarahMemory.living.compass_idle_bearing.v1",
+            "module": "SarahMemoryCognitiveCompass",
+            "ts": _sm_living_now_iso(),
+            "bearing": "ON_COURSE_IDLE_MONITOR",
+            "anti_drift_lock": True,
+            "reply_allowed": False,
+            "execution_authority": False,
+        }
+    except Exception as exc:
+        packets["organs_available"]["cognitive_compass"] = False
+        packets["errors"]["cognitive_compass"] = str(exc)
+
+    return packets
+
+
 def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, caller: str = "CognitiveServices.evaluate_emergency_instinct") -> Dict[str, Any]:
     """Evaluate emergency instinct, produce selected bounded action contract, and log evidence."""
     payload = payload if isinstance(payload, dict) else {}
@@ -2677,7 +2908,6 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
     incident_id = hazard["incident_id"]
     log_emergency_instinct_event("INCIDENT_DETECTED", incident_id, {"caller": caller, "hazard": hazard}, severity="CRITICAL" if hazard.get("human_risk") else "WARNING")
 
-    # Identity and affect packets
     try:
         import SarahMemoryCognitiveIdentityLayer as _Identity  # type: ignore
         identity_packet = _Identity.build_emergency_instinct_identity_packet(hazard, payload)
@@ -2686,21 +2916,18 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
         identity_packet = {"ok": False, "error": str(exc), "execution_authority": False}
         emotion_packet = {"ok": False, "error": str(exc), "execution_authority": False}
 
-    # Body/capability witness
     try:
         import SarahMemoryCognitiveSelf as _Self  # type: ignore
         body_packet = _Self.build_emergency_body_capability_packet(hazard, payload)
     except Exception as exc:
         body_packet = {"ok": False, "error": str(exc), "capabilities": {}, "execution_authority": False}
 
-    # Hyper-awake REM candidates
     try:
         import SarahMemoryCognitiveThinker as _Thinker  # type: ignore
         candidates_packet = _Thinker.generate_hyper_awake_rem_candidates(hazard, body_packet)
     except Exception as exc:
         candidates_packet = {"ok": False, "error": str(exc), "candidates": [], "execution_authority": False}
 
-    # Compass bearing/ranking
     try:
         import SarahMemoryCognitiveCompass as _Compass  # type: ignore
         bearing_packet = _Compass.assess_emergency_instinct_bearing(hazard, candidates_packet, body_packet)
@@ -2715,7 +2942,8 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
     if confidence < _EMERGENCY_MIN_CONFIDENCE and selected_action_id not in {"alert_humans", "warn_human_and_driver", "observe_and_escalate"}:
         bounded_allowed = False
 
-    # Build SMGET-style emergency action contract preview. This is not direct execution.
+    decision = "ALLOW_EMERGENCY_BOUNDED_ACTION" if bounded_allowed else ("WARN_NOTIFY_OBSERVE" if confidence >= 0.45 else "DEFER_GATHER_MORE_EVIDENCE")
+    allow_physical_dispatch = bool(payload.get("allow_physical_dispatch") or payload.get("operator_apply") or payload.get("user_authorized_physical_dispatch"))
     action_contract = {
         "contract_type": "EmergencyInstinctActionContract",
         "schema": "SarahMemory.smget.emergency_action_contract.v1",
@@ -2723,7 +2951,16 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
         "incident_id": incident_id,
         "hazard_type": hazard.get("hazard_type"),
         "selected_action": selected,
+        "selected_action_id": selected_action_id,
+        "primary_lane": "action",
+        "action_type": "emergency_instinct",
+        "target": selected_action_id or str(hazard.get("hazard_type") or "unknown"),
+        "risk_level": "TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE" if selected_action_id in {"call_emergency_services", "notify_emergency_services_after_collision_risk"} else "TIER_2_BOUNDED_LOCAL_OPERATION",
+        "decision": decision,
+        "bounded_action_allowed": bounded_allowed,
         "execution_mode": "emergency_bounded",
+        "operator_execution_mode": "apply" if allow_physical_dispatch else "simulate",
+        "allow_physical_dispatch": allow_physical_dispatch,
         "requires_user": False if bounded_allowed and human_risk else True,
         "user_delay_override": bool(bounded_allowed and human_risk),
         "operator_core_dispatch_required": True,
@@ -2735,7 +2972,6 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
         "execution_authority": False,
     }
 
-    decision = "ALLOW_EMERGENCY_BOUNDED_ACTION" if bounded_allowed else ("WARN_NOTIFY_OBSERVE" if confidence >= 0.45 else "DEFER_GATHER_MORE_EVIDENCE")
     result = {
         "ok": True,
         "packet_type": "EmergencyInstinctGovernancePacket",
@@ -2772,36 +3008,72 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
     return result
 
 
+def _sm_dispatch_emergency_contract_via_operator_core(action_contract: Dict[str, Any]) -> Dict[str, Any]:
+    dispatch: Dict[str, Any] = {
+        "ok": False,
+        "executed": False,
+        "attempted": False,
+        "reason": "operator_core_dispatch_unavailable_or_not_wired",
+    }
+    try:
+        import SarahMemoryOperatorCore as _Op  # type: ignore
+    except Exception as exc:
+        return {"ok": False, "executed": False, "attempted": False, "reason": "operator_core_import_failed", "error": str(exc)}
+
+    for fname in ("process_action_contract", "process_emergency_action_contract", "execute_action_contract", "operator_execute_contract", "dispatch_action_contract"):
+        fn = getattr(_Op, fname, None)
+        if callable(fn):
+            try:
+                out = fn(action_contract)  # type: ignore[misc]
+                dispatch = out if isinstance(out, dict) else {"ok": bool(out), "raw_result": str(out)}
+                dispatch.setdefault("attempted", True)
+                dispatch.setdefault("function", fname)
+                dispatch.setdefault("executed", bool(dispatch.get("executed") or (dispatch.get("result") or {}).get("execution_result", {}).get("executed") if isinstance(dispatch.get("result"), dict) else False))
+                return dispatch
+            except Exception as exc:
+                return {"ok": False, "executed": False, "attempted": True, "function": fname, "reason": "operator_core_dispatch_error", "error": str(exc)}
+
+    fn_req = getattr(_Op, "process_action_request", None)
+    if callable(fn_req):
+        try:
+            selected = action_contract.get("selected_action") if isinstance(action_contract.get("selected_action"), dict) else {}
+            goal = f"Emergency instinct action: {selected.get('title') or action_contract.get('selected_action_id') or action_contract.get('hazard_type') or 'unknown'}"
+            out = fn_req(
+                goal,
+                origin="CognitiveServices.run_emergency_instinct",
+                meta={"emergency_action_contract": action_contract, "session_id": action_contract.get("incident_id"), "surface": "living_loop"},
+                proposed_action={"intent_label": "emergency_instinct", "target": action_contract.get("target"), "selected_action": selected},
+                execution_mode="simulate",
+            )
+            dispatch = out if isinstance(out, dict) else {"ok": bool(out), "raw_result": str(out)}
+            dispatch.setdefault("attempted", True)
+            dispatch.setdefault("function", "process_action_request")
+            dispatch.setdefault("executed", False)
+            dispatch.setdefault("reason", "operator_core_process_action_request_simulate_fallback")
+            return dispatch
+        except Exception as exc:
+            return {"ok": False, "executed": False, "attempted": True, "function": "process_action_request", "reason": "operator_core_action_request_error", "error": str(exc)}
+
+    return dispatch
+
+
 def run_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, execute: bool = False, caller: str = "CognitiveServices.run_emergency_instinct") -> Dict[str, Any]:
-    """Run emergency instinct. Physical execution is deliberately delegated to OperatorCore/MSDC when wired."""
+    """Run emergency instinct. Execution requests are delegated to OperatorCore/MSDC."""
     evaluation = evaluate_emergency_instinct(payload, caller=caller)
     incident_id = str(evaluation.get("incident_id") or "")
     if not execute:
         evaluation["execution_result"] = {
+            "ok": True,
             "executed": False,
+            "attempted": False,
             "reason": "execute_false; action contract prepared only",
             "operator_core_required": True,
         }
         log_emergency_instinct_event("EXECUTION_NOT_REQUESTED", incident_id, evaluation["execution_result"], severity="INFO")
         return evaluation
 
-    # Optional future dispatch hook. We do not guess OperatorCore function names beyond safe discovery.
-    dispatch = {"executed": False, "reason": "operator_core_dispatch_unavailable_or_not_wired", "attempted": False}
-    try:
-        contract = evaluation.get("action_contract") if isinstance(evaluation.get("action_contract"), dict) else {}
-        import SarahMemoryOperatorCore as _Op  # type: ignore
-        for fname in ("process_action_contract", "execute_action_contract", "operator_execute_contract", "dispatch_action_contract"):
-            fn = getattr(_Op, fname, None)
-            if callable(fn):
-                dispatch = fn(contract)  # type: ignore[misc]
-                if not isinstance(dispatch, dict):
-                    dispatch = {"executed": True, "raw_result": str(dispatch), "function": fname}
-                dispatch["attempted"] = True
-                dispatch["function"] = fname
-                break
-    except Exception as exc:
-        dispatch = {"executed": False, "reason": "operator_core_dispatch_error", "error": str(exc), "attempted": True}
-
+    contract = evaluation.get("action_contract") if isinstance(evaluation.get("action_contract"), dict) else {}
+    dispatch = _sm_dispatch_emergency_contract_via_operator_core(contract)
     evaluation["execution_result"] = dispatch
     log_emergency_instinct_event("EXECUTION_DISPATCH_RESULT", incident_id, {"dispatch": dispatch}, severity="CRITICAL" if dispatch.get("executed") else "WARNING")
     return evaluation
@@ -2809,10 +3081,13 @@ def run_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, execute:
 
 def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One bounded Living Loop tick. Emergency context is routed into Cognitive Instinct."""
-    ctx = context if isinstance(context, dict) else {}
+    ctx = _sm_build_idle_context(context)
+    tick_ts = _sm_living_now_iso()
     with _LIVING_LOOP_LOCK:
         _LIVING_LOOP_STATE["tick_count"] = int(_LIVING_LOOP_STATE.get("tick_count") or 0) + 1
-        _LIVING_LOOP_STATE["last_tick_ts"] = _sm_living_now_iso()
+        _LIVING_LOOP_STATE["last_tick_ts"] = tick_ts
+        _LIVING_LOOP_STATE["enabled"] = _sm_living_loop_enabled()
+
     text = str(ctx.get("text") or ctx.get("observation") or "")
     emergency_hint = bool(ctx.get("emergency") or ctx.get("emergency_mode") or ctx.get("hazard_type") or ctx.get("emergency_type"))
     classified = _sm_classify_emergency_from_text(text, ctx)
@@ -2822,61 +3097,181 @@ def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[
         payload.setdefault("confidence", classified.get("confidence"))
         payload.setdefault("human_risk", classified.get("human_risk"))
         instinct = evaluate_emergency_instinct(payload, caller="CognitiveServices.run_cognitive_living_tick")
-        decision = {"ok": True, "mode": "EMERGENCY_INSTINCT", "instinct": instinct}
+        decision: Dict[str, Any] = {
+            "ok": True,
+            "mode": "EMERGENCY_INSTINCT",
+            "tick_ts": tick_ts,
+            "emergency_detected": True,
+            "action_taken": False,
+            "execution_authority": False,
+            "instinct": instinct,
+        }
     else:
+        packets = _sm_collect_living_idle_packets(ctx)
         decision = {
             "ok": True,
             "mode": "LIVING_LOOP_IDLE",
-            "tick_ts": _sm_living_now_iso(),
+            "schema": "SarahMemory.living.loop.tick.v1",
+            "tick_ts": tick_ts,
             "emergency_detected": False,
+            "classification": classified,
+            "distributed_packets": packets,
             "action_taken": False,
             "execution_authority": False,
+            "working_memory_policy": {
+                "volatile_first": True,
+                "dedupe_required": True,
+                "raw_continuous_logging_disallowed": True,
+                "snapshot_compaction_enabled": True,
+            },
         }
     with _LIVING_LOOP_LOCK:
-        _LIVING_LOOP_STATE["last_decision"] = decision
+        _LIVING_LOOP_STATE["last_decision"] = _sm_living_safe(decision, limit=8000)
+        _LIVING_LOOP_STATE["last_error"] = ""
+    _sm_append_living_heartbeat(decision)
+    _sm_write_living_snapshot({"last_tick_mode": decision.get("mode")})
     return decision
 
 
-def start_cognitive_living_loop(reason: str = "manual_start") -> Dict[str, Any]:
+def _sm_living_loop_worker(interval_seconds: float) -> None:
+    name = threading.current_thread().name
     with _LIVING_LOOP_LOCK:
-        _LIVING_LOOP_STATE["started"] = True
-        _LIVING_LOOP_STATE["started_ts"] = _sm_living_now_iso()
-        _LIVING_LOOP_STATE["reason"] = str(reason or "manual_start")
+        _LIVING_LOOP_STATE["thread_alive"] = True
+        _LIVING_LOOP_STATE["thread_name"] = name
     try:
-        log_cognitive_event("COGNITIVE_LIVING_LOOP_STARTED", str(reason), severity="INFO", meta=dict(_LIVING_LOOP_STATE))
+        log_cognitive_event("COGNITIVE_LIVING_LOOP_WORKER_STARTED", name, severity="INFO", meta={"interval_seconds": interval_seconds})
     except Exception:
         pass
+
+    while not _LIVING_LOOP_STOP_EVENT.is_set():
+        with _LIVING_LOOP_LOCK:
+            if not bool(_LIVING_LOOP_STATE.get("started")):
+                break
+            interval_seconds = _sm_living_interval(_LIVING_LOOP_STATE.get("interval_seconds", interval_seconds))
+        try:
+            run_cognitive_living_tick({"source": "living_loop_daemon", "loop_thread": name})
+        except Exception as exc:
+            with _LIVING_LOOP_LOCK:
+                _LIVING_LOOP_STATE["last_error"] = str(exc)
+                _LIVING_LOOP_STATE["last_error_ts"] = _sm_living_now_iso()
+            try:
+                log_cognitive_event("COGNITIVE_LIVING_LOOP_TICK_ERROR", str(exc), severity="ERROR", meta={"thread": name})
+            except Exception:
+                pass
+        if _LIVING_LOOP_STOP_EVENT.wait(interval_seconds):
+            break
+
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["thread_alive"] = False
+        _LIVING_LOOP_STATE["stopped_ts"] = _sm_living_now_iso()
+    _sm_write_living_snapshot({"worker_exit": name})
+    try:
+        log_cognitive_event("COGNITIVE_LIVING_LOOP_WORKER_STOPPED", name, severity="INFO", meta={"state": dict(_LIVING_LOOP_STATE)})
+    except Exception:
+        pass
+
+
+def start_cognitive_living_loop(reason: str = "manual_start", interval_seconds: Optional[float] = None, daemon: bool = True) -> Dict[str, Any]:
+    """Start the bounded cognitive heartbeat thread if enabled."""
+    global _LIVING_LOOP_THREAD
+    enabled = _sm_living_loop_enabled()
+    interval = _sm_living_interval(interval_seconds)
+    with _LIVING_LOOP_LOCK:
+        _LIVING_LOOP_STATE["enabled"] = enabled
+        _LIVING_LOOP_STATE["interval_seconds"] = interval
+        _LIVING_LOOP_STATE["reason"] = str(reason or "manual_start")
+        if not enabled:
+            _LIVING_LOOP_STATE["started"] = False
+            _LIVING_LOOP_STATE["stop_reason"] = "living_loop_disabled_by_config"
+            _sm_write_living_snapshot({"start_skipped": "disabled"})
+            return cognitive_living_loop_status()
+        _LIVING_LOOP_STATE["started"] = True
+        _LIVING_LOOP_STATE["started_ts"] = _LIVING_LOOP_STATE.get("started_ts") or _sm_living_now_iso()
+        _LIVING_LOOP_STATE["stop_reason"] = ""
+        if "boot" in str(reason or "").lower():
+            _LIVING_LOOP_STATE["boot_autostart"] = True
+
+    _LIVING_LOOP_STOP_EVENT.clear()
+    if _LIVING_LOOP_THREAD is None or not _LIVING_LOOP_THREAD.is_alive():
+        _LIVING_LOOP_THREAD = threading.Thread(
+            target=_sm_living_loop_worker,
+            args=(interval,),
+            name="SM_CognitiveLivingLoop",
+            daemon=bool(daemon),
+        )
+        _LIVING_LOOP_THREAD.start()
+        started_thread = True
+    else:
+        started_thread = False
+
+    try:
+        log_cognitive_event("COGNITIVE_LIVING_LOOP_STARTED", str(reason), severity="INFO", meta={"state": dict(_LIVING_LOOP_STATE), "started_thread": started_thread})
+    except Exception:
+        pass
+    _sm_write_living_snapshot({"start_reason": reason, "started_thread": started_thread})
     return cognitive_living_loop_status()
 
 
 def stop_cognitive_living_loop(reason: str = "manual_stop") -> Dict[str, Any]:
+    """Stop the bounded cognitive heartbeat thread cleanly."""
+    global _LIVING_LOOP_THREAD
     with _LIVING_LOOP_LOCK:
         _LIVING_LOOP_STATE["started"] = False
         _LIVING_LOOP_STATE["stopped_ts"] = _sm_living_now_iso()
         _LIVING_LOOP_STATE["stop_reason"] = str(reason or "manual_stop")
+    _LIVING_LOOP_STOP_EVENT.set()
+    try:
+        thread = _LIVING_LOOP_THREAD
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+    except Exception:
+        pass
     try:
         log_cognitive_event("COGNITIVE_LIVING_LOOP_STOPPED", str(reason), severity="INFO", meta=dict(_LIVING_LOOP_STATE))
     except Exception:
         pass
+    _sm_write_living_snapshot({"stop_reason": reason})
     return cognitive_living_loop_status()
 
 
 def cognitive_living_loop_status() -> Dict[str, Any]:
+    global _LIVING_LOOP_THREAD
     with _LIVING_LOOP_LOCK:
         state = dict(_LIVING_LOOP_STATE)
+    try:
+        state["thread_alive"] = bool(_LIVING_LOOP_THREAD is not None and _LIVING_LOOP_THREAD.is_alive())
+    except Exception:
+        state["thread_alive"] = False
+    state["enabled"] = _sm_living_loop_enabled()
     return {
         "ok": True,
-        "schema": "SarahMemory.living.loop.status.v1",
+        "schema": "SarahMemory.living.loop.status.v2",
         "module": "SarahMemoryCognitiveServices",
         "state": state,
+        "autostart_enabled": _sm_living_loop_autostart_enabled(),
+        "snapshot_path": _sm_living_snapshot_path(),
+        "heartbeat_path": _sm_living_heartbeat_path(),
         "emergency_instinct_available": True,
         "evidence_ledger_path": _sm_emergency_chain_path(),
         "execution_authority": False,
         "doctrine": {
             "living_loop_distributed_across_cognitive_stack": True,
             "normal_idle_loop_is_ram_first": True,
+            "daemon_is_bounded_and_stoppable": True,
             "emergency_instinct_is_a_bounded_autonomy_envelope": True,
             "physical_execution_requires_smget_operatorcore_msdc": True,
         },
     }
+
+
+def autostart_cognitive_living_loop(reason: str = "boot_autostart") -> Dict[str, Any]:
+    """Boot-safe helper used by SarahMemoryMain/app.py. Honors config/env autostart flags."""
+    if not _sm_living_loop_autostart_enabled():
+        with _LIVING_LOOP_LOCK:
+            _LIVING_LOOP_STATE["enabled"] = _sm_living_loop_enabled()
+            _LIVING_LOOP_STATE["started"] = False
+            _LIVING_LOOP_STATE["stop_reason"] = "autostart_disabled_by_config"
+        _sm_write_living_snapshot({"autostart_skipped": True})
+        return cognitive_living_loop_status()
+    return start_cognitive_living_loop(reason=reason, interval_seconds=None, daemon=True)
 
