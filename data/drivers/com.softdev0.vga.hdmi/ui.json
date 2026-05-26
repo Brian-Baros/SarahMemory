@@ -1,24 +1,23 @@
 {
   "sections": [
     {
-      "id": "display",
-      "title": "Display Routing",
+      "id": "vr_surface",
+      "title": "VR Operator Surface",
       "fields": [
-        "preferred_mode",
-        "history_limit",
-        "scene_request_dir"
+        "vr_surface.x",
+        "vr_surface.y",
+        "vr_surface.width",
+        "vr_surface.height",
+        "vr_surface.fullscreen",
+        "vr_surface.mirror_preview"
       ]
     }
   ],
   "actions": [
     "probe_backends",
     "discover_displays",
-    "set_active_display",
-    "set_mode",
-    "set_brightness",
-    "mirror_on",
-    "extend_on",
-    "build_scene_request",
+    "operator_hud_surface",
+    "build_hud_surface_request",
     "get_config",
     "safe_stop"
   ]

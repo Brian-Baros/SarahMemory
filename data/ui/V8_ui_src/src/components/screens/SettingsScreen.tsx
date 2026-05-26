@@ -78,6 +78,9 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
   const [selectedMode, setSelectedMode] = useState(settings.mode || 'any');
   const [devBridgeStatus, setDevBridgeStatus] = useState<any>(null);
   const [devBridgeError, setDevBridgeError] = useState<string>("");
+  const [vrStatus, setVrStatus] = useState<any>(null);
+  const [vrError, setVrError] = useState<string>("");
+  const [isVrBusy, setIsVrBusy] = useState(false);
 
   const [modelStatus, setModelStatus] = useState<any>(null);
   const [modelError, setModelError] = useState<string>("");
@@ -96,6 +99,7 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     loadThemes();
     loadMode();
     loadDevBridgeStatus();
+    loadVrStatus(true);
     loadModelStatus(true);
     setSelectedMode(settings.mode || 'any');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -193,6 +197,67 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     } catch (error: any) {
       setDevBridgeStatus(null);
       setDevBridgeError(String(error?.message || error || "DevBridge unavailable"));
+    }
+  };
+
+
+  const loadVrStatus = async (refresh = false, silent = false) => {
+    if (!silent) setIsVrBusy(true);
+    try {
+      const status = await api.vr.status(refresh);
+      setVrStatus(status);
+      setVrError(status?.ok ? "" : String(status?.error || "VR runtime unavailable"));
+    } catch (error: any) {
+      setVrStatus(null);
+      setVrError(String(error?.message || error || "VR runtime unavailable"));
+    } finally {
+      if (!silent) setIsVrBusy(false);
+    }
+  };
+
+  const handleVrProbe = async () => {
+    setIsVrBusy(true);
+    try {
+      const result = await api.vr.probe();
+      setVrStatus(result);
+      setVrError(result?.ok ? "" : String(result?.error || result?.probe?.error || "VR probe failed"));
+      toast.success("VR probe complete");
+    } catch (error: any) {
+      setVrError(String(error?.message || error || "VR probe failed"));
+      toast.error("VR probe failed");
+    } finally {
+      setIsVrBusy(false);
+    }
+  };
+
+  const handleVrStart = async () => {
+    setIsVrBusy(true);
+    try {
+      const result = await api.vr.start({ reason: "settings_vr_button" });
+      setVrStatus(result);
+      setVrError(result?.ok ? "" : String(result?.error || "VR start failed"));
+      if (result?.ok) toast.success("VR Operator HUD started");
+      else toast.error("VR Operator HUD did not start");
+    } catch (error: any) {
+      setVrError(String(error?.message || error || "VR start failed"));
+      toast.error("VR start failed");
+    } finally {
+      setIsVrBusy(false);
+    }
+  };
+
+  const handleVrStop = async () => {
+    setIsVrBusy(true);
+    try {
+      const result = await api.vr.stop("settings_vr_stop");
+      setVrStatus(result);
+      setVrError(result?.ok ? "" : String(result?.error || "VR stop failed"));
+      toast.success("VR display feed stopped; vision analysis remains available");
+    } catch (error: any) {
+      setVrError(String(error?.message || error || "VR stop failed"));
+      toast.error("VR stop failed");
+    } finally {
+      setIsVrBusy(false);
     }
   };
 
@@ -777,28 +842,60 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
 
 
       {/* Vision / VR Operator HUD */}
-      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-2">
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
         <Label className="flex items-center gap-2 text-sm font-medium">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
           Vision / VR Operator HUD
         </Label>
         <p className="text-xs text-muted-foreground">
-          Open the dedicated camera telemetry surface for webcam-to-VR HUD testing. This is a read-only operator viewport and keeps movement locked.
+          Native SarahMemory VR surface: Start/Stop/Status/Probe are backend-managed. Stopping the headset display does not stop appvision, SOBJE, or FacialRecognition analysis.
         </p>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Renderer</div>
+            <div className={vrStatus?.running ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>
+              {vrStatus?.running ? "Running" : "Stopped"}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Runtime</div>
+            <div className="font-medium">{vrStatus?.native_runtime || vrStatus?.probe?.native_runtime || "sarahmemory_native"}</div>
+          </div>
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Headset</div>
+            <div className="font-medium">
+              {vrStatus?.probe?.readiness?.headset_connected ? "Connected" : "Probe Required"}
+            </div>
+          </div>
+          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div className="text-muted-foreground">Movement</div>
+            <div className="font-medium">{vrStatus?.movement_lock === false ? "Unlocked" : "Locked"}</div>
+          </div>
+        </div>
+        {vrError ? (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
+            {vrError}
+          </div>
+        ) : null}
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}
-          >
-            Open Vision HUD
+          <Button variant="outline" size="sm" onClick={handleVrProbe} disabled={isVrBusy}>
+            {isVrBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            Probe
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}
-          >
-            Open VR HUD Route
+          <Button variant="outline" size="sm" onClick={handleVrStart} disabled={isVrBusy}>
+            Start VR
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleVrStop} disabled={isVrBusy}>
+            Stop VR
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void loadVrStatus(true)} disabled={isVrBusy}>
+            Status
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}>
+            Open Mirror
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}>
+            Browser HUD
           </Button>
         </div>
       </div>

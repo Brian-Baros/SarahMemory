@@ -2,41 +2,95 @@
   "enabled": true,
   "autoload": false,
   "runtime_preference": [
-    "openxr",
-    "steamvr",
-    "monado",
-    "openvr"
+    "sarahmemory_native"
   ],
-  "allow_pose_tracking": true,
-  "allow_eye_tracking": false,
-  "allow_hand_tracking": true,
-  "allow_passthrough": false,
-  "allow_microphone": true,
+  "external_runtime_allowed": false,
+  "allow_runtime_launch": false,
+  "allow_scene_requests": false,
   "allow_secondary_display": true,
-  "allow_scene_requests": true,
-  "allow_runtime_launch": true,
-  "allow_resolution_changes": true,
-  "require_confirm_for_scene_launch": true,
-  "require_confirm_for_runtime_launch": false,
+  "allow_pose_tracking": false,
+  "allow_eye_tracking": false,
+  "allow_hand_tracking": false,
+  "allow_passthrough": false,
+  "allow_microphone": false,
   "allow_vendor_tools": false,
-  "allow_bluetooth_glasses": true,
-  "display_mode": "auto",
-  "mirror_mode": "auto",
-  "render_scale": 1.0,
-  "target_width": 0,
-  "target_height": 0,
-  "target_refresh_hz": 0,
-  "target_runtime": "OpenXR",
-  "target_headset_name": "",
-  "target_headset_serial": "",
-  "preferred_audio_output": "",
-  "preferred_audio_input": "",
-  "preferred_controller_mode": "auto",
-  "preferred_scene_transport": "file",
-  "scene_request_dir": "",
-  "runtime_command": "",
-  "runtime_stop_command": "",
-  "session_name": "SarahMemory XR Session",
+  "selected_profile": "psvr_v1_processor_box",
+  "auto_start_on_headset_connected": true,
+  "auto_stop_on_headset_disconnected": true,
   "poll_interval_ms": 1000,
-  "history_limit": 200
+  "history_limit": 200,
+  "native_profile": {
+    "profile_id": "psvr_v1_processor_box",
+    "vendor_family": "sony_psvr",
+    "transport": [
+      "usb",
+      "hdmi"
+    ],
+    "display_mode": "secondary_surface",
+    "width": 1920,
+    "height": 1080,
+    "refresh_hz": 60,
+    "render_mode": "mono_mirror",
+    "stereo_split": false,
+    "lens_correction": false,
+    "requires_external_runtime": false
+  },
+  "headset_profiles": {
+    "psvr_v1_processor_box": {
+      "profile_id": "psvr_v1_processor_box",
+      "vendor_family": "sony_psvr",
+      "transport": [
+        "usb",
+        "hdmi"
+      ],
+      "display_mode": "secondary_surface",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 60,
+      "render_mode": "mono_mirror",
+      "stereo_split": false,
+      "lens_correction": false,
+      "requires_external_runtime": false,
+      "usb_match_keywords": [
+        "playstation vr",
+        "psvr",
+        "sony",
+        "morpheus"
+      ]
+    },
+    "generic_hdmi_hmd": {
+      "profile_id": "generic_hdmi_hmd",
+      "vendor_family": "generic",
+      "transport": [
+        "usb",
+        "hdmi",
+        "displayport"
+      ],
+      "display_mode": "secondary_surface",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 60,
+      "render_mode": "mono_mirror",
+      "stereo_split": false,
+      "lens_correction": false,
+      "requires_external_runtime": false
+    },
+    "meta_quest_generic": {
+      "profile_id": "meta_quest_generic",
+      "vendor_family": "meta",
+      "transport": [
+        "usb_c",
+        "wifi"
+      ],
+      "display_mode": "encoded_stream_or_link_surface_future",
+      "width": 1920,
+      "height": 1080,
+      "refresh_hz": 72,
+      "render_mode": "mono_mirror",
+      "stereo_split": false,
+      "lens_correction": false,
+      "requires_external_runtime": false,
+      "status": "adapter_future"
+    }
+  }
 }

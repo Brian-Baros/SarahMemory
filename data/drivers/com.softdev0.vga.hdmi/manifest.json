@@ -1,11 +1,18 @@
 {
+  "id": "com.softdev0.vga.hdmi",
   "driver_id": "com.softdev0.vga.hdmi",
-  "version": "2.0.0",
-  "display_name": "Generic Display Bridge",
-  "description": "Governed display bridge for VGA/HDMI/DVI/DP monitors and secondary display routing.",
+  "name": "SarahMemory Native Display Bridge Driver",
+  "display_name": "SarahMemory Native Display Bridge",
+  "version": "3.0.0",
+  "category": "display",
+  "description": "Governed display bridge for HDMI/DisplayPort/VGA/DVI monitors and VR operator HUD surfaces. Produces read-only surface packets for SarahMemoryVRHudRenderer.py.",
   "platform": {
     "transport": [
-      "local_os"
+      "local_os",
+      "hdmi",
+      "displayport",
+      "vga",
+      "dvi"
     ],
     "os": [
       "Windows",
@@ -20,26 +27,19 @@
   "tags": [
     "display",
     "monitor",
-    "vga",
     "hdmi",
-    "displayport"
+    "displayport",
+    "operator_vr_surface"
   ],
   "actions": [
+    "ping",
     "probe_backends",
     "discover_displays",
+    "operator_hud_surface",
+    "build_hud_surface_request",
     "set_active_display",
-    "set_mode",
-    "set_brightness",
-    "mirror_on",
-    "extend_on",
-    "build_scene_request",
     "get_config",
     "set_config",
-    "safe_stop",
-    "operator_hud_surface",
-    "build_hud_surface_request"
-  ],
-  "id": "com.softdev0.vga.hdmi",
-  "name": "VGA/HDMI Display Bridge Driver",
-  "category": "display"
+    "safe_stop"
+  ]
 }

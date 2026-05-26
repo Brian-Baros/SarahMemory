@@ -116,6 +116,8 @@ READ_ONLY_ACTIONS = {
     "select_device", "probe", "probe_capabilities", "capabilities", "enumerate_controls",
     "list_controls", "controls", "get_control", "get_property", "get_config", "ping",
     "describe_capabilities", "probe_backends", "court_witness", "body_map",
+    "operator_hud_status", "build_operator_hud_request", "operator_hud_surface",
+    "build_hud_surface_request", "native_hmd_status", "native_headset_profile",
 }
 
 PRIVACY_SENSITIVE_ACTIONS = {
@@ -624,6 +626,143 @@ def msdc_camera_capture_b64(user_authorized: bool = False, payload: Optional[Dic
 
 
 
+
+def _bool_ready(record: Dict[str, Any]) -> bool:
+    return bool(isinstance(record, dict) and record.get("driver_present") and record.get("manifest_valid"))
+
+
+def msdc_vr_native_profile_status() -> Dict[str, Any]:
+    """Read-only SarahMemory-native VR/HMD profile status.
+
+    This is a witness packet only. It does not open cameras, launch renderers,
+    change displays, or send headset control packets.
+    """
+    headset_cfg = _read_driver_config(VR_HEADSET_DRIVER_ID)
+    display_cfg = _read_driver_config(DISPLAY_DRIVER_ID)
+    profile = headset_cfg.get("native_profile") if isinstance(headset_cfg.get("native_profile"), dict) else {}
+    profiles = headset_cfg.get("headset_profiles") if isinstance(headset_cfg.get("headset_profiles"), dict) else {}
+    selected_profile = str(headset_cfg.get("selected_profile") or profile.get("profile_id") or "psvr_v1_processor_box")
+    active_profile = profiles.get(selected_profile) if isinstance(profiles, dict) and isinstance(profiles.get(selected_profile), dict) else profile
+    return {
+        "ok": True,
+        "schema": "SarahMemoryMSDC.vr_native_profile.v1",
+        "native_runtime": "sarahmemory_native",
+        "external_runtime_allowed": bool(headset_cfg.get("external_runtime_allowed", False)),
+        "external_runtime_dependency": False,
+        "selected_profile": selected_profile,
+        "active_profile": active_profile if isinstance(active_profile, dict) else {},
+        "headset_driver_id": VR_HEADSET_DRIVER_ID,
+        "display_driver_id": DISPLAY_DRIVER_ID,
+        "camera_driver_id": CAMERA_DRIVER_ID,
+        "auto_start_on_headset_connected": bool(headset_cfg.get("auto_start_on_headset_connected", True)),
+        "auto_stop_on_headset_disconnected": bool(headset_cfg.get("auto_stop_on_headset_disconnected", True)),
+        "display_surface": display_cfg.get("vr_surface") if isinstance(display_cfg.get("vr_surface"), dict) else {},
+        "limits": {
+            "msdc_launches_renderer": False,
+            "msdc_opens_camera": False,
+            "msdc_controls_headset_display": False,
+            "movement_lock": True,
+        },
+    }
+
+
+def msdc_vr_probe(include_driver_actions: bool = True) -> Dict[str, Any]:
+    """Aggregate read-only VR probe across camera, display bridge, and HMD.
+
+    This is the packet app.py should call before starting the renderer.
+    """
+    body_map = msdc_map_body(persist=True)
+    parts = body_map.get("body_parts", {}) if isinstance(body_map, dict) else {}
+    eyes = parts.get("eyes", {}) if isinstance(parts.get("eyes"), dict) else {}
+    vr_surface = parts.get("operator_vr_surface", {}) if isinstance(parts.get("operator_vr_surface"), dict) else {}
+    display = parts.get("display_bridge", {}) if isinstance(parts.get("display_bridge"), dict) else {}
+    native_profile = msdc_vr_native_profile_status()
+
+    driver_probe: Dict[str, Any] = {}
+    if include_driver_actions:
+        driver_probe["headset"] = msdc_driver_action(VR_HEADSET_DRIVER_ID, "native_hmd_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"})
+        if not driver_probe["headset"].get("ok"):
+            driver_probe["headset"] = msdc_driver_action(VR_HEADSET_DRIVER_ID, "operator_hud_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"})
+        driver_probe["display"] = msdc_driver_action(DISPLAY_DRIVER_ID, "operator_hud_surface", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"})
+        if not driver_probe["display"].get("ok"):
+            driver_probe["display"] = msdc_driver_action(DISPLAY_DRIVER_ID, "build_hud_surface_request", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"})
+        driver_probe["camera"] = msdc_driver_action(CAMERA_DRIVER_ID, "probe_capabilities", payload={}, context={"read_only_probe": True, "body_part": "eyes"})
+
+    headset_connected = False
+    try:
+        h = driver_probe.get("headset") if isinstance(driver_probe, dict) else {}
+        headset_connected = bool(
+            h.get("connected")
+            or h.get("headset_connected")
+            or (isinstance(h.get("native_hmd"), dict) and h["native_hmd"].get("connected"))
+            or (isinstance(h.get("detect"), dict) and h["detect"].get("connected"))
+        )
+    except Exception:
+        headset_connected = False
+
+    readiness = {
+        "camera_eye_source_ready": _bool_ready(eyes),
+        "operator_vr_surface_ready": _bool_ready(vr_surface),
+        "display_bridge_ready": _bool_ready(display),
+        "headset_connected": headset_connected,
+        "renderer_allowed": True,
+        "movement_lock": True,
+    }
+    readiness["ready_for_renderer_start"] = bool(
+        readiness["camera_eye_source_ready"]
+        and readiness["operator_vr_surface_ready"]
+        and readiness["display_bridge_ready"]
+    )
+    return {
+        "ok": True,
+        "schema": "SarahMemoryMSDC.vr_probe.v1",
+        "module": MODULE_NAME,
+        "version": MODULE_VERSION,
+        "native_runtime": "sarahmemory_native",
+        "external_runtime_allowed": False,
+        "readiness": readiness,
+        "body_map": body_map,
+        "native_profile": native_profile,
+        "drivers": driver_probe,
+        "limits": {
+            "probe_is_activation": False,
+            "camera_opened": False,
+            "renderer_started": False,
+            "hud_can_execute_actions": False,
+            "hud_can_authorize_movement": False,
+            "requires_smget_for_actions": True,
+            "msdc_self_authorizes": False,
+        },
+    }
+
+
+def msdc_vr_surface_request(payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a read-only surface contract for app.py/SarahMemoryVRHudRenderer.py."""
+    payload = payload if isinstance(payload, dict) else {}
+    probe = msdc_vr_probe(include_driver_actions=True)
+    display_packet = ((probe.get("drivers") or {}).get("display") or {}) if isinstance(probe.get("drivers"), dict) else {}
+    surface = display_packet.get("surface") if isinstance(display_packet.get("surface"), dict) else display_packet.get("hud_surface")
+    if not isinstance(surface, dict):
+        surface = {}
+    request_packet = {
+        "ok": True,
+        "schema": "SarahMemoryMSDC.vr_surface_request.v1",
+        "native_runtime": "sarahmemory_native",
+        "renderer_file": "SarahMemoryVRHudRenderer.py",
+        "api_base": str(payload.get("api_base") or "http://127.0.0.1:8000"),
+        "mirror_preview": bool(payload.get("mirror_preview", True)),
+        "headset_surface": bool(payload.get("headset_surface", True)),
+        "surface": surface,
+        "probe": probe,
+        "safety": {
+            "observe_only": True,
+            "movement_locked": True,
+            "hud_can_execute_actions": False,
+            "hud_can_authorize_movement": False,
+        },
+    }
+    return request_packet
+
 def msdc_dispatch_emergency_contract(contract: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Bounded MSDC emergency dispatcher for OperatorCore-owned contracts.
 
@@ -734,21 +873,40 @@ def msdc_vr_hud_status() -> Dict[str, Any]:
     """Read-only body-map status for the VR Operator HUD surface."""
     body_map = msdc_map_body(persist=True)
     parts = body_map.get("body_parts", {}) if isinstance(body_map, dict) else {}
+    native_profile = msdc_vr_native_profile_status()
+    readiness = {
+        "camera_eye_source_ready": _bool_ready(parts.get("eyes", {}) if isinstance(parts.get("eyes"), dict) else {}),
+        "operator_vr_surface_ready": _bool_ready(parts.get("operator_vr_surface", {}) if isinstance(parts.get("operator_vr_surface"), dict) else {}),
+        "display_bridge_ready": _bool_ready(parts.get("display_bridge", {}) if isinstance(parts.get("display_bridge"), dict) else {}),
+        "movement_lock": True,
+    }
     return {
         "ok": True,
         "module": MODULE_NAME,
         "version": MODULE_VERSION,
+        "schema": "SarahMemoryMSDC.vr_hud_status.v2",
         "mode": "OBSERVE_ONLY",
+        "native_runtime": "sarahmemory_native",
+        "external_runtime_allowed": False,
+        "renderer_expected": True,
         "movement_lock": True,
+        "readiness": readiness,
         "operator_vr_surface": parts.get("operator_vr_surface", {}),
         "display_bridge": parts.get("display_bridge", {}),
         "camera_eye_source": parts.get("eyes", {}),
+        "native_profile": native_profile,
+        "driver_ids": {
+            "headset": VR_HEADSET_DRIVER_ID,
+            "display": DISPLAY_DRIVER_ID,
+            "camera": CAMERA_DRIVER_ID,
+        },
         "body_map": body_map,
         "limits": {
             "hud_can_execute_actions": False,
             "hud_can_authorize_movement": False,
             "requires_smget_for_actions": True,
             "msdc_self_authorizes": False,
+            "vision_background_analysis_continues_after_vr_stop": True,
         },
     }
 

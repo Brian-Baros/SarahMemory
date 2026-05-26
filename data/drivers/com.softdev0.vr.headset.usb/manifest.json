@@ -1,81 +1,50 @@
 {
   "id": "com.softdev0.vr.headset.usb",
-  "name": "VR Headset XR Bridge Driver",
-  "type": "driver",
-  "version": "2.0.0",
-  "author": "SOFTDEV0 LLC / SarahMemory Community",
-  "description": "Governed XR runtime/headset bridge for SarahMemory AiOS. Detects XR-capable runtimes and devices, negotiates resolution/runtime launch, exports scene/avatar requests, and degrades cleanly when optional VR stacks are absent.",
-  "api_compat": {
-    "min": "8.0.0",
-    "max": "8.9.9"
-  },
+  "name": "SarahMemory Native Universal HMD Bridge Driver",
+  "version": "3.0.0",
+  "category": "vr_hmd_native_bridge",
+  "description": "SarahMemory-native universal VR/HMD witness and profile driver. PSVR is the first profile. No OpenXR/SteamVR/OpenVR/Monado runtime dependency in the core path.",
   "platform": {
-    "os": [
-      "windows",
-      "linux",
-      "macos",
-      "android"
-    ],
-    "runtime": [
-      "OpenXR",
-      "SteamVR",
-      "Monado",
-      "OpenVR-compatible bridge"
-    ],
     "transport": [
       "usb",
-      "bluetooth",
-      "displayport",
       "hdmi",
-      "wifi_link"
+      "displayport",
+      "usb_c",
+      "wifi_future"
+    ],
+    "os": [
+      "Windows",
+      "Linux",
+      "macOS"
     ]
-  },
-  "transport": "hybrid",
-  "category": "vr",
-  "permissions": [
-    "hardware.usb",
-    "hardware.bluetooth",
-    "media.video",
-    "media.audio_input",
-    "media.audio_output",
-    "os.display_control",
-    "os.input_control",
-    "filesystem.write_local",
-    "subprocess.execute"
-  ],
-  "entry": {
-    "module": "driver",
-    "callable": "driver_init"
   },
   "status_callable": "driver_status",
   "action_callable": "driver_action",
   "shutdown_callable": "driver_shutdown",
+  "entry": "driver.py",
+  "tags": [
+    "vr",
+    "hmd",
+    "psvr",
+    "meta",
+    "headset",
+    "sarahmemory_native"
+  ],
   "actions": [
     "ping",
+    "probe",
     "probe_backends",
+    "discover",
+    "discover_devices",
     "detect_headsets",
-    "list_inputs",
+    "native_hmd_status",
+    "native_headset_profile",
+    "operator_hud_status",
+    "build_operator_hud_request",
     "get_config",
     "set_config",
-    "start_runtime",
-    "stop_runtime",
-    "set_resolution",
-    "launch_scene_request",
-    "start_avatar_mode",
-    "stop_avatar_mode",
     "describe_capabilities",
     "safe_stop",
-    "operator_hud_status",
-    "build_operator_hud_request"
-  ],
-  "notes": {
-    "design_boundary": "This package is a hardware/runtime bridge, not a full scene-generation or render engine.",
-    "primary_contract": "Use OpenXR-capable runtimes when present; export scene/avatar requests into the wider SarahMemory creative/runtime pipeline."
-  },
-  "capabilities": {
-    "vr_operator_hud": true,
-    "read_only_telemetry_surface": true,
-    "camera_feed_overlay": true,
-    "movement_authority": false
-  }
+    "stop"
+  ]
 }

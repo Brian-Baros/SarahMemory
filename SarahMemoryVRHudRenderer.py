@@ -96,6 +96,33 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "borderless": False,
         "move_window": True,
         "target_role": "operator_vr_surface",
+        "mirror_x": True,
+    },
+    "mirror": {
+        "enabled": True,
+        "window_title": "SM_A_HUD_MIRROR",
+        "x": 60,
+        "y": 60,
+        "width": 960,
+        "height": 540,
+        "fullscreen": False,
+        "move_window": True
+    },
+    "headset": {
+        "enabled": True,
+        "profile_id": "psvr_v1_processor_box",
+        "render_mode": "mono_mirror",
+        "lens_correction": False,
+        "stereo_split": False,
+        "auto_start_on_headset_connected": True,
+        "auto_stop_on_headset_disconnected": True
+    },
+    "compositor": {
+        "enabled": True,
+        "mode": "mirror_plus_headset",
+        "fit": "cover",
+        "safe_border_px": 0,
+        "hud_overlay": True
     },
     "render": {
         "fps": 30,
@@ -352,6 +379,62 @@ class TelemetryClient:
         return threads
 
 
+
+class VRCompositor:
+    """In-file SarahMemory VR compositor.
+
+    The compositor transforms one governed HUD frame into two visual surfaces:
+    a desktop mirror and the configured headset output. It does not discover
+    hardware, open cameras, send USB packets, or authorize actions.
+    """
+
+    def __init__(self, cfg: Dict[str, Any], state: SharedState):
+        self.cfg = cfg
+        self.state = state
+        self.compositor_cfg = cfg.get("compositor") if isinstance(cfg.get("compositor"), dict) else {}
+        self.headset_cfg = cfg.get("headset") if isinstance(cfg.get("headset"), dict) else {}
+        self.mirror_cfg = cfg.get("mirror") if isinstance(cfg.get("mirror"), dict) else {}
+
+    @staticmethod
+    def _resize(frame: Any, width: int, height: int) -> Any:
+        if cv2 is None or np is None:
+            return frame
+        try:
+            return cv2.resize(frame, (max(1, int(width)), max(1, int(height))), interpolation=cv2.INTER_AREA)
+        except Exception:
+            return frame
+
+    def compose_headset(self, hud_frame: Any, width: int, height: int) -> Any:
+        if hud_frame is None:
+            return hud_frame
+        render_mode = str(self.headset_cfg.get("render_mode") or "mono_mirror").strip().lower()
+        stereo = bool(self.headset_cfg.get("stereo_split", False)) or render_mode in {"side_by_side", "sbs", "stereo_sbs"}
+        base = self._resize(hud_frame, width, height)
+        if not stereo or cv2 is None or np is None:
+            return base
+        try:
+            half_w = max(1, width // 2)
+            eye = self._resize(hud_frame, half_w, height)
+            return np.concatenate([eye, eye.copy()], axis=1)
+        except Exception:
+            return base
+
+    def compose_mirror(self, hud_frame: Any, width: int, height: int) -> Any:
+        return self._resize(hud_frame, width, height)
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "schema": "SarahMemoryVRCompositor.status.v1",
+            "mode": str(self.compositor_cfg.get("mode") or "mirror_plus_headset"),
+            "headset_enabled": bool(self.headset_cfg.get("enabled", True)),
+            "mirror_enabled": bool(self.mirror_cfg.get("enabled", True)),
+            "profile_id": str(self.headset_cfg.get("profile_id") or "psvr_v1_processor_box"),
+            "render_mode": str(self.headset_cfg.get("render_mode") or "mono_mirror"),
+            "movement_lock": True,
+            "authority": "visual_only",
+        }
+
 class HudRenderer:
     def __init__(self, cfg: Dict[str, Any], state: SharedState):
         if cv2 is None or np is None:
@@ -360,6 +443,8 @@ class HudRenderer:
         self.state = state
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         render = cfg.get("render") if isinstance(cfg.get("render"), dict) else {}
+        mirror = cfg.get("mirror") if isinstance(cfg.get("mirror"), dict) else {}
+        headset = cfg.get("headset") if isinstance(cfg.get("headset"), dict) else {}
         self.title = str(display.get("window_title") or "SM_A_HUD_DIRECT")
         self.x = _safe_int(display.get("x"), 0)
         self.y = _safe_int(display.get("y"), 0)
@@ -367,6 +452,20 @@ class HudRenderer:
         self.h = max(240, _safe_int(display.get("height"), 1080))
         self.fullscreen = bool(display.get("fullscreen", True))
         self.move_window = bool(display.get("move_window", True))
+        # Presentation-only horizontal correction. Raw appvision/SOBJE/FaceRec
+        # coordinates remain canonical; only the displayed camera background and
+        # the drawn target boxes are mirrored. HUD text is drawn after this step.
+        self.mirror_camera_x = bool(display.get("mirror_x", True))
+        self.headset_enabled = bool(headset.get("enabled", True))
+        self.mirror_enabled = bool(mirror.get("enabled", True))
+        self.mirror_title = str(mirror.get("window_title") or "SM_A_HUD_MIRROR")
+        self.mirror_x = _safe_int(mirror.get("x"), 60)
+        self.mirror_y = _safe_int(mirror.get("y"), 60)
+        self.mirror_w = max(320, _safe_int(mirror.get("width"), 960))
+        self.mirror_h = max(240, _safe_int(mirror.get("height"), 540))
+        self.mirror_fullscreen = bool(mirror.get("fullscreen", False))
+        self.mirror_move_window = bool(mirror.get("move_window", True))
+        self.compositor = VRCompositor(cfg, state)
         self.fps = max(5.0, min(120.0, _safe_float(render.get("fps"), 30.0)))
         self.filter_name = str(render.get("filter") or "mono_crimson").strip().lower()
         self.grid = bool(render.get("grid", True))
@@ -395,6 +494,8 @@ class HudRenderer:
     def _apply_filter(self, frame: Any) -> Any:
         try:
             frame = cv2.resize(frame, (self.w, self.h), interpolation=cv2.INTER_AREA)
+            if self.mirror_camera_x:
+                frame = cv2.flip(frame, 1)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             if self.filter_name in {"mono_green", "green"}:
                 out = np.zeros((self.h, self.w, 3), dtype=np.uint8)
@@ -482,10 +583,18 @@ class HudRenderer:
             bbox = obj.get("bbox") if isinstance(obj.get("bbox"), list) else []
             if len(bbox) < 4:
                 continue
-            x1 = int(max(0, min(1, _safe_float(bbox[0], 0))) * self.w)
-            y1 = int(max(0, min(1, _safe_float(bbox[1], 0))) * self.h)
-            x2 = int(max(0, min(1, _safe_float(bbox[2], 0))) * self.w)
-            y2 = int(max(0, min(1, _safe_float(bbox[3], 0))) * self.h)
+            nx1 = max(0.0, min(1.0, _safe_float(bbox[0], 0.0)))
+            ny1 = max(0.0, min(1.0, _safe_float(bbox[1], 0.0)))
+            nx2 = max(0.0, min(1.0, _safe_float(bbox[2], 0.0)))
+            ny2 = max(0.0, min(1.0, _safe_float(bbox[3], 0.0)))
+            left, right = min(nx1, nx2), max(nx1, nx2)
+            top, bottom = min(ny1, ny2), max(ny1, ny2)
+            if self.mirror_camera_x:
+                left, right = 1.0 - right, 1.0 - left
+            x1 = int(left * self.w)
+            y1 = int(top * self.h)
+            x2 = int(right * self.w)
+            y2 = int(bottom * self.h)
             if x2 <= x1 or y2 <= y1:
                 continue
             bw, bh = x2 - x1, y2 - y1
@@ -506,7 +615,10 @@ class HudRenderer:
             label = str(obj.get("label") or obj.get("class") or obj.get("id") or f"TGT_{idx}").upper()[:32]
             conf = _safe_float(obj.get("confidence"), 0.0)
             vec = obj.get("vectors") if isinstance(obj.get("vectors"), dict) else {}
-            data = f"{label} CONF={conf:.2f} DX={_safe_float(vec.get('dx'),0):+.2f} DY={_safe_float(vec.get('dy'),0):+.2f} DZ={vec.get('dz_est', '--')}"
+            dx = _safe_float(vec.get('dx'), 0.0)
+            if self.mirror_camera_x:
+                dx = -dx
+            data = f"{label} CONF={conf:.2f} DX={dx:+.2f} DY={_safe_float(vec.get('dy'),0):+.2f} DZ={vec.get('dz_est', '--')}"
             self._put_text(img, data, (x1, max(18, y1 - 8)), 0.34, "red", 1)
 
     def _draw_tapes(self, img: Any, packet: Dict[str, Any], status: Dict[str, Any], errors: List[str]) -> None:
@@ -614,27 +726,36 @@ class HudRenderer:
         self._update_fps()
         return img
 
-    def run(self) -> int:
-        cv2.namedWindow(self.title, cv2.WINDOW_NORMAL)
+    def _open_window(self, title: str, width: int, height: int, x: int, y: int, fullscreen: bool, move_window: bool) -> None:
+        cv2.namedWindow(title, cv2.WINDOW_NORMAL)
         try:
-            cv2.resizeWindow(self.title, self.w, self.h)
+            cv2.resizeWindow(title, width, height)
         except Exception:
             pass
-        if self.move_window:
+        if move_window:
             try:
-                cv2.moveWindow(self.title, self.x, self.y)
+                cv2.moveWindow(title, x, y)
             except Exception:
                 pass
-        if self.fullscreen:
+        if fullscreen:
             try:
-                cv2.setWindowProperty(self.title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                cv2.setWindowProperty(title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             except Exception:
                 pass
+
+    def run(self) -> int:
+        if self.headset_enabled:
+            self._open_window(self.title, self.w, self.h, self.x, self.y, self.fullscreen, self.move_window)
+        if self.mirror_enabled:
+            self._open_window(self.mirror_title, self.mirror_w, self.mirror_h, self.mirror_x, self.mirror_y, self.mirror_fullscreen, self.mirror_move_window)
         frame_interval = 1.0 / self.fps
         while self.state.running:
             started = time.time()
-            img = self._render_frame()
-            cv2.imshow(self.title, img)
+            hud = self._render_frame()
+            if self.headset_enabled:
+                cv2.imshow(self.title, self.compositor.compose_headset(hud, self.w, self.h))
+            if self.mirror_enabled:
+                cv2.imshow(self.mirror_title, self.compositor.compose_mirror(hud, self.mirror_w, self.mirror_h))
             key = cv2.waitKey(1) & 0xFF
             if key in self.safe_exit_keys:
                 self.state.running = False
@@ -642,7 +763,10 @@ class HudRenderer:
             elapsed = time.time() - started
             time.sleep(max(0.001, frame_interval - elapsed))
         try:
-            cv2.destroyWindow(self.title)
+            if self.headset_enabled:
+                cv2.destroyWindow(self.title)
+            if self.mirror_enabled:
+                cv2.destroyWindow(self.mirror_title)
         except Exception:
             cv2.destroyAllWindows()
         return 0
@@ -666,6 +790,12 @@ def apply_cli_overrides(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[s
         out["render"]["filter"] = args.filter
     if args.fps:
         out["render"]["fps"] = float(args.fps)
+    out.setdefault("mirror", {})
+    out.setdefault("headset", {})
+    if args.no_mirror:
+        out["mirror"]["enabled"] = False
+    if args.no_headset:
+        out["headset"]["enabled"] = False
     return out
 
 
@@ -681,6 +811,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--windowed", action="store_true", help="Force windowed mode.")
     p.add_argument("--filter", default="", choices=["mono_crimson", "mono_green", "gray", "mono", "green"], help="Video contrast filter.")
     p.add_argument("--fps", type=float, default=None, help="Renderer target FPS.")
+    p.add_argument("--no-mirror", action="store_true", help="Disable desktop mirror popup.")
+    p.add_argument("--no-headset", action="store_true", help="Disable headset output surface.")
     p.add_argument("--write-config", action="store_true", help="Write merged config with CLI overrides before launch.")
     return p
 
@@ -694,6 +826,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"[{MODULE_NAME}] config={cfg_path}")
     print(f"[{MODULE_NAME}] api_base={cfg.get('api_base')}")
     print(f"[{MODULE_NAME}] display=({cfg.get('display', {}).get('x')},{cfg.get('display', {}).get('y')}) {cfg.get('display', {}).get('width')}x{cfg.get('display', {}).get('height')} fullscreen={cfg.get('display', {}).get('fullscreen')}")
+    print(f"[{MODULE_NAME}] mirror={cfg.get('mirror', {}).get('enabled')} headset={cfg.get('headset', {}).get('enabled')} compositor={cfg.get('compositor', {}).get('mode')} mirror_x={cfg.get('display', {}).get('mirror_x')}")
     print(f"[{MODULE_NAME}] OBSERVE_ONLY / MOVEMENT_LOCKED / VISUAL_SURFACE_ONLY")
 
     state = SharedState()

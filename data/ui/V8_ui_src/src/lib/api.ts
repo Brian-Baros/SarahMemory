@@ -337,6 +337,18 @@ export interface VisionFrameSubmitResponse {
   [key: string]: any;
 }
 
+
+
+export interface VrRuntimeResponse {
+  ok: boolean;
+  running?: boolean;
+  runtime?: Record<string, any>;
+  probe?: Record<string, any>;
+  source?: string;
+  error?: string;
+  [key: string]: any;
+}
+
 export interface VisionFrameLatestResponse {
   ok: boolean;
   has_frame?: boolean;
@@ -1293,6 +1305,37 @@ export const visionApi = {
   },
 };
 
+
+export const vrApi = {
+  async status(refresh = false): Promise<VrRuntimeResponse> {
+    return directCall<VrRuntimeResponse>(`/api/vr/status?refresh=${refresh ? "1" : "0"}`, { method: "GET" });
+  },
+
+  async probe(): Promise<VrRuntimeResponse> {
+    return directCall<VrRuntimeResponse>("/api/vr/probe", { method: "POST", body: JSON.stringify({}) });
+  },
+
+  async start(options: Record<string, unknown> = {}): Promise<VrRuntimeResponse> {
+    return directCall<VrRuntimeResponse>("/api/vr/start", {
+      method: "POST",
+      body: JSON.stringify({
+        mirror_preview: true,
+        headset_surface: true,
+        auto_start_on_headset_connected: true,
+        auto_stop_on_headset_disconnected: true,
+        ...options,
+      }),
+    });
+  },
+
+  async stop(reason = "frontend_stop"): Promise<VrRuntimeResponse> {
+    return directCall<VrRuntimeResponse>("/api/vr/stop", {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  },
+};
+
 export const devBridgeApi = {
   async status(): Promise<DevBridgeStatusResponse> {
     return directCall<DevBridgeStatusResponse>("/api/devbridge/status", { method: "GET" });
@@ -1527,6 +1570,7 @@ export const api = {
   devbridge: devBridgeApi,
   governance: governanceApi,
   vision: visionApi,
+  vr: vrApi,
   models: modelsApi,
   dlengine: dlengineApi,
 };

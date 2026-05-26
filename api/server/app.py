@@ -23,7 +23,7 @@
 # - Safe fallbacks against missing core modules
 
 from __future__ import annotations
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error, subprocess, signal
 from pathlib import Path
 from decimal import Decimal
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, send_file, g, session, abort
@@ -1462,6 +1462,350 @@ def api_ui_actions_poll():
         _UI_ACTION_QUEUE[:] = keep
     actions = [{"type": i.get("type"), "payload": i.get("payload") or {}} for i in picked]
     return jsonify({"ok": True, "count": len(actions), "actions": actions, "items": picked}), 200
+
+
+# =============================================================================
+# SM V8.0 Native VR Operator HUD Runtime API
+# =============================================================================
+# Visual-only runtime manager. MSDC produces the body/display witness; app.py
+# owns process lifecycle for SarahMemoryVRHudRenderer.py. Stopping VR does not
+# stop appvision, SOBJE, or FacialRecognition background interpretation.
+# =============================================================================
+
+_VR_RUNTIME_LOCK = threading.RLock()
+_VR_RENDERER_PROC = None
+_VR_WATCHER_STARTED = False
+_VR_WATCHER_STOP = False
+
+def _vr_settings_dir() -> str:
+    try:
+        path = getattr(config, "SETTINGS_DIR", None)
+        if path:
+            return os.path.abspath(str(path))
+    except Exception:
+        pass
+    return os.path.join(DATA_DIR, "settings")
+
+def _vr_runtime_state_path() -> str:
+    return os.path.join(_vr_settings_dir(), "vr_runtime_state.json")
+
+def _vr_renderer_config_path() -> str:
+    return os.path.join(_vr_settings_dir(), "vr_hud_renderer.json")
+
+def _vr_read_json(path: str, default=None):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {} if default is None else default
+
+def _vr_write_json(path: str, payload) -> bool:
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception as exc:
+        app_logger.warning("VR JSON write failed %s: %s", path, exc)
+        return False
+
+def _vr_renderer_alive() -> bool:
+    global _VR_RENDERER_PROC
+    with _VR_RUNTIME_LOCK:
+        proc = _VR_RENDERER_PROC
+        if proc is not None:
+            try:
+                if proc.poll() is None:
+                    return True
+                _VR_RENDERER_PROC = None
+            except Exception:
+                _VR_RENDERER_PROC = None
+        state = _vr_read_json(_vr_runtime_state_path(), {})
+        pid = int(state.get("pid") or 0) if isinstance(state, dict) else 0
+        if pid <= 0:
+            return False
+        try:
+            if os.name == "nt":
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return True
+                return False
+            os.kill(pid, 0)
+            return True
+        except Exception:
+            return False
+
+def _vr_import_msdc():
+    try:
+        import SarahMemoryMSDC as _MSDC  # type: ignore
+        return _MSDC
+    except Exception as exc:
+        app_logger.warning("MSDC import failed for VR runtime: %s", exc)
+        return None
+
+def _vr_msdc_probe() -> dict:
+    msdc = _vr_import_msdc()
+    if msdc is None:
+        return {"ok": False, "error": "msdc_unavailable", "source": "api.vr"}
+    try:
+        if hasattr(msdc, "msdc_vr_probe"):
+            return msdc.msdc_vr_probe(include_driver_actions=True)  # type: ignore[attr-defined]
+        if hasattr(msdc, "msdc_vr_hud_status"):
+            return {"ok": True, "fallback": True, "status": msdc.msdc_vr_hud_status()}  # type: ignore[attr-defined]
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "source": "api.vr.msdc_probe"}
+    return {"ok": False, "error": "msdc_vr_probe_missing", "source": "api.vr"}
+
+def _vr_msdc_surface_request(payload: dict | None = None) -> dict:
+    msdc = _vr_import_msdc()
+    if msdc is None:
+        return {"ok": False, "error": "msdc_unavailable", "source": "api.vr"}
+    try:
+        if hasattr(msdc, "msdc_vr_surface_request"):
+            return msdc.msdc_vr_surface_request(payload or {})  # type: ignore[attr-defined]
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "source": "api.vr.surface_request"}
+    return {"ok": False, "error": "msdc_vr_surface_request_missing", "source": "api.vr"}
+
+def _vr_config_from_surface(surface_request: dict, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    surface = surface_request.get("surface") if isinstance(surface_request.get("surface"), dict) else {}
+    bounds = surface.get("bounds") if isinstance(surface.get("bounds"), dict) else {}
+    if not bounds:
+        bounds = surface.get("display") if isinstance(surface.get("display"), dict) else {}
+    headset = surface_request.get("probe", {}).get("native_profile", {}) if isinstance(surface_request.get("probe"), dict) else {}
+    active_profile = headset.get("active_profile") if isinstance(headset.get("active_profile"), dict) else {}
+    cfg = {
+        "schema": "SMHUD_RENDERER_CONFIG_V1",
+        "api_base": str(payload.get("api_base") or "http://127.0.0.1:8000"),
+        "endpoints": {
+            "frame_latest": "/api/vision/frame/latest",
+            "hud_packet": "/api/vision/hud/packet",
+            "hud_status": "/api/vision/hud/status",
+        },
+        "display": {
+            "window_title": "SM_A_HUD_DIRECT",
+            "x": int(payload.get("x", bounds.get("x", 0)) or 0),
+            "y": int(payload.get("y", bounds.get("y", 0)) or 0),
+            "width": int(payload.get("width", bounds.get("width", active_profile.get("width", 1920))) or 1920),
+            "height": int(payload.get("height", bounds.get("height", active_profile.get("height", 1080))) or 1080),
+            "fullscreen": bool(payload.get("fullscreen", True)),
+            "borderless": False,
+            "move_window": True,
+            "target_role": "operator_vr_surface",
+            "mirror_x": bool(payload.get("mirror_x", True)),
+        },
+        "mirror": {
+            "enabled": bool(payload.get("mirror_preview", True)),
+            "window_title": "SM_A_HUD_MIRROR",
+            "x": int(payload.get("mirror_x", 60) or 60),
+            "y": int(payload.get("mirror_y", 60) or 60),
+            "width": int(payload.get("mirror_width", 960) or 960),
+            "height": int(payload.get("mirror_height", 540) or 540),
+            "fullscreen": False,
+            "move_window": True,
+        },
+        "headset": {
+            "enabled": bool(payload.get("headset_surface", True)),
+            "profile_id": str(active_profile.get("profile_id") or headset.get("selected_profile") or "psvr_v1_processor_box"),
+            "render_mode": str(active_profile.get("render_mode") or "mono_mirror"),
+            "lens_correction": bool(active_profile.get("lens_correction", False)),
+            "stereo_split": bool(active_profile.get("stereo_split", False)),
+            "auto_start_on_headset_connected": bool(payload.get("auto_start_on_headset_connected", True)),
+            "auto_stop_on_headset_disconnected": bool(payload.get("auto_stop_on_headset_disconnected", True)),
+        },
+        "compositor": {
+            "enabled": True,
+            "mode": "mirror_plus_headset",
+            "fit": "cover",
+            "safe_border_px": 0,
+            "hud_overlay": True,
+        },
+        "render": {
+            "fps": float(payload.get("fps", 30) or 30),
+            "frame_poll_hz": 24,
+            "packet_poll_hz": 10,
+            "status_poll_hz": 1,
+            "filter": str(payload.get("filter") or "mono_crimson"),
+            "grid": True,
+            "target_brackets": True,
+            "telemetry_tapes": True,
+            "center_crosshair": True,
+            "stale_packet_ms": 2500,
+            "no_frame_background": "black",
+            "safe_exit_keys": [27, 113],
+        },
+        "safety": {
+            "observe_only": True,
+            "movement_locked": True,
+            "hud_can_execute_actions": False,
+            "hud_can_authorize_movement": False,
+            "require_backend_packet_schema": True,
+        },
+    }
+    return cfg
+
+def _vr_start_renderer(payload: dict | None = None, reason: str = "manual") -> dict:
+    global _VR_RENDERER_PROC
+    payload = payload or {}
+    with _VR_RUNTIME_LOCK:
+        if _vr_renderer_alive():
+            state = _vr_read_json(_vr_runtime_state_path(), {})
+            return {"ok": True, "already_running": True, "runtime": state, "source": "api.vr.start"}
+        probe = _vr_msdc_probe()
+        surface_request = _vr_msdc_surface_request({"api_base": payload.get("api_base") or "http://127.0.0.1:8000"})
+        cfg = _vr_config_from_surface(surface_request if surface_request.get("ok") else {"surface": {}, "probe": probe}, payload)
+        cfg_path = _vr_renderer_config_path()
+        _vr_write_json(cfg_path, cfg)
+        renderer_path = os.path.join(BASE_DIR, "SarahMemoryVRHudRenderer.py")
+        if not os.path.exists(renderer_path):
+            renderer_path = os.path.join(os.getcwd(), "SarahMemoryVRHudRenderer.py")
+        if not os.path.exists(renderer_path):
+            return {"ok": False, "error": "renderer_file_missing", "renderer_path": renderer_path, "probe": probe}
+        cmd = [sys.executable, renderer_path, "--config", cfg_path]
+        try:
+            _VR_RENDERER_PROC = subprocess.Popen(cmd, cwd=BASE_DIR)
+            runtime = {
+                "ok": True,
+                "running": True,
+                "pid": int(_VR_RENDERER_PROC.pid),
+                "cmd": cmd,
+                "started_ts": time.time(),
+                "reason": reason,
+                "config_path": cfg_path,
+                "renderer_path": renderer_path,
+                "movement_lock": True,
+                "vision_background_continues_after_stop": True,
+                "probe": probe,
+                "surface_request": surface_request,
+            }
+            _vr_write_json(_vr_runtime_state_path(), runtime)
+            return runtime
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "cmd": cmd, "probe": probe}
+
+def _vr_stop_renderer(reason: str = "manual") -> dict:
+    global _VR_RENDERER_PROC
+    with _VR_RUNTIME_LOCK:
+        stopped = False
+        pid = 0
+        proc = _VR_RENDERER_PROC
+        if proc is not None:
+            try:
+                pid = int(proc.pid or 0)
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=4)
+                    except Exception:
+                        proc.kill()
+                stopped = True
+            except Exception as exc:
+                app_logger.warning("VR renderer process stop failed: %s", exc)
+            _VR_RENDERER_PROC = None
+        state = _vr_read_json(_vr_runtime_state_path(), {})
+        state.update({
+            "ok": True,
+            "running": False,
+            "stopped_ts": time.time(),
+            "stop_reason": reason,
+            "pid": 0,
+            "previous_pid": pid or state.get("pid"),
+            "vision_background_continues": True,
+            "note": "VR display feed stopped; appvision/SOBJE/FacialRecognition remain available for background frame interpretation.",
+        })
+        _vr_write_json(_vr_runtime_state_path(), state)
+        return {"ok": True, "stopped": stopped, "runtime": state, "source": "api.vr.stop"}
+
+def _vr_status_payload(refresh_probe: bool = False) -> dict:
+    state = _vr_read_json(_vr_runtime_state_path(), {})
+    alive = _vr_renderer_alive()
+    probe = _vr_msdc_probe() if refresh_probe else None
+    vision = {"ok": True, "endpoint": "/api/vision/hud/status", "background_analysis_continues": True}
+    return {
+        "ok": True,
+        "schema": "SarahMemory.api.vr.status.v1",
+        "running": alive,
+        "runtime": state if isinstance(state, dict) else {},
+        "probe": probe,
+        "vision": vision,
+        "movement_lock": True,
+        "native_runtime": "sarahmemory_native",
+        "external_runtime_allowed": False,
+        "auto_watcher_started": bool(_VR_WATCHER_STARTED),
+    }
+
+def _vr_headset_connected_from_probe(probe: dict) -> bool:
+    try:
+        r = probe.get("readiness") if isinstance(probe.get("readiness"), dict) else {}
+        if bool(r.get("headset_connected")):
+            return True
+        h = ((probe.get("drivers") or {}).get("headset") or {}) if isinstance(probe.get("drivers"), dict) else {}
+        return bool(h.get("connected") or h.get("headset_connected") or (isinstance(h.get("native_hmd"), dict) and h["native_hmd"].get("connected")))
+    except Exception:
+        return False
+
+def _vr_watcher_loop():
+    global _VR_WATCHER_STOP
+    while not _VR_WATCHER_STOP:
+        try:
+            state = _vr_read_json(_vr_runtime_state_path(), {})
+            cfg = _vr_read_json(_vr_renderer_config_path(), {})
+            headset_cfg = cfg.get("headset") if isinstance(cfg.get("headset"), dict) else {}
+            auto_start = bool(headset_cfg.get("auto_start_on_headset_connected", state.get("auto_start_on_headset_connected", True)))
+            auto_stop = bool(headset_cfg.get("auto_stop_on_headset_disconnected", state.get("auto_stop_on_headset_disconnected", True)))
+            probe = _vr_msdc_probe()
+            connected = _vr_headset_connected_from_probe(probe)
+            if connected and auto_start and not _vr_renderer_alive():
+                _vr_start_renderer({"auto_start_on_headset_connected": True}, reason="headset_connected")
+            elif (not connected) and auto_stop and _vr_renderer_alive():
+                _vr_stop_renderer(reason="headset_disconnected")
+        except Exception as exc:
+            app_logger.debug("VR watcher tick failed: %s", exc)
+        time.sleep(2.0)
+
+def _vr_ensure_watcher_started() -> None:
+    global _VR_WATCHER_STARTED
+    if _VR_WATCHER_STARTED:
+        return
+    try:
+        t = threading.Thread(target=_vr_watcher_loop, name="SM_VR_HeadsetWatcher", daemon=True)
+        t.start()
+        _VR_WATCHER_STARTED = True
+    except Exception as exc:
+        app_logger.warning("VR watcher start failed: %s", exc)
+
+@app.route("/api/vr/status", methods=["GET"])
+def api_vr_status():
+    _vr_ensure_watcher_started()
+    refresh = str(request.args.get("refresh") or "0").lower() in ("1", "true", "yes", "on")
+    return jsonify(_vr_status_payload(refresh_probe=refresh)), 200
+
+@app.route("/api/vr/probe", methods=["POST", "GET"])
+def api_vr_probe():
+    _vr_ensure_watcher_started()
+    probe = _vr_msdc_probe()
+    return jsonify({"ok": bool(probe.get("ok", True)), "probe": probe, "running": _vr_renderer_alive(), "source": "api.vr.probe"}), 200
+
+@app.route("/api/vr/start", methods=["POST"])
+def api_vr_start():
+    _vr_ensure_watcher_started()
+    payload = request.get_json(silent=True) or {}
+    result = _vr_start_renderer(payload, reason=str(payload.get("reason") or "api_start"))
+    return jsonify(result), 200 if result.get("ok") else 400
+
+@app.route("/api/vr/stop", methods=["POST"])
+def api_vr_stop():
+    payload = request.get_json(silent=True) or {}
+    result = _vr_stop_renderer(reason=str(payload.get("reason") or "api_stop"))
+    return jsonify(result), 200
 
 
 # --- SarahMemoryGITtalk (TEMP ADMIN TOOL) ---
@@ -7339,6 +7683,10 @@ def _start_autonomous_services():
         app_logger.error(f"Autonomous init failed: {e}", exc_info=True)
 
 _start_autonomous_services()
+try:
+    _vr_ensure_watcher_started()
+except Exception:
+    pass
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5055))

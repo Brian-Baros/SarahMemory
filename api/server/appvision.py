@@ -97,6 +97,8 @@ DEFAULT_POLICY: Dict[str, Any] = {
     "frame_ttl_seconds": 10,
     "max_frame_chars": 1800000,
     "learning_default": "off",
+    "background_analysis_enabled": True,
+    "background_analysis_interval_ms": 1500,
     "identity_learning_requires_user_approval": True,
     "frontend_authority": ["camera_on_off", "preview_show_hide", "submit"],
     "backend_authority": ["frame_acceptance", "max_fps", "max_resolution", "analysis", "learning_gate", "driver_use"],
@@ -118,6 +120,7 @@ _FRAME_CACHE: Dict[str, Any] = {
     "data_url": None,
     "mime": None,
     "image_cached_ts": None,
+    "last_background_analysis_ts": 0.0,
 }
 
 
@@ -765,7 +768,22 @@ def api_vision_frame_submit():
     if frame is None:
         return _response({"ok": False, "error": "no_decodable_frame", "decode_status": status}, 400)
     analyze = bool(data.get("analyze"))
-    analysis = _analyze_frame(str(data.get("question") or "VR HUD observation pass"), frame, learning_allowed=False) if analyze else {"ok": True, "errors": [], "sobje": None, "facial": None}
+    background_analysis = False
+    try:
+        now_ms = time.time() * 1000.0
+        interval_ms = max(500.0, float(policy.get("background_analysis_interval_ms", 1500) or 1500))
+        with _FRAME_LOCK:
+            last_bg = float(_FRAME_CACHE.get("last_background_analysis_ts") or 0.0)
+        background_analysis = bool(policy.get("background_analysis_enabled", True)) and (now_ms - last_bg >= interval_ms)
+        if background_analysis:
+            with _FRAME_LOCK:
+                _FRAME_CACHE["last_background_analysis_ts"] = now_ms
+    except Exception:
+        background_analysis = False
+    run_analysis = bool(analyze or background_analysis)
+    analysis = _analyze_frame(str(data.get("question") or "VR HUD observation pass"), frame, learning_allowed=False) if run_analysis else {"ok": True, "errors": [], "sobje": None, "facial": None, "background_analysis_skipped": True}
+    if isinstance(analysis, dict):
+        analysis["analysis_trigger"] = "explicit" if analyze else "background" if background_analysis else "skipped"
     meta = _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=None, hud_packet=None)
     hud_packet = _build_hud_packet(frame, analysis, meta)
     _cache_frame(frame, str(data.get("source") or "frontend_frame_submit"), analysis=analysis, hud_packet=hud_packet)

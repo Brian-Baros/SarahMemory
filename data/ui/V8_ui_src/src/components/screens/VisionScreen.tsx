@@ -8,6 +8,11 @@ const FRAME_SUBMIT_INTERVAL_MS = 500;
 const ANALYZE_INTERVAL_MS = 1500;
 const HUD_PACKET_POLL_MS = 750;
 
+// Display-only correction. Raw frames submitted to appvision/SOBJE/FacialRecognition
+// stay canonical. Only the human-facing camera layer is horizontally corrected,
+// and HUD text is drawn separately so the writing stays readable.
+const DISPLAY_MIRROR_X = true;
+
 type HudMode = "idle" | "starting" | "running" | "paused" | "error";
 
 function pct(value: unknown, fallback = 0): number {
@@ -33,26 +38,37 @@ function compact(value: unknown, fallback = "--"): string {
   }
 }
 
-function normalizeTarget(target: VisionHudTarget) {
+function normalizeTarget(target: VisionHudTarget, mirrorX = false) {
   const box = Array.isArray(target.bbox) ? target.bbox : [0.42, 0.35, 0.58, 0.55];
-  const [x1, y1, x2, y2] = box.map((v) => Math.max(0, Math.min(1, Number(v) || 0)));
+  const [rawX1, rawY1, rawX2, rawY2] = box.map((v) => Math.max(0, Math.min(1, Number(v) || 0)));
+  const x1 = Math.min(rawX1, rawX2);
+  const x2 = Math.max(rawX1, rawX2);
+  const y1 = Math.min(rawY1, rawY2);
+  const y2 = Math.max(rawY1, rawY2);
   return {
-    x: Math.min(x1, x2),
-    y: Math.min(y1, y2),
+    x: mirrorX ? 1 - x2 : x1,
+    y: y1,
     w: Math.abs(x2 - x1),
     h: Math.abs(y2 - y1),
   };
 }
 
-function TargetBracket({ target, index }: { target: VisionHudTarget; index: number }) {
-  const b = normalizeTarget(target);
+function mirrorVectorDx(value: unknown, mirrorX = false): unknown {
+  if (!mirrorX) return value;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return value;
+  return -n;
+}
+
+function TargetBracket({ target, index, mirrorX = false }: { target: VisionHudTarget; index: number; mirrorX?: boolean }) {
+  const b = normalizeTarget(target, mirrorX);
   const x = pct(b.x);
   const y = pct(b.y);
   const w = Math.max(4, pct(b.w));
   const h = Math.max(4, pct(b.h));
   const label = String(target.label || target.class || target.id || `TARGET_${index}`);
   const conf = confidenceText(target.confidence);
-  const dx = compact(target.vectors?.dx);
+  const dx = compact(mirrorVectorDx(target.vectors?.dx, mirrorX));
   const dy = compact(target.vectors?.dy);
   const dz = compact(target.vectors?.dz_est);
 
@@ -203,6 +219,12 @@ export function VisionScreen() {
   }, [stopCamera]);
 
   useEffect(() => {
+    if (window.location.pathname === "/vr-hud") {
+      void startCamera();
+    }
+  }, [startCamera]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => void submitFrame(), FRAME_SUBMIT_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [submitFrame]);
@@ -241,6 +263,7 @@ export function VisionScreen() {
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full object-cover opacity-85 contrast-125 grayscale"
+        style={{ transform: DISPLAY_MIRROR_X ? "scaleX(-1)" : undefined }}
         muted
         playsInline
       />
@@ -255,7 +278,7 @@ export function VisionScreen() {
       </div>
 
       {targets.map((target, idx) => (
-        <TargetBracket key={target.id || idx} target={target} index={idx} />
+        <TargetBracket key={target.id || idx} target={target} index={idx} mirrorX={DISPLAY_MIRROR_X} />
       ))}
 
       {/* Top bar */}
@@ -364,7 +387,7 @@ export function VisionScreen() {
           </div>
           <h1 className="font-mono text-xl uppercase tracking-[0.28em] text-red-300">VR Operator HUD</h1>
           <p className="mt-3 text-sm text-red-100/80">
-            Start the camera, move this browser window to the PSVR display, then press Fullscreen. This surface is read-only telemetry; it does not control movement.
+            Browser mirror/debug surface. The native VR renderer is controlled from Settings and can target the headset display while appvision continues SOBJE and FacialRecognition analysis in the background.
           </p>
           <Button onClick={startCamera} className="mt-5 bg-red-700 text-white hover:bg-red-800">
             <Camera className="mr-2 h-4 w-4" /> Start Camera Feed
