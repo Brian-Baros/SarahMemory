@@ -1032,6 +1032,74 @@ def _get_latest_appvision_frame_for_chat(*, max_age_s: int | None = None) -> dic
     }
 
 
+
+def _sm_text_looks_like_desktop_visual_request(text: str, payload: dict | None = None, context_packet: dict | None = None) -> bool:
+    """Return True when chat text specifically asks about the desktop/screen feed."""
+    payload = payload if isinstance(payload, dict) else {}
+    context_packet = context_packet if isinstance(context_packet, dict) else {}
+    meta = context_packet.get("meta") if isinstance(context_packet.get("meta"), dict) else {}
+
+    if bool(payload.get("force_latest_desktop") or payload.get("use_latest_desktop") or payload.get("desktop_request")):
+        return True
+    if str(payload.get("intent") or meta.get("intent") or "").strip().lower() in {"desktop", "screen", "desktop_mirror", "screen_mirror"}:
+        return True
+
+    t = str(text or payload.get("text") or payload.get("message") or payload.get("q") or "").strip().lower()
+    if not t:
+        return False
+
+    desktop_phrases = (
+        "my desktop", "the desktop", "desktop mirror", "desktop feed",
+        "my screen", "the screen", "screen capture", "screen mirror", "monitor feed",
+        "what is on my screen", "what's on my screen", "what do you see on my screen",
+        "what is on my desktop", "what's on my desktop", "look at my desktop", "look at my screen",
+        "read my screen", "read the screen", "read this screen", "read this window",
+        "active window", "current window", "open window", "what window", "what app is open",
+    )
+    return any(p in t for p in desktop_phrases)
+
+
+def _get_latest_desktop_frame_for_chat(*, max_age_s: int | None = None, auto_capture: bool = True) -> dict | None:
+    """Bridge Chat to SarahMemoryDesktop's latest screen frame cache.
+
+    This stays read-only. It does not perform desktop actions and does not enable
+    OperatorCore execution. If desktop capture is unavailable, it returns None so
+    existing camera/appvision behavior can continue.
+    """
+    try:
+        import SarahMemoryDesktop as _SMDesktop  # type: ignore
+        rt = _SMDesktop.get_desktop_runtime()
+        rec = rt.latest(include_image=True, auto_capture=auto_capture)
+        if not isinstance(rec, dict) or not bool(rec.get("has_frame")):
+            return None
+        ts = float(rec.get("ts") or time.time())
+        max_age = int(max_age_s or _VISION_FRAME_MAX_AGE_S)
+        if ts and (time.time() - ts) > max(1, max_age):
+            return None
+        frame_value = rec.get("data_url") or rec.get("frame")
+        if not frame_value and rec.get("image_b64"):
+            frame_value = "data:" + str(rec.get("mime") or "image/jpeg") + ";base64," + str(rec.get("image_b64"))
+        if not frame_value:
+            return None
+        return {
+            "frame": frame_value,
+            "ts": ts,
+            "source": "desktop_mirror.latest",
+            "width": rec.get("width"),
+            "height": rec.get("height"),
+            "mime": rec.get("mime") or "image/jpeg",
+            "frame_id": rec.get("frame_id"),
+            "backend_cache": "desktop_mirror",
+            "desktop_observe_only": True,
+        }
+    except Exception as exc:
+        try:
+            app_logger.debug("Desktop frame bridge unavailable: %s", exc)
+        except Exception:
+            pass
+        return None
+
+
 def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, user_text: str = "") -> tuple[dict, dict | None]:
     """Attach the freshest available frame into the Context Packet meta block.
 
@@ -1052,7 +1120,19 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
         frame_rec = _get_latest_vision_frame(session_id)
 
     bridge = "inline_or_session"
-    if not frame_rec and _sm_text_looks_like_visual_request(user_text, payload=payload, context_packet=context_packet):
+    desktop_visual_request = _sm_text_looks_like_desktop_visual_request(user_text, payload=payload, context_packet=context_packet)
+    visual_request = _sm_text_looks_like_visual_request(user_text, payload=payload, context_packet=context_packet)
+
+    if not frame_rec and desktop_visual_request:
+        frame_rec = _get_latest_desktop_frame_for_chat(max_age_s=_VISION_FRAME_MAX_AGE_S, auto_capture=True)
+        bridge = str((frame_rec or {}).get("backend_cache") or "desktop_mirror")
+        if frame_rec is not None and session_id:
+            try:
+                frame_rec = _store_latest_vision_frame(session_id, frame_rec)
+            except Exception:
+                pass
+
+    if not frame_rec and visual_request:
         frame_rec = _get_latest_appvision_frame_for_chat(max_age_s=_VISION_FRAME_MAX_AGE_S)
         bridge = str((frame_rec or {}).get("backend_cache") or "appvision")
         if frame_rec is not None and session_id:
@@ -1065,7 +1145,8 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
         meta_block["vision_frame_bridge"] = {
             "attached": False,
             "reason": "no_cached_or_inline_frame",
-            "visual_request": _sm_text_looks_like_visual_request(user_text, payload=payload, context_packet=context_packet),
+            "visual_request": visual_request,
+            "desktop_visual_request": desktop_visual_request,
         }
         context_packet["meta"] = meta_block
         return context_packet, None
@@ -1462,6 +1543,184 @@ def api_ui_actions_poll():
         _UI_ACTION_QUEUE[:] = keep
     actions = [{"type": i.get("type"), "payload": i.get("payload") or {}} for i in picked]
     return jsonify({"ok": True, "count": len(actions), "actions": actions, "items": picked}), 200
+
+
+
+# =============================================================================
+# SM V8.0 Desktop Mirror Runtime API
+# =============================================================================
+# Backend-owned desktop capture surface for AvatarPanel's Desktop Mirror mode.
+# The frontend is display-only. Desktop control/autonomy requests are accepted
+# only as governed tickets and are not executed here.
+# =============================================================================
+
+_DESKTOP_RUNTIME_LOCK = threading.RLock()
+_DESKTOP_RUNTIME = None
+
+
+def _desktop_runtime():
+    """Return the singleton SarahMemoryDesktop runtime without hard-failing app.py."""
+    global _DESKTOP_RUNTIME
+    with _DESKTOP_RUNTIME_LOCK:
+        if _DESKTOP_RUNTIME is not None:
+            return _DESKTOP_RUNTIME
+        try:
+            import SarahMemoryDesktop as _SMDesktop  # type: ignore
+            _DESKTOP_RUNTIME = _SMDesktop.get_desktop_runtime()
+            return _DESKTOP_RUNTIME
+        except Exception as exc:
+            app_logger.warning("SarahMemoryDesktop runtime unavailable: %s", exc)
+            return None
+
+
+def _desktop_request_allowed() -> bool:
+    """Desktop capture is local-first by default because it can expose private screen data."""
+    try:
+        if str(os.getenv("SARAH_DESKTOP_REMOTE_ALLOWED", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            return True
+        remote = str(request.remote_addr or "").strip().lower()
+        if remote in ("127.0.0.1", "::1", "localhost", ""):
+            return True
+        # Some local reverse proxies report IPv4-mapped loopback.
+        if remote.endswith("127.0.0.1"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _desktop_blocked_response():
+    return jsonify({
+        "ok": False,
+        "error": "desktop_mirror_remote_blocked",
+        "message": "Desktop mirror is local-only by default. Set SARAH_DESKTOP_REMOTE_ALLOWED=1 only if you explicitly want LAN/remote browser access.",
+        "source": "api.desktop.guard",
+    }), 403
+
+
+@app.route("/api/desktop/status", methods=["GET"])
+def api_desktop_status():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.status"}), 503
+    return jsonify(rt.status()), 200
+
+
+@app.route("/api/desktop/start", methods=["POST"])
+def api_desktop_start():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.start"}), 503
+    payload = request.get_json(silent=True) or {}
+    result = rt.start(payload if isinstance(payload, dict) else {})
+    return jsonify(result), 200 if result.get("ok") else 503
+
+
+@app.route("/api/desktop/stop", methods=["POST"])
+def api_desktop_stop():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.stop"}), 503
+    payload = request.get_json(silent=True) or {}
+    result = rt.stop(payload if isinstance(payload, dict) else {})
+    return jsonify(result), 200 if result.get("ok") else 500
+
+
+@app.route("/api/desktop/capture", methods=["GET", "POST"])
+def api_desktop_capture():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.capture"}), 503
+    payload = request.get_json(silent=True) if request.method == "POST" else {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if request.method == "GET":
+        payload["include_image"] = str(request.args.get("include_image") or "1").lower() not in ("0", "false", "no", "off")
+        if request.args.get("monitor"):
+            payload["monitor"] = request.args.get("monitor")
+    result = rt.capture(payload)
+    return jsonify(result), 200 if result.get("ok") else 503
+
+
+@app.route("/api/desktop/latest", methods=["GET"])
+def api_desktop_latest():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.latest"}), 503
+    include_image = str(request.args.get("include_image") or "1").lower() not in ("0", "false", "no", "off")
+    auto_capture = str(request.args.get("capture") or request.args.get("auto_capture") or "0").lower() in ("1", "true", "yes", "on")
+    result = rt.latest(include_image=include_image, auto_capture=auto_capture)
+    return jsonify(result), 200 if result.get("ok", True) else 503
+
+
+@app.route("/api/desktop/observe", methods=["GET"])
+def api_desktop_observe():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.observe"}), 503
+    include_image = str(request.args.get("include_image") or "0").lower() in ("1", "true", "yes", "on")
+    result = rt.observe(include_image=include_image)
+    return jsonify(result), 200 if result.get("ok") else 503
+
+
+@app.route("/api/desktop/action/request", methods=["POST"])
+def api_desktop_action_request():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.action"}), 503
+    payload = request.get_json(silent=True) or {}
+    result = rt.request_action(payload if isinstance(payload, dict) else {})
+    return jsonify(result), 202 if result.get("ok") else 400
+
+
+@app.route("/api/desktop/task/request", methods=["POST"])
+def api_desktop_task_request():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.task"}), 503
+    payload = request.get_json(silent=True) or {}
+    result = rt.request_task(payload if isinstance(payload, dict) else {})
+    return jsonify(result), 202 if result.get("ok") else 400
+
+
+@app.route("/api/desktop/mjpeg", methods=["GET"])
+@app.route("/api/desktop/stream", methods=["GET"])
+@app.route("/api/desktop_mirror", methods=["GET"])
+@app.route("/api/desktop_mirror/stream", methods=["GET"])
+@app.route("/api/screen/mjpeg", methods=["GET"])
+@app.route("/api/screen/stream", methods=["GET"])
+def api_desktop_mjpeg_stream():
+    if not _desktop_request_allowed():
+        return _desktop_blocked_response()
+    rt = _desktop_runtime()
+    if rt is None:
+        return jsonify({"ok": False, "error": "desktop_runtime_unavailable", "source": "api.desktop.mjpeg"}), 503
+    try:
+        fps = int(request.args.get("fps") or os.getenv("SARAH_DESKTOP_MIRROR_FPS", "6") or 6)
+    except Exception:
+        fps = 6
+    from flask import Response
+    return Response(
+        rt.mjpeg_stream(fps=fps),
+        mimetype="multipart/x-mixed-replace; boundary=frame",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "X-SarahMemory-Source": "desktop_mirror"},
+    )
 
 
 # =============================================================================
@@ -5773,6 +6032,184 @@ def _safe_avatar_files() -> list[str]:
 def _avatar_public_url(filename: str) -> str:
     return f"/api/avatar/2d/{os.path.basename(filename or 'sarah-avatar.png')}"
 
+
+# ---------------------------------------------------------------------------
+# SarahMemory 3D Avatar Runtime Asset Contract
+# ---------------------------------------------------------------------------
+# The browser cannot load local Windows paths such as S:\SarahMemory\resources
+# directly.  This route family exposes only runtime-safe 3D avatar delivery files
+# from resources/avatars/3D.  Source/development files such as .blend, .py, and
+# logs are intentionally not web-served.
+_AVATAR_3D_ALLOWED_EXTENSIONS = {
+    ".glb",
+    ".gltf",
+    ".bin",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
+    ".json",
+}
+
+_AVATAR_3D_MIMETYPES = {
+    ".glb": "model/gltf-binary",
+    ".gltf": "model/gltf+json",
+    ".bin": "application/octet-stream",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".json": "application/json",
+}
+
+def _avatar_3d_dir() -> str:
+    """Return the local runtime folder for AvatarPanel 3D assets."""
+    try:
+        root = _globals_paths().get("ROOT_DIR") or BASE_DIR
+    except Exception:
+        root = BASE_DIR
+    candidates = [
+        os.path.join(root, "resources", "avatars", "3D"),
+        os.path.join(BASE_DIR, "resources", "avatars", "3D"),
+        os.path.join(os.getcwd(), "resources", "avatars", "3D"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return candidates[0]
+
+def _avatar_3d_safe_name(filename: str) -> str:
+    safe_name = os.path.basename(str(filename or "").strip())
+    if not safe_name:
+        return ""
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in _AVATAR_3D_ALLOWED_EXTENSIONS:
+        return ""
+    return safe_name
+
+def _safe_avatar_3d_files() -> list[str]:
+    """List runtime-safe 3D files.  Development sources are intentionally hidden."""
+    files: list[str] = []
+    try:
+        d = _avatar_3d_dir()
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                safe = _avatar_3d_safe_name(fn)
+                if safe and safe not in files:
+                    files.append(safe)
+    except Exception as e:
+        app_logger.debug(f"Avatar 3D file scan failed: {e}")
+    return files
+
+def _avatar_3d_manifest_path() -> str:
+    d = _avatar_3d_dir()
+    for name in (
+        "sarahmemory_3d_avatar_manifest.json",
+        "avatar_3d_manifest.json",
+        "avatar-manifest-3d.json",
+        "manifest.json",
+    ):
+        pth = os.path.join(d, name)
+        if os.path.isfile(pth):
+            return pth
+    return os.path.join(d, "sarahmemory_3d_avatar_manifest.json")
+
+def _avatar_3d_read_manifest() -> dict:
+    try:
+        manifest = _avatar_3d_manifest_path()
+        if os.path.isfile(manifest):
+            with open(manifest, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        app_logger.debug(f"Avatar 3D manifest read failed: {e}")
+    return {}
+
+def _avatar_3d_pick_model() -> str | None:
+    """Select the active GLB/GLTF runtime model, preferring the generated SarahMemory GLB."""
+    files = set(_safe_avatar_3d_files())
+    manifest = _avatar_3d_read_manifest()
+    candidates: list[str] = []
+
+    for key in ("glb", "model", "model_file", "modelUrl", "model_url"):
+        raw = manifest.get(key) if isinstance(manifest, dict) else None
+        if raw:
+            candidates.append(os.path.basename(str(raw)))
+
+    candidates.extend([
+        "sarahmemory_3d_avatar.glb",
+        "sarahmemory_happy_face_ball.glb",
+    ])
+
+    for name in sorted(files):
+        if name.lower().endswith((".glb", ".gltf")) and name not in candidates:
+            candidates.append(name)
+
+    for candidate in candidates:
+        safe = _avatar_3d_safe_name(candidate)
+        if safe and safe in files and safe.lower().endswith((".glb", ".gltf")):
+            return safe
+    return None
+
+def _avatar_3d_public_url(filename: str | None) -> str:
+    safe = _avatar_3d_safe_name(filename or "")
+    return f"/api/avatar/3d/{safe}" if safe else ""
+
+def _avatar_3d_manifest_payload() -> dict:
+    manifest = _avatar_3d_read_manifest()
+    files = _safe_avatar_3d_files()
+    model_file = _avatar_3d_pick_model()
+    return {
+        "success": True,
+        "ok": bool(model_file),
+        "base_url": "/api/avatar/3d",
+        "asset_dir": _avatar_3d_dir(),
+        "manifest_path": _avatar_3d_manifest_path(),
+        "manifest": manifest,
+        "files": files,
+        "model_file": model_file,
+        "model_url": _avatar_3d_public_url(model_file),
+        "blocked_extensions": [".blend", ".py", ".log"],
+        "runtime_only": True,
+    }
+
+def _avatar_3d_spec_payload(state: dict | None = None) -> dict:
+    """Return the Avatar3D.tsx backend contract used by the dropdown 3D mode."""
+    state = dict(state or {})
+    model_file = _avatar_3d_pick_model()
+    expression = str(state.get("expression") or state.get("emotion") or "neutral")
+    speaking = bool(state.get("speaking", False))
+    listening = bool(state.get("listening", False))
+
+    if not model_file:
+        return {
+            "renderMode": "procedural_holo",
+            "modelUrl": "",
+            "backgroundType": "none",
+            "pose": "stand",
+            "gesture": "none",
+            "expression": expression,
+            "speaking": speaking,
+            "listening": listening,
+            "source": "avatar_3d_missing_model",
+        }
+
+    return {
+        "renderMode": "gltf_model",
+        "modelUrl": _avatar_3d_public_url(model_file),
+        "backgroundType": "none",
+        "pose": "stand",
+        "gesture": "none",
+        "lookAt": {"x": 0, "y": 1.4, "z": 0},
+        "expression": expression,
+        "speaking": speaking,
+        "listening": listening,
+        "source": "resources/avatars/3D",
+        "modelFile": model_file,
+        "runtimeOnly": True,
+    }
+
+
 def _avatar_normalize_mode(mode: str | None) -> str:
     m = str(mode or "avatar_2d").strip().lower()
     if m in {"2d", "avatar2d", "avatar_2d", "avatar-2d", "avater_2d"}:
@@ -6004,8 +6441,9 @@ def _avatar_state_payload(extra: dict | None = None) -> dict:
         state["avatar_image"] = current_file
         state["avatar_image_url"] = _avatar_public_url(current_file)
         state["manifest"] = _avatar_manifest_payload()
+        state["avatar_3d"] = _avatar_3d_manifest_payload()
+        state["spec"] = _avatar_3d_spec_payload(state)
         state["success"] = True
-        state.setdefault("spec", {"renderMode": "procedural_holo"})
         return state
 
 def _avatar_update_state(**updates) -> dict:
@@ -6139,6 +6577,38 @@ def avatar_live_asset(filename: str):
         abort(404)
     try:
         return send_from_directory(_avatar_default_dir(), safe_name, mimetype="image/png", max_age=1)
+    except Exception:
+        abort(404)
+
+
+
+@app.route("/api/avatar/3d/manifest", methods=["GET"])
+def avatar_live_3d_manifest():
+    return jsonify(_avatar_3d_manifest_payload()), 200
+
+@app.route("/api/avatar/3d/spec", methods=["GET"])
+def avatar_live_3d_spec():
+    return jsonify({
+        "success": True,
+        "ok": True,
+        "spec": _avatar_3d_spec_payload(_avatar_state_payload()),
+        "manifest": _avatar_3d_manifest_payload(),
+    }), 200
+
+@app.route("/api/avatar/3d/<path:filename>", methods=["GET"])
+def avatar_live_3d_asset(filename: str):
+    safe_name = _avatar_3d_safe_name(filename)
+    if not safe_name:
+        abort(404)
+
+    allowed = set(_safe_avatar_3d_files())
+    if safe_name not in allowed:
+        abort(404)
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    mimetype = _AVATAR_3D_MIMETYPES.get(ext, "application/octet-stream")
+    try:
+        return send_from_directory(_avatar_3d_dir(), safe_name, mimetype=mimetype, max_age=1)
     except Exception:
         abort(404)
 
