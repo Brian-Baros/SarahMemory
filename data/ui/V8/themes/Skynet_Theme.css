@@ -1,0 +1,16 @@
+/* SarahMemory Unified Theme — SKYNET (v7.7.5) */
+:root{
+  --bg:#0c0d10; --panel:#13151a; --text:#f5dbdb; --muted:#cc9a9a;
+  --accent:#ff4343; --border:#351717; --btn:#191a22; --btnText:#f5dbdb;
+  --bubble-user:#1b2330; --bubble-sarah:#1a1416;
+}
+html,body{background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Roboto,Arial,sans-serif}
+.bubble.user{background:var(--bubble-user);border:1px solid #222a38}
+.bubble.sarah{background:var(--bubble-sarah);border:1px solid #351717}
+.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
+.small,.muted{color:var(--muted)}
+
+.TFrame { background-color:#13151a; }
+.TLabel { background-color:transparent; color:#ff4343; foreground:#ff4343; font-family:"Segoe UI",Arial,sans-serif; font-size:12pt; }
+.TButton{ background-color:#191a22; color:#f5dbdb; foreground:#f5dbdb; font-family:"Segoe UI",Arial,sans-serif; font-size:10pt; bordercolor:#2a2c36; }
+.ChatText{ background-color:#0c0d10; color:#f5dbdb; font-family:"Consolas","Lucida Console",monospace; font-size:11pt; }
