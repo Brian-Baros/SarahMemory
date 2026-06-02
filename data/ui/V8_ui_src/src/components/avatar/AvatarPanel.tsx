@@ -26,6 +26,15 @@ type LocalAvatarState = {
 
 type MirrorKind = "mjpeg" | "video" | "image" | "unknown";
 
+const DEFAULT_3D_SPEC: AvatarSpec = {
+  renderMode: "gltf_model",
+  modelUrl: "/api/avatar/3d/sarahmemory_3d_avatar.glb",
+  backgroundType: "none",
+  pose: "stand",
+  gesture: "none",
+};
+
+
 function joinUrl(base: string, path: string): string {
   if (!base) return path;
   const b = base.endsWith("/") ? base.slice(0, -1) : base;
@@ -276,7 +285,7 @@ export function AvatarPanel() {
     listening: false,
     current_action: "idle",
     current_image: "sarah-avatar.png",
-    spec: { renderMode: "procedural_holo" },
+    spec: DEFAULT_3D_SPEC,
   });
 
   const [webcamVisible, setWebcamVisible] = useState(true);
@@ -300,13 +309,41 @@ export function AvatarPanel() {
   const isCallMode = currentMode === "media" && String(avatarState.current_action || "").toLowerCase().includes("call");
   const apiBase = bootstrapData?.env?.api_base || "";
   const isCompactViewport = useCompactAvatarViewport();
-  const render3DInline = is3DMode && !isCompactViewport;
+  const render3DInline = is3DMode;
 
   const normalizeAvatarUrl = (url: string): string => {
     if (!url) return sarahAvatarPng;
     if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) return url;
     return joinUrl(apiBase || window.location.origin, url);
   };
+
+  const normalizeAssetUrl = (url?: string): string | undefined => {
+    if (!url) return undefined;
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("data:")) return url;
+    return joinUrl(apiBase || window.location.origin, url);
+  };
+
+  const avatar3DSpec = useMemo<AvatarSpec>(() => {
+    const incoming = avatarState.spec && typeof avatarState.spec === "object" ? avatarState.spec : DEFAULT_3D_SPEC;
+    const merged: AvatarSpec = {
+      ...DEFAULT_3D_SPEC,
+      ...incoming,
+      expression: avatarState.expression || incoming.expression || "neutral",
+      speaking: avatarState.speaking ?? incoming.speaking ?? false,
+      listening: avatarState.listening ?? incoming.listening ?? false,
+    };
+
+    if (merged.renderMode === "gltf_model" && !merged.modelUrl) {
+      merged.modelUrl = DEFAULT_3D_SPEC.modelUrl;
+    }
+
+    return {
+      ...merged,
+      modelUrl: normalizeAssetUrl(merged.modelUrl),
+      videoUrl: normalizeAssetUrl(merged.videoUrl),
+      backgroundUrl: normalizeAssetUrl(merged.backgroundUrl),
+    };
+  }, [apiBase, avatarState.spec, avatarState.expression, avatarState.speaking, avatarState.listening]);
 
   const resolveRoleFile = (role: string, fallback: string): string => {
     const key = String(role || "").toLowerCase();
@@ -401,7 +438,7 @@ export function AvatarPanel() {
           expression: String(state.expression || state.emotion || prev.expression || "neutral"),
           speaking: Boolean(state.speaking ?? prev.speaking),
           listening: Boolean(state.listening ?? prev.listening),
-          spec: (state.spec as AvatarSpec) || prev.spec || { renderMode: "procedural_holo" },
+          spec: (state.spec as AvatarSpec) || prev.spec || DEFAULT_3D_SPEC,
         }));
       } catch {
         // Keep UI alive with the hardcoded sarah-avatar.png / local role-file fallback.
@@ -441,7 +478,7 @@ export function AvatarPanel() {
           expression: String(state.expression || state.emotion || prev.expression || "neutral"),
           speaking: Boolean(state.speaking ?? prev.speaking),
           listening: Boolean(state.listening ?? prev.listening),
-          spec: (state.spec as AvatarSpec) || prev.spec || { renderMode: "procedural_holo" },
+          spec: (state.spec as AvatarSpec) || prev.spec || DEFAULT_3D_SPEC,
         }));
       } catch {
         // Heartbeat is advisory. UI state polling above remains authoritative.
@@ -461,6 +498,44 @@ export function AvatarPanel() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiBase, avatarState.speaking, avatarState.listening]);
+
+  useEffect(() => {
+    if (!is3DMode) return;
+    let alive = true;
+    const specUrl = joinUrl(apiBase || window.location.origin, "/api/avatar/3d/spec");
+
+    const load3DSpec = async () => {
+      try {
+        const res = await fetch(`${specUrl}?t=${Date.now()}`, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (!res.ok) throw new Error(`Avatar 3D spec failed: ${res.status}`);
+        const data = await res.json();
+        const spec = (data?.spec || data) as AvatarSpec;
+        if (!alive || !spec) return;
+        setAvatarState((prev) => ({
+          ...prev,
+          spec: {
+            ...DEFAULT_3D_SPEC,
+            ...spec,
+          },
+        }));
+      } catch {
+        if (!alive) return;
+        setAvatarState((prev) => ({
+          ...prev,
+          spec: prev.spec || DEFAULT_3D_SPEC,
+        }));
+      }
+    };
+
+    void load3DSpec();
+    return () => {
+      alive = false;
+    };
+  }, [apiBase, is3DMode]);
 
   useEffect(() => {
     if (!avatarState.speaking && !avatarState.listening) return;
@@ -563,7 +638,7 @@ export function AvatarPanel() {
                     speaking={avatarState.speaking}
                     listening={avatarState.listening}
                     expression={avatarState.expression}
-                    spec={avatarState.spec}
+                    spec={avatar3DSpec}
                   />
                 </Suspense>
               </AvatarSurfaceBoundary>
@@ -600,9 +675,9 @@ export function AvatarPanel() {
             </SelectContent>
           </Select>
 
-          {is3DMode && isCompactViewport && (
+          {is3DMode && (
             <div className="basis-full rounded-md border border-cyan-500/20 bg-slate-950/95 px-2 py-1 text-[11px] text-cyan-100 sm:hidden">
-              Mobile vertical view is using the stable 2D surface. Switch to landscape/desktop for inline 3D.
+              3D Avatar runtime loaded from resources/avatars/3D.
             </div>
           )}
 

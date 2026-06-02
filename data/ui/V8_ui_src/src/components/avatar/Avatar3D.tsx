@@ -362,19 +362,66 @@ function ProceduralHoloAvatar({
 /* -----------------------------
    GLTF Avatar (backend-generated)
 ------------------------------ */
-function GltfAvatar({ url, lookAt }: { url: string; lookAt?: { x: number; y: number; z: number } }) {
+function GltfAvatar({
+  url,
+  lookAt,
+  speaking = false,
+  listening = false,
+}: {
+  url: string;
+  lookAt?: { x: number; y: number; z: number };
+  speaking?: boolean;
+  listening?: boolean;
+}) {
   const groupRef = useRef<THREE.Group>(null);
   const gltf = useGLTF(url, true);
 
-  useFrame(() => {
-    if (!groupRef.current || !lookAt) return;
-    // simple look-at (later: drive head bone)
-    groupRef.current.lookAt(lookAt.x, lookAt.y, lookAt.z);
+  const scene = useMemo(() => {
+    const cloned = gltf.scene.clone(true);
+    cloned.traverse((obj) => {
+      const mesh = obj as THREE.Mesh;
+      if ((mesh as any).isMesh) {
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        const material = mesh.material as THREE.Material | THREE.Material[] | undefined;
+        const mats = Array.isArray(material) ? material : material ? [material] : [];
+        mats.forEach((mat) => {
+          mat.needsUpdate = true;
+        });
+      }
+    });
+    return cloned;
+  }, [gltf.scene]);
+
+  const fit = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(scene);
+    const size = new THREE.Vector3();
+    const center = new THREE.Vector3();
+    box.getSize(size);
+    box.getCenter(center);
+
+    const maxAxis = Math.max(size.x || 1, size.y || 1, size.z || 1);
+    const scale = maxAxis > 0 ? Math.min(1.85, 2.7 / maxAxis) : 1;
+
+    return { center, scale };
+  }, [scene]);
+
+  useFrame((state) => {
+    if (!groupRef.current) return;
+
+    const t = state.clock.elapsedTime;
+    const idleY = Math.sin(t * 0.9) * 0.035;
+    const activePulse = speaking ? Math.sin(t * 10) * 0.018 : listening ? Math.sin(t * 3) * 0.012 : 0;
+    groupRef.current.position.y = idleY + activePulse;
+
+    const targetYaw = lookAt ? THREE.MathUtils.clamp(lookAt.x * 0.04, -0.12, 0.12) : 0;
+    const idleYaw = Math.sin(t * 0.35) * 0.045;
+    groupRef.current.rotation.y = THREE.MathUtils.lerp(groupRef.current.rotation.y, targetYaw + idleYaw, 0.035);
   });
 
   return (
-    <group ref={groupRef} position={[0, -1.2, 0]}>
-      <primitive object={gltf.scene} />
+    <group ref={groupRef} position={[0, 0, 0]} scale={fit.scale}>
+      <primitive object={scene} position={[-fit.center.x, -fit.center.y, -fit.center.z]} />
     </group>
   );
 }
@@ -420,8 +467,8 @@ function VideoSpriteAvatar({ url }: { url: string }) {
 function CameraController() {
   const { camera } = useThree();
   useEffect(() => {
-    camera.position.set(0, 0.3, 2.5);
-    camera.lookAt(0, 0.2, 0);
+    camera.position.set(0, 0.35, 4.2);
+    camera.lookAt(0, 0.1, 0);
   }, [camera]);
   return null;
 }
@@ -496,7 +543,8 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
   return (
     <div ref={containerRef} className="w-full h-full" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
       <Canvas
-        camera={{ position: [0, 0.3, 2.5], fov: 50 }}
+        camera={{ position: [0, 0.35, 4.2], fov: 45 }}
+        dpr={[1, 2]}
         gl={{ antialias: true, alpha: true }}
         style={{ background: "transparent" }}
       >
@@ -506,7 +554,7 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
         <SceneBackground url={effective.backgroundUrl} type={effective.backgroundType} />
 
         {/* Holo lighting */}
-        <ambientLight intensity={0.3} color="#00ffff" />
+        <ambientLight intensity={0.55} color="#dffaff" />
         <pointLight position={[3, 3, 3]} intensity={0.8} color="#00d4ff" />
         <pointLight position={[-3, 2, 2]} intensity={0.5} color="#00ffcc" />
         <pointLight position={[0, -3, 2]} intensity={0.3} color="#40e0d0" />
@@ -520,7 +568,7 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
               </Html>
             }
           >
-            <GltfAvatar url={effective.modelUrl} lookAt={effective.lookAt} />
+            <GltfAvatar url={effective.modelUrl} lookAt={effective.lookAt} speaking={effective.speaking} listening={effective.listening} />
           </React.Suspense>
         ) : safeRenderMode === "video_sprite" && effective.videoUrl ? (
           <VideoSpriteAvatar url={effective.videoUrl} />
@@ -541,10 +589,12 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
         <OrbitControls
           enablePan={false}
           enableZoom={true}
-          minDistance={1.2}
-          maxDistance={6}
-          enableRotate={false}
-          target={[0, 0, 0]}
+          minDistance={2.0}
+          maxDistance={8}
+          enableRotate={true}
+          enableDamping={true}
+          dampingFactor={0.08}
+          target={[0, 0.1, 0]}
         />
       </Canvas>
     </div>
@@ -552,4 +602,4 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
 }
 
 // Allow GLTF caching
-useGLTF.preload("/placeholder.glb");
+useGLTF.preload("/api/avatar/3d/sarahmemory_3d_avatar.glb");
