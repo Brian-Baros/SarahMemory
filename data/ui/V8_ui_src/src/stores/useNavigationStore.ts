@@ -48,6 +48,8 @@ export const BOTTOM_NAV_ITEMS: { screen: MobileScreen; label: string; icon: stri
   { screen: "avatar", label: "Assistant", icon: "user" },
 ];
 
+export type UiAction = { type: string; payload?: any };
+
 interface NavigationState {
   // Mobile
   currentScreen: MobileScreen;
@@ -67,7 +69,11 @@ interface NavigationState {
   // Desktop shell toggle
   isDesktopShellMode: boolean;
   setDesktopShellMode: (enabled: boolean) => void;
+
+  // UI Control Bus hook
+  applyUiAction: (action: UiAction) => boolean;
 }
+
 
 export const useNavigationStore = create<NavigationState>()(
   persist(
@@ -103,6 +109,94 @@ export const useNavigationStore = create<NavigationState>()(
       // Desktop shell (default ON so landscape dock behavior works)
       isDesktopShellMode: true,
       setDesktopShellMode: (enabled) => set({ isDesktopShellMode: enabled }),
+
+      applyUiAction: (action) => {
+        const type = String(action?.type || "");
+        const p = action?.payload || {};
+
+        if (type === "navigate") {
+          const screen = p?.screen || p?.route || p?.app;
+          if (!screen) return false;
+          const s = String(screen);
+          if ((SCREEN_ORDER as any).includes(s)) {
+            set({ currentScreen: s as MobileScreen });
+            return true;
+          }
+          const desktopMap: Record<string, DesktopApp> = {
+            chat: "chat",
+            files: "files",
+            media: "media",
+            research: "research",
+            studio: "studio",
+            studios: "studio",
+            dlengine: "dlengine",
+            sarahnet: "sarahnet",
+            avatar: "avatar",
+          };
+          if (desktopMap[s]) {
+            set({ activeDesktopApp: desktopMap[s] });
+            return true;
+          }
+          return false;
+        }
+
+        if (type === "nav.set_screen") {
+          const s = String(p?.screen || "");
+          if ((SCREEN_ORDER as any).includes(s)) {
+            set({ currentScreen: s as MobileScreen });
+            return true;
+          }
+          return false;
+        }
+
+        if (type === "nav.swipe_left") {
+          get().swipeLeft();
+          return true;
+        }
+        if (type === "nav.swipe_right") {
+          get().swipeRight();
+          return true;
+        }
+        if (type === "nav.home") {
+          get().goHome();
+          return true;
+        }
+
+        if (type === "desktop.set_app") {
+          const s = String(p?.app || "");
+          const desktopMap: Record<string, DesktopApp> = {
+            chat: "chat",
+            files: "files",
+            media: "media",
+            research: "research",
+            studio: "studio",
+            dlengine: "dlengine",
+            sarahnet: "sarahnet",
+            avatar: "avatar",
+          };
+          if (desktopMap[s]) {
+            set({ activeDesktopApp: desktopMap[s] });
+            return true;
+          }
+          return false;
+        }
+
+        if (type === "connection.set") {
+          const s = String(p?.status || "");
+          if (s === "connected" || s === "degraded" || s === "offline") {
+            set({ connectionStatus: s as any });
+            return true;
+          }
+          return false;
+        }
+
+        if (type === "desktop.shell_mode") {
+          set({ isDesktopShellMode: !!p?.enabled });
+          return true;
+        }
+
+        return false;
+      },
     }),
     {
       name: "sarah-navigation-storage",

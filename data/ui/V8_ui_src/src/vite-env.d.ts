@@ -15,3 +15,11 @@ declare module '*?format=webp' {
   const src: string;
   export default src;
 }
+
+declare global {
+  interface WindowEventMap {
+    "sarah:ui": CustomEvent<{ source?: string; ts?: number; actions?: any[] }>;
+  }
+}
+
+export {};

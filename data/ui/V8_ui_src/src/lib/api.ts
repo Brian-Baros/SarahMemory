@@ -77,6 +77,25 @@ export interface AvatarState {
   speaking: boolean;
   listening: boolean;
   current_action?: string;
+  spec?: {
+    renderMode?: "procedural_holo" | "gltf_model" | "video_sprite";
+    modelUrl?: string;
+    videoUrl?: string;
+    backgroundUrl?: string;
+    backgroundType?: "none" | "image" | "video";
+    pose?: "stand" | "sit" | "wave";
+    gesture?: "none" | "wave" | "point" | "nod" | "shake";
+    lookAt?: { x: number; y: number; z: number };
+    expression?: string;
+    speaking?: boolean;
+    listening?: boolean;
+  };
+  avatar_3d?: {
+    ok?: boolean;
+    model_file?: string;
+    model_url?: string;
+    files?: string[];
+  };
 }
 
 export interface AvatarResponse {

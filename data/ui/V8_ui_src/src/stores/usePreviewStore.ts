@@ -14,6 +14,8 @@ export type PreviewType =
   | 'call'        // Dual video call view
   | 'mirror';     // Desktop mirror
 
+export type UiAction = { type: string; payload?: any };
+
 export interface PreviewState {
   type: PreviewType;
   mode?: string;        // e.g., '2d' | '3d' for avatar
@@ -43,7 +45,11 @@ interface PreviewStoreState {
   showVideo: (mediaId: string, url?: string) => void;
   showCall: (callId: string) => void;
   endCall: () => void;
+
+  // UI Control Bus hook
+  applyUiAction: (action: UiAction) => boolean;
 }
+
 
 const defaultPreview: PreviewState = {
   type: 'avatar',
@@ -120,5 +126,42 @@ export const usePreviewStore = create<PreviewStoreState>((set, get) => ({
   endCall: () => {
     // Restore previous preview when call ends
     get().restorePrevious();
+  },
+
+  applyUiAction: (action) => {
+    const type = String(action?.type || "");
+    const p = action?.payload || {};
+
+    switch (type) {
+      case "preview.set": {
+        const t = String(p?.type || "");
+        if (!t) return false;
+        get().setPreview(t as any, p);
+        return true;
+      }
+      case "preview.reset":
+        get().resetToAvatar(p?.mode || "2d");
+        return true;
+      case "preview.restore":
+        get().restorePrevious();
+        return true;
+      case "preview.show_image":
+        get().showImage(String(p?.mediaId || ""), p?.url, p?.base64);
+        return true;
+      case "preview.show_audio":
+        get().showAudio(String(p?.mediaId || ""), p?.url, p?.base64);
+        return true;
+      case "preview.show_video":
+        get().showVideo(String(p?.mediaId || ""), p?.url);
+        return true;
+      case "preview.show_call":
+        get().showCall(String(p?.callId || ""));
+        return true;
+      case "preview.end_call":
+        get().endCall();
+        return true;
+      default:
+        return false;
+    }
   },
 }));

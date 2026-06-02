@@ -4,6 +4,8 @@ import { create } from 'zustand';
 
 export type CachedItemType = 'image' | 'music' | 'voice' | 'video';
 
+export type UiAction = { type: string; payload?: any };
+
 export interface CachedItem {
   id: string;
   type: CachedItemType;
@@ -41,7 +43,11 @@ interface CreativeCacheState {
   
   // Download item
   downloadItem: (type: CachedItemType, id: string) => void;
+
+  // UI Control Bus hook
+  applyUiAction: (action: UiAction) => boolean;
 }
+
 
 const generateId = () => Math.random().toString(36).slice(2, 11);
 
@@ -103,6 +109,49 @@ export const useCreativeCacheStore = create<CreativeCacheState>((set, get) => ({
   
   getItems: (type) => get().items[type],
   
+  applyUiAction: (action) => {
+    const type = String(action?.type || "");
+    const p = action?.payload || {};
+
+    if (type === "creative.cache.add") {
+      if (!p?.itemType) return false;
+      const t = String(p.itemType) as CachedItemType;
+      const item = p.item || {};
+      get().addItem(t, item);
+      return true;
+    }
+
+    if (type === "creative.cache.remove") {
+      const t = String(p?.itemType || "") as CachedItemType;
+      const id = String(p?.id || "");
+      if (!t || !id) return false;
+      get().removeItem(t, id);
+      return true;
+    }
+
+    if (type === "creative.cache.clear") {
+      const t = String(p?.itemType || "") as CachedItemType;
+      if (!t) return false;
+      get().clearModule(t);
+      return true;
+    }
+
+    if (type === "creative.cache.reset") {
+      get().resetStack();
+      return true;
+    }
+
+    if (type === "creative.cache.download") {
+      const t = String(p?.itemType || "") as CachedItemType;
+      const id = String(p?.id || "");
+      if (!t || !id) return false;
+      get().downloadItem(t, id);
+      return true;
+    }
+
+    return false;
+  },
+
   downloadItem: (type, id) => {
     const item = get().items[type].find((i) => i.id === id);
     if (!item) return;

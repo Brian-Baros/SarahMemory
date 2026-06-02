@@ -18,6 +18,82 @@ export type AvatarPose = "stand" | "sit" | "wave";
 // Right panel page types
 export type RightPanelPage = "contacts" | "keypad" | "tools" | "settings";
 
+
+// ------------------------------------------------------------
+// UI Control Bus + Automation (Chat-driven orchestration)
+// ------------------------------------------------------------
+export type UiAction = { type: string; payload?: any };
+
+export type AutomationAuditEntry = {
+  id: string;
+  ts: number;
+  source: string;
+  actionType: string;
+  payload?: any;
+  status: "applied" | "skipped" | "error";
+  error?: string;
+};
+
+function nowTs() {
+  return Date.now();
+}
+
+function safeString(x: any) {
+  try {
+    return String(x);
+  } catch {
+    return "";
+  }
+}
+
+function coerceBool(v: any, fallback = false): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") return ["1", "true", "yes", "on"].includes(v.toLowerCase());
+  if (typeof v === "number") return v !== 0;
+  return fallback;
+}
+
+function normalizeUiActions(input: any): UiAction[] {
+  if (!input) return [];
+  if (Array.isArray(input)) return input.filter(Boolean) as UiAction[];
+  if (typeof input === "object") return [input as UiAction];
+  return [];
+}
+
+const PANEL_PENDING_PREFIX = "sarahmemory:panel:pending:";
+
+function canonicalActionType(type: any): string {
+  return safeString(type || "").trim().toLowerCase().replace(/\./g, "_");
+}
+
+function queuePanelAction(panel: "research" | "history", action: UiAction): void {
+  if (typeof window === "undefined") return;
+  try {
+    const key = `${PANEL_PENDING_PREFIX}${panel}`;
+    const raw = window.sessionStorage.getItem(key);
+    const existing = raw ? JSON.parse(raw) : [];
+    const batch = Array.isArray(existing) ? existing : [];
+    batch.push({ ...action, queuedAt: Date.now() });
+    window.sessionStorage.setItem(key, JSON.stringify(batch.slice(-50)));
+    window.dispatchEvent(new CustomEvent(`sarah:${panel}`, { detail: { actions: [action], source: "store" } }));
+  } catch {
+    // non-fatal UI bridge
+  }
+}
+
+function normalizeChatThreadMessage(message: any, id: string): any {
+  return {
+    ...message,
+    id,
+    timestamp: message?.timestamp instanceof Date ? message.timestamp : new Date(),
+  };
+}
+
+function deriveThreadTitle(firstText: string): string {
+  const clean = safeString(firstText || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "Conversation";
+  return clean.length > 54 ? `${clean.slice(0, 54).trim()}…` : clean;
+}
 // ------------------------------------------------------------
 // Taskbar settings (kept inside Settings for now)
 // We do NOT modify @/types/sarah in this patch; we safely extend at runtime.
@@ -150,7 +226,22 @@ interface SarahState {
   // Welcome / Intro
   playWelcomeIfNeeded: () => Promise<void>;
 
-  // Avatar animation state
+  
+  // Automation + UI bus
+  uiAutomationEnabled: boolean;
+  setUiAutomationEnabled: (enabled: boolean) => void;
+
+  // Action queue (supports multi-step autonomous flows)
+  actionQueue: UiAction[];
+  processingActions: boolean;
+  enqueueUiActions: (actions: UiAction[] | UiAction, source?: string) => void;
+  dispatchUiActions: (actions: UiAction[] | UiAction, source?: string) => Promise<void>;
+
+  // Audit log (bounded)
+  automationAudit: AutomationAuditEntry[];
+  clearAutomationAudit: () => void;
+  lastActionQueueDrainTs: number | null;
+// Avatar animation state
   avatarSpeaking: boolean;
   speechCues: AvatarSpeechCue[];
   speechStartTime: number | null;
@@ -278,16 +369,35 @@ export const useSarahStore = create<SarahState>()(
 
       addMessage: (message) => {
         const id = generateId();
-        set((state) => ({
-          messages: [
-            ...state.messages,
-            {
-              ...message,
-              id,
-              timestamp: new Date(),
-            },
-          ],
-        }));
+        const normalizedMessage = normalizeChatThreadMessage(message, id);
+
+        set((state) => {
+          const activeId = state.activeThreadId || `thread_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const existingThread = (state.threads || []).find((t: any) => String(t?.id) === activeId) as any;
+          const existingMessages = Array.isArray(existingThread?.messages) ? existingThread.messages : [];
+          const nextThreadMessages = [...existingMessages, normalizedMessage];
+          const firstUser = nextThreadMessages.find((m: any) => String(m?.role || "") === "user");
+          const title = existingThread?.title || deriveThreadTitle(firstUser?.content || normalizedMessage.content || "Conversation");
+
+          const updatedThread: any = {
+            ...(existingThread || {}),
+            id: activeId,
+            title,
+            preview: safeString(normalizedMessage.content || ""),
+            timestamp: normalizedMessage.timestamp,
+            messageCount: nextThreadMessages.length,
+            messages: nextThreadMessages,
+          };
+
+          const otherThreads = (state.threads || []).filter((t: any) => String(t?.id) !== activeId);
+
+          return {
+            activeThreadId: activeId,
+            messages: [...state.messages, normalizedMessage],
+            threads: [updatedThread, ...otherThreads],
+          };
+        });
+
         return id;
       },
 
@@ -502,6 +612,205 @@ export const useSarahStore = create<SarahState>()(
         }
       },
 
+
+      // Automation + UI bus
+      uiAutomationEnabled: true,
+      setUiAutomationEnabled: (enabled) => set({ uiAutomationEnabled: enabled }),
+
+      actionQueue: [],
+      processingActions: false,
+
+      enqueueUiActions: (actions, source = "ui") => {
+        const batch = normalizeUiActions(actions);
+        if (batch.length === 0) return;
+        set((s) => ({ actionQueue: [...s.actionQueue, ...batch] }));
+        queueMicrotask(() => {
+          get().dispatchUiActions(batch, source).catch(() => {});
+        });
+      },
+
+      clearAutomationAudit: () => set({ automationAudit: [] }),
+
+      dispatchUiActions: async (actions, source = "ui") => {
+        const batch = normalizeUiActions(actions);
+        if (batch.length === 0) return;
+        if (!get().uiAutomationEnabled) return;
+        if (get().processingActions) return;
+
+        set({ processingActions: true });
+
+        try {
+          const [{ useNavigationStore }, { useWindowStore }, { usePreviewStore }, { useCreativeCacheStore }] =
+            await Promise.all([
+              import("@/stores/useNavigationStore"),
+              import("@/stores/useWindowStore"),
+              import("@/stores/usePreviewStore"),
+              import("@/stores/useCreativeCacheStore"),
+            ]);
+
+          const nav = useNavigationStore.getState();
+          const win = useWindowStore.getState();
+          const preview = usePreviewStore.getState();
+          const cache = useCreativeCacheStore.getState();
+
+          const audit: AutomationAuditEntry[] = [];
+
+          for (const a of batch) {
+            const actionType = safeString(a?.type || "");
+            const payload = a?.payload;
+            if (!actionType) continue;
+
+            const entry: AutomationAuditEntry = {
+              id: generateId(),
+              ts: nowTs(),
+              source,
+              actionType,
+              payload,
+              status: "applied",
+            };
+
+            try {
+              if (nav.applyUiAction && nav.applyUiAction(a as any)) {
+                // applied
+              } else if (win.applyUiAction && win.applyUiAction(a as any)) {
+                // applied
+              } else if (preview.applyUiAction && preview.applyUiAction(a as any)) {
+                // applied
+              } else if (cache.applyUiAction && cache.applyUiAction(a as any)) {
+                // applied
+              } else {
+                switch (actionType) {
+                  case "settings.open":
+                    get().setSettingsOpen(true);
+                    break;
+                  case "settings.close":
+                    get().setSettingsOpen(false);
+                    break;
+                  case "settings.update":
+                    if (payload && typeof payload === "object") get().updateSettings(payload);
+                    break;
+
+                  case "right_panel.set":
+                    if (payload?.page) get().setRightPanelPage(payload.page);
+                    if (payload?.open != null) get().setRightDrawerOpen(coerceBool(payload.open));
+                    break;
+
+                  case "right_drawer.open":
+                    get().setRightDrawerOpen(true);
+                    break;
+                  case "right_drawer.close":
+                    get().setRightDrawerOpen(false);
+                    break;
+
+                  case "left_drawer.open":
+                    get().setLeftDrawerOpen(true);
+                    break;
+                  case "left_drawer.close":
+                    get().setLeftDrawerOpen(false);
+                    break;
+
+                  case "contacts.set":
+                    if (Array.isArray(payload)) get().setContacts(payload);
+                    break;
+                  case "contacts.add":
+                    if (payload && typeof payload === "object") get().addContact(payload);
+                    break;
+                  case "contacts.update":
+                    if (payload?.id) get().updateContact(payload.id, payload.updates || {});
+                    break;
+                  case "contacts.delete":
+                    if (payload?.id) get().deleteContact(payload.id);
+                    break;
+
+                  case "reminders.set":
+                    if (Array.isArray(payload)) get().setReminders(payload);
+                    break;
+                  case "reminders.add":
+                    if (payload && typeof payload === "object") get().addReminder(payload);
+                    break;
+                  case "reminders.update":
+                    if (payload?.id) get().updateReminder(payload.id, payload.updates || {});
+                    break;
+                  case "reminders.delete":
+                    if (payload?.id) get().deleteReminder(payload.id);
+                    break;
+                  case "reminders.toggle_complete":
+                    if (payload?.id) get().toggleReminderComplete(payload.id);
+                    break;
+
+                  case "avatar.pose":
+                    if (payload?.pose) get().setAvatarPose(payload.pose);
+                    break;
+                  case "avatar.wave":
+                    get().triggerWave();
+                    break;
+
+                  case "research_open":
+                  case "research.open":
+                  case "browser.open":
+                  case "research_search":
+                  case "research.search":
+                  case "browser.search":
+                  case "research_back":
+                  case "research.back":
+                  case "research_forward":
+                  case "research.forward":
+                  case "research_reload":
+                  case "research.reload":
+                  case "research_read_current":
+                  case "research.read_current":
+                  case "browser.read_current":
+                    queuePanelAction("research", a);
+                    break;
+
+                  case "history_refresh":
+                  case "history.refresh":
+                  case "history_open":
+                  case "history.open":
+                  case "history_search_date":
+                  case "history.search_date":
+                    queuePanelAction("history", a);
+                    break;
+
+                  case "toast":
+                    try {
+                      window.dispatchEvent(new CustomEvent("sarah:toast", { detail: payload || {} }));
+                    } catch {}
+                    break;
+
+                  default:
+                    if (canonicalActionType(actionType).startsWith("research_")) {
+                      queuePanelAction("research", a);
+                    } else if (canonicalActionType(actionType).startsWith("history_")) {
+                      queuePanelAction("history", a);
+                    } else {
+                      entry.status = "skipped";
+                    }
+                    break;
+                }
+              }
+            } catch (err: any) {
+              entry.status = "error";
+              entry.error = safeString(err?.message || err);
+            }
+
+            audit.push(entry);
+          }
+
+          set((s) => {
+            const next = [...(s.automationAudit || []), ...audit];
+            const MAX = 300;
+            return { automationAudit: next.length > MAX ? next.slice(next.length - MAX) : next };
+          });
+        } finally {
+          // BigBang governance: actions are drained exactly once after a bounded dispatch pass.
+          // This prevents Research/History pending actions from looping or duplicating after panel open.
+          set({ processingActions: false, actionQueue: [], lastActionQueueDrainTs: nowTs() });
+        }
+      },
+
+      automationAudit: [],
+      lastActionQueueDrainTs: null,
       // Avatar animation state
       avatarSpeaking: false,
       speechCues: [],
@@ -548,3 +857,21 @@ export const useSarahStore = create<SarahState>()(
     },
   ),
 );
+
+
+// -----------------------------------------------------------------------------
+// Global UI Control Bus installer
+// -----------------------------------------------------------------------------
+let __uiBusInstalled = false;
+
+export function installSarahUiBus() {
+  if (__uiBusInstalled) return;
+  if (typeof window === "undefined") return;
+
+  __uiBusInstalled = true;
+
+  window.addEventListener("sarah:ui", (ev: any) => {
+    const actions = ev?.detail?.actions || [];
+    useSarahStore.getState().dispatchUiActions(actions, ev?.detail?.source || "event").catch(() => {});
+  });
+}

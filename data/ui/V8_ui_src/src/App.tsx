@@ -9,9 +9,10 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import Index from "@/pages/Index";
 import NotFound from "@/pages/NotFound";
+import { VisionScreen } from "@/components/screens/VisionScreen";
 
 import { api } from "@/lib/api";
-import { useSarahStore } from "@/stores/useSarahStore";
+import { installSarahUiBus, useSarahStore } from "@/stores/useSarahStore";
 
 const queryClient = new QueryClient();
 
@@ -75,9 +76,41 @@ class AppErrorBoundary extends React.Component<
 export default function App() {
   const setBootstrapData = useSarahStore((s) => s.setBootstrapData);
   const setBackendReady = useSarahStore((s) => s.setBackendReady);
+  const enqueueUiActions = useSarahStore((s) => s.enqueueUiActions);
 
   // StrictMode guard
   const didBootRef = useRef(false);
+
+  useEffect(() => {
+    installSarahUiBus();
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let busy = false;
+
+    const pollUiActions = async () => {
+      if (stopped || busy) return;
+      busy = true;
+      try {
+        const res = await fetch("/api/ui/actions/poll?surface=webui&limit=25", { credentials: "include" });
+        const data = await res.json().catch(() => ({}));
+        const actions = Array.isArray(data?.actions) ? data.actions : [];
+        if (actions.length > 0) enqueueUiActions(actions, "backend_queue");
+      } catch {
+        // backend queue is optional; do not destabilize the UI
+      } finally {
+        busy = false;
+      }
+    };
+
+    void pollUiActions();
+    const timer = window.setInterval(() => void pollUiActions(), 1500);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [enqueueUiActions]);
 
   useEffect(() => {
     if (didBootRef.current) return;
@@ -116,6 +149,8 @@ export default function App() {
           <BrowserRouter>
             <Routes>
               <Route path="/" element={<Index />} />
+              <Route path="/vision" element={<VisionScreen />} />
+              <Route path="/vr-hud" element={<VisionScreen />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </BrowserRouter>

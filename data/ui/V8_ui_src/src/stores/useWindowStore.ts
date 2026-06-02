@@ -27,6 +27,8 @@ export interface WindowState {
   zIndex: number;
 }
 
+export type UiAction = { type: string; payload?: any };
+
 interface WindowStore {
   windows: WindowState[];
   focusedWindowId: WindowId | null;
@@ -40,7 +42,11 @@ interface WindowStore {
   restoreWindow: (id: WindowId) => void;
   moveWindow: (id: WindowId, x: number, y: number) => void;
   resizeWindow: (id: WindowId, width: number, height: number) => void;
+
+  // UI Control Bus hook
+  applyUiAction: (action: UiAction) => boolean;
 }
+
 
 const WINDOW_DEFAULTS: Record<
   WindowId,
@@ -167,6 +173,51 @@ export const useWindowStore = create<WindowStore>()(
         set((s) => ({
           windows: s.windows.map((w) => (w.id === id ? { ...w, x, y } : w)),
         })),
+
+
+      applyUiAction: (action) => {
+        const type = String(action?.type || "");
+        const p = action?.payload || {};
+        const id = (p?.id || p?.window || p?.name) as WindowId;
+
+        if (type === "window.open" && id) {
+          get().openWindow(id);
+          return true;
+        }
+        if (type === "window.close" && id) {
+          get().closeWindow(id);
+          return true;
+        }
+        if (type === "window.focus" && id) {
+          get().focusWindow(id);
+          return true;
+        }
+        if (type === "window.minimize" && id) {
+          get().minimizeWindow(id);
+          return true;
+        }
+        if (type === "window.maximize" && id) {
+          get().maximizeWindow(id);
+          return true;
+        }
+        if (type === "window.restore" && id) {
+          get().restoreWindow(id);
+          return true;
+        }
+        if (type === "window.move" && id) {
+          const x = Number(p?.x);
+          const y = Number(p?.y);
+          if (Number.isFinite(x) && Number.isFinite(y)) get().moveWindow(id, x, y);
+          return true;
+        }
+        if (type === "window.resize" && id) {
+          const w = Number(p?.width);
+          const h = Number(p?.height);
+          if (Number.isFinite(w) && Number.isFinite(h)) get().resizeWindow(id, w, h);
+          return true;
+        }
+        return false;
+      },
 
       resizeWindow: (id, width, height) =>
         set((s) => ({
