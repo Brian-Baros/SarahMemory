@@ -45,6 +45,7 @@ from __future__ import annotations
 import os
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import subprocess
 import time
 import urllib.request
@@ -86,8 +87,13 @@ os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
 
 logger = logging.getLogger("SarahMemoryLLM")
 if not logger.handlers:
-    logger.setLevel(logging.INFO)
-    _h = logging.FileHandler(LOG_PATH, encoding="utf-8")
+    logger.setLevel(logging.DEBUG if os.getenv("SARAH_LLM_DEBUG", "0") in ("1", "true", "yes", "on") else logging.INFO)
+    _h = RotatingFileHandler(
+        LOG_PATH,
+        maxBytes=int(os.getenv("SARAH_LLM_LOG_MAX_BYTES", "1048576") or 1048576),
+        backupCount=int(os.getenv("SARAH_LLM_LOG_BACKUPS", "3") or 3),
+        encoding="utf-8",
+    )
     _h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
     logger.addHandler(_h)
 
@@ -467,7 +473,7 @@ def download_category_model(category: str, repo: Optional[str] = None, progress_
 # SarahMemoryGlobals.py constitution and not shipped source truth.
 
 MODEL_REGISTRY_VERSION = 1
-MODEL_LIVE_SCAN_INTERVAL_SEC = 30
+MODEL_LIVE_SCAN_INTERVAL_SEC = int(os.getenv("SARAH_MODEL_LIVE_SCAN_INTERVAL_SEC", "300") or 300)
 _MODEL_REGISTRY_LOCK = threading.RLock()
 
 _CATEGORY_ALIASES = {
@@ -714,9 +720,17 @@ def _save_model_registry(registry: Dict[str, Any]) -> None:
         registry["version"] = MODEL_REGISTRY_VERSION
         registry["updated_at"] = _now_iso()
         os.makedirs(os.path.dirname(path), exist_ok=True)
+        raw = json.dumps(registry, indent=2, sort_keys=True, ensure_ascii=False)
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    if f.read() == raw:
+                        return
+        except Exception:
+            pass
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(registry, f, indent=2, sort_keys=True, ensure_ascii=False)
+            f.write(raw)
         os.replace(tmp, path)
     except Exception as exc:
         logger.warning("Failed to save model registry %s: %s", path, exc)

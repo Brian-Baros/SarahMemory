@@ -105,6 +105,7 @@ import difflib
 import subprocess
 import datetime as dt
 import logging
+from logging.handlers import RotatingFileHandler
 import zipfile
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
@@ -115,7 +116,7 @@ warnings.filterwarnings("error", category=SyntaxWarning)
 # LOGGING CONFIGURATION - v8.0 Enhanced
 # =============================================================================
 logger = logging.getLogger('SarahMemoryUpdater')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG if os.environ.get('SM_UPDATER_DEBUG','0') in ('1','true','True','yes','on') else logging.INFO)
 
 # Create console handler
 console_handler = logging.StreamHandler()
@@ -127,10 +128,13 @@ console_handler.setFormatter(console_formatter)
 try:
     log_dir = os.path.join(os.getcwd(), "data", "logs")
     os.makedirs(log_dir, exist_ok=True)
-    file_handler = logging.FileHandler(
-        os.path.join(log_dir, f"updater_{dt.datetime.now().strftime('%Y%m%d')}.log")
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, f"updater_{dt.datetime.now().strftime('%Y%m%d')}.log"),
+        maxBytes=int(os.environ.get("SM_UPDATER_LOG_MAX_BYTES", "1048576") or 1048576),
+        backupCount=int(os.environ.get("SM_UPDATER_LOG_BACKUPS", "3") or 3),
+        encoding="utf-8",
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.DEBUG if os.environ.get('SM_UPDATER_DEBUG','0') in ('1','true','True','yes','on') else logging.INFO)
     file_formatter = logging.Formatter('%(asctime)s - [v8.0][UPDATER] %(levelname)s - %(message)s')
     file_handler.setFormatter(file_formatter)
     
@@ -171,12 +175,31 @@ BACKUPS_DIR = getattr(G, "BACKUPS_DIR", None) or os.path.join(UPDATER_DIR, "back
 
 # Project policy-based ignore patterns (avoid huge or binary content)
 DEFAULT_EXCLUDES = [
-    ".git", "__pycache__", "venv", "node_modules", "dist", "build", "logs",
+    ".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env", ".pytest_cache",
+    "node_modules", "dist", "build", ".next", ".vite", "coverage", "logs", "log",
+    "cache", "tmp", "temp", "runtime", "backup", "backups", "archive", "archives",
     os.path.relpath(UPDATER_DIR, BASE_DIR),
-    "data/models", "data/memory", "data/datasets", "data/cache", "data/tmp",
-    "*.db", "*.zip", "*.tar", "*.tar.gz", "*.png", "*.jpg", "*.jpeg", "*.gif",
-    "*.mp4", "*.mp3", "*.wav", "*.onnx", "*.pt", "*.bin"
+    "data/models", "data/memory", "data/datasets", "data/cache", "data/tmp", "data/runtime",
+    "*.db", "*.db-wal", "*.db-shm", "*.sqlite", "*.zip", "*.tar", "*.tar.gz", "*.png", "*.jpg", "*.jpeg", "*.gif",
+    "*.mp4", "*.mp3", "*.wav", "*.onnx", "*.pt", "*.pth", "*.safetensors", "*.gguf", "*.bin", "*.log"
 ]
+
+_UPDATER_SKIP_DIR_PARTS = {str(x).lower() for x in DEFAULT_EXCLUDES if not str(x).startswith("*") and "." not in str(x).replace(".venv", "")}
+_UPDATER_BACKUP_MAX_FILE_MB = float(os.environ.get("SM_UPDATER_BACKUP_MAX_FILE_MB", "16") or 16)
+_UPDATER_OPT_BACKUP_ENABLED = os.environ.get("SM_UPDATER_OPT_BACKUP_ENABLED", "0") in ("1", "true", "True", "yes", "on")
+
+
+def _updater_should_skip_path(path: str) -> bool:
+    try:
+        rel = os.path.relpath(os.path.abspath(path), BASE_DIR).replace("\\", "/").lower()
+        parts = set(rel.split("/"))
+        if parts & {".git", ".hg", ".svn", "__pycache__", ".venv", "venv", "env", "node_modules", "dist", "build", ".next", ".vite", "logs", "cache", "tmp", "temp", "runtime", "backup", "backups", "archive", "archives", "models"}:
+            return True
+        if any(rel.startswith(str(x).replace("\\", "/").lower().rstrip("/") + "/") for x in ("data/models", "data/memory", "data/datasets", "data/cache", "data/tmp", "data/runtime")):
+            return True
+        return False
+    except Exception:
+        return True
 
 DEFAULT_EXTS = [".py"]  # Start conservative; can extend via CLI flags or config
 
@@ -1150,17 +1173,28 @@ def _create_opt_backup(tag="F"):
         name = f"SarahMemory_{tag}-opt-backup_{seq}_{ts}.zip"
         out_path = os.path.join(backup_dir, name)
         
+        if not _UPDATER_OPT_BACKUP_ENABLED:
+            _log("[Pre-Update Backup] Full opt-backup skipped by optimized runtime policy.")
+            return None
+
         def _iter_files(root):
-            for r, _, files in os.walk(root):
-                # Skip the backup dir itself to avoid ballooning backups
-                if os.path.abspath(r).startswith(os.path.abspath(backup_dir)):
+            for r, dirs, files in os.walk(root):
+                dirs[:] = [d for d in dirs if not _updater_should_skip_path(os.path.join(r, d))]
+                if os.path.abspath(r).startswith(os.path.abspath(backup_dir)) or _updater_should_skip_path(r):
                     continue
                 for fn in files:
                     fp = os.path.join(r, fn)
+                    if _updater_should_skip_path(fp):
+                        continue
+                    try:
+                        if os.path.getsize(fp) > int(_UPDATER_BACKUP_MAX_FILE_MB * 1024 * 1024):
+                            continue
+                    except Exception:
+                        continue
                     rel = os.path.relpath(fp, base_dir)
                     yield fp, rel
         
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as z:
             for fp, rel in _iter_files(base_dir):
                 try:
                     z.write(fp, arcname=rel)
@@ -1235,13 +1269,18 @@ def _pre_update_backup() -> str | None:
         ts = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         out = os.path.join(BACKUPS_DIR, f"preupdate-{ts}.zip")
         
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-            for root, _, files in os.walk(BASE_DIR):
-                if any(x in root for x in (".git", "node_modules", "__pycache__", "data")):
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=3) as z:
+            for root, dirs, files in os.walk(BASE_DIR):
+                dirs[:] = [d for d in dirs if not _updater_should_skip_path(os.path.join(root, d))]
+                if _updater_should_skip_path(root):
                     continue
                 for fn in files:
                     fp = os.path.join(root, fn)
+                    if _updater_should_skip_path(fp):
+                        continue
                     try:
+                        if os.path.getsize(fp) > int(_UPDATER_BACKUP_MAX_FILE_MB * 1024 * 1024):
+                            continue
                         z.write(fp, arcname=os.path.relpath(fp, BASE_DIR))
                     except Exception:
                         pass
@@ -1511,7 +1550,8 @@ def run_updater(
 
         # One-time full-system opt-backup prior to applying the first update
         if not pre_update_backup_done:
-            _create_opt_backup(tag="F")
+            if _UPDATER_OPT_BACKUP_ENABLED:
+                _create_opt_backup(tag="F")
             pre_update_backup_done = True
 
         # Backup, write, sanity

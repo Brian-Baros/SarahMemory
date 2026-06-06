@@ -2842,10 +2842,23 @@ def _log_corpus_boot_message() -> None:
         logger.debug(f"[AdvCU] boot message skipped: {e}")
 
 
-# Initialize on import
+def _advcu_warm_code_corpus_on_import() -> bool:
+    try:
+        env = os.getenv("SARAH_ADVCU_WARM_CODE_CORPUS_ON_IMPORT", "0").strip().lower()
+        if env in ("1", "true", "yes", "on"):
+            return True
+        return bool(getattr(config, "ADVCU_WARM_CODE_CORPUS_ON_IMPORT", False))
+    except Exception:
+        return False
+
+
+# Import must be light.  The code corpus can still be warmed manually, but normal
+# boot/runtime imports should not scan/write thousands of rows just because a
+# helper module was imported by MSDC, SystemLearn, Neuron, or Chat.
 try:
-    _ensure_db()
-    ensure_corpus_ready()
+    if _advcu_warm_code_corpus_on_import():
+        _ensure_db()
+        ensure_corpus_ready()
 except Exception as e:
     logger.debug(f"[AdvCU] initialization skipped: {e}")
 

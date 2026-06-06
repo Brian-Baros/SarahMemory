@@ -190,20 +190,24 @@ def execute_action_ticket(ticket: dict, *, confirm: bool = False) -> dict:
 # =============================================================================
 if config.ENABLE_CONTEXT_BUFFER:
     import SarahMemoryAiFunctions as context
-    try:
-        context.init_context_history()
-    except Exception:
-        pass
+    # Runtime optimization: avoid database/context writes during import unless explicitly requested.
+    if str(os.getenv("SARAH_CONTEXT_INIT_ON_IMPORT", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        try:
+            context.init_context_history()
+        except Exception:
+            pass
 
 # =============================================================================
 # LOGGER SETUP - v8.0 Enhanced
 # =============================================================================
 logger = logging.getLogger("SarahMemoryIntegration")
-logger.setLevel(logging.INFO)
-stream_handler = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter('%(asctime)s - v8.0 - %(levelname)s - %(message)s')
-stream_handler.setFormatter(formatter)
-logger.addHandler(stream_handler)
+logger.setLevel(logging.DEBUG if bool(getattr(config, "DEBUG_MODE", False)) else logging.INFO)
+if not logger.handlers:
+    stream_handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s - v8.0 - %(levelname)s - %(message)s')
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(stream_handler)
+logger.propagate = False
 
 # =============================================================================
 # GLOBAL STATE
@@ -457,48 +461,63 @@ def _start_runtime_services_once() -> None:
     else:
         logger.warning("[v8.0][RUNTIME] Local API not confirmed ready. Starting runtime services in degraded mode...")
 
-    # Diagnostics / Self-check (post-API) - background thread
-    def _diag_worker():
-        try:
-            run_self_check()
-        except Exception as e:
-            logger.debug("[v8.0][RUNTIME] run_self_check failed: %s", e)
+    # Diagnostics / Self-check (post-API) - optional background thread.
+    # Normal boot already runs initialization checks; keep this off by default to avoid duplicate DB/file reads.
+    if _cfg_bool("RUNTIME_START_SELF_CHECK", False):
+        def _diag_worker():
+            try:
+                run_self_check()
+            except Exception as e:
+                logger.debug("[v8.0][RUNTIME] run_self_check failed: %s", e)
 
-    try:
-        threading.Thread(target=_diag_worker, name="SM_RuntimeDiagnostics", daemon=True).start()
-    except Exception:
-        pass
+        try:
+            threading.Thread(target=_diag_worker, name="SM_RuntimeDiagnostics", daemon=True).start()
+        except Exception:
+            pass
+    else:
+        logger.info("[v8.0][RUNTIME] Runtime self-check skipped by optimized runtime policy.")
 
     # Synapses: awareness tick + background training dispatcher (if available)
     try:
         import SarahMemorySynapes as syn  # type: ignore
 
         if hasattr(syn, "start_training_dispatcher_background"):
-            try:
-                syn.start_training_dispatcher_background()
-                logger.info("[v8.0][RUNTIME] Synapes training dispatcher started.")
-            except Exception as e:
-                logger.debug("[v8.0][RUNTIME] start_training_dispatcher_background failed: %s", e)
+            if _cfg_bool("SYNAPES_TRAINING_DISPATCHER_ON_BOOT", False):
+                try:
+                    syn.start_training_dispatcher_background()
+                    logger.info("[v8.0][RUNTIME] Synapes training dispatcher started.")
+                except Exception as e:
+                    logger.debug("[v8.0][RUNTIME] start_training_dispatcher_background failed: %s", e)
+            else:
+                logger.info("[v8.0][RUNTIME] Synapes training dispatcher skipped by optimized runtime policy.")
 
-        if hasattr(syn, "synapes_awareness_tick"):
+        if hasattr(syn, "synapes_awareness_tick") and _cfg_bool("SYNAPES_AWARENESS_ON_BOOT", False):
+            try:
+                interval = float(os.getenv("SARAH_SYNAPES_AWARENESS_INTERVAL_SEC", str(getattr(config, "SYNAPES_AWARENESS_INTERVAL_SEC", 900.0))))
+            except Exception:
+                interval = 900.0
+            interval = max(300.0, interval)
+
             def _syn_awareness_loop():
                 try:
                     while not terminate_flag.is_set():
                         try:
-                            syn.synapes_awareness_tick()
+                            syn.synapes_awareness_tick(enqueue_job=False, max_rows_per_table=25, mode="background")
                         except TypeError:
                             break
                         except Exception:
                             pass
-                        time.sleep(2.0)
+                        time.sleep(interval)
                 except Exception:
                     pass
 
             try:
                 threading.Thread(target=_syn_awareness_loop, name="SM_SynapesAwareness", daemon=True).start()
-                logger.info("[v8.0][RUNTIME] Synapes awareness loop started.")
+                logger.info("[v8.0][RUNTIME] Synapes awareness loop started at %.1fs interval.", interval)
             except Exception as e:
                 logger.debug("[v8.0][RUNTIME] Synapes awareness thread failed: %s", e)
+        else:
+            logger.info("[v8.0][RUNTIME] Synapes awareness loop skipped by optimized runtime policy.")
 
     except Exception as e:
         logger.debug("[v8.0][RUNTIME] Synapes module not available: %s", e)
@@ -559,10 +578,12 @@ def bootstrap_startup():
         # =====================================================================
         try:
             import SarahMemoryResearch as research
-            if getattr(config, "LOCAL_DATA_ENABLED", True):
+            if getattr(config, "LOCAL_DATA_ENABLED", True) and _cfg_bool("BOOT_VECTOR_WARMUP", False):
                 logger.info("[v8.0][BOOTSTRAP] Warming up vector search...")
                 _ = research.get_research_data("warmup")
                 logger.info("[v8.0][BOOTSTRAP] Vector warmup completed")
+            else:
+                logger.info("[v8.0][BOOTSTRAP] Vector warmup skipped by optimized runtime policy.")
         except Exception as ve:
             logger.debug(f"[v8.0][BOOTSTRAP] Vector warmup skipped: {ve}")
     
@@ -1290,11 +1311,12 @@ def _ensure_response_table(db_path=None):
             pass
 
 
-# Initialize response table
-try:
-    _ensure_response_table()
-except Exception:
-    pass
+# Response table schema creation is available on demand. Avoid import-time DB writes by default.
+if _cfg_bool("INTEGRATION_ENSURE_RESPONSE_TABLE_ON_IMPORT", False):
+    try:
+        _ensure_response_table()
+    except Exception:
+        pass
 
 
 # =============================================================================
@@ -1309,11 +1331,12 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-    # Optional dataset sync (network-dependent)
-    try:
-        sync_dataset_bidirectional()
-    except Exception:
-        pass
+    # Optional dataset sync (network-dependent); disabled by default for anti-thrash boot.
+    if _cfg_bool("INTEGRATION_SYNC_DATASETS_ON_STANDALONE_START", False):
+        try:
+            sync_dataset_bidirectional()
+        except Exception:
+            pass
 
     main_menu()
 

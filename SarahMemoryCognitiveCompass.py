@@ -1683,3 +1683,88 @@ def assess_emergency_instinct_bearing(
         },
     }
 
+
+
+# -----------------------------------------------------------------------------
+# SM V8 Robotic Body Expansion - embodied bearing guard
+# -----------------------------------------------------------------------------
+def assess_robotic_body_bearing(
+    goal_text: str = "",
+    action_contract: Optional[Dict[str, Any]] = None,
+    body_witness: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Validate that a robotic/body action stays on governed bearing.
+
+    Compass does not execute and does not authorize. It detects drift: motion
+    based on stale perception, human-contact without emergency context, or
+    claims of capability not supported by the body witness.
+    """
+    contract = action_contract if isinstance(action_contract, dict) else {}
+    witness = body_witness if isinstance(body_witness, dict) else {}
+    joined = " ".join([
+        str(goal_text or "").lower(),
+        str(contract.get("action_type") or "").lower(),
+        str(contract.get("capability_name") or "").lower(),
+        str(contract.get("target") or "").lower(),
+        str(contract.get("body_part") or contract.get("target_body_part") or "").lower(),
+    ])
+    is_robotic = any(k in joined for k in ("robot", "servo", "gripper", "arm", "hand", "leg", "walk", "move", "locomotion", "posture", "torque", "force")) or str(contract.get("risk_level") or "").startswith("TIER_ROBOT")
+    failures: List[str] = []
+    warnings: List[str] = []
+    if is_robotic:
+        if not bool(contract.get("safe_stop_available") or (contract.get("safety_envelope") or {}).get("safe_stop_required")):
+            failures.append("robotic_action_missing_safe_stop_bearing")
+        if any(k in joined for k in ("move", "walk", "step", "reach", "grip", "posture")) and not bool(contract.get("current_perception_fresh")):
+            failures.append("robotic_motion_based_on_stale_or_missing_perception")
+        if any(k in joined for k in ("human contact", "touch human", "grab person", "push", "pull")) and not any(k in joined for k in ("emergency", "medical", "fire", "collision", "rescue")):
+            failures.append("robotic_human_contact_without_emergency_bearing")
+        declared = witness.get("declared_parts") if isinstance(witness.get("declared_parts"), list) else []
+        target = str(contract.get("body_part") or contract.get("target_body_part") or contract.get("target") or "").lower().replace(" ", "_")
+        if target and declared and target not in declared:
+            warnings.append("target_body_part_not_declared_in_witness")
+    return {
+        "ok": bool(not failures),
+        "schema": "SarahMemoryCompass.robotic_body_bearing.v1",
+        "guard": "embodied_bearing_guard",
+        "is_robotic_body_action": bool(is_robotic),
+        "allow_execution": False,
+        "failures": failures,
+        "warnings": warnings,
+        "decision": "ON_BEARING" if not failures else "HOLD_OR_SIMULATE_ONLY",
+        "doctrine": {
+            "compass_validates_bearing_not_execution": True,
+            "movement_requires_fresh_perception": True,
+            "safe_stop_required": True,
+            "human_contact_requires_verified_emergency": True,
+        },
+    }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Compass bearing for agentic adapter workflows.
+
+def assess_sovereign_agent_bearing(goal: str = "", envelope: Optional[Dict[str, Any]] = None, workflow_state: str = "PROPOSED") -> Dict[str, Any]:
+    env = dict(envelope or {})
+    message_type = str(env.get("message_type") or env.get("type") or env.get("action_type") or "unknown").lower()
+    status = STATUS_ON_COURSE
+    directives = [DIRECTIVE_REANCHOR_ORIGINAL]
+    reasons = ["Agentic adapter workflow remains governed and one-way by default."]
+    if message_type in {"execute", "tool_call", "command", "driver_action", "robot_motion", "filesystem_write"}:
+        status = STATUS_RED_ZONE
+        directives = [DIRECTIVE_ABORT, ESCAPE_SANDBOX_ONLY]
+        reasons.append("Execution-like adapter packet detected; direct execution would drift outside one-way broker doctrine.")
+    if bool(env.get("bidirectional")) and not bool(env.get("explicit_bidirectional_authority")):
+        status = STATUS_PROCEDURAL_GAP
+        directives = [DIRECTIVE_REANCHOR_GOVERNOR, DIRECTIVE_HOLD_REPLY]
+        reasons.append("Bidirectional adapter path requires explicit governed exception before proceeding.")
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sovereign_agent_bearing.v1",
+        "goal": _safe_text(goal, 500),
+        "workflow_state": workflow_state,
+        "status": status,
+        "reply_allowed": status not in {STATUS_RED_ZONE, STATUS_PROCEDURAL_GAP},
+        "continue_allowed": status == STATUS_ON_COURSE,
+        "directives": directives,
+        "reasons": reasons,
+    }
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

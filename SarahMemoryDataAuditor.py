@@ -1129,3 +1129,72 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryDataAuditor.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Local-first semantic telemetry. Default behavior is RAM-buffered only; disk
+# export is explicit and compact to avoid log/write storms.
+import threading as _sm_semantic_threading
+import time as _sm_semantic_time
+import uuid as _sm_semantic_uuid
+
+class SemanticTelemetryRecorder:
+    """Low-thrash semantic trace recorder for agentic runtime events."""
+
+    def __init__(self, max_events: int = 256) -> None:
+        self.max_events = max(16, int(max_events or 256))
+        self._events: List[Dict[str, Any]] = []
+        self._lock = _sm_semantic_threading.RLock()
+
+    def record(self, *, organ: str, action: str, verdict: str = "OBSERVED", task_id: str = "", trace_id: str = "", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        rec = {
+            "ok": True,
+            "ts": datetime.now().isoformat(),
+            "trace_id": trace_id or _sm_semantic_uuid.uuid4().hex,
+            "task_id": str(task_id or ""),
+            "organ": str(organ or "unknown")[:120],
+            "action": str(action or "unknown")[:160],
+            "verdict": str(verdict or "OBSERVED")[:80],
+            "risk_tier": str((meta or {}).get("risk_tier") or ""),
+            "write_bytes": int((meta or {}).get("write_bytes") or 0),
+            "network_used": bool((meta or {}).get("network_used") or False),
+            "rollback_available": bool((meta or {}).get("rollback_available") or False),
+            "meta": dict(meta or {}),
+        }
+        if self._lock:
+            with self._lock:
+                self._events.append(rec)
+                if len(self._events) > self.max_events:
+                    self._events = self._events[-self.max_events:]
+        else:
+            self._events.append(rec)
+            if len(self._events) > self.max_events:
+                self._events = self._events[-self.max_events:]
+        return rec
+
+    def snapshot(self) -> Dict[str, Any]:
+        events = list(self._events)
+        return {"ok": True, "schema": "SarahMemory.semantic_telemetry.v1", "count": len(events), "events": events[-self.max_events:]}
+
+    def export_compact_jsonl(self, path: str, *, max_events: int = 128) -> Dict[str, Any]:
+        # Explicit export only. No automatic telemetry file writes.
+        try:
+            events = list(self._events)[-int(max_events or 128):]
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                for ev in events:
+                    f.write(json.dumps(ev, ensure_ascii=False, default=str) + "\n")
+            return {"ok": True, "path": path, "events_written": len(events)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+
+_SEMANTIC_TELEMETRY = SemanticTelemetryRecorder()
+
+
+def record_semantic_telemetry(**kwargs: Any) -> Dict[str, Any]:
+    return _SEMANTIC_TELEMETRY.record(**kwargs)
+
+
+def get_semantic_telemetry_snapshot() -> Dict[str, Any]:
+    return _SEMANTIC_TELEMETRY.snapshot()
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

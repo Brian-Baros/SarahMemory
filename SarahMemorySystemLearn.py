@@ -231,6 +231,8 @@ def process_files(files, use_mammoth=True, use_antiword=True, learn_registry=Fal
     log(f"📁 Processing {len(files)} files from index...")
     total = 0
     for file_path, file_type in files:
+        if _path_is_excluded(file_path):
+            continue
         if not os.path.exists(file_path):
             continue
         # Call extract_text with proper flags
@@ -684,33 +686,107 @@ VECTOR_INDEX_PATH = os.path.join(DATASETS_DIR, "vectors.index")
 VECTOR_HASH_PATH = os.path.join(DATASETS_DIR, "vector_hash.md5")
 FORCE_REBUILD = False
 
+# Runtime optimization / anti-thrash guardrails.  SystemLearn can still be run
+# manually, but import/boot must not recursively hash or learn from the virtual
+# environment, package cache, logs, model files, or other volatile runtime paths.
+SYSTEMLEARN_EXCLUDED_DIR_NAMES = {
+    "__pycache__", ".git", ".venv", "venv", "env", "site-packages",
+    "node_modules", "logs", "cache", "tmp", "temp", "backups", "backup",
+    "archive", "models", "model_cache", ".cache", "dist", "build",
+}
+SYSTEMLEARN_EXCLUDED_PATH_PARTS = {
+    os.sep + ".venv" + os.sep, os.sep + "venv" + os.sep,
+    os.sep + "site-packages" + os.sep, os.sep + "node_modules" + os.sep,
+    os.sep + "__pycache__" + os.sep, os.sep + "data" + os.sep + "logs" + os.sep,
+    os.sep + "data" + os.sep + "cache" + os.sep, os.sep + "data" + os.sep + "runtime" + os.sep,
+    os.sep + "data" + os.sep + "models" + os.sep,
+}
+SYSTEMLEARN_MAX_HASH_BYTES = int(os.getenv("SARAH_SYSTEMLEARN_MAX_HASH_BYTES", str(16 * 1024 * 1024)) or (16 * 1024 * 1024))
+SYSTEMLEARN_MAX_HASH_FILES = int(os.getenv("SARAH_SYSTEMLEARN_MAX_HASH_FILES", "2500") or 2500)
+SYSTEMLEARN_MAX_FILES_PER_RUN = int(os.getenv("SARAH_SYSTEMLEARN_MAX_FILES_PER_RUN", "1000") or 1000)
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+def _systemlearn_import_vector_check_enabled() -> bool:
+    return bool(
+        _env_truthy("SARAH_SYSTEMLEARN_VECTOR_CHECK_ON_IMPORT", False)
+        or bool(getattr(config, "SYSTEMLEARN_VECTOR_CHECK_ON_IMPORT", False))
+    )
+
+def _norm_path_for_exclusion(path: str) -> str:
+    try:
+        return os.path.abspath(str(path or "")).replace("/", os.sep).lower()
+    except Exception:
+        return str(path or "").replace("/", os.sep).lower()
+
+def _path_is_excluded(path: str) -> bool:
+    p = _norm_path_for_exclusion(path)
+    if not p:
+        return False
+    parts = set([x.lower() for x in p.split(os.sep) if x])
+    if parts.intersection(SYSTEMLEARN_EXCLUDED_DIR_NAMES):
+        return True
+    wrapped = os.sep + p.strip(os.sep) + os.sep
+    return any(part in wrapped for part in SYSTEMLEARN_EXCLUDED_PATH_PARTS)
+
+def _prune_dirs_in_place(root: str, dirs: list) -> None:
+    try:
+        dirs[:] = [d for d in dirs if str(d).lower() not in SYSTEMLEARN_EXCLUDED_DIR_NAMES and not _path_is_excluded(os.path.join(root, d))]
+    except Exception:
+        pass
+
 def compute_dataset_hash(directory):
     hash_md5 = hashlib.md5()
-    for root, _, files in os.walk(directory):
+    files_seen = 0
+    for root, dirs, files in os.walk(directory):
+        _prune_dirs_in_place(root, dirs)
+        if _path_is_excluded(root):
+            continue
         for name in sorted(files):
             path = os.path.join(root, name)
+            if _path_is_excluded(path):
+                continue
+            try:
+                if os.path.getsize(path) > SYSTEMLEARN_MAX_HASH_BYTES:
+                    continue
+            except Exception:
+                continue
             try:
                 with open(path, 'rb') as f:
                     while chunk := f.read(8192):
                         hash_md5.update(chunk)
+                files_seen += 1
+                if files_seen >= SYSTEMLEARN_MAX_HASH_FILES:
+                    break
             except Exception:
                 continue
+        if files_seen >= SYSTEMLEARN_MAX_HASH_FILES:
+            break
+    hash_md5.update(str(files_seen).encode("ascii", errors="ignore"))
     return hash_md5.hexdigest()
 
-# Check vector index and hash
-if os.path.exists(VECTOR_INDEX_PATH) and not FORCE_REBUILD:
-    current_hash = compute_dataset_hash(DATASETS_DIR)
-    if os.path.exists(VECTOR_HASH_PATH):
-        with open(VECTOR_HASH_PATH, 'r') as f:
-            cached_hash = f.read().strip()
-        if current_hash == cached_hash:
-            log("✅ Vector index and dataset hash match. Skipping vector rebuild.")
-            sys.exit(0)
-    # Update hash file
-    with open(VECTOR_HASH_PATH, 'w') as f:
-        f.write(current_hash)
-else:
-    log("⚠️ Vector index missing or rebuild forced. Proceeding with vector rebuild.")
+def _run_vector_index_import_check() -> None:
+    # This function is intentionally opt-in. Normal boot/import must not trigger
+    # vector rebuilds or whole-dataset hashing.
+    if os.path.exists(VECTOR_INDEX_PATH) and not FORCE_REBUILD:
+        current_hash = compute_dataset_hash(DATASETS_DIR)
+        if os.path.exists(VECTOR_HASH_PATH):
+            with open(VECTOR_HASH_PATH, 'r') as f:
+                cached_hash = f.read().strip()
+            if current_hash == cached_hash:
+                log("✅ Vector index and dataset hash match. Skipping vector rebuild.")
+                return
+        with open(VECTOR_HASH_PATH, 'w') as f:
+            f.write(current_hash)
+    else:
+        log("⚠️ Vector index missing or rebuild forced. Manual/on-demand vector rebuild required; boot/import will not rebuild automatically.")
+
+if _systemlearn_import_vector_check_enabled():
+    _run_vector_index_import_check()
 # Index reader
 # ⬇️ NEW FUNCTION: Extract named entities from document
 
@@ -751,6 +827,8 @@ def extract_doc_metadata(file_path):
 
 def extract_text(file_path, use_mammoth=True, use_antiword=True):
     text = ""
+    if _path_is_excluded(file_path):
+        return ""
     try:
         if file_path.endswith(".docx"):
             from docx import Document
@@ -814,6 +892,7 @@ def read_index_db():
     cur = conn.cursor()
     cur.execute("SELECT file_path, file_type FROM file_index")
     files = cur.fetchall()
+    files = [(p, t) for (p, t) in files if not _path_is_excluded(str(p))][:SYSTEMLEARN_MAX_FILES_PER_RUN]
     cur.execute("SELECT root_key, key_path, value_name, value_data FROM registry_index")
     registry = cur.fetchall()
     conn.close()
@@ -1182,6 +1261,8 @@ def is_clean_content(text):
     log(f"📁 Processing {len(files)} files from index...")
     total = 0
     for file_path, file_type in files:
+        if _path_is_excluded(file_path):
+            continue
         if not os.path.exists(file_path):
             continue
             content = extract_text(file_path, use_mammoth=use_mammoth, use_antiword=use_antiword)

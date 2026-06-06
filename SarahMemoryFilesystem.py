@@ -111,7 +111,108 @@ QUARANTINE_DIR = os.path.join(DATA_DIR, "quarantine")
 # Backup configuration
 BACKUP_RETENTION_DAYS = 30  # Keep backups for 30 days
 MAX_BACKUP_COUNT = 50  # Maximum number of backups to keep
-BACKUP_COMPRESSION_LEVEL = 6  # ZIP compression level (0-9)
+BACKUP_COMPRESSION_LEVEL = int(os.getenv("SARAH_BACKUP_COMPRESSION_LEVEL", "3") or 3)  # Lower CPU/I/O pressure default
+
+# Runtime anti-thrash backup policy.  Backups must not crawl dependency trees,
+# active caches, model stores, logs, backup output folders, or volatile runtime
+# directories.  These folders are either reproducible, large, constantly
+# changing, or unsafe to snapshot while SarahMemory is running from C:\ NVMe.
+_BACKUP_EXCLUDED_DIR_NAMES = {
+    ".git", ".hg", ".svn",
+    ".venv", "venv", "env", "virtualenv",
+    "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "node_modules", ".vite", ".next", "dist", "build",
+    "cache", "caches", ".cache", "runtime", "tmp", "temp",
+    "logs", "log", "backup", "backups", "archive", "archives",
+    "models", "model_cache", "downloads",
+}
+
+_BACKUP_EXCLUDED_FILE_SUFFIXES = {
+    ".tmp", ".temp", ".bak", ".lock", ".pid",
+    ".log", ".zip", ".7z", ".rar",
+    "-wal", "-shm",
+}
+
+_BACKUP_MAX_FILE_BYTES = max(1, int(os.getenv("SARAH_BACKUP_MAX_FILE_MB", "256") or 256)) * 1024 * 1024
+
+
+def _norm_path(path: str) -> str:
+    try:
+        return os.path.abspath(os.fspath(path))
+    except Exception:
+        return str(path or "")
+
+
+def _is_path_under(child: str, parent: str) -> bool:
+    try:
+        child_abs = _norm_path(child)
+        parent_abs = _norm_path(parent)
+        return os.path.commonpath([child_abs, parent_abs]) == parent_abs
+    except Exception:
+        return False
+
+
+def _is_backup_excluded_dir(path: str) -> bool:
+    name = os.path.basename(_norm_path(path)).lower()
+    if name in _BACKUP_EXCLUDED_DIR_NAMES:
+        return True
+    # BACKUP_DIR may not literally be named "backup" in future layouts.
+    if _is_path_under(path, BACKUP_DIR):
+        return True
+    return False
+
+
+def _is_backup_excluded_file(file_path: str, destination: str = "") -> Tuple[bool, str]:
+    try:
+        p = _norm_path(file_path)
+        if destination and p == _norm_path(destination):
+            return True, "destination_zip"
+        base = os.path.basename(p).lower()
+        if base.startswith("~$") or base.endswith(".swp") or base.endswith(".part"):
+            return True, "temporary_file"
+        for suffix in _BACKUP_EXCLUDED_FILE_SUFFIXES:
+            if base.endswith(suffix):
+                return True, f"excluded_suffix:{suffix}"
+        try:
+            size = os.path.getsize(p)
+            if size > _BACKUP_MAX_FILE_BYTES:
+                return True, f"over_size_limit:{size}"
+        except Exception:
+            return True, "stat_failed"
+    except Exception as exc:
+        return True, f"exclude_check_failed:{exc}"
+    return False, ""
+
+
+def _collect_backup_files(source_dir: str, destination: str = "") -> Tuple[List[str], Dict[str, int]]:
+    files_to_backup: List[str] = []
+    skipped: Dict[str, int] = defaultdict(int)
+    source_abs = _norm_path(source_dir)
+
+    for foldername, subdirs, filenames in os.walk(source_abs):
+        # Prune excluded directories in-place so os.walk never descends into them.
+        kept_subdirs = []
+        for subdir in list(subdirs):
+            subdir_path = os.path.join(foldername, subdir)
+            if _is_backup_excluded_dir(subdir_path):
+                skipped[f"dir:{subdir.lower()}"] += 1
+            else:
+                kept_subdirs.append(subdir)
+        subdirs[:] = kept_subdirs
+
+        if _is_backup_excluded_dir(foldername):
+            skipped[f"dir:{os.path.basename(foldername).lower()}"] += 1
+            continue
+
+        for filename in filenames:
+            file_path = os.path.join(foldername, filename)
+            excluded, reason = _is_backup_excluded_file(file_path, destination)
+            if excluded:
+                skipped[reason] += 1
+                continue
+            files_to_backup.append(file_path)
+
+    return files_to_backup, skipped
 
 
 # ============================================================================
@@ -846,93 +947,82 @@ class BackupManager:
                            destination: str = None) -> Optional[str]:
         """
         Create full backup of specified directory.
-        
-        Args:
-            source_dir: Directory to backup (defaults to BASE_DIR)
-            destination: Backup destination path
-        
-        Returns:
-            Path to created backup file, or None on failure
+
+        Anti-thrash policy:
+        - single-writer ZIP creation only; zipfile is not thread-safe
+        - excludes node_modules/.venv/caches/logs/models/backups/build output
+        - skips oversized/volatile files by default
+        - writes a compact skipped-summary into backup metadata
         """
         if source_dir is None:
             source_dir = BASE_DIR
-        
+
+        source_dir = _norm_path(source_dir)
+
         if destination is None:
             os.makedirs(BACKUP_DIR, exist_ok=True)
             backup_filename = self.generate_backup_filename("full", "F")
             destination = os.path.join(BACKUP_DIR, backup_filename)
-        
+        destination = _norm_path(destination)
+
         logger.info(f"Starting full backup: {source_dir} -> {destination}")
         start_time = time.time()
-        
+
         try:
-            checksum_map = {}
+            checksum_map: Dict[str, str] = {}
             file_count = 0
             total_size = 0
             original_size = 0
-            
-            with zipfile.ZipFile(destination, 'w', 
-                                zipfile.ZIP_DEFLATED,
-                                compresslevel=self.compression_level) as backup_zip:
-                
-                # Collect all files
-                files_to_backup = []
-                for foldername, subdirs, filenames in os.walk(source_dir):
-                    # Skip backup directory itself
-                    if BACKUP_DIR in foldername:
-                        continue
-                    
-                    for filename in filenames:
-                        file_path = os.path.join(foldername, filename)
-                        files_to_backup.append(file_path)
-                
-                logger.info(f"Backing up {len(files_to_backup)} files...")
-                
-                # Backup files with thread pool
-                def backup_file(file_path):
+            failed_count = 0
+
+            files_to_backup, skipped = _collect_backup_files(source_dir, destination)
+            logger.info(
+                "Backing up %s files after exclusions; skipped=%s",
+                len(files_to_backup),
+                dict(list(skipped.items())[:20]),
+            )
+
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+
+            # IMPORTANT: zipfile.ZipFile is not safe for concurrent writes.  The
+            # previous threaded writer caused repeated "open writing handle" errors
+            # and hammered node_modules.  Keep the ZIP writer single-threaded.
+            with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
+                for file_path in files_to_backup:
                     try:
                         arcname = os.path.relpath(file_path, start=source_dir)
                         backup_zip.write(file_path, arcname)
                         checksum = calculate_checksum(file_path)
                         size = os.path.getsize(file_path)
-                        return arcname, checksum, size
+                        checksum_map[arcname] = checksum
+                        original_size += size
+                        file_count += 1
                     except Exception as e:
-                        logger.error(f"Error backing up {file_path}: {e}")
-                        return None, None, 0
-                
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    results = executor.map(backup_file, files_to_backup)
-                    
-                    for arcname, checksum, size in results:
-                        if arcname:
-                            checksum_map[arcname] = checksum
-                            original_size += size
-                            file_count += 1
-                
-                # Write checksum manifest
+                        failed_count += 1
+                        logger.warning(f"Backup skipped file after write/check failure {file_path}: {e}")
+
                 checksum_data = "\n".join([f"{k}: {v}" for k, v in checksum_map.items()])
                 backup_zip.writestr("CHECKSUM_MANIFEST.txt", checksum_data)
-                
-                # Write backup metadata
+
                 metadata = {
                     "backup_type": "full",
                     "timestamp": datetime.now().isoformat(),
                     "source_directory": source_dir,
                     "file_count": file_count,
+                    "failed_count": failed_count,
                     "original_size_bytes": original_size,
-                    "sarah_memory_version": "7.7.5"
+                    "excluded_policy": "anti_thrash_runtime_safe",
+                    "excluded_summary": dict(skipped),
+                    "max_file_bytes": _BACKUP_MAX_FILE_BYTES,
+                    "sarah_memory_version": "8.0.0",
                 }
                 backup_zip.writestr("BACKUP_METADATA.json", json.dumps(metadata, indent=2))
-            
-            # Get final backup size
+
             total_size = os.path.getsize(destination)
             compression_ratio = (1 - (total_size / original_size)) * 100 if original_size > 0 else 0
             duration = time.time() - start_time
-            
-            # Calculate overall backup checksum
             backup_checksum = calculate_checksum(destination)
-            
-            # Log backup operation
+
             log_backup_operation(
                 "full",
                 destination,
@@ -941,23 +1031,23 @@ class BackupManager:
                 file_count,
                 backup_checksum,
                 compression_ratio,
-                duration
+                duration,
             )
-            
+
             logger.info(
                 f"Full backup completed: {destination}\n"
-                f"Files: {file_count}, Size: {total_size / (1024*1024):.2f} MB, "
+                f"Files: {file_count}, Failed: {failed_count}, Size: {total_size / (1024*1024):.2f} MB, "
                 f"Compression: {compression_ratio:.1f}%, Duration: {duration:.2f}s"
             )
-            
+
             log_filesystem_event(
                 "backup_full",
                 destination,
-                f"Full backup created with {file_count} files"
+                f"Full backup created with {file_count} files; skipped={sum(skipped.values())}; failed={failed_count}"
             )
-            
+
             return destination
-        
+
         except Exception as e:
             logger.error(f"Error creating full backup: {e}")
             log_backup_operation(
@@ -969,50 +1059,48 @@ class BackupManager:
                 str(e)
             )
             return None
-    
+
     def create_incremental_backup(self, source_dir: str = None,
                                    base_backup: str = None) -> Optional[str]:
         """
         Create incremental backup (only changed files since last backup).
-        
-        Args:
-            source_dir: Directory to backup
-            base_backup: Path to last backup (for comparison)
-        
-        Returns:
-            Path to created backup file
+
+        Uses the same anti-thrash exclusions as full backup and writes the ZIP
+        sequentially to avoid zipfile concurrent write-handle failures.
         """
         if source_dir is None:
             source_dir = BASE_DIR
-        
+        source_dir = _norm_path(source_dir)
+
         logger.info(f"Starting incremental backup: {source_dir}")
         start_time = time.time()
-        
+
         try:
-            # Get list of files that changed since last backup
             changed_files = self._find_changed_files(source_dir, base_backup)
-            
+
             if not changed_files:
                 logger.info("No files changed since last backup")
                 return None
-            
+
             logger.info(f"Found {len(changed_files)} changed files")
-            
-            # Create incremental backup
+
             os.makedirs(BACKUP_DIR, exist_ok=True)
             backup_filename = self.generate_backup_filename("incremental", "I")
-            destination = os.path.join(BACKUP_DIR, backup_filename)
-            
-            checksum_map = {}
+            destination = _norm_path(os.path.join(BACKUP_DIR, backup_filename))
+
+            checksum_map: Dict[str, str] = {}
             file_count = 0
             total_size = 0
             original_size = 0
-            
-            with zipfile.ZipFile(destination, 'w',
-                                zipfile.ZIP_DEFLATED,
-                                compresslevel=self.compression_level) as backup_zip:
-                
+            failed_count = 0
+            skipped: Dict[str, int] = defaultdict(int)
+
+            with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED, compresslevel=self.compression_level) as backup_zip:
                 for file_path in changed_files:
+                    excluded, reason = _is_backup_excluded_file(file_path, destination)
+                    if excluded:
+                        skipped[reason] += 1
+                        continue
                     try:
                         arcname = os.path.relpath(file_path, start=source_dir)
                         backup_zip.write(file_path, arcname)
@@ -1022,27 +1110,31 @@ class BackupManager:
                         original_size += size
                         file_count += 1
                     except Exception as e:
-                        logger.error(f"Error backing up {file_path}: {e}")
-                
-                # Write manifests
+                        failed_count += 1
+                        logger.warning(f"Backup skipped changed file after write/check failure {file_path}: {e}")
+
                 checksum_data = "\n".join([f"{k}: {v}" for k, v in checksum_map.items()])
                 backup_zip.writestr("CHECKSUM_MANIFEST.txt", checksum_data)
-                
+
                 metadata = {
                     "backup_type": "incremental",
                     "timestamp": datetime.now().isoformat(),
                     "source_directory": source_dir,
                     "base_backup": base_backup,
                     "file_count": file_count,
-                    "original_size_bytes": original_size
+                    "failed_count": failed_count,
+                    "original_size_bytes": original_size,
+                    "excluded_policy": "anti_thrash_runtime_safe",
+                    "excluded_summary": dict(skipped),
+                    "max_file_bytes": _BACKUP_MAX_FILE_BYTES,
                 }
                 backup_zip.writestr("BACKUP_METADATA.json", json.dumps(metadata, indent=2))
-            
+
             total_size = os.path.getsize(destination)
             compression_ratio = (1 - (total_size / original_size)) * 100 if original_size > 0 else 0
             duration = time.time() - start_time
             backup_checksum = calculate_checksum(destination)
-            
+
             log_backup_operation(
                 "incremental",
                 destination,
@@ -1051,30 +1143,29 @@ class BackupManager:
                 file_count,
                 backup_checksum,
                 compression_ratio,
-                duration
+                duration,
             )
-            
+
             logger.info(
                 f"Incremental backup completed: {destination}\n"
-                f"Files: {file_count}, Size: {total_size / (1024*1024):.2f} MB, "
+                f"Files: {file_count}, Failed: {failed_count}, Size: {total_size / (1024*1024):.2f} MB, "
                 f"Duration: {duration:.2f}s"
             )
-            
+
             return destination
-        
+
         except Exception as e:
             logger.error(f"Error creating incremental backup: {e}")
             return None
-    
-    def _find_changed_files(self, source_dir: str, 
+
+    def _find_changed_files(self, source_dir: str,
                             base_backup: str = None) -> List[str]:
-        """Find files that have changed since last backup."""
-        changed_files = []
-        
+        """Find files that have changed since last backup, excluding volatile trees."""
+        changed_files: List[str] = []
+
         try:
-            # Get last backup checksums
-            last_checksums = {}
-            
+            last_checksums: Dict[str, str] = {}
+
             if base_backup and os.path.exists(base_backup):
                 with zipfile.ZipFile(base_backup, 'r') as z:
                     if "CHECKSUM_MANIFEST.txt" in z.namelist():
@@ -1083,28 +1174,25 @@ class BackupManager:
                             if ': ' in line:
                                 path, checksum = line.split(': ', 1)
                                 last_checksums[path] = checksum
-            
-            # Compare current files with last backup
-            for root, dirs, files in os.walk(source_dir):
-                if BACKUP_DIR in root:
-                    continue
-                
-                for filename in files:
-                    file_path = os.path.join(root, filename)
+
+            files_to_check, skipped = _collect_backup_files(source_dir)
+            if skipped:
+                logger.debug("Incremental backup skipped volatile paths: %s", dict(list(skipped.items())[:20]))
+
+            for file_path in files_to_check:
+                try:
                     arcname = os.path.relpath(file_path, start=source_dir)
-                    
-                    # Check if file is new or modified
                     current_checksum = calculate_checksum(file_path)
-                    
-                    if arcname not in last_checksums or \
-                       last_checksums[arcname] != current_checksum:
+                    if arcname not in last_checksums or last_checksums[arcname] != current_checksum:
                         changed_files.append(file_path)
-        
+                except Exception as exc:
+                    logger.warning(f"Incremental backup skipped unreadable file {file_path}: {exc}")
+
         except Exception as e:
             logger.error(f"Error finding changed files: {e}")
-        
+
         return changed_files
-    
+
     def restore_backup(self, backup_path: str, 
                        destination: str = None,
                        verify_checksum: bool = True) -> bool:
@@ -1890,23 +1978,29 @@ def restore_backup(zip_path):
 def start_backup_monitor(interval=3600):
     """
     Legacy function: Start automatic backup monitoring.
-    Maintained for backward compatibility.
+
+    Runtime optimization policy: disabled unless explicitly enabled with
+    SARAH_BACKUP_MONITOR_ENABLED=1. Backups are heavy disk writers and should
+    not run silently on an NVMe-only host.
     """
+    if str(os.getenv("SARAH_BACKUP_MONITOR_ENABLED", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+        logger.info("Backup monitor skipped by optimized runtime policy (SARAH_BACKUP_MONITOR_ENABLED not enabled).")
+        return None
     try:
         from SarahMemoryGlobals import run_async
-        
+
         def backup_loop():
             while True:
                 try:
                     create_full_backup()
-                    time.sleep(interval)
+                    time.sleep(max(3600, int(interval or 3600)))
                 except Exception as e:
                     logger.error(f"Error in backup monitor loop: {e}")
-                    time.sleep(60)  # Wait before retrying
-        
+                    time.sleep(300)
+
         run_async(backup_loop)
         logger.info(f"Backup monitor started (interval: {interval}s)")
-    
+
     except Exception as e:
         logger.error(f"Could not start backup monitor: {e}")
 

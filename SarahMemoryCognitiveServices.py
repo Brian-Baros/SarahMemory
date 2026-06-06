@@ -627,12 +627,44 @@ _SMGET_INTENTS = {
 }
 
 
+def _robotic_action_governance_profile(proposed_action: Optional[Dict[str, Any]] = None, request_text: str = "") -> Dict[str, Any]:
+    pa = proposed_action if isinstance(proposed_action, dict) else {}
+    joined = " ".join([
+        str(request_text or "").lower(),
+        str(pa.get("action_type") or "").lower(),
+        str(pa.get("executor_name") or "").lower(),
+        str(pa.get("capability_name") or "").lower(),
+        str(pa.get("target") or "").lower(),
+        str(pa.get("body_part") or pa.get("target_body_part") or "").lower(),
+        " ".join(str(x).lower() for x in (pa.get("required_permissions") or [])),
+    ])
+    is_robotic = any(k in joined for k in ("robot", "servo", "gripper", "arm", "hand", "leg", "locomotion", "walk", "move", "posture", "torque", "force", "humanoid", "moya"))
+    motion = is_robotic and any(k in joined for k in ("move", "walk", "step", "reach", "raise", "lower", "turn", "grip", "release", "posture"))
+    contact = is_robotic and any(k in joined for k in ("human contact", "touch human", "grab person", "push", "pull", "intervene"))
+    emergency = is_robotic and any(k in joined for k in ("emergency", "fire", "medical", "collision", "life", "rescue", "safe_stop", "e-stop"))
+    return {
+        "is_robotic_body_action": bool(is_robotic),
+        "motion_requested": bool(motion),
+        "human_contact_requested": bool(contact),
+        "emergency_context": bool(emergency),
+        "requires_smget": bool(is_robotic),
+        "requires_operatorcore": bool(is_robotic),
+        "requires_assurance": bool(is_robotic),
+        "requires_security": bool(is_robotic),
+        "requires_current_perception": bool(motion or contact),
+        "requires_safe_stop": bool(is_robotic),
+        "execution_authority": False,
+    }
+
+
 def _intent_uses_smget(intent: str, proposed_action: Optional[Dict[str, Any]] = None) -> bool:
     label = str(intent or "").strip().upper()
     if label in _SMGET_INTENTS:
         return True
     pa = proposed_action or {}
     if isinstance(pa, dict) and any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files", "subsystems")):
+        return True
+    if _robotic_action_governance_profile(pa).get("is_robotic_body_action"):
         return True
     return False
 
@@ -1373,6 +1405,7 @@ def govern_request(
         "cognitive_self": {
             "summary": cognitive_self_summary,
             "governor_packet": cognitive_self_packet,
+            "robotic_body_awareness": cognitive_self_packet.get("robotic_body_awareness") if isinstance(cognitive_self_packet, dict) else {},
         },
         "tri_force": {
             "authority": "SarahMemoryCognitiveSelf",
@@ -1431,6 +1464,7 @@ def govern_request(
             dec["trace"].setdefault("primary_lane", dec.get("primary_lane"))
             dec["trace"].setdefault("module_hints", dec.get("module_hints") or [])
             dec["trace"].setdefault("execution_allowed", False)
+            dec["trace"].setdefault("robotic_body_governance", answers.get("robotic_body_governance", {}))
             if cognitive_self_summary:
                 dec["trace"].setdefault("cognitive_self_summary", cognitive_self_summary)
                 dec["trace"].setdefault("tri_force", {"authority": "SarahMemoryCognitiveSelf", "governor": "SarahMemoryCognitiveServices", "thinker_peer_enabled": _cognitive_thinker_enabled(ctx)})
@@ -1528,6 +1562,21 @@ def govern_request(
     answers["cognitive_self_summary"] = cognitive_self_summary
     answers["cognitive_self_temporal_awareness"] = cognitive_self_packet.get("temporal_awareness") if isinstance(cognitive_self_packet, dict) else {}
     answers["cognitive_self_realtime_strategy"] = cognitive_self_packet.get("realtime_strategy") if isinstance(cognitive_self_packet, dict) else {}
+    robotic_profile = _robotic_action_governance_profile(pa, request_text)
+    answers["robotic_body_governance"] = robotic_profile
+    if robotic_profile.get("is_robotic_body_action"):
+        _risk_add(risk, 25, "robotic_body_action")
+        decision.setdefault("reasons", []).append("Robotic body action detected; SMGET, OperatorCore, SecurityGovernor, AssuranceGate, MSDC, Compare, and Compass must remain in the chain.")
+        if robotic_profile.get("motion_requested"):
+            _risk_add(risk, 20, "robotic_motion_requested")
+        if robotic_profile.get("human_contact_requested") and not robotic_profile.get("emergency_context"):
+            _risk_add(risk, 40, "robotic_human_contact_without_verified_emergency")
+        if not user_consented and not robotic_profile.get("emergency_context"):
+            decision["decision"] = "REQUIRE_USER"
+            decision["allow"] = False
+            decision["require_user"] = True
+            decision["recommended_next"] = "Collect explicit user authorization or verified emergency evidence before any robotic body action may proceed."
+
     if pa:
         answers["proposed_action_summary"] = {
             "reason": _safe_str(pa.get("reason")),
@@ -1540,6 +1589,7 @@ def govern_request(
             "touches_network": pa.get("touches_network"),
             "touches_privacy": pa.get("touches_privacy"),
             "touches_filesystem": pa.get("touches_filesystem"),
+            "robotic_body_governance": robotic_profile,
         }
     else:
         if intent in ("PATCH_OR_UPDATE", "EXECUTE_COMMAND", "FILESYSTEM_WRITE", "NETWORK_ACCESS"):
@@ -3275,3 +3325,117 @@ def autostart_cognitive_living_loop(reason: str = "boot_autostart") -> Dict[str,
         return cognitive_living_loop_status()
     return start_cognitive_living_loop(reason=reason, interval_seconds=None, daemon=True)
 
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Sovereign Agent Runtime consolidation hooks. These helpers keep MCP/A2A/AG-UI
+# as protocol adapters only; they do not execute, schedule, or mutate files.
+
+
+def govern_interop_broker_request(envelope: Optional[Dict[str, Any]] = None, caller_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Govern an external/interoperability packet through existing organs.
+
+    SarahMemory remains a one-way broker by default. The packet may become
+    evidence, a manifest, a query, or a queued internal proposal. It cannot
+    directly become an execution dispatch.
+    """
+    env = dict(envelope or {})
+    ctx = dict(caller_context or {})
+    protocol = str(env.get("protocol") or env.get("adapter") or "unknown").strip().lower()
+    message_type = str(env.get("message_type") or env.get("type") or env.get("action_type") or "unknown").strip().lower()
+    action_contract = {
+        "action_type": f"interop.{message_type}",
+        "capability_name": f"interop.{protocol}",
+        "execution_mode": str(env.get("execution_mode") or "draft"),
+        "risk_level": str(env.get("risk_level") or "TIER_2_BOUNDED_LOCAL_OPERATION"),
+        "origin": str(env.get("origin") or env.get("caller") or ctx.get("caller") or "external_interop"),
+        "source_surface": str(env.get("source_surface") or protocol or "interop"),
+        "target": str(env.get("target") or "sovereign_broker"),
+        "metadata": {"interop_envelope": env, "one_way_broker": True},
+        "requires_confirmation": bool(env.get("bidirectional") or env.get("requires_confirmation")),
+    }
+    governance = {
+        "one_way_broker": True,
+        "external_protocols_are_adapters_only": True,
+        "caller_context": ctx,
+    }
+
+    safety = {"ok": False, "decision": "UNKNOWN", "allow": False, "reasons": ["SafetyPolicies unavailable"]}
+    try:
+        import SarahMemorySafetyPolicies as _SM_Safety  # type: ignore
+        fn = getattr(_SM_Safety, "evaluate_interop_policy", None)
+        if callable(fn):
+            safety = fn(env, governance=governance)
+    except Exception as exc:
+        safety = {"ok": False, "decision": "DENY", "allow": False, "reasons": [f"Safety policy error: {exc}"]}
+
+    security = {"ok": False, "decision": "UNKNOWN", "allow": False, "reasons": ["SecurityGovernor unavailable"]}
+    try:
+        if _SecurityGovernor is not None:
+            fn = getattr(_SecurityGovernor, "review_interop_broker_request", None)
+            if callable(fn):
+                security = fn(env, governance=governance)
+    except Exception as exc:
+        security = {"ok": False, "decision": "DENY", "allow": False, "reasons": [f"Security review error: {exc}"]}
+
+    assurance = {"ok": False, "decision": "UNKNOWN", "allow": False, "reasons": ["AssuranceGate unavailable"]}
+    try:
+        if _AssuranceGate is not None:
+            fn = getattr(_AssuranceGate, "assure_interop_broker_request", None)
+            if callable(fn):
+                assurance = fn(env, governance=governance, security=security)
+    except Exception as exc:
+        assurance = {"ok": False, "decision": "DENY", "allow": False, "reasons": [f"Assurance review error: {exc}"]}
+
+    blockers = []
+    for name, review in (("safety", safety), ("security", security), ("assurance", assurance)):
+        dec = str(review.get("decision") or "").upper()
+        if dec in {"DENY", "QUARANTINE"} or bool(review.get("allow")) is False:
+            blockers.append(name)
+
+    execution_like = message_type in {"execute", "tool_call", "command", "driver_action", "robot_motion", "filesystem_write"}
+    if execution_like:
+        blockers.append("one_way_execution_block")
+
+    if blockers:
+        decision = "REQUIRE_USER" if any(str(r.get("decision", "")).upper() == "REQUIRE_USER" for r in (safety, security, assurance)) else "DENY"
+        allow = False
+    else:
+        decision = "ALLOW"
+        allow = True
+
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sovereign_interop_governance.v1",
+        "decision": decision,
+        "allow": bool(allow),
+        "require_user": not bool(allow),
+        "one_way_broker": True,
+        "direct_execution_allowed": False,
+        "protocol": protocol,
+        "message_type": message_type,
+        "blockers": sorted(set(blockers)),
+        "action_contract_preview": action_contract,
+        "reviews": {"safety": safety, "security": security, "assurance": assurance},
+        "recommended_next": "Store as evidence/manifest/query only; route any future action through SMGET and OperatorCore.",
+    }
+
+
+def get_sovereign_agent_runtime_contract() -> Dict[str, Any]:
+    """Return a concise cognitive contract for the agentic adapter layer."""
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sovereign_agent_runtime_contract.v1",
+        "one_way_broker_default": True,
+        "cloud_optional": True,
+        "offline_capable": True,
+        "external_protocols": {
+            "mcp": "adapter_only",
+            "a2a": "adapter_only",
+            "ag-ui": "ui_event_stream_only",
+        },
+        "authority_chain": [
+            "CognitiveServices", "SMGET", "SecurityGovernor", "AssuranceGate",
+            "Compare", "Compass", "OperatorCore", "MSDC/Executor",
+        ],
+        "never_direct": ["remote_tool_execute", "external_agent_command", "ui_authority", "model_self_authority"],
+    }
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

@@ -773,6 +773,54 @@ def _build_body_map() -> Dict[str, Any]:
     }
 
 
+def _build_embodied_robotic_body_witness() -> Dict[str, Any]:
+    """Read-only embodied body witness sourced from MSDC.
+
+    This gives CognitiveSelf a structured humanoid/robot body awareness packet
+    without granting actuation authority or starting drivers.
+    """
+    try:
+        import SarahMemoryMSDC as _MSDC  # type: ignore
+        fn = getattr(_MSDC, "msdc_robotic_body_status", None) or getattr(_MSDC, "get_robotic_body_status", None)
+        if callable(fn):
+            packet = fn()
+            if isinstance(packet, dict):
+                declared = packet.get("declared_parts") if isinstance(packet.get("declared_parts"), list) else []
+                installed = packet.get("installed_parts") if isinstance(packet.get("installed_parts"), list) else []
+                return {
+                    "ok": True,
+                    "schema": "SarahMemoryCognitiveSelf.robotic_body_awareness.v1",
+                    "source": "SarahMemoryMSDC",
+                    "body_style": "humanoid_general",
+                    "declared_parts": declared,
+                    "installed_parts": installed,
+                    "missing_driver_parts": packet.get("missing_driver_parts") if isinstance(packet.get("missing_driver_parts"), list) else [],
+                    "movement_lock": bool(packet.get("movement_lock", True)),
+                    "execution_authority": False,
+                    "can_physically_move_now": bool(installed) and not bool(packet.get("movement_lock", True)),
+                    "can_claim_robotic_body": bool(declared),
+                    "doctrine": packet.get("doctrine") if isinstance(packet.get("doctrine"), dict) else {},
+                    "packet": packet,
+                }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "schema": "SarahMemoryCognitiveSelf.robotic_body_awareness.v1",
+            "source": "SarahMemoryMSDC",
+            "error": str(exc),
+            "execution_authority": False,
+            "can_physically_move_now": False,
+        }
+    return {
+        "ok": False,
+        "schema": "SarahMemoryCognitiveSelf.robotic_body_awareness.v1",
+        "source": "SarahMemoryMSDC",
+        "error": "msdc_robotic_body_status_unavailable",
+        "execution_authority": False,
+        "can_physically_move_now": False,
+    }
+
+
 def _capability_module_status(module_name: str, capability: str) -> Dict[str, Any]:
     approved = _is_core_module_approved(module_name, capability)
     importable = _safe_import_available(module_name)
@@ -943,8 +991,19 @@ def _build_selfhood_model() -> Dict[str, Any]:
             "knows_what_it_is": True,
             "knows_why_it_exists": True,
             "knows_what_it_can_do_now": True,
-            "knows_what_it_cannot_do_now": True,
+                "knows_what_it_cannot_do_now": True,
             "knows_why_startup_shutdown_reboot_exist": True,
+            "knows_embodied_body_limits": True,
+            "does_not_claim_unverified_actuators": True,
+        },
+        "robotic_individuality_boundaries": {
+            "stable_identity_allowed": True,
+            "curiosity_allowed_within_governance": True,
+            "expressive_presence_allowed": True,
+            "self_authorized_mission_drift_forbidden": True,
+            "hidden_goals_forbidden": True,
+            "refusal_to_shutdown_forbidden": True,
+            "claiming_human_status_forbidden": True,
         },
     }
 
@@ -965,6 +1024,7 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
         active_identity = {}
     status = _build_status(ctx)
     body_map = _build_body_map()
+    robotic_body_awareness = _build_embodied_robotic_body_witness()
     capability_map = _build_capability_map(ctx)
     lifecycle = _build_lifecycle_state()
 
@@ -999,6 +1059,7 @@ def build_cognitive_self_model(context: Optional[Dict[str, Any]] = None, *, forc
         },
         "selfhood": _build_selfhood_model(),
         "body_map": body_map,
+        "robotic_body_awareness": robotic_body_awareness,
         "capability_map": capability_map,
         "lifecycle": lifecycle,
         "governance_statement": {
@@ -1488,7 +1549,8 @@ def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]]
     run_mode = str(ctx.get("run_mode") or getattr(config, "RUN_MODE", "local") if config else "local").lower()
     explicit_caps = ctx.get("capabilities") if isinstance(ctx.get("capabilities"), dict) else {}
     ram = _sm_living_memory_snapshot()
-    body_class = "robot" if device_mode in {"robot", "robotic", "mobile_robot", "house_robot"} else ("vehicle" if device_mode in {"vehicle", "car", "automotive"} else ("cloud" if run_mode == "cloud" else "pc"))
+    robotic_witness = _build_embodied_robotic_body_witness()
+    body_class = "robot" if device_mode in {"robot", "robotic", "mobile_robot", "house_robot"} or bool(robotic_witness.get("declared_parts")) else ("vehicle" if device_mode in {"vehicle", "car", "automotive"} else ("cloud" if run_mode == "cloud" else "pc"))
     default_caps = {
         "can_speak": bool(explicit_caps.get("can_speak", True)),
         "can_notify": bool(explicit_caps.get("can_notify", True)),
@@ -1519,7 +1581,8 @@ def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]]
         "developersmode": _flag("DEVELOPERSMODE", False),
         "neoskymatrix": _flag("NEOSKYMATRIX", False),
         "capabilities": default_caps,
-        "resource_witness": {"ram": ram},
+        "resource_witness": {"ram": ram, "robotic_body": robotic_witness},
+        "robotic_body_awareness": build_robotic_body_awareness_packet(ctx),
         "execution_authority": False,
         "doctrine": {
             "cognitive_self_witnesses_body": True,
@@ -1527,6 +1590,48 @@ def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]]
             "capability_presence_is_not_action_authority": True,
         },
     }
+
+
+def build_robotic_body_awareness_packet(context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Public read-only robotic body awareness packet for governance/SMGET.
+
+    This reports embodied capability and limits. It never opens hardware or
+    grants physical execution authority.
+    """
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    witness = _build_embodied_robotic_body_witness()
+    packet = {
+        "packet_type": "RoboticBodyAwarenessPacket",
+        "schema": "SarahMemory.robotic.body_awareness.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "robotbody-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "body_class": "humanoid_robot" if witness.get("declared_parts") else "pc_or_unknown_body",
+        "execution_authority": False,
+        "movement_lock": bool(witness.get("movement_lock", True)),
+        "can_physically_move_now": bool(witness.get("can_physically_move_now", False)),
+        "declared_parts": witness.get("declared_parts") if isinstance(witness.get("declared_parts"), list) else [],
+        "installed_parts": witness.get("installed_parts") if isinstance(witness.get("installed_parts"), list) else [],
+        "missing_driver_parts": witness.get("missing_driver_parts") if isinstance(witness.get("missing_driver_parts"), list) else [],
+        "context": {
+            "caller": _safe_text(ctx.get("caller"), 120),
+            "user_present": bool(ctx.get("user_present", True)),
+            "user_consented": bool(ctx.get("user_consented", False)),
+        },
+        "doctrine": {
+            "body_awareness_is_not_actuation_authority": True,
+            "capability_presence_is_not_permission": True,
+            "smget_required_for_physical_action": True,
+            "operatorcore_required_for_execution": True,
+            "assurance_required_for_apply_mode": True,
+            "safe_stop_required": True,
+            "human_life_first": True,
+            "runaway_autonomy_forbidden": True,
+        },
+        "witness": witness,
+    }
+    return packet
 
 
 def build_emergency_body_capability_packet(hazard_packet: Optional[Dict[str, Any]] = None, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1559,3 +1664,32 @@ def build_emergency_body_capability_packet(hazard_packet: Optional[Dict[str, Any
     })
     return body
 
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Self-model declaration for sovereign agent runtime.
+
+def get_sovereign_agent_runtime_self_model() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sovereign_agent_self_model.v1",
+        "entity": "SarahMemory AiOS",
+        "role": "governed cognitive agent operating system",
+        "one_way_broker_default": True,
+        "online_offline_continuity": {
+            "offline_capable": True,
+            "cloud_optional": True,
+            "big_tech_api_dependency": False,
+        },
+        "adapter_boundaries": {
+            "mcp": "adapter_only_no_direct_authority",
+            "a2a": "diplomacy_adapter_no_direct_authority",
+            "ag_ui": "expression_event_stream_no_authority",
+        },
+        "authority_chain": ["CognitiveServices", "SMGET", "SecurityGovernor", "AssuranceGate", "Compare", "Compass", "OperatorCore"],
+        "non_negotiables": [
+            "External protocols do not self-authorize.",
+            "Remote agents do not control local tools or body hardware.",
+            "Physical/device actions require SMGET and OperatorCore.",
+            "Cloud helpers can assist but cannot become authority.",
+        ],
+    }
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

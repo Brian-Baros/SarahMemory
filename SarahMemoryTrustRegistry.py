@@ -989,3 +989,134 @@ def trust_subject_for_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) 
         "capability_grant": [],
         "execution_authority": False,
     }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Capability/skill manifest layer. Declaration is not grant. Signed/hashed
+# manifests are evaluated into quarantine/approved states but never executed here.
+
+@dataclass
+class SkillManifest:
+    skill_id: str
+    name: str
+    version: str = "0.0.0"
+    author: str = "unknown"
+    permissions: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    risk_tier: str = "TIER_2_BOUNDED_LOCAL_OPERATION"
+    offline_capable: bool = True
+    network_required: bool = False
+    rollback_required: bool = True
+    one_way_broker_only: bool = True
+    sha256: str = ""
+    signature: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SkillManifest":
+        d = dict(data or {})
+        return cls(
+            skill_id=str(d.get("skill_id") or d.get("id") or "").strip(),
+            name=str(d.get("name") or d.get("skill_id") or "Unnamed Skill").strip(),
+            version=str(d.get("version") or "0.0.0"),
+            author=str(d.get("author") or d.get("publisher") or "unknown"),
+            permissions=list(d.get("permissions") or []),
+            capabilities=list(d.get("capabilities") or []),
+            risk_tier=str(d.get("risk_tier") or "TIER_2_BOUNDED_LOCAL_OPERATION"),
+            offline_capable=bool(d.get("offline_capable", True)),
+            network_required=bool(d.get("network_required", False)),
+            rollback_required=bool(d.get("rollback_required", True)),
+            one_way_broker_only=bool(d.get("one_way_broker_only", True)),
+            sha256=str(d.get("sha256") or ""),
+            signature=str(d.get("signature") or ""),
+            metadata=dict(d.get("metadata") or {}),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class CapabilityGrant:
+    capability_name: str
+    subject_id: str
+    grant_state: str = "declared_only"
+    allowed_modes: List[str] = field(default_factory=lambda: ["simulate", "draft"])
+    requires_smget: bool = True
+    requires_assurance: bool = True
+    expires_ts: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class CapabilityRegistry:
+    """In-process capability registry for signed skills and adapter manifests.
+
+    This class is deliberately conservative: it can validate and summarize, but
+    it does not activate a skill, import a module, or grant execution authority.
+    """
+
+    def __init__(self) -> None:
+        self._manifests: Dict[str, SkillManifest] = {}
+        self._grants: Dict[str, CapabilityGrant] = {}
+
+    def validate_manifest(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        sm = SkillManifest.from_dict(manifest)
+        reasons: List[str] = []
+        status = "QUARANTINED"
+        if not sm.skill_id:
+            reasons.append("missing_skill_id")
+        if not sm.permissions:
+            reasons.append("no_permissions_declared")
+        if sm.network_required and sm.offline_capable:
+            reasons.append("network_required_conflicts_with_offline_capable")
+        if sm.risk_tier in {"TIER_3_PRIVILEGED_SYSTEM", "TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE"} and not sm.signature:
+            reasons.append("high_risk_unsigned")
+        if not reasons:
+            status = "DECLARED_VALID_NOT_GRANTED"
+            reasons.append("Manifest structurally valid; execution grant still requires SMGET/Security/Assurance.")
+        return {"ok": status != "QUARANTINED", "status": status, "manifest": sm.to_dict(), "reasons": reasons}
+
+    def register_manifest(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        review = self.validate_manifest(manifest)
+        sm = SkillManifest.from_dict(manifest)
+        if sm.skill_id:
+            self._manifests[sm.skill_id] = sm
+        review["registered"] = bool(sm.skill_id)
+        return review
+
+    def declare_capability(self, subject_id: str, capability_name: str, **metadata: Any) -> Dict[str, Any]:
+        grant = CapabilityGrant(
+            capability_name=str(capability_name or ""),
+            subject_id=str(subject_id or "unknown"),
+            grant_state="declared_only",
+            metadata=dict(metadata or {}),
+        )
+        key = f"{grant.subject_id}::{grant.capability_name}"
+        self._grants[key] = grant
+        return {"ok": True, "grant": grant.to_dict(), "execution_authority": False}
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "schema": "SarahMemory.capability_registry.v1",
+            "manifests": {k: v.to_dict() for k, v in self._manifests.items()},
+            "grants": {k: v.to_dict() for k, v in self._grants.items()},
+            "doctrine": "Declaration is not grant; execution authority remains SMGET-governed.",
+        }
+
+
+_CAPABILITY_REGISTRY = CapabilityRegistry()
+
+
+def review_skill_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    return _CAPABILITY_REGISTRY.register_manifest(manifest or {})
+
+
+def declare_capability(subject_id: str, capability_name: str, **metadata: Any) -> Dict[str, Any]:
+    return _CAPABILITY_REGISTRY.declare_capability(subject_id, capability_name, **metadata)
+
+
+def get_capability_registry_snapshot() -> Dict[str, Any]:
+    return _CAPABILITY_REGISTRY.snapshot()
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

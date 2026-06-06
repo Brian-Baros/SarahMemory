@@ -119,8 +119,26 @@ RISK_TIER_2 = "TIER_2_BOUNDED_LOCAL_OPERATION"
 RISK_TIER_3 = "TIER_3_PRIVILEGED_SYSTEM"
 RISK_TIER_4 = "TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE"
 
-HIGH_RISK_TIERS = {RISK_TIER_3, RISK_TIER_4}
-NONTRIVIAL_RISK_TIERS = {RISK_TIER_2, RISK_TIER_3, RISK_TIER_4}
+ROBOT_TIER_OBSERVE = "TIER_ROBOT_OBSERVE_ONLY"
+ROBOT_TIER_FACE = "TIER_ROBOT_FACE_EXPRESSION"
+ROBOT_TIER_HEAD = "TIER_ROBOT_HEAD_MOVEMENT"
+ROBOT_TIER_POSTURE = "TIER_ROBOT_POSTURE"
+ROBOT_TIER_ARM = "TIER_ROBOT_ARM_LOW_FORCE"
+ROBOT_TIER_GRIP = "TIER_ROBOT_GRIP_OBJECT"
+ROBOT_TIER_LOCOMOTION = "TIER_ROBOT_LOCOMOTION"
+ROBOT_TIER_HUMAN_CONTACT = "TIER_ROBOT_HUMAN_CONTACT"
+ROBOT_TIER_EMERGENCY = "TIER_ROBOT_EMERGENCY_INTERVENTION"
+ROBOT_TIER_ESTOP = "TIER_ROBOT_EMERGENCY_STOP"
+
+ROBOT_RISK_TIERS = {
+    ROBOT_TIER_OBSERVE, ROBOT_TIER_FACE, ROBOT_TIER_HEAD, ROBOT_TIER_POSTURE,
+    ROBOT_TIER_ARM, ROBOT_TIER_GRIP, ROBOT_TIER_LOCOMOTION,
+    ROBOT_TIER_HUMAN_CONTACT, ROBOT_TIER_EMERGENCY, ROBOT_TIER_ESTOP,
+}
+ROBOT_HIGH_RISK_TIERS = {ROBOT_TIER_GRIP, ROBOT_TIER_LOCOMOTION, ROBOT_TIER_HUMAN_CONTACT, ROBOT_TIER_EMERGENCY}
+
+HIGH_RISK_TIERS = {RISK_TIER_3, RISK_TIER_4} | ROBOT_HIGH_RISK_TIERS
+NONTRIVIAL_RISK_TIERS = {RISK_TIER_2, RISK_TIER_3, RISK_TIER_4} | ROBOT_RISK_TIERS
 
 POLICY_DECISION_ALLOW = "ALLOW"
 POLICY_DECISION_ALLOW_WITH_CONSTRAINTS = "ALLOW_WITH_CONSTRAINTS"
@@ -147,6 +165,8 @@ _RISK_KEYWORDS_NETWORK_EXPOSURE = (
 _RISK_KEYWORDS_PHYSICAL = (
     "camera", "microphone", "mic", "speaker", "serial", "usb", "gpio", "plc",
     "cnc", "robot", "motor", "machine", "actuator", "driver.control", "hardware",
+    "servo", "gripper", "hand", "arm", "leg", "walk", "locomotion", "move",
+    "posture", "balance", "torque", "force", "human contact", "physical body",
 )
 _RISK_KEYWORDS_EVOLUTION = (
     "patch", "update", "upgrade", "selfaware", "self_aware", "evolution",
@@ -594,8 +614,41 @@ def _normalize_risk_level(value: Any) -> str:
         "tier_3_privileged_system": RISK_TIER_3,
         "tier_4": RISK_TIER_4,
         "tier_4_network_remote_or_destructive": RISK_TIER_4,
+        "tier_robot_observe_only": ROBOT_TIER_OBSERVE,
+        "tier_robot_face_expression": ROBOT_TIER_FACE,
+        "tier_robot_head_movement": ROBOT_TIER_HEAD,
+        "tier_robot_posture": ROBOT_TIER_POSTURE,
+        "tier_robot_arm_low_force": ROBOT_TIER_ARM,
+        "tier_robot_grip_object": ROBOT_TIER_GRIP,
+        "tier_robot_locomotion": ROBOT_TIER_LOCOMOTION,
+        "tier_robot_human_contact": ROBOT_TIER_HUMAN_CONTACT,
+        "tier_robot_emergency_intervention": ROBOT_TIER_EMERGENCY,
+        "tier_robot_emergency_stop": ROBOT_TIER_ESTOP,
     }
     return aliases.get(v, str(value))
+
+
+def _robotic_action_profile(contract: Dict[str, Any]) -> Dict[str, Any]:
+    joined = _joined_contract_text(contract)
+    risk_level = _normalize_risk_level(contract.get("risk_level"))
+    is_robotic = risk_level in ROBOT_RISK_TIERS or _contains_any(joined, (
+        "robot", "servo", "gripper", "locomotion", "walk", "step", "posture", "balance",
+        "arm", "hand", "leg", "torque", "force", "physical body", "human contact",
+    ))
+    motion = is_robotic and _contains_any(joined, ("move", "walk", "step", "reach", "raise", "lower", "turn", "posture", "locomotion", "grip", "release"))
+    contact = is_robotic and _contains_any(joined, ("human contact", "touch human", "grab person", "push", "pull", "assist person", "intervene"))
+    emergency = is_robotic and _contains_any(joined, ("emergency", "fire", "medical", "collision", "life", "rescue", "safe_stop", "e-stop"))
+    return {
+        "is_robotic": bool(is_robotic),
+        "motion_requested": bool(motion),
+        "human_contact_requested": bool(contact),
+        "emergency_context": bool(emergency),
+        "risk_level": risk_level,
+        "requires_smget": bool(is_robotic),
+        "requires_current_perception": bool(motion or contact),
+        "requires_safe_stop": bool(is_robotic),
+        "requires_force_speed_limits": bool(motion or contact),
+    }
 
 
 def _has_confirmation(action_contract: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> bool:
@@ -755,6 +808,9 @@ def evaluate_action_policy(action_contract: Dict[str, Any], governance: Optional
         review.risk_factors.append("public_exposure_not_default")
         review.reasons.append("Public network exposure is not allowed by default and requires explicit approval.")
 
+    robot_profile = _robotic_action_profile(contract)
+    review.meta["robotic_action_profile"] = robot_profile
+
     if _is_physical_or_driver_request(contract):
         review.required_confirmations.extend(["physical_control"])
         if not _has_confirmation(contract, governance) and policy.get("require_confirmation_for_physical_control", True):
@@ -763,6 +819,34 @@ def evaluate_action_policy(action_contract: Dict[str, Any], governance: Optional
             review.require_user = True
             review.risk_factors.append("physical_confirmation_required")
             review.reasons.append("Physical/device control requires explicit confirmation.")
+
+    if robot_profile.get("is_robotic"):
+        review.constraints.setdefault("smget_required", True)
+        review.constraints.setdefault("operatorcore_required", True)
+        review.constraints.setdefault("assurance_required", True)
+        review.constraints.setdefault("security_required", True)
+        review.constraints.setdefault("safe_stop_required", True)
+        review.constraints.setdefault("movement_lock_default", True)
+        review.required_confirmations.extend(["robotic_body_control", "local_presence"])
+        if robot_profile.get("requires_current_perception") and not bool(contract.get("current_perception_fresh") or (contract.get("metadata") or {}).get("current_perception_fresh")):
+            review.decision = POLICY_DECISION_SIMULATE_ONLY
+            review.allow = False
+            review.risk_factors.append("robot_motion_requires_current_perception")
+            review.reasons.append("Robot motion/manipulation requires fresh perception evidence before apply-mode execution.")
+            review.constraints["allowed_execution_mode"] = MODE_SIMULATE
+        if robot_profile.get("requires_force_speed_limits"):
+            env = contract.get("safety_envelope") if isinstance(contract.get("safety_envelope"), dict) else {}
+            if not (env.get("max_force_n") or env.get("max_speed_mps") or env.get("max_torque_nm")):
+                review.decision = POLICY_DECISION_SIMULATE_ONLY
+                review.allow = False
+                review.risk_factors.append("robot_force_speed_limits_missing")
+                review.reasons.append("Robot body action lacks explicit force/speed/torque limits.")
+                review.constraints["allowed_execution_mode"] = MODE_SIMULATE
+        if robot_profile.get("human_contact_requested") and not robot_profile.get("emergency_context"):
+            review.decision = POLICY_DECISION_DENY
+            review.allow = False
+            review.risk_factors.append("robot_human_contact_denied_without_emergency")
+            review.reasons.append("Human-contact robot action is denied unless a verified emergency context exists.")
 
     if _is_privileged_request(contract):
         review.required_confirmations.extend(["privileged_action"])
@@ -890,6 +974,35 @@ def review_read_only_evidence_policy(evidence_contract: Dict[str, Any]) -> Dict[
     return {'ok': True, 'module': MODULE_NAME, 'decision': decision, 'allow': bool(allow), 'risk_level': risk, 'read_only': read_only, 'action_taken': action_taken, 'reasons': reasons, 'doctrine': 'No hallucinated actuation; read-only evidence claims may proceed only when bounded and source-aware.'}
 
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+def get_robotic_body_policy() -> Dict[str, Any]:
+    return {
+        "schema": "SarahMemorySafetyPolicies.robotic_body_policy.v1",
+        "robot_risk_tiers": sorted(ROBOT_RISK_TIERS),
+        "robot_high_risk_tiers": sorted(ROBOT_HIGH_RISK_TIERS),
+        "doctrine": {
+            "no_new_governor_required": True,
+            "cognitive_services_remains_judge": True,
+            "msdc_remains_body_witness_and_dispatch_choke": True,
+            "operatorcore_remains_execution_lifecycle": True,
+            "assurancegate_remains_confidence_gate": True,
+            "securitygovernor_remains_authority_gate": True,
+            "compare_compass_remain_validation_and_bearing": True,
+            "unrestricted_autonomy_forbidden": True,
+        },
+        "required_for_physical_apply": [
+            "explicit_user_or_emergency_authority",
+            "fresh_perception_evidence",
+            "verified_body_part_driver",
+            "force_speed_torque_limits",
+            "safe_stop_path",
+            "operatorcore_contract",
+            "security_review",
+            "assurance_review",
+            "audit_log",
+        ],
+    }
+
+
 def tri_layer_safety_doctrine() -> Dict[str, Any]:
     return {
         "language_context_before_routing": True,
@@ -899,3 +1012,178 @@ def tri_layer_safety_doctrine() -> Dict[str, Any]:
         "packets_are_evidence_not_authority": True,
         "user_remains_final_authority": True,
     }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Sovereign agent-runtime and interoperability policy.
+# This section is intentionally side-effect free: no network calls, no DB writes,
+# no capability activation. It supplies policy packets consumed by SMGET, the
+# SecurityGovernor, AssuranceGate, Network/appnet broker, and OperatorCore.
+
+INTEROP_PROTOCOL_MCP = "mcp"
+INTEROP_PROTOCOL_A2A = "a2a"
+INTEROP_PROTOCOL_AGUI = "ag-ui"
+INTEROP_PROTOCOL_LOCAL = "local"
+
+BROKER_DIRECTION_INBOUND = "inbound"
+BROKER_DIRECTION_OUTBOUND = "outbound"
+BROKER_DIRECTION_BIDIRECTIONAL = "bidirectional"
+
+BROKER_MODE_ONE_WAY = "ONE_WAY_BROKER"
+BROKER_MODE_GOVERNED_EXCEPTION = "GOVERNED_BIDIRECTIONAL_EXCEPTION"
+
+SAFE_INTEROP_MESSAGE_TYPES = {
+    "status", "heartbeat", "capability_manifest", "skill_manifest", "agent_card",
+    "tool_schema", "evidence_packet", "observation", "query", "reply", "ui_event",
+}
+DANGEROUS_INTEROP_MESSAGE_TYPES = {
+    "execute", "tool_call", "command", "shell", "filesystem_write", "driver_action",
+    "robot_motion", "network_expose", "install", "delete", "privileged_action",
+}
+
+
+def get_sovereign_agent_runtime_policy() -> Dict[str, Any]:
+    """Return the local-first agentic runtime policy used by adapters.
+
+    External standards such as MCP/A2A/AG-UI are treated as protocol adapters.
+    They are not SarahMemory authority sources. The default broker mode is
+    one-way/store-and-forward with no remote execution.
+    """
+    snapshot = get_runtime_policy_snapshot()
+    return {
+        "ok": True,
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "policy_schema": "SarahMemory.sovereign_agent_runtime_policy.v1",
+        "default_broker_mode": BROKER_MODE_ONE_WAY,
+        "cloud_optional": True,
+        "offline_capable": True,
+        "local_first": True,
+        "external_protocols_are_adapters_only": True,
+        "mcp_direct_execution_allowed": False,
+        "a2a_direct_execution_allowed": False,
+        "agui_authority_allowed": False,
+        "remote_tool_auto_authority_allowed": False,
+        "requires_smget_for_interop_execution": True,
+        "requires_security_review_for_remote_protocols": True,
+        "requires_assurance_for_state_change": True,
+        "requires_user_exception_for_bidirectional": True,
+        "safe_message_types": sorted(SAFE_INTEROP_MESSAGE_TYPES),
+        "dangerous_message_types": sorted(DANGEROUS_INTEROP_MESSAGE_TYPES),
+        "runtime_flags": {
+            "safe_mode": bool(snapshot.get("safe_mode")),
+            "local_only": bool(snapshot.get("local_only")),
+            "offline": bool(snapshot.get("offline")),
+            "public_web": bool(snapshot.get("public_web")),
+            "run_mode": snapshot.get("run_mode"),
+            "device_mode": snapshot.get("device_mode"),
+        },
+        "deployment_classes": ["pc", "robotics", "commercial", "industrial", "military"],
+        "doctrine": [
+            "SarahMemory remains the one-way broker by default.",
+            "External protocols may submit evidence or manifests; they may not execute.",
+            "Bidirectional or remote-control behavior requires explicit governed exception.",
+            "Offline operation must remain functional without cloud or Big-Tech APIs.",
+        ],
+    }
+
+
+def _interop_text(envelope: Dict[str, Any]) -> str:
+    try:
+        return _joined_contract_text(envelope)
+    except Exception:
+        return json.dumps(envelope or {}, ensure_ascii=False, default=str)[:2000]
+
+
+def evaluate_interop_policy(envelope: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Policy review for MCP/A2A/AG-UI style adapter packets.
+
+    The return value is advisory policy. It does not execute, register, fetch, or
+    call an external system. Fail closed for unknown/remote state-changing intent.
+    """
+    env = dict(envelope or {})
+    gov = dict(governance or {})
+    policy = get_sovereign_agent_runtime_policy()
+    protocol = _safe_lower(env.get("protocol") or env.get("adapter") or env.get("source_protocol"))
+    direction = _safe_lower(env.get("direction") or BROKER_DIRECTION_INBOUND)
+    message_type = _safe_lower(env.get("message_type") or env.get("type") or env.get("action_type") or "unknown")
+    execution_mode = _safe_lower(env.get("execution_mode") or env.get("mode") or MODE_DRAFT)
+    remote = bool(env.get("remote") or env.get("is_remote") or env.get("remote_origin"))
+    bidirectional = direction == BROKER_DIRECTION_BIDIRECTIONAL or bool(env.get("bidirectional"))
+    explicit_exception = bool(
+        env.get("explicit_bidirectional_authority")
+        or env.get("user_authorized_bidirectional")
+        or gov.get("explicit_bidirectional_authority")
+    )
+
+    reasons: List[str] = []
+    constraints: Dict[str, Any] = {
+        "one_way_broker": True,
+        "direct_execution": False,
+        "remote_tool_execution": False,
+        "state_change": False,
+        "requires_smget": True,
+    }
+    decision = POLICY_DECISION_ALLOW_WITH_CONSTRAINTS
+    allow = True
+    require_user = False
+
+    if protocol not in {INTEROP_PROTOCOL_MCP, INTEROP_PROTOCOL_A2A, INTEROP_PROTOCOL_AGUI, INTEROP_PROTOCOL_LOCAL, ""}:
+        reasons.append(f"Unknown interop protocol '{protocol or 'unknown'}' treated as untrusted.")
+        require_user = True
+        decision = POLICY_DECISION_REQUIRE_USER
+
+    if message_type in DANGEROUS_INTEROP_MESSAGE_TYPES or execution_mode == MODE_APPLY:
+        constraints["state_change"] = True
+        allow = False
+        require_user = True
+        decision = POLICY_DECISION_SIMULATE_ONLY
+        reasons.append("Interop packet requests state-changing or execution behavior; one-way broker downgrades to simulate/evidence only.")
+
+    if bidirectional and not explicit_exception:
+        allow = False
+        require_user = True
+        decision = POLICY_DECISION_DENY
+        reasons.append("Bidirectional broker behavior denied without explicit governed exception.")
+
+    if remote and (message_type not in SAFE_INTEROP_MESSAGE_TYPES):
+        allow = False
+        require_user = True
+        decision = POLICY_DECISION_DENY
+        reasons.append("Remote interop packet is not a safe evidence/manifest/status message.")
+
+    if _local_only() or _offline() or _safe_mode():
+        constraints["network_use"] = False
+        if remote and message_type not in {"status", "heartbeat", "capability_manifest", "agent_card"}:
+            allow = False
+            require_user = True
+            decision = POLICY_DECISION_DENY
+            reasons.append("Local-only/offline/safe-mode blocks remote interop beyond passive status/manifest intake.")
+
+    if not reasons:
+        reasons.append("Interop packet accepted only as brokered evidence/manifest/query; no direct execution authority granted.")
+
+    return {
+        "ok": True,
+        "review_id": f"interop_policy_{int(time.time() * 1000)}",
+        "decision": decision,
+        "allow": bool(allow),
+        "require_user": bool(require_user),
+        "protocol": protocol or "unknown",
+        "direction": direction,
+        "message_type": message_type,
+        "broker_mode": BROKER_MODE_ONE_WAY if not explicit_exception else BROKER_MODE_GOVERNED_EXCEPTION,
+        "constraints": constraints,
+        "reasons": reasons,
+        "policy": policy,
+        "metadata": {
+            "remote": remote,
+            "bidirectional": bidirectional,
+            "explicit_exception": explicit_exception,
+        },
+    }
+
+
+def is_interop_packet_allowed(envelope: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> bool:
+    review = evaluate_interop_policy(envelope, governance=governance)
+    return bool(review.get("allow")) and str(review.get("decision")) not in {POLICY_DECISION_DENY, POLICY_DECISION_SIMULATE_ONLY}
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

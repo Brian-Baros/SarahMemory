@@ -74,6 +74,7 @@ except Exception as e:
 import os
 import atexit
 import logging
+from logging.handlers import RotatingFileHandler
 import datetime
 import sys
 import subprocess
@@ -170,22 +171,40 @@ warnings.filterwarnings("ignore", category=RuntimeWarning, module="pydub.utils")
 # =============================================================================
 log_filename = os.path.join(config.LOGS_DIR, "System.log")
 
-# Centralized logging: write INFO+ to System.log, only show ERROR+ on console
+# Centralized logging: write bounded INFO+ to System.log, only show ERROR+ on console.
+# Runtime optimization: avoid unbounded System.log growth on the C: NVMe drive.
 root = logging.getLogger()
-# Clear existing handlers to prevent duplicate logs
 for h in list(root.handlers):
     root.removeHandler(h)
-root.setLevel(logging.DEBUG)
+
+try:
+    _debug_mode = bool(getattr(config, "DEBUG_MODE", False))
+except Exception:
+    _debug_mode = False
+
+root.setLevel(logging.DEBUG if _debug_mode else logging.INFO)
 os.makedirs(config.LOGS_DIR, exist_ok=True)
 
-# File handler with enhanced formatting
-file_handler = logging.FileHandler(log_filename, encoding="utf-8")
-file_handler.setLevel(logging.DEBUG)
+try:
+    _max_log_bytes = int(getattr(config, "SM_SYSTEM_LOG_MAX_BYTES", int(os.getenv("SARAH_SYSTEM_LOG_MAX_BYTES", "5242880"))) or 5242880)
+except Exception:
+    _max_log_bytes = 5242880
+try:
+    _backup_count = int(getattr(config, "SM_SYSTEM_LOG_BACKUP_COUNT", int(os.getenv("SARAH_SYSTEM_LOG_BACKUP_COUNT", "5"))) or 5)
+except Exception:
+    _backup_count = 5
+
+file_handler = RotatingFileHandler(
+    log_filename,
+    maxBytes=max(262144, _max_log_bytes),
+    backupCount=max(1, _backup_count),
+    encoding="utf-8",
+)
+file_handler.setLevel(logging.DEBUG if _debug_mode else logging.INFO)
 file_handler.setFormatter(
     logging.Formatter("%(asctime)s - v8.0 - %(levelname)s - %(name)s - %(message)s")
 )
 
-# Console handler - only errors
 console_handler = logging.StreamHandler(stream=sys.stdout)
 console_handler.setLevel(logging.ERROR)
 console_handler.setFormatter(logging.Formatter("%(levelname)s - %(message)s"))
@@ -204,6 +223,25 @@ logger = logging.getLogger("SarahMemoryMain")
 _LOCAL_API_PROCESS = None
 _MAIN_CLEANUP_STARTED = False
 _MAIN_CLEANUP_LOCK = threading.RLock()
+
+
+def _sm_boot_flag(name: str, default: bool = False) -> bool:
+    """Read a boot/runtime flag from SarahMemoryGlobals or environment."""
+    try:
+        value = getattr(config, name, default)
+    except Exception:
+        value = default
+    try:
+        env_val = os.getenv(name, None)
+        if env_val is None:
+            env_val = os.getenv(f"SARAH_{name}", None)
+        if env_val is not None and str(env_val).strip() != "":
+            value = env_val
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
 
 
 def _sm_data_dir() -> str:
@@ -679,14 +717,18 @@ try:
     # without blocking startup. This ensures the latest code updates are applied
     # when available.
     print("[v8.0][PHASE 1] Checking for system updates...")
-    try:
-        from SarahMemoryUpdater import run_updater
-        run_updater(invoked_by_main=True)
-        logger.info("[v8.0][PHASE 1] Update check completed successfully")
-    except Exception as e:
-        # Never block boot if anything goes wrong here
-        print(f"[v8.0][Updater] Skipped due to error: {e}")
-        logger.warning(f"[v8.0][Updater] Skipped due to error: {e}")
+    if _sm_boot_flag("BOOT_RUN_UPDATER_ON_STARTUP", False):
+        try:
+            from SarahMemoryUpdater import run_updater
+            run_updater(invoked_by_main=True)
+            logger.info("[v8.0][PHASE 1] Update check completed successfully")
+        except Exception as e:
+            # Never block boot if anything goes wrong here
+            print(f"[v8.0][Updater] Skipped due to error: {e}")
+            logger.warning(f"[v8.0][Updater] Skipped due to error: {e}")
+    else:
+        print("[v8.0][Updater] Skipped (BOOT_RUN_UPDATER_ON_STARTUP disabled for optimized boot).")
+        logger.info("[v8.0][PHASE 1] Updater skipped by optimized runtime policy.")
 
     # ==========================================================================
     # PHASE 2: CORE MODULE INITIALIZATION

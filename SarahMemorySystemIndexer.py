@@ -41,7 +41,10 @@ import time
 import datetime
 import hashlib
 import psutil
-import winreg
+try:
+    import winreg
+except Exception:
+    winreg = None  # type: ignore
 import traceback
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -65,11 +68,24 @@ FILE_EXTENSIONS = {
     '.py', '.ipynb', '.js', '.html', '.css', '.php',
     '.asp', '.bat', '.sh', '.sql'
 }
-REGISTRY_ROOTS = [
+REGISTRY_ROOTS = [] if winreg is None else [
     (winreg.HKEY_CURRENT_USER, "Software"),
     (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE")
 ]
 MAX_REGISTRY_DEPTH = 3
+
+# Runtime optimization: filesystem indexing is explicit/user-run only, but when
+# invoked it must not hash caches, logs, models, virtual environments, or massive
+# binary/model files by default.
+EXCLUDED_DIR_NAMES = {
+    "__pycache__", ".git", ".venv", "venv", "env", "site-packages", "node_modules",
+    "logs", "cache", "tmp", "temp", "backups", "backup", "archive",
+    "models", "model_cache", ".cache", "dist", "build"
+}
+DEFAULT_MAX_HASH_BYTES = int(os.getenv("SARAH_INDEXER_MAX_HASH_BYTES", str(64 * 1024 * 1024)) or (64 * 1024 * 1024))
+DEFAULT_MAX_FILES_PER_SCAN = int(os.getenv("SARAH_INDEXER_MAX_FILES_PER_SCAN", "5000") or 5000)
+BATCH_COMMIT_SIZE = int(os.getenv("SARAH_INDEXER_BATCH_COMMIT", "100") or 100)
+
 # Dynamically derive the path to the system index database using SarahMemoryGlobals when available.
 if config:
     DB_PATH = os.path.join(config.DATASETS_DIR, "system_index.db")
@@ -103,6 +119,8 @@ def init_db():
             indexed_at TEXT
         )
     """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_file_index_path_hash ON file_index(file_path, sha256)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_registry_index_key ON registry_index(root_key, key_path, value_name)")
     conn.commit()
     conn.close()
 
@@ -140,9 +158,45 @@ def insert_registry_record(root_key, key_path, value_name, value_data, value_typ
     conn.commit()
     conn.close()
 
-def compute_sha256(filepath, block_size=65536):
+def _path_is_excluded(path: str) -> bool:
+    try:
+        parts = [p.lower() for p in os.path.normpath(path).split(os.sep) if p]
+        return any(p in EXCLUDED_DIR_NAMES for p in parts)
+    except Exception:
+        return False
+
+
+def _prune_dirs_in_place(root: str, dirs: list) -> None:
+    try:
+        dirs[:] = [d for d in dirs if d.lower() not in EXCLUDED_DIR_NAMES and not _path_is_excluded(os.path.join(root, d))]
+    except Exception:
+        pass
+
+
+def _file_metadata_already_indexed(cur, file_path: str, modified: str, file_size: int) -> bool:
+    try:
+        cur.execute("SELECT id FROM file_index WHERE file_path=? AND modified=? AND file_size=? LIMIT 1", (file_path, modified, int(file_size)))
+        return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _insert_file_record_cur(cur, file_path, file_type, file_size, modified, sha256):
+    cur.execute("""
+        INSERT INTO file_index
+        (file_path, file_type, file_size, modified, sha256, indexed_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (file_path, file_type, int(file_size), modified, sha256, datetime.datetime.utcnow().isoformat()))
+
+def compute_sha256(filepath, block_size=65536, max_bytes=None):
     sha256 = hashlib.sha256()
     try:
+        if max_bytes is None:
+            max_bytes = DEFAULT_MAX_HASH_BYTES
+        size = os.path.getsize(filepath)
+        if max_bytes and size > int(max_bytes):
+            # Avoid reading multi-GB archives/models during interactive runtime.
+            return f"SKIPPED_SIZE_{size}"
         with open(filepath, 'rb') as f:
             for block in iter(lambda: f.read(block_size), b""):
                 sha256.update(block)
@@ -160,31 +214,65 @@ def file_already_indexed(file_path, sha256):
     return exists is not None
 
 def scan_filesystem_gui(selected_drive, selected_ext):
-    print("[Indexer] Starting GUI-based file scan...")
+    print("[Indexer] Starting optimized GUI-based file scan...")
     drives = [selected_drive] if selected_drive != "ALL" else [part.mountpoint for part in psutil.disk_partitions(all=False) if "cdrom" not in part.opts and part.fstype]
     extensions = [selected_ext] if selected_ext != "ALL" else list(FILE_EXTENSIONS)
+    processed = 0
+    skipped = 0
+    inserted = 0
 
-    for mount_point in drives:
-        for root, dirs, files in os.walk(mount_point):
-            for file in files:
-                ext = os.path.splitext(file)[1].lower()
-                if ext in extensions:
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
+    cur = conn.cursor()
+    try:
+        for mount_point in drives:
+            if processed >= DEFAULT_MAX_FILES_PER_SCAN:
+                break
+            for root, dirs, files in os.walk(mount_point):
+                _prune_dirs_in_place(root, dirs)
+                if _path_is_excluded(root):
+                    continue
+                for file in files:
+                    if processed >= DEFAULT_MAX_FILES_PER_SCAN:
+                        break
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext not in extensions:
+                        continue
                     full_path = os.path.join(root, file)
+                    if _path_is_excluded(full_path):
+                        skipped += 1
+                        continue
                     try:
                         stat = os.stat(full_path)
-                        file_size = stat.st_size
+                        file_size = int(stat.st_size)
                         modified = datetime.datetime.fromtimestamp(stat.st_mtime).isoformat()
+                        processed += 1
+                        if _file_metadata_already_indexed(cur, full_path, modified, file_size):
+                            skipped += 1
+                            continue
                         file_hash = compute_sha256(full_path)
+                        if not file_hash:
+                            skipped += 1
+                            continue
                         if not file_already_indexed(full_path, file_hash):
-                            insert_file_record(full_path, ext, file_size, modified, file_hash)
-                            print(f"[File Indexed] {full_path}")
+                            _insert_file_record_cur(cur, full_path, ext, file_size, modified, file_hash)
+                            inserted += 1
+                            if inserted % max(1, BATCH_COMMIT_SIZE) == 0:
+                                conn.commit()
                         else:
-                            print(f"[Skipped] Already indexed: {full_path}")
+                            skipped += 1
                     except Exception as e:
                         print(f"[Error] Indexing file {full_path}: {e}")
-    print("[Indexer] File system scan complete.")
+                if processed >= DEFAULT_MAX_FILES_PER_SCAN:
+                    break
+        conn.commit()
+    finally:
+        conn.close()
+    print(f"[Indexer] File system scan complete. processed={processed}, inserted={inserted}, skipped={skipped}, cap={DEFAULT_MAX_FILES_PER_SCAN}")
 
 def scan_registry():
+    if winreg is None:
+        print("[Indexer] Registry scan skipped: winreg unavailable on this platform.")
+        return
     print("[Indexer] Starting registry scan...")
     # Scan original registry hives
     for root, base_path in REGISTRY_ROOTS:

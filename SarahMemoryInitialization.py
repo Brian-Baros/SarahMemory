@@ -66,7 +66,7 @@ import SarahMemoryGlobals as SarahMemoryGlobals
 # LOGGER SETUP - v8.0 Enhanced
 # =============================================================================
 logger = logging.getLogger("SarahMemoryInitialization")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG if str(os.getenv("SARAH_DEBUG_MODE", os.getenv("DEBUG_MODE", "0"))).strip().lower() in ("1", "true", "yes", "on") else logging.INFO)
 handler = logging.NullHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - v8.0 - %(levelname)s - %(message)s'))
 if not logger.hasHandlers():
@@ -190,9 +190,36 @@ def _cfg_bool(name, default=False):
     return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled")
 
 
-def _should_defer_dataset_embedding() -> bool:
-    """Fast-boot default: defer dataset embedding unless explicitly forced on."""
-    return not _cfg_bool("BOOT_EAGER_DATASET_EMBEDDING", False)
+def _boot_dataset_embedding_mode() -> str:
+    """Return manual|background|eager for boot dataset embedding.
+
+    Runtime optimization default is manual: do not scan/embed datasets during
+    normal boot. This protects the active C: NVMe drive and keeps the UI fast.
+    Users/developers can re-enable old behavior with either:
+      SARAH_BOOT_DATASET_EMBEDDING_MODE=background
+      SARAH_BOOT_DATASET_EMBEDDING_MODE=eager
+      SARAH_BOOT_EAGER_DATASET_EMBEDDING=true
+    """
+    try:
+        value = getattr(SarahMemoryGlobals, "BOOT_DATASET_EMBEDDING_MODE", None)
+    except Exception:
+        value = None
+    try:
+        env_val = os.getenv("SARAH_BOOT_DATASET_EMBEDDING_MODE") or os.getenv("BOOT_DATASET_EMBEDDING_MODE")
+        if env_val:
+            value = env_val
+    except Exception:
+        pass
+    if _cfg_bool("BOOT_EAGER_DATASET_EMBEDDING", False):
+        return "eager"
+    mode = str(value or "manual").strip().lower()
+    if mode in ("off", "skip", "disabled", "manual", "none", "false", "0"):
+        return "manual"
+    if mode in ("background", "defer", "deferred"):
+        return "background"
+    if mode in ("eager", "boot", "startup", "true", "1"):
+        return "eager"
+    return "manual"
 
 
 def _background_thread_alive(task_name: str) -> bool:
@@ -283,14 +310,18 @@ def run_initial_checks():
         print_phase_banner(2, "DATASET VECTORING & INDEXING")
         
         try:
-            if callable(run_vectoring_with_status_bars):
-                print_status_line("Vector Database", "⏳", "Loading datasets and rebuilding indexes...")
-                run_vectoring_with_status_bars(force=True)
-                print_status_line("Vector Database", "✓", "All datasets indexed successfully")
-                logger.info("[v8.0][VECTOR] Dataset vectoring completed successfully")
+            if _cfg_bool("BOOT_RUN_VECTORING_ON_STARTUP", False):
+                if callable(run_vectoring_with_status_bars):
+                    print_status_line("Vector Database", "⏳", "Checking datasets/indexes without forced rebuild...")
+                    run_vectoring_with_status_bars(force=_cfg_bool("BOOT_FORCE_VECTOR_REBUILD", False))
+                    print_status_line("Vector Database", "✓", "Vector check completed")
+                    logger.info("[v8.0][VECTOR] Dataset vector check completed")
+                else:
+                    print_status_line("Vector Database", "⚠", "Vectoring function unavailable")
+                    logger.warning("[v8.0][VECTOR] run_vectoring_with_status_bars not available")
             else:
-                print_status_line("Vector Database", "⚠", "Vectoring function unavailable")
-                logger.warning("[v8.0][VECTOR] run_vectoring_with_status_bars not available")
+                print_status_line("Vector Database", "⏭", "Skipped during boot (manual/on-demand indexing policy)")
+                logger.info("[v8.0][VECTOR] Boot vectoring skipped by optimized runtime policy.")
         
         except Exception as e:
             print_status_line("Vector Database", "✗", f"Vectoring failed: {e}")
@@ -412,7 +443,13 @@ def run_initial_checks():
         except Exception:
             SAFE_MODE = False
 
-        if not SAFE_MODE:
+        if SAFE_MODE:
+            print_status_line("Weekly Backup", "⏭", "Skipped (SAFE_MODE enabled)")
+            logger.info("[v8.0][BACKUP] SAFE_MODE enabled; weekly backup skipped.")
+        elif not _cfg_bool("BOOT_WEEKLY_BACKUP_CHECK", False):
+            print_status_line("Weekly Backup", "⏭", "Skipped during boot (manual/scheduled backup policy)")
+            logger.info("[v8.0][BACKUP] Boot backup check skipped by optimized runtime policy.")
+        else:
             try:
                 from SarahMemoryFilesystem import create_weekly_backup
                 create_weekly_backup()
@@ -422,30 +459,31 @@ def run_initial_checks():
             except Exception as backup_err:
                 print_status_line("Weekly Backup", "⚠", "Check failed (non-critical)")
                 logger.warning(f"[v8.0][BACKUP] Could not verify weekly backup: {backup_err}")
-        else:
-            print_status_line("Weekly Backup", "⏭", "Skipped (SAFE_MODE enabled)")
-            logger.info("[v8.0][BACKUP] SAFE_MODE enabled; weekly backup skipped.")
 
         # =====================================================================
         # CORE-BRAIN DIAGNOSTICS
         # =====================================================================
         print_phase_banner(6, "CORE-BRAIN DIAGNOSTICS")
         
-        try:
-            from SarahMemoryDiagnostics import run_personality_core_diagnostics
-            
+        if not _cfg_bool("BOOT_PERSONALITY_DIAGNOSTICS", False):
+            print_status_line("Personality Core", "⏭", "Skipped during boot (diagnostics available on demand)")
+            logger.info("[v8.0][DIAG] Personality diagnostics skipped by optimized runtime policy.")
+        else:
             try:
-                run_personality_core_diagnostics()
-                print_status_line("Personality Core", "✓", "Diagnostics passed")
-                logger.info("[v8.0][DIAG] Core-Brain diagnostics complete.")
+                from SarahMemoryDiagnostics import run_personality_core_diagnostics
+                
+                try:
+                    run_personality_core_diagnostics()
+                    print_status_line("Personality Core", "✓", "Diagnostics passed")
+                    logger.info("[v8.0][DIAG] Core-Brain diagnostics complete.")
+                
+                except Exception as dierr:
+                    print_status_line("Personality Core", "⚠", "Diagnostics failed (non-critical)")
+                    logger.warning(f"[v8.0][DIAG] Personality diagnostics failed: {dierr}")
             
-            except Exception as dierr:
-                print_status_line("Personality Core", "⚠", "Diagnostics failed (non-critical)")
-                logger.warning(f"[v8.0][DIAG] Personality diagnostics failed: {dierr}")
-        
-        except Exception as imerr:
-            print_status_line("Personality Core", "⚠", "Module unavailable (non-critical)")
-            logger.warning(f"[v8.0][DIAG] Diagnostics module import failed: {imerr}")
+            except Exception as imerr:
+                print_status_line("Personality Core", "⚠", "Module unavailable (non-critical)")
+                logger.warning(f"[v8.0][DIAG] Diagnostics module import failed: {imerr}")
 
         # =====================================================================
         # LOCAL DATASET EMBEDDING (Skip in SAFE_MODE / defer by default)
@@ -453,13 +491,20 @@ def run_initial_checks():
         print_phase_banner(7, "LOCAL DATASET EMBEDDING")
 
         try:
-            if not SAFE_MODE:
+            if SAFE_MODE:
+                print_status_line("Dataset Embedding", "⏭", "Skipped (SAFE_MODE enabled)")
+                logger.info("[v8.0][EMBED] SAFE_MODE enabled; skipping local dataset embedding.")
+            else:
+                mode = _boot_dataset_embedding_mode()
                 try:
-                    if _should_defer_dataset_embedding():
+                    if mode == "manual":
+                        print_status_line("Dataset Embedding", "⏭", "Skipped during boot (manual/on-demand embedding policy)")
+                        logger.info("[v8.0][EMBED] Boot dataset embedding skipped by optimized runtime policy.")
+                    elif mode == "background":
                         started = _start_background_dataset_embedding()
                         if started:
-                            print_status_line("Dataset Embedding", "⏭", "Deferred to background for fast-boot optimization")
-                            logger.info("[v8.0][EMBED] Local dataset embedding deferred to background for fast boot")
+                            print_status_line("Dataset Embedding", "⏭", "Deferred to background by explicit policy")
+                            logger.info("[v8.0][EMBED] Local dataset embedding deferred to background by explicit policy")
                         else:
                             print_status_line("Dataset Embedding", "⏭", "Background embedding already running")
                     else:
@@ -469,9 +514,6 @@ def run_initial_checks():
                 except Exception as emb_err:
                     print_status_line("Dataset Embedding", "⚠", "Embedding failed (non-critical)")
                     logger.warning(f"[v8.0][EMBED] Local dataset embedding failed: {emb_err}")
-            else:
-                print_status_line("Dataset Embedding", "⏭", "Skipped (SAFE_MODE enabled)")
-                logger.info("[v8.0][EMBED] SAFE_MODE enabled; skipping local dataset embedding.")
 
         except Exception:
             pass
@@ -1041,14 +1083,16 @@ signal.signal(signal.SIGINT, signal_handler)
 # =============================================================================
 # MODULE INITIALIZATION
 # =============================================================================
-# Call schema validation on import
-try:
-    ensure_boot_schemas()
-except Exception:
-    pass
+# Import-time work is intentionally minimal for optimized runtime.
+# Full schema checks run through run_initial_checks()/manual diagnostics unless explicitly enabled.
+if _cfg_bool("BOOT_ENSURE_SCHEMAS_ON_IMPORT", False):
+    try:
+        ensure_boot_schemas()
+    except Exception:
+        pass
 
-# Print boot indicator
-print_boot_bars('Globals→Init')
+if _cfg_bool("BOOT_PRINT_IMPORT_BARS", False):
+    print_boot_bars('Globals→Init')
 
 # =============================================================================
 # MAIN EXECUTION (when run directly)

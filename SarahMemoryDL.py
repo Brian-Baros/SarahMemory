@@ -54,6 +54,7 @@ from __future__ import annotations
 # NOTES = "Deep learning engine providing neural architectures, training infrastructure, embeddings/model management, continual learning, and performance tracking with graceful degradation."
 # --- SARAHMETA END ---
 import logging
+from logging.handlers import RotatingFileHandler
 import sqlite3
 import os
 import string
@@ -119,12 +120,17 @@ except ImportError:
 
 # Setup Enhanced Logger
 logger = logging.getLogger("SarahMemoryDL")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG if os.getenv("SARAH_DL_DEBUG", "0") in ("1", "true", "yes", "on") else logging.INFO)
 
 # Create file handler for deep learning logs
 dl_log_file = os.path.join(LOGS_DIR, "deep_learning.log")
-file_handler = logging.FileHandler(dl_log_file, encoding='utf-8')
-file_handler.setLevel(logging.DEBUG)
+file_handler = RotatingFileHandler(
+    dl_log_file,
+    maxBytes=int(os.getenv("SARAH_DL_LOG_MAX_BYTES", "1048576") or 1048576),
+    backupCount=int(os.getenv("SARAH_DL_LOG_BACKUPS", "3") or 3),
+    encoding='utf-8',
+)
+file_handler.setLevel(logging.DEBUG if os.getenv("SARAH_DL_DEBUG", "0") in ("1", "true", "yes", "on") else logging.INFO)
 
 # Create console handler
 console_handler = logging.StreamHandler()
@@ -372,8 +378,10 @@ def initialize_dl_database():
         logger.error(f"Failed to initialize DL database: {e}")
         return False
 
-# Initialize database on module load
-initialize_dl_database()
+# Optimized runtime: database schema creation is available on demand. Importing
+# SarahMemoryDL should not write to disk unless explicitly requested.
+if os.getenv("SARAH_DL_INIT_DB_ON_IMPORT", "0") in ("1", "true", "yes", "on"):
+    initialize_dl_database()
 
 # ===============================================================================
 # UTILITY FUNCTIONS

@@ -1200,3 +1200,91 @@ def validate_tri_layer_packet(packet: Dict[str, Any]) -> Dict[str, Any]:
         "allow_execution": False,
         "notes": "Packet validation only; execution still requires SMGET/OperatorCore.",
     }
+
+
+# -----------------------------------------------------------------------------
+# SM V8 Robotic Body Expansion - embodied action contract guard
+# -----------------------------------------------------------------------------
+def validate_embodied_action_contract(action_contract: Dict[str, Any], body_witness: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """GuardDog validation for robot/body action claims.
+
+    Compare confirms the proposed contract does not claim unverified body
+    capability and does not bypass SMGET/OperatorCore. It does not execute.
+    """
+    contract = action_contract if isinstance(action_contract, dict) else {}
+    witness = body_witness if isinstance(body_witness, dict) else {}
+    failures: List[str] = []
+    warnings: List[str] = []
+    joined = " ".join([
+        str(contract.get("action_type") or "").lower(),
+        str(contract.get("capability_name") or "").lower(),
+        str(contract.get("executor_name") or "").lower(),
+        str(contract.get("target") or "").lower(),
+        str(contract.get("normalized_text") or "").lower(),
+    ])
+    is_robotic = any(k in joined for k in ("robot", "servo", "gripper", "locomotion", "arm", "hand", "leg", "torque", "force", "walk", "move")) or str(contract.get("risk_level") or "").startswith("TIER_ROBOT")
+    if is_robotic:
+        if not bool(contract.get("requires_confirmation") or contract.get("confirmed") or contract.get("user_confirmed")):
+            warnings.append("robotic_action_confirmation_not_visible")
+        if str(contract.get("execution_mode") or "").lower() == "apply" and not bool(contract.get("body_part_driver_verified")):
+            failures.append("robotic_apply_claims_unverified_body_driver")
+        if str(contract.get("executor_name") or "") not in {"robotic_body_staging_executor", "emergency_instinct_executor"} and "robot" in joined:
+            warnings.append("robotic_contract_executor_not_recognized_as_robotic_staging_path")
+        if not bool(contract.get("safe_stop_available") or (contract.get("safety_envelope") or {}).get("safe_stop_required")):
+            failures.append("robotic_contract_missing_safe_stop")
+        declared = witness.get("declared_parts") if isinstance(witness.get("declared_parts"), list) else []
+        target = str(contract.get("body_part") or contract.get("target_body_part") or contract.get("target") or "").lower().replace(" ", "_")
+        if target and declared and target not in declared:
+            failures.append("target_body_part_not_declared")
+    return {
+        "ok": bool(not failures),
+        "guard": "embodied_action_contract_guarddog",
+        "is_robotic_body_action": bool(is_robotic),
+        "failures": failures,
+        "warnings": warnings,
+        "allow_execution": False,
+        "decision": "ACCEPT_STRUCTURE" if not failures else "REJECT_EMBODIED_CONTRACT",
+        "doctrine": {
+            "compare_validates_claims_not_execution": True,
+            "no_hallucinated_actuation": True,
+            "body_witness_required_for_robotic_apply": True,
+        },
+    }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# GuardDog helpers for agentic/interoperability envelopes.
+
+def validate_sovereign_agent_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    pkt = dict(packet or {})
+    message_type = str(pkt.get("message_type") or pkt.get("type") or pkt.get("action_type") or "unknown").lower()
+    execution_like = message_type in {"execute", "tool_call", "command", "driver_action", "robot_motion", "filesystem_write"}
+    reasons = []
+    passed = True
+    if execution_like:
+        passed = False
+        reasons.append("Packet is execution-like; Compare requires SMGET/OperatorCore route, not direct adapter execution.")
+    if bool(pkt.get("bidirectional")) and not bool(pkt.get("explicit_bidirectional_authority")):
+        passed = False
+        reasons.append("Bidirectional packet lacks explicit governed exception.")
+    if not reasons:
+        reasons.append("Packet is acceptable as passive evidence/manifest/query only.")
+    return {
+        "ok": True,
+        "passed": passed,
+        "decision": "PASS" if passed else "FAIL",
+        "one_way_broker": True,
+        "direct_execution_allowed": False,
+        "reasons": reasons,
+    }
+
+
+def compare_interop_envelope(envelope: Optional[Dict[str, Any]] = None, expected_protocol: str = "") -> Dict[str, Any]:
+    pkt = dict(envelope or {})
+    review = validate_sovereign_agent_packet(pkt)
+    protocol = str(pkt.get("protocol") or pkt.get("adapter") or "").lower()
+    if expected_protocol and protocol != str(expected_protocol).lower():
+        review["passed"] = False
+        review["decision"] = "FAIL"
+        review.setdefault("reasons", []).append("Protocol does not match expected adapter contract.")
+    return review
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

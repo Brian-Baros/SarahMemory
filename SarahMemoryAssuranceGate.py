@@ -617,6 +617,34 @@ def _trust_tier(security: Dict[str, Any]) -> str:
     return TRUST_TIER_UNKNOWN
 
 
+def _robotic_body_profile(action_contract: Dict[str, Any]) -> Dict[str, Any]:
+    contract = dict(action_contract or {})
+    meta = dict(contract.get("metadata") or {})
+    joined = " ".join([
+        _safe_lower(contract.get("action_type")),
+        _safe_lower(contract.get("capability_name")),
+        _safe_lower(contract.get("executor_name")),
+        _safe_lower(contract.get("target")),
+        _safe_lower(contract.get("normalized_text")),
+        " ".join(_safe_lower(x) for x in (contract.get("required_permissions") or [])),
+    ])
+    is_robotic = any(k in joined for k in ("robot", "servo", "gripper", "locomotion", "arm", "hand", "leg", "torque", "force", "human contact", "physical body")) or str(contract.get("risk_level") or "").startswith("TIER_ROBOT")
+    motion = is_robotic and any(k in joined for k in ("move", "walk", "step", "reach", "raise", "lower", "turn", "grip", "release", "posture"))
+    env = contract.get("safety_envelope") if isinstance(contract.get("safety_envelope"), dict) else {}
+    fresh = bool(contract.get("current_perception_fresh") or meta.get("current_perception_fresh"))
+    safe_stop = bool(contract.get("safe_stop_available") or meta.get("safe_stop_available") or env.get("safe_stop_required"))
+    limits = bool(env.get("max_force_n") or env.get("max_speed_mps") or env.get("max_torque_nm"))
+    driver_verified = bool(contract.get("body_part_driver_verified") or meta.get("body_part_driver_verified") or env.get("observe_only_until_driver_verified") is False)
+    return {
+        "is_robotic": bool(is_robotic),
+        "motion_requested": bool(motion),
+        "current_perception_fresh": fresh,
+        "safe_stop_available": safe_stop,
+        "force_speed_limits_present": limits,
+        "body_part_driver_verified": driver_verified,
+    }
+
+
 def _seems_hazardous(action_contract: Dict[str, Any]) -> bool:
     contract = dict(action_contract or {})
     joined = " ".join([
@@ -674,7 +702,10 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
     risk_level = str(contract.get("risk_level") or RISK_TIER_0)
 
     policy = _policy_snapshot()
+    robot_profile = _robotic_body_profile(contract)
     threshold = _threshold_for(execution_mode, risk_level)
+    if robot_profile.get("is_robotic"):
+        threshold = max(threshold, 0.72 if execution_mode != MODE_APPLY else 0.90)
     signals = _extract_confidence_signals(contract, governance, security)
     weighted_conf = _weighted_confidence(signals)
 
@@ -723,6 +754,7 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
             "rollback_score": rollback_score,
             "trust_tier": trust_tier,
             "risk_penalty": risk_penalty,
+            "robotic_body_profile": robot_profile,
         },
     )
 
@@ -768,6 +800,28 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
         review.risk_factors.append("rollback_plan_insufficient")
         review.missing_requirements.extend(rollback_missing)
         review.reasons.append("Non-trivial apply-mode action lacks rollback readiness.")
+
+    if robot_profile.get("is_robotic"):
+        review.constraints.setdefault("smget_required", True)
+        review.constraints.setdefault("operatorcore_required", True)
+        review.constraints.setdefault("security_required", True)
+        review.constraints.setdefault("safe_stop_required", True)
+        missing_robot = []
+        if robot_profile.get("motion_requested") and not robot_profile.get("current_perception_fresh"):
+            missing_robot.append("current_perception_fresh")
+        if robot_profile.get("motion_requested") and not robot_profile.get("force_speed_limits_present"):
+            missing_robot.append("force_speed_torque_limits")
+        if not robot_profile.get("safe_stop_available"):
+            missing_robot.append("safe_stop_available")
+        if not robot_profile.get("body_part_driver_verified"):
+            missing_robot.append("body_part_driver_verified")
+        if missing_robot:
+            review.decision = DECISION_SIMULATE_ONLY if execution_mode != MODE_APPLY else DECISION_DENY
+            review.allow = False
+            review.risk_factors.append("robotic_body_assurance_requirements_missing")
+            review.missing_requirements.extend(missing_robot)
+            review.reasons.append("Robotic body action lacks required embodied assurance evidence: " + ", ".join(missing_robot))
+            review.constraints["allowed_execution_mode"] = MODE_SIMULATE
 
     if _seems_hazardous(contract) and weighted_conf < 0.55:
         review.decision = DECISION_DENY
@@ -911,6 +965,10 @@ def get_assurance_profile() -> Dict[str, Any]:
             "verification_required_for_apply": True,
             "rollback_required_for_nontrivial_apply": True,
             "riskier_actions_require_stronger_assurance": True,
+            "robotic_motion_requires_fresh_perception": True,
+            "robotic_apply_requires_safe_stop": True,
+            "robotic_apply_requires_force_speed_limits": True,
+            "robotic_apply_requires_verified_body_driver": True,
             "fail_closed_on_low_assurance": True,
         },
     }
@@ -979,3 +1037,110 @@ def assure_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str
         "missing": missing,
         "execution_authority": False,
     }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Assurance checks for sovereign adapter/broker packets. No execution.
+
+
+def assure_interop_broker_request(
+    envelope: Optional[Dict[str, Any]] = None,
+    governance: Optional[Dict[str, Any]] = None,
+    security: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assure an interoperability envelope as passive broker evidence.
+
+    This function never calls MCP/A2A/AG-UI endpoints and never executes tools.
+    It only determines whether the envelope is sufficiently specified to become
+    evidence for SMGET or a queued internal request.
+    """
+    env = dict(envelope or {})
+    gov = dict(governance or {})
+    sec = dict(security or {})
+    message_type = str(env.get("message_type") or env.get("type") or env.get("action_type") or "unknown").strip().lower()
+    protocol = str(env.get("protocol") or env.get("adapter") or "unknown").strip().lower()
+    remote = bool(env.get("remote") or env.get("is_remote") or env.get("remote_origin"))
+    bidirectional = bool(env.get("bidirectional")) or str(env.get("direction") or "").lower() == "bidirectional"
+    has_payload = isinstance(env.get("payload"), dict) or bool(env.get("content") or env.get("manifest") or env.get("schema"))
+    security_allows = bool(sec.get("allow", True)) and str(sec.get("decision", "")).upper() not in {DECISION_DENY, "QUARANTINE"}
+
+    risk_level = str(env.get("risk_level") or RISK_TIER_2)
+    base = 0.55
+    reasons: List[str] = []
+    missing: List[str] = []
+    if protocol in {"mcp", "a2a", "ag-ui", "local"}:
+        base += 0.10
+    else:
+        missing.append("recognized_protocol")
+    if message_type != "unknown":
+        base += 0.10
+    else:
+        missing.append("message_type")
+    if has_payload:
+        base += 0.10
+    else:
+        missing.append("payload_or_manifest")
+    if not remote:
+        base += 0.05
+    if not bidirectional:
+        base += 0.05
+    if security_allows:
+        base += 0.10
+    else:
+        reasons.append("SecurityGovernor did not allow broker packet as passive evidence.")
+
+    execution_like = message_type in {"execute", "tool_call", "command", "driver_action", "robot_motion", "filesystem_write"}
+    decision = DECISION_ALLOW
+    allow = True
+    require_user = False
+    if execution_like:
+        decision = DECISION_SIMULATE_ONLY
+        allow = False
+        require_user = True
+        reasons.append("Execution-like interop message cannot be assured as direct action.")
+    if bidirectional:
+        decision = DECISION_REQUIRE_USER
+        allow = False
+        require_user = True
+        reasons.append("Bidirectional interop requires explicit user/governance exception.")
+    if not security_allows:
+        decision = DECISION_DENY
+        allow = False
+        require_user = True
+    if missing:
+        decision = DECISION_REQUIRE_USER if not execution_like else decision
+        allow = False if remote else allow
+        reasons.append("Missing assurance fields: " + ", ".join(missing))
+    if not reasons:
+        reasons.append("Interop envelope is assured only for passive broker intake/evidence use.")
+
+    threshold = 0.70 if remote else 0.60
+    score = max(0.0, min(1.0, float(base)))
+    if score < threshold:
+        allow = False
+        require_user = True
+        if decision == DECISION_ALLOW:
+            decision = DECISION_REQUIRE_USER
+        reasons.append(f"Assurance score {score:.2f} below threshold {threshold:.2f}.")
+
+    return {
+        "ok": True,
+        "review_id": uuid.uuid4().hex,
+        "decision": decision,
+        "allow": bool(allow),
+        "require_user": bool(require_user),
+        "protocol": protocol,
+        "message_type": message_type,
+        "risk_level": risk_level,
+        "assurance_score": score,
+        "threshold": threshold,
+        "verification_ready": bool(has_payload and message_type != "unknown"),
+        "rollback_ready": True,
+        "missing_requirements": missing,
+        "reasons": reasons,
+        "constraints": {
+            "direct_execution_allowed": False,
+            "passive_evidence_only": True,
+            "one_way_broker": True,
+        },
+    }
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

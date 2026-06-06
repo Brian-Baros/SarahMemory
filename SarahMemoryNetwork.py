@@ -1490,3 +1490,85 @@ def get_local_node_status():
 # ====================================================================
 # END OF SarahMemoryNetwork.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Sovereign interoperability adapter. Protocol packets are converted into
+# internal evidence/proposals; no tool or command execution occurs here.
+
+class SarahMemoryInteropAdapter:
+    def __init__(self, broker_mode: str = "ONE_WAY_BROKER") -> None:
+        self.broker_mode = broker_mode
+
+    def normalize_envelope(self, packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        pkt = dict(packet or {})
+        protocol = str(pkt.get("protocol") or pkt.get("adapter") or pkt.get("source_protocol") or "unknown").lower()
+        message_type = str(pkt.get("message_type") or pkt.get("type") or pkt.get("action_type") or "unknown").lower()
+        return {
+            "schema": "SarahMemory.interop_envelope.v1",
+            "protocol": protocol,
+            "message_type": message_type,
+            "direction": str(pkt.get("direction") or "inbound").lower(),
+            "origin": str(pkt.get("origin") or pkt.get("caller") or pkt.get("sender") or "external_interop")[:160],
+            "remote": bool(pkt.get("remote") or pkt.get("is_remote") or pkt.get("remote_origin")),
+            "bidirectional": bool(pkt.get("bidirectional")),
+            "execution_mode": str(pkt.get("execution_mode") or pkt.get("mode") or "draft").lower(),
+            "payload": pkt.get("payload") if isinstance(pkt.get("payload"), dict) else {"raw": pkt.get("payload")},
+            "metadata": {"one_way_broker": True, "received_ts": time.time()},
+        }
+
+    def translate_to_internal_request(self, packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        env = self.normalize_envelope(packet)
+        dangerous = env["message_type"] in {"execute", "tool_call", "command", "filesystem_write", "driver_action", "robot_motion"}
+        return {
+            "ok": True,
+            "one_way_broker": True,
+            "direct_execution_allowed": False,
+            "translated": True,
+            "envelope": env,
+            "internal_request": {
+                "kind": "interop_evidence" if not dangerous else "interop_blocked_execution_request",
+                "protocol": env["protocol"],
+                "message_type": env["message_type"],
+                "payload": env["payload"],
+                "requires_smget": True,
+                "execution_allowed": False,
+            },
+            "reasons": ["External packet translated to SarahMemory evidence/proposal only; no execution."],
+        }
+
+
+class SarahMemoryMCPBridge(SarahMemoryInteropAdapter):
+    def normalize_envelope(self, packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        pkt = dict(packet or {})
+        pkt["protocol"] = "mcp"
+        return super().normalize_envelope(pkt)
+
+
+class SarahMemoryA2ABridge(SarahMemoryInteropAdapter):
+    def normalize_envelope(self, packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        pkt = dict(packet or {})
+        pkt["protocol"] = "a2a"
+        return super().normalize_envelope(pkt)
+
+
+_INTEROP_ADAPTER = SarahMemoryInteropAdapter()
+
+
+def translate_interop_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _INTEROP_ADAPTER.translate_to_internal_request(packet or {})
+
+
+def get_interop_broker_policy() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "schema": "SarahMemory.interop_broker_policy.v1",
+        "broker_mode": "ONE_WAY_BROKER",
+        "direct_execution_allowed": False,
+        "remote_tool_execution_allowed": False,
+        "mcp": "adapter_only",
+        "a2a": "adapter_only",
+        "ag_ui": "ui_event_stream_only",
+        "offline_capable": True,
+        "cloud_optional": True,
+    }
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

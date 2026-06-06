@@ -125,10 +125,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "hud_overlay": True
     },
     "render": {
-        "fps": 30,
-        "frame_poll_hz": 24,
-        "packet_poll_hz": 10,
-        "status_poll_hz": 1,
+        "fps": 15,
+        "frame_poll_hz": 8,
+        "packet_poll_hz": 3,
+        "status_poll_hz": 0.5,
         "filter": "mono_crimson",
         "grid": True,
         "target_brackets": True,
@@ -466,7 +466,7 @@ class HudRenderer:
         self.mirror_fullscreen = bool(mirror.get("fullscreen", False))
         self.mirror_move_window = bool(mirror.get("move_window", True))
         self.compositor = VRCompositor(cfg, state)
-        self.fps = max(5.0, min(120.0, _safe_float(render.get("fps"), 30.0)))
+        self.fps = max(5.0, min(60.0, _safe_float(render.get("fps"), 15.0)))
         self.filter_name = str(render.get("filter") or "mono_crimson").strip().lower()
         self.grid = bool(render.get("grid", True))
         self.brackets = bool(render.get("target_brackets", True))

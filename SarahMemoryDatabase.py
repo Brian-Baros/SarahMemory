@@ -54,7 +54,7 @@ from datetime import datetime as dt, timedelta
 
 # Setup logging for the database module
 logger = logging.getLogger('SarahMemoryDatabase')
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.DEBUG if bool(getattr(config, 'DEBUG_MODE', False)) else logging.INFO)
 handler = logging.NullHandler()
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler.setFormatter(formatter)
@@ -748,7 +748,7 @@ def store_answer(query, answer):
     if _sm_is_volatile_body_fact_query(query) or _sm_is_volatile_body_fact_query(answer):
         logger.info("[V10/V9C] QA cache store blocked for volatile SelfAware body fact.")
         return False
-    timestamp = datetime.datetime.now().isoformat()
+    timestamp = dt.now().isoformat()
 
     # 1) Local sqlite
     try:
@@ -807,7 +807,7 @@ def store_answer(query, answer):
 
 def store_performance_metrics(conn):
     try:
-        timestamp = datetime.datetime.now().isoformat()
+        timestamp = dt.now().isoformat()
         cpu = psutil.cpu_percent(interval=1)
         mem = psutil.virtual_memory().percent
         disk = psutil.disk_usage('/').percent
@@ -852,7 +852,7 @@ def record_qa_feedback(query, score, feedback, timestamp=None):
         return False
     try:
         if not timestamp:
-           timestamp = datetime.datetime.now().isoformat()
+           timestamp = dt.now().isoformat()
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
@@ -1251,7 +1251,7 @@ def vector_search(query_text, top_n=1):
 
         for sim, matched in top_results:
             cursor.execute("INSERT INTO search_log (query, match_text, similarity, timestamp) VALUES (?, ?, ?, ?)",
-                           (query_text, matched, float(sim), datetime.datetime.now().isoformat()))
+                           (query_text, matched, float(sim), dt.now().isoformat()))
 
         conn.commit()
         conn.close()
@@ -1287,7 +1287,7 @@ def log_ai_functions_event(event_type, details):
     try:
         conn = sqlite3.connect(os.path.join(config.DATASETS_DIR, "functions.db"))
         cursor = conn.cursor()
-        timestamp = datetime.datetime.now().isoformat()
+        timestamp = dt.now().isoformat()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS functions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1506,6 +1506,56 @@ def store_comparison_outcome(query, reply, intent, source, confidence, meta=None
     except Exception: pass
 
 
+# ---------------------------------------------------------------------------
+# Runtime anti-thrash helpers
+# ---------------------------------------------------------------------------
+def _sm_env_bool(name: str, default: bool = False) -> bool:
+    try:
+        val = os.getenv(name)
+        if val is None and 'config' in globals() and hasattr(config, name):
+            val = getattr(config, name)
+        if val is None:
+            return bool(default)
+        if isinstance(val, bool):
+            return bool(val)
+        return str(val).strip().lower() in ("1", "true", "yes", "on", "enable", "enabled")
+    except Exception:
+        return bool(default)
+
+
+def _sm_vectoring_stamp_path(datasets_dir: str) -> str:
+    try:
+        return os.path.join(datasets_dir, ".vectoring_last_run.json")
+    except Exception:
+        return os.path.join(os.getcwd(), ".vectoring_last_run.json")
+
+
+def _sm_vectoring_recent(datasets_dir: str, cooldown_seconds: float) -> bool:
+    try:
+        p = _sm_vectoring_stamp_path(datasets_dir)
+        if not os.path.exists(p):
+            return False
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f) or {}
+        last = float(data.get("ts", 0) or 0)
+        return last > 0 and (time.time() - last) < max(0.0, float(cooldown_seconds))
+    except Exception:
+        return False
+
+
+def _sm_write_vectoring_stamp(datasets_dir: str, payload: dict) -> None:
+    try:
+        p = _sm_vectoring_stamp_path(datasets_dir)
+        tmp = p + ".tmp"
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        data = dict(payload or {})
+        data["ts"] = time.time()
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
+        os.replace(tmp, p)
+    except Exception:
+        pass
+
 # === injected: Visible dataset vectoring with ASCII status bars ===
 
 def _print_progress_bar(prefix, percent):
@@ -1548,7 +1598,7 @@ Author: © 2025 Brian Lee Baros. All Rights Reserved.
 ================================================================================
 """
 
-def run_vectoring_with_status_bars(force=True):
+def run_vectoring_with_status_bars(force=False):
     """
     v8.0 ENHANCED: Enumerate *.db files in the configured datasets directory and 
     visibly vector each one with world-class visual progress indicators.
@@ -1563,7 +1613,7 @@ def run_vectoring_with_status_bars(force=True):
     - Multi-platform compatibility (Windows/Linux/macOS)
     
     Args:
-        force: If True, run even if LOCAL_DATA_ENABLED is False
+        force: If True, run even when normal boot/runtime throttles would skip it
     
     Returns:
         None
@@ -1602,11 +1652,24 @@ def run_vectoring_with_status_bars(force=True):
         print(f"  ⚠ Warning: Datasets directory not found: {datasets_dir}")
         return
     
-    # Check if local data is enabled
+    # Check if local data is enabled and whether this is an explicitly authorized
+    # vectoring window.  Normal boot must not rebuild/vector every dataset.
     local_enabled = getattr(config, "LOCAL_DATA_ENABLED", True)
     if not local_enabled and not force:
-        logging.info("[v8.0][BOOT][VECTOR] Local dataset embedding skipped - LOCAL_DATA_ENABLED is False.")
-        print("Local dataset embedding skipped (LOCAL_DATA_ENABLED is False)")
+        logging.info("[v8.0][VECTOR] Local dataset embedding skipped - LOCAL_DATA_ENABLED is False.")
+        return
+
+    manual_enabled = _sm_env_bool("BOOT_ENABLE_DATASET_VECTORING", False) or _sm_env_bool("SARAH_ENABLE_DATASET_VECTORING", False)
+    if not force and not manual_enabled:
+        logging.info("[v8.0][VECTOR] Dataset vectoring skipped by optimized runtime policy. Set BOOT_ENABLE_DATASET_VECTORING=true or call force=True to run.")
+        return
+
+    try:
+        cooldown = float(os.getenv("SARAH_VECTORING_COOLDOWN_SEC", str(getattr(config, "VECTORING_COOLDOWN_SEC", 6 * 60 * 60))))
+    except Exception:
+        cooldown = 6 * 60 * 60
+    if not force and _sm_vectoring_recent(datasets_dir, cooldown):
+        logging.info("[v8.0][VECTOR] Dataset vectoring skipped by cooldown policy (%ss).", cooldown)
         return
     
     # ==========================================================================
@@ -1640,9 +1703,18 @@ def run_vectoring_with_status_bars(force=True):
             _entries.append(_name)
     
     if _entries:
-        logging.info("[v8.0][BOOT][VECTOR] Using vectoring entry point: %s", _entries[0])
+        logging.info("[v8.0][VECTOR] Using vectoring entry point once: %s", _entries[0])
+        start_once = time.time()
+        try:
+            globals()[_entries[0]]()
+            _sm_write_vectoring_stamp(datasets_dir, {"entry_point": _entries[0], "status": "ok", "db_count": len(db_files)})
+            logging.info("[v8.0][VECTOR] Entry point completed in %.2fs", time.time() - start_once)
+        except Exception as e:
+            logging.warning("[v8.0][VECTOR] Entry point failed: %s", e)
+            _sm_write_vectoring_stamp(datasets_dir, {"entry_point": _entries[0], "status": "failed", "error": str(e), "db_count": len(db_files)})
+        return
     else:
-        logging.info("[v8.0][BOOT][VECTOR] No vectoring entry points found, using minimal processing")
+        logging.info("[v8.0][VECTOR] No vectoring entry points found; using metadata-only scan display")
     
     # ==========================================================================
     # v8.0 ENHANCED PROGRESS DISPLAY
@@ -1685,12 +1757,8 @@ def run_vectoring_with_status_bars(force=True):
                     processing_start = time.time()
                     
                     try:
-                        if _entries:
-                            # Call the first available vectoring entry point
-                            globals()[_entries[0]]()
-                        else:
-                            # Minimal processing simulation
-                            time.sleep(0.03)
+                        # Metadata-only pass. Heavy vectoring entry points run once above.
+                        time.sleep(0.01)
                         
                         # Simulate progress (since we don't have real progress from the function)
                         for step in range(0, 101, 20):
@@ -1734,10 +1802,8 @@ def run_vectoring_with_status_bars(force=True):
                 processing_start = time.time()
                 
                 try:
-                    if _entries:
-                        globals()[_entries[0]]()
-                    else:
-                        time.sleep(0.02)
+                    # Metadata-only pass. Heavy vectoring entry points run once above.
+                    time.sleep(0.005)
                     
                     processing_time = time.time() - processing_start
                     
@@ -1775,8 +1841,9 @@ def run_vectoring_with_status_bars(force=True):
     print(f"     • Total time: {total_time:.2f} seconds")
     print()
     
-    logging.info("[v8.0][BOOT][VECTOR] Dataset scan complete.")
-    logging.info("[v8.0][BOOT][VECTOR] Processed: %d, Failed: %d, Time: %.2f seconds", 
+    _sm_write_vectoring_stamp(datasets_dir, {"entry_point": "metadata_only", "status": "ok", "processed": processed_count, "failed": failed_count, "db_count": len(db_files)})
+    logging.info("[v8.0][VECTOR] Dataset metadata scan complete.")
+    logging.info("[v8.0][VECTOR] Processed: %d, Failed: %d, Time: %.2f seconds", 
                processed_count, failed_count, total_time)
 
 
@@ -1932,7 +1999,7 @@ def save_emotion_state(state: dict, fer_source: str = "unknown", notes: str = ""
         per_db = os.path.join(config.DATASETS_DIR, "personality1.db")
         with sqlite3.connect(per_db) as conn:
             cur = conn.cursor()
-            ts = datetime.datetime.now().isoformat()
+            ts = dt.now().isoformat()
             row = (ts,
                 float(state.get("joy",0)), float(state.get("anger",0)),
                 float(state.get("fear",0)), float(state.get("sadness",0)),
@@ -1970,7 +2037,7 @@ def record_intent(intent: str, confidence: float, extras: dict = None):
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute("INSERT INTO intent_logs (timestamp,intent,confidence,extras) VALUES (?,?,?,?)",
-                        (datetime.datetime.now().isoformat(), intent, float(confidence), json.dumps(extras or {})))
+                        (dt.now().isoformat(), intent, float(confidence), json.dumps(extras or {})))
             conn.commit()
     except Exception as e:
         logger.warning(f"record_intent failed: {e}")
@@ -2342,3 +2409,81 @@ def sm_get_conversation_messages(conversation_id, limit=50):
 # ====================================================================
 # END OF SarahMemoryDatabase.py v8.0.0
 # ====================================================================
+
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict
+from datetime import datetime as _sm_memory_datetime
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Structured memory lifecycle records. These builders are pure/data-only by
+# default; persistence must be explicitly performed by the existing DB layer.
+
+@dataclass
+class MemoryLifecycleRecord:
+    memory_id: str
+    fact: str
+    source: str = "unknown"
+    confidence: float = 0.0
+    created_at: str = field(default_factory=lambda: _sm_memory_datetime.now().isoformat())
+    last_confirmed: str = ""
+    retention_class: str = "standard"
+    privacy_class: str = "local_private"
+    contradiction_status: str = "unchecked"
+    user_approved: bool = False
+    rollback_id: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class MemoryDiff:
+    diff_id: str
+    memory_id: str
+    old_value: Any
+    new_value: Any
+    reason: str
+    source: str = "unknown"
+    confidence: float = 0.0
+    approval_state: str = "pending"
+    created_at: str = field(default_factory=lambda: _sm_memory_datetime.now().isoformat())
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class MemoryRetentionPolicy:
+    def classify(self, record: MemoryLifecycleRecord) -> Dict[str, Any]:
+        privacy = str(record.privacy_class or "local_private")
+        confidence = float(record.confidence or 0.0)
+        retain = confidence >= 0.50 or bool(record.user_approved)
+        if privacy in {"sensitive", "private_sensitive"} and not record.user_approved:
+            retain = False
+        return {
+            "ok": True,
+            "retain": bool(retain),
+            "requires_user_approval": privacy in {"sensitive", "private_sensitive"},
+            "write_immediately": False,
+            "batch_flush_allowed": True,
+            "reasons": ["Memory lifecycle policy is local-first and diff-based; persistence is explicit/batched."],
+        }
+
+
+def build_memory_lifecycle_record(fact: str, *, source: str = "unknown", confidence: float = 0.0, **metadata: Any) -> Dict[str, Any]:
+    rec = MemoryLifecycleRecord(
+        memory_id=hashlib.sha256((str(fact) + str(source)).encode("utf-8", errors="ignore")).hexdigest()[:32] if 'hashlib' in globals() else str(int(time.time()*1000)),
+        fact=str(fact or ""),
+        source=str(source or "unknown"),
+        confidence=max(0.0, min(1.0, float(confidence or 0.0))),
+        metadata=dict(metadata or {}),
+    )
+    policy = MemoryRetentionPolicy().classify(rec)
+    return {"ok": True, "record": rec.to_dict(), "policy": policy}
+
+
+def build_memory_diff(memory_id: str, old_value: Any, new_value: Any, reason: str = "") -> Dict[str, Any]:
+    did = hashlib.sha256((str(memory_id) + str(old_value) + str(new_value)).encode("utf-8", errors="ignore")).hexdigest()[:32] if 'hashlib' in globals() else str(int(time.time()*1000))
+    diff = MemoryDiff(diff_id=did, memory_id=str(memory_id or ""), old_value=old_value, new_value=new_value, reason=str(reason or "unspecified"))
+    return {"ok": True, "diff": diff.to_dict(), "write_immediately": False}
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

@@ -690,11 +690,63 @@ class EmergencyInstinctExecutor(BaseExecutor):
         return f"Emergency instinct action '{action_id}' did not complete ({reason})."
 
 
+class RoboticBodyStagingExecutor(BaseExecutor):
+    """Structured robotic body executor placeholder.
+
+    This executor deliberately stages/simulates embodied actions only. Real
+    actuation remains behind MSDC driver verification, SMGET authority,
+    SecurityGovernor, AssuranceGate, and current perception evidence.
+    """
+    name = "robotic_body_staging_executor"
+    capability = "robotic_body_control_staged"
+
+    def preflight_check(self, contract: ActionContract) -> Tuple[bool, Dict[str, Any]]:
+        meta = dict(contract.metadata or {})
+        safety = meta.get("safety_envelope") if isinstance(meta.get("safety_envelope"), dict) else {}
+        if contract.execution_mode == MODE_APPLY:
+            return False, {
+                "ok": False,
+                "reason": "RoboticBodyStagingExecutor cannot perform apply-mode physical actuation.",
+                "required_path": "verified MSDC robot driver + physical executor + SMGET apply authorization",
+            }
+        return True, {
+            "ok": True,
+            "reason": "robotic_body_staging_only",
+            "safety_envelope": safety,
+            "execution_authority": False,
+        }
+
+    def execute(self, contract: ActionContract) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "executed": False,
+            "simulated": True,
+            "staged": True,
+            "execution_authority": False,
+            "reason": "Robotic body action staged only. No physical actuation occurred.",
+            "body_target": contract.target,
+            "safety_envelope": (contract.metadata or {}).get("safety_envelope") if isinstance((contract.metadata or {}).get("safety_envelope"), dict) else {},
+            "required_before_apply": [
+                "verified_body_part_driver",
+                "fresh_perception_evidence",
+                "safe_stop_available",
+                "force_speed_torque_limits",
+                "security_review",
+                "assurance_review",
+                "operator_audit",
+            ],
+        }
+
+    def rollback(self, contract: ActionContract, execution_result: Dict[str, Any]) -> Dict[str, Any]:
+        return {"ok": True, "rolled_back": False, "reason": "No physical actuation occurred; rollback not required."}
+
+
 _EXECUTOR_LOCK = threading.RLock()
 _EXECUTORS: Dict[str, BaseExecutor] = {
     NoOpExecutor.name: NoOpExecutor(),
     SoftwareControlExecutor.name: SoftwareControlExecutor(),
     EmergencyInstinctExecutor.name: EmergencyInstinctExecutor(),
+    RoboticBodyStagingExecutor.name: RoboticBodyStagingExecutor(),
 }
 
 
@@ -844,8 +896,16 @@ def _infer_target(parsed_command: Optional[Dict[str, Any]], proposed_action: Opt
     return text[:120], text[:120]
 
 
+def _looks_like_robotic_action(action_type: str, primary_lane: str, target: str) -> bool:
+    joined = " ".join([str(action_type or "").lower(), str(primary_lane or "").lower(), str(target or "").lower()])
+    return any(k in joined for k in ("robot", "servo", "gripper", "arm", "hand", "leg", "locomotion", "walk", "move", "posture", "balance", "torque", "force"))
+
+
 def _infer_capability_and_executor(action_type: str, primary_lane: str, target: str, execution_mode: str) -> Tuple[str, str, List[str]]:
     permissions: List[str] = []
+    if _looks_like_robotic_action(action_type, primary_lane, target):
+        permissions = ["robotic.body.stage", "msdc.body_map.read", "safe_stop.required"]
+        return "robotic_body_control_staged", RoboticBodyStagingExecutor.name, permissions
     if action_type in {"open_app", "close_app", "maximize_window", "minimize_window", "focus_window"}:
         permissions = ["app.control.local"]
         return "software_interaction", SoftwareControlExecutor.name, permissions
@@ -864,6 +924,8 @@ def _infer_capability_and_executor(action_type: str, primary_lane: str, target: 
 
 
 def _infer_risk_level(action_type: str, primary_lane: str, execution_mode: str) -> str:
+    if _looks_like_robotic_action(action_type, primary_lane, ""):
+        return "TIER_ROBOT_OBSERVE_ONLY" if execution_mode in {MODE_SIMULATE, MODE_DRAFT} else "TIER_ROBOT_LOCOMOTION"
     if execution_mode in {MODE_SIMULATE, MODE_DRAFT}:
         return RISK_TIER_0
     if action_type in {"open_app", "close_app", "maximize_window", "minimize_window", "focus_window", "play_media"}:
@@ -884,6 +946,8 @@ def _default_preconditions(action_type: str, target: str, primary_lane: str) -> 
         checks.append("app_surface_allowed")
     if primary_lane == "network":
         checks.append("network_policy_allows")
+    if _looks_like_robotic_action(action_type, primary_lane, target):
+        checks.extend(["msdc_body_map_present", "smget_authority_required", "safe_stop_path_declared", "fresh_perception_required_before_apply"])
     if _safe_mode():
         checks.append("safe_mode_considered")
     return checks
@@ -892,6 +956,12 @@ def _default_preconditions(action_type: str, target: str, primary_lane: str) -> 
 def _default_verification_checks(action_type: str, target: str, execution_mode: str) -> List[VerificationCheck]:
     if execution_mode in {MODE_SIMULATE, MODE_DRAFT}:
         return [VerificationCheck(name="staged_only", description="Execution remained in a non-apply mode.", expected=True)]
+    if _looks_like_robotic_action(action_type, "", target):
+        return [
+            VerificationCheck(name="safe_stop_available", description="Confirm a safe-stop path exists before physical robot execution.", evidence_key="safe_stop_available", expected=True),
+            VerificationCheck(name="fresh_perception", description="Confirm current perception evidence is fresh before robot motion.", evidence_key="current_perception_fresh", expected=True),
+            VerificationCheck(name="body_driver_verified", description="Confirm target robot body-part driver is verified.", evidence_key="body_part_driver_verified", expected=True),
+        ]
     if action_type == "open_app":
         return [
             VerificationCheck(name="target_launched", description=f"Confirm that '{target}' is running or reachable.", evidence_key="running", expected=True),
@@ -906,6 +976,8 @@ def _default_verification_checks(action_type: str, target: str, execution_mode: 
 def _default_rollback_plan(action_type: str, target: str, execution_mode: str) -> List[RollbackStep]:
     if execution_mode in {MODE_SIMULATE, MODE_DRAFT}:
         return [RollbackStep(name="noop", description="No rollback required for staged-only execution.")]
+    if _looks_like_robotic_action(action_type, "", target):
+        return [RollbackStep(name="safe_stop", description="Execute physical safe-stop through MSDC if robot actuation begins.", required=True, action_ref="safe_stop")]
     if action_type == "open_app":
         return [RollbackStep(name="close_target", description=f"Attempt to close '{target}' if launch succeeds but verification fails.", required=False, action_ref="close_app")]
     return [RollbackStep(name="report_only", description="No structured rollback available; report bounded failure.", required=False)]
@@ -1593,3 +1665,81 @@ def attach_tri_layer_packets_to_meta(meta: Optional[Dict[str, Any]], tri_layer_p
         out["six_question_governance_packet"] = six_question_packet
     out["packet_metadata_is_evidence_only"] = True
     return out
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Durable workflow/checkpoint helpers. These extend OperatorCore's lifecycle but
+# do not start background workers or execute tasks.
+
+WORKFLOW_PROPOSED = "PROPOSED"
+WORKFLOW_PLANNED = "PLANNED"
+WORKFLOW_WAITING_USER = "WAITING_USER"
+WORKFLOW_APPROVED = "APPROVED"
+WORKFLOW_EXECUTING = "EXECUTING"
+WORKFLOW_VERIFYING = "VERIFYING"
+WORKFLOW_COMPLETED = "COMPLETED"
+WORKFLOW_FAILED = "FAILED"
+WORKFLOW_ROLLED_BACK = "ROLLED_BACK"
+WORKFLOW_CANCELLED = "CANCELLED"
+
+_ALLOWED_WORKFLOW_TRANSITIONS = {
+    WORKFLOW_PROPOSED: {WORKFLOW_PLANNED, WORKFLOW_WAITING_USER, WORKFLOW_CANCELLED},
+    WORKFLOW_PLANNED: {WORKFLOW_WAITING_USER, WORKFLOW_APPROVED, WORKFLOW_CANCELLED},
+    WORKFLOW_WAITING_USER: {WORKFLOW_APPROVED, WORKFLOW_CANCELLED},
+    WORKFLOW_APPROVED: {WORKFLOW_EXECUTING, WORKFLOW_CANCELLED},
+    WORKFLOW_EXECUTING: {WORKFLOW_VERIFYING, WORKFLOW_FAILED, WORKFLOW_ROLLED_BACK},
+    WORKFLOW_VERIFYING: {WORKFLOW_COMPLETED, WORKFLOW_FAILED, WORKFLOW_ROLLED_BACK},
+    WORKFLOW_FAILED: {WORKFLOW_ROLLED_BACK, WORKFLOW_CANCELLED},
+    WORKFLOW_ROLLED_BACK: {WORKFLOW_REPORTED if 'WORKFLOW_REPORTED' in globals() else WORKFLOW_CANCELLED},
+}
+
+@dataclass
+class DurableWorkflowCheckpoint:
+    workflow_id: str
+    state: str
+    goal: str = ""
+    task_id: str = ""
+    checkpoint_ts: str = field(default_factory=lambda: datetime.now().isoformat())
+    compact_state: Dict[str, Any] = field(default_factory=dict)
+    write_policy: Dict[str, Any] = field(default_factory=lambda: {"ram_first": True, "write_on_state_boundary_only": True})
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class WorkflowStateMachine:
+    def __init__(self, workflow_id: str, initial_state: str = WORKFLOW_PROPOSED) -> None:
+        self.workflow_id = str(workflow_id or uuid.uuid4().hex)
+        self.state = str(initial_state or WORKFLOW_PROPOSED)
+        self.history: List[Dict[str, Any]] = []
+
+    def can_transition(self, new_state: str) -> bool:
+        if self.state == new_state:
+            return True
+        allowed = _ALLOWED_WORKFLOW_TRANSITIONS.get(self.state, set())
+        return new_state in allowed
+
+    def transition(self, new_state: str, reason: str = "") -> Dict[str, Any]:
+        ns = str(new_state or "")
+        ok = self.can_transition(ns)
+        rec = {"ts": datetime.now().isoformat(), "from": self.state, "to": ns, "ok": ok, "reason": reason}
+        if ok:
+            self.state = ns
+        self.history.append(rec)
+        return {"ok": ok, "workflow_id": self.workflow_id, "state": self.state, "transition": rec, "history": list(self.history)}
+
+
+def create_durable_workflow_checkpoint(workflow_id: str, state: str, *, goal: str = "", task_id: str = "", compact_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    cp = DurableWorkflowCheckpoint(
+        workflow_id=str(workflow_id or uuid.uuid4().hex),
+        state=str(state or WORKFLOW_PROPOSED),
+        goal=str(goal or "")[:500],
+        task_id=str(task_id or ""),
+        compact_state=dict(compact_state or {}),
+    )
+    return {"ok": True, "checkpoint": cp.to_dict(), "persisted": False, "note": "Checkpoint object built; persistence must be explicit/batched."}
+
+
+def review_workflow_transition(workflow_id: str, current_state: str, requested_state: str, reason: str = "") -> Dict[str, Any]:
+    sm = WorkflowStateMachine(workflow_id, initial_state=current_state)
+    return sm.transition(requested_state, reason=reason)
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

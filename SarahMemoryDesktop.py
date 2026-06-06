@@ -190,7 +190,7 @@ class DesktopMirrorService:
         self._frame_seq = 0
         self._last_error = ""
         self._running = False
-        self.default_fps = _int_env("SARAH_DESKTOP_MIRROR_FPS", 6, minimum=1, maximum=30)
+        self.default_fps = _int_env("SARAH_DESKTOP_MIRROR_FPS", 3, minimum=1, maximum=15)
         self.default_monitor = _int_env("SARAH_DESKTOP_MONITOR_INDEX", 1, minimum=0, maximum=16)
         self.max_width = _int_env("SARAH_DESKTOP_MAX_WIDTH", 1280, minimum=320, maximum=7680)
         self.jpeg_quality = _int_env("SARAH_DESKTOP_JPEG_QUALITY", 70, minimum=20, maximum=95)
@@ -305,7 +305,7 @@ class DesktopMirrorService:
             if self._thread is not None and self._thread.is_alive():
                 return {"ok": True, "already_running": True, "status": self.status()}
             self._stop_event.clear()
-            fps_value = max(1, min(30, int(fps or self.default_fps)))
+            fps_value = max(1, min(15, int(fps or self.default_fps)))
             mon_value = self.default_monitor if monitor_index is None else int(monitor_index)
             self._thread = threading.Thread(
                 target=self._capture_loop,
@@ -339,7 +339,8 @@ class DesktopMirrorService:
         try:
             while not self._stop_event.is_set():
                 self.capture_once(monitor_index=monitor_index, source="desktop_capture_loop")
-                time.sleep(interval)
+                if self._stop_event.wait(interval):
+                    break
         finally:
             with self._lock:
                 self._running = False
@@ -355,7 +356,7 @@ class DesktopMirrorService:
         return frame.packet(include_image=include_image)
 
     def mjpeg_stream(self, fps: Optional[int] = None) -> Generator[bytes, None, None]:
-        fps_value = max(1, min(30, int(fps or self.default_fps)))
+        fps_value = max(1, min(15, int(fps or self.default_fps)))
         interval = 1.0 / fps_value
         if not self.available():
             message = json.dumps({"ok": False, "error": "desktop_mirror_unavailable", "dependencies": self.dependencies()}).encode("utf-8")
@@ -375,7 +376,8 @@ class DesktopMirrorService:
                     + frame.image_bytes
                     + b"\r\n"
                 )
-            time.sleep(interval)
+            if self._stop_event.wait(interval):
+                break
 
 
 class DesktopVisionService:

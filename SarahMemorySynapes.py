@@ -62,6 +62,7 @@ from __future__ import annotations
 # --- SARAHMETA END ---
 import sqlite3
 import logging
+from logging.handlers import RotatingFileHandler
 import os
 import sys
 import ast
@@ -111,8 +112,11 @@ logger.setLevel(logging.DEBUG if DEBUG_MODE else logging.INFO)
 log_dir = os.path.join(DATA_DIR, "logs", "synapses")
 os.makedirs(log_dir, exist_ok=True)
 
-file_handler = logging.FileHandler(
-    os.path.join(log_dir, f"synapes_{datetime.datetime.now().strftime('%Y%m%d')}.log")
+file_handler = RotatingFileHandler(
+    os.path.join(log_dir, "synapes.log"),
+    maxBytes=int(os.getenv("SARAH_SYNAPES_LOG_MAX_BYTES", "1048576") or 1048576),
+    backupCount=int(os.getenv("SARAH_SYNAPES_LOG_BACKUPS", "3") or 3),
+    encoding="utf-8",
 )
 file_handler.setFormatter(
     logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - [%(funcName)s:%(lineno)d] - %(message)s')
@@ -136,6 +140,10 @@ _SQLITE_WRITE_LOCK = threading.RLock()
 _SQLITE_WAL_INIT_LOCK = threading.RLock()
 _SQLITE_WAL_INITIALIZED = set()
 _SQLITE_LOCK_WARNING_STATE: Dict[str, float] = {}
+_BACKGROUND_SERVICES_LOCK = threading.RLock()
+_BACKGROUND_SERVICES_THREAD: Optional[threading.Thread] = None
+_BACKGROUND_SERVICES_STOP: Optional[threading.Event] = None
+
 
 
 def _constitutional_value(name: str, default: Any = None) -> Any:
@@ -1122,13 +1130,19 @@ def synapes_awareness_tick(
                 except Exception:
                     obs_state = {"last_epoch": 0, "last_hash": ""}
 
-                obs_payload = json.dumps(obs, ensure_ascii=False, sort_keys=True)
+                # Hash the stable observation body, not the timestamp.  The previous
+                # timestamp-inclusive hash changed on every tick and defeated the
+                # throttle, creating repeated ledger/state writes.
+                obs_for_hash = dict(obs)
+                obs_for_hash.pop("ts", None)
+                obs_payload = json.dumps(obs_for_hash, ensure_ascii=False, sort_keys=True)
                 obs_h = hashlib.sha256(obs_payload.encode("utf-8", errors="ignore")).hexdigest()
 
                 last_epoch = int(obs_state.get("last_epoch", 0) or 0)
                 last_hash = str(obs_state.get("last_hash", "") or "")
-                # cadence: at most once per 10 minutes, unless materially changed
-                allow_obs = (now_epoch - last_epoch) >= 600 or last_epoch == 0 or (obs_h and obs_h != last_hash)
+                # Anti-thrash cadence: at most once per 10 minutes; material changes
+                # can be surfaced on the next cadence, not every heartbeat.
+                allow_obs = (now_epoch - last_epoch) >= 600 or last_epoch == 0
                 if not allow_obs:
                     observation_hash = obs_h
                 else:
@@ -1559,16 +1573,16 @@ def run_training_dispatcher_once(worker_id: str = "synapses") -> str:
 
 def start_training_dispatcher_background(
     *,
-    interval_seconds: int = 60,
+    interval_seconds: int = 900,
     worker_id: str = "synapses",
     stop_event: Optional[threading.Event] = None,
     # Awareness loop (alive + curious), lightweight + throttled
-    start_awareness: bool = True,
-    awareness_interval_seconds: int = 15 * 60,
+    start_awareness: bool = False,
+    awareness_interval_seconds: int = 30 * 60,
     awareness_dataset_id: str = "sm_live",
-    awareness_enqueue_job: bool = True,
+    awareness_enqueue_job: bool = False,
     awareness_ingest_verified_only: bool = False,
-    awareness_max_rows_per_table: int = 250,
+    awareness_max_rows_per_table: int = 25,
 ) -> threading.Thread:
     """
     Start background services for the Living Model lane.
@@ -1586,6 +1600,17 @@ def start_training_dispatcher_background(
     """
     ev = stop_event or threading.Event()
 
+    # Anti-thrash guard: only one LivingModel background service set may run per process.
+    global _BACKGROUND_SERVICES_THREAD, _BACKGROUND_SERVICES_STOP
+    with _BACKGROUND_SERVICES_LOCK:
+        try:
+            if _BACKGROUND_SERVICES_THREAD is not None and _BACKGROUND_SERVICES_THREAD.is_alive():
+                logger.info("[LivingModel][P3] Background dispatcher already running; duplicate start ignored.")
+                return _BACKGROUND_SERVICES_THREAD
+        except Exception:
+            pass
+        _BACKGROUND_SERVICES_STOP = ev
+
     # --- Training dispatcher loop
     def _dispatch_loop():
         logger.info(f"[LivingModel][P3] Training dispatcher started (interval={interval_seconds}s)")
@@ -1594,10 +1619,12 @@ def start_training_dispatcher_background(
                 run_training_dispatcher_once(worker_id=worker_id)
             except Exception:
                 pass
-            ev.wait(max(5, int(interval_seconds)))
+            ev.wait(max(300, int(interval_seconds)))
 
-    t = threading.Thread(target=_dispatch_loop, daemon=True)
+    t = threading.Thread(target=_dispatch_loop, daemon=True, name="SM_SynapesTrainingDispatcher")
     t.start()
+    with _BACKGROUND_SERVICES_LOCK:
+        _BACKGROUND_SERVICES_THREAD = t
 
     # --- Awareness loop
     if start_awareness:
@@ -3131,3 +3158,51 @@ def run_rem_sandbox_trial(candidate: Dict[str, Any], *, snapshot: Optional[Dict[
         with open(result.get("artifact_path") or os.path.join(rem_dir, f"{trial_id}.json"), "w", encoding="utf-8") as f: json.dump({"candidate":candidate,"snapshot":snapshot,"result":result}, f, indent=2, ensure_ascii=False, default=str)
     except Exception as e: result.setdefault("notes", []).append(f"artifact_write_failed:{e}")
     return result
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Governed tool sandbox. This is a staging/test helper, not an execution bypass.
+
+class GovernedToolSandbox:
+    """Subprocess/sandbox policy wrapper with deny-by-default execution."""
+
+    def __init__(self, *, allow_process_execution: bool = False, timeout_seconds: float = 5.0, max_output_chars: int = 12000) -> None:
+        self.allow_process_execution = bool(allow_process_execution)
+        self.timeout_seconds = max(1.0, float(timeout_seconds or 5.0))
+        self.max_output_chars = max(1000, int(max_output_chars or 12000))
+
+    def review(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        req = dict(request or {})
+        command = req.get("command") or req.get("argv") or []
+        network_allowed = bool(req.get("network_allowed", False))
+        write_allowed = bool(req.get("write_allowed", False))
+        return {
+            "ok": True,
+            "decision": "SIMULATE_ONLY" if not self.allow_process_execution else "REQUIRE_USER",
+            "allow": False,
+            "one_way_broker": True,
+            "direct_execution": False,
+            "command_preview": command,
+            "constraints": {
+                "network_allowed": network_allowed,
+                "write_allowed": write_allowed,
+                "timeout_seconds": self.timeout_seconds,
+                "max_output_chars": self.max_output_chars,
+            },
+            "reasons": ["GovernedToolSandbox defaults to no execution; OperatorCore/SMGET must authorize any real tool run."],
+        }
+
+    def dry_run(self, request: Dict[str, Any]) -> Dict[str, Any]:
+        review = self.review(request)
+        return {"ok": True, "mode": "dry_run", "review": review, "executed": False}
+
+
+_GOVERNED_TOOL_SANDBOX = GovernedToolSandbox()
+
+
+def review_tool_sandbox_request(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _GOVERNED_TOOL_SANDBOX.review(request or {})
+
+
+def dry_run_tool_sandbox_request(request: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _GOVERNED_TOOL_SANDBOX.dry_run(request or {})
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

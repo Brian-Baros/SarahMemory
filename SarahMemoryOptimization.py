@@ -904,3 +904,74 @@ def analyze_performance_trends() -> Dict[str, Any]:
 # ====================================================================
 # END OF SarahMemoryOptimization.py v8.0.0
 # ====================================================================
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Compute fabric planner: local/offline-first workload placement. Advisory only.
+
+class ComputeFabricPlanner:
+    """Classifies workloads across CPU/GPU/VRAM/RAM/NVMe/NPU/cloud lanes."""
+
+    def __init__(self) -> None:
+        self.schema = "SarahMemory.compute_fabric.v1"
+
+    def snapshot(self) -> Dict[str, Any]:
+        try:
+            import psutil  # type: ignore
+            vm = psutil.virtual_memory()
+            ram_total_gb = round(float(vm.total) / (1024 ** 3), 2)
+            ram_avail_gb = round(float(vm.available) / (1024 ** 3), 2)
+        except Exception:
+            ram_total_gb = None
+            ram_avail_gb = None
+        return {
+            "ok": True,
+            "schema": self.schema,
+            "local_first": True,
+            "cloud_optional": True,
+            "lanes": {
+                "cpu": {"role": "governance_orchestration_symbolic"},
+                "gpu": {"role": "inference_vision_embeddings_multimodal", "detected": None},
+                "ram": {"role": "hot_cache_ring_buffers", "total_gb": ram_total_gb, "available_gb": ram_avail_gb},
+                "nvme": {"role": "durable_state_only", "avoid_write_storms": True},
+                "npu": {"role": "low_power_perception_when_available", "detected": False},
+                "cloud": {"role": "optional_helper_only", "authority": False},
+            },
+        }
+
+    def recommend_lane(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        t = dict(task or {})
+        kind = str(t.get("kind") or t.get("task_type") or "generic").lower()
+        local_only = bool(t.get("local_only", False) or os.getenv("SARAH_LOCAL_ONLY", "").lower() in ("1", "true", "yes", "on"))
+        risk = str(t.get("risk_level") or "TIER_0_INFO")
+        lane = "cpu"
+        reasons = []
+        if kind in {"llm", "vision", "embedding", "image", "video", "multimodal"}:
+            lane = "gpu"
+            reasons.append("Workload benefits from GPU/tensor acceleration when available.")
+        elif kind in {"memory", "rag", "context"}:
+            lane = "ram_then_nvme"
+            reasons.append("Use RAM cache first, durable NVMe checkpoints only at state boundaries.")
+        elif kind in {"wake", "sensor", "low_power_perception"}:
+            lane = "npu_or_cpu"
+            reasons.append("NPU may be used if present; CPU fallback required.")
+        elif kind in {"network", "research"} and not local_only:
+            lane = "network_optional"
+            reasons.append("Network/cloud may assist, but local answer path remains primary.")
+        else:
+            reasons.append("CPU orchestration/governance lane is sufficient.")
+        if local_only and lane in {"network_optional", "cloud"}:
+            lane = "cpu_local_degraded"
+            reasons.append("Local-only mode disables cloud/network lane.")
+        return {"ok": True, "lane": lane, "risk_level": risk, "reasons": reasons, "authority": False}
+
+
+_COMPUTE_FABRIC_PLANNER = ComputeFabricPlanner()
+
+
+def get_compute_fabric_snapshot() -> Dict[str, Any]:
+    return _COMPUTE_FABRIC_PLANNER.snapshot()
+
+
+def recommend_compute_lane(task: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _COMPUTE_FABRIC_PLANNER.recommend_lane(task or {})
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

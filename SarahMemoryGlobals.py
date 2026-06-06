@@ -2204,8 +2204,8 @@ SYNAPSES_SQLITE_RETRY_MAX_SECONDS = 2.0
 # registered, governed, and only then exposed to routing. Unqualified files are
 # ignored or logically quarantined without destabilizing the running core.
 # =============================================================================
-SM_CORE_DISCOVERY_ENABLED = True
-SM_CORE_DISCOVERY_ON_BOOT = True
+SM_CORE_DISCOVERY_ENABLED = _env_flag("SARAH_CORE_DISCOVERY_ENABLED", "true")
+SM_CORE_DISCOVERY_ON_BOOT = _env_flag("SARAH_CORE_DISCOVERY_ON_BOOT", "false")
 SM_CORE_DYNAMIC_REGISTRATION = True
 SM_CORE_AUTO_EXPOSE_APPROVED = True
 SM_CORE_REQUIRE_APPROVED_PREFIX = True
@@ -2213,8 +2213,13 @@ SM_CORE_REQUIRE_CONTRACT = True
 SM_CORE_IGNORE_UNQUALIFIED = True
 SM_CORE_QUARANTINE_INVALID = True
 SM_CORE_ALLOW_MONKEY_PATCHES = True
-SM_CORE_DISCOVERY_MAX_DEPTH = int(os.getenv("SARAH_CORE_DISCOVERY_MAX_DEPTH", "4") or 4)
+SM_CORE_DISCOVERY_MAX_DEPTH = int(os.getenv("SARAH_CORE_DISCOVERY_MAX_DEPTH", "3") or 3)
 SM_CORE_DISCOVERY_ALLOWED_EXTENSIONS = {".py"}
+SM_CORE_DISCOVERY_SKIP_DIR_NAMES = {
+    ".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".venv", "venv", "env", "node_modules", "dist", "build",
+    "logs", "cache", "tmp", "temp", "models", "backup", "backups", "archive",
+}
 SM_CORE_APPROVED_NAME_PREFIXES = ("SarahMemory", "app")
 SM_CORE_APPROVED_FILE_NAMES = {
     "app.py",
@@ -2302,6 +2307,88 @@ def sm_get_core_scan_dirs() -> list[str]:
         if nd and nd not in out:
             out.append(nd)
     return out
+
+
+def _sm_core_discovery_skip_dir(dir_name: str) -> bool:
+    try:
+        n = str(dir_name or "").strip().lower()
+        if not n:
+            return False
+        if n in SM_CORE_DISCOVERY_SKIP_DIR_NAMES:
+            return True
+        if n.endswith(('.egg-info', '.dist-info')):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _sm_core_registry_static_entry(module_name: str, file_path: str, capability: str) -> dict:
+    norm = _sm_norm_path(file_path)
+    return {
+        "file": norm,
+        "name": os.path.basename(norm),
+        "module_name": module_name,
+        "capability": capability,
+        "status": "approved",
+        "reason": "static_fast_boot_registry",
+        "contract_markers": ["SarahMemory"],
+        "compile_ok": True,
+        "designed_for_sarahmemory": True,
+        "approved": True,
+        "exposed": True,
+    }
+
+
+def sm_build_static_core_registry() -> dict:
+    """Build a no-scan registry from known core file names.
+
+    This is the optimized boot fallback when no persisted registry exists. It
+    avoids walking/compiling the whole project on import while preserving core
+    module approvals for existing governed files.
+    """
+    registry = {
+        "version": CORE_REGISTRY_CACHE.get("version", 1),
+        "generated_at": datetime.utcnow().isoformat(),
+        "base_dir": _sm_norm_path(BASE_DIR),
+        "entries": {},
+        "quarantined": {},
+        "ignored": {},
+        "static_fast_boot": True,
+    }
+    try:
+        for module_name, capability in _SM_CORE_FILE_HINTS.items():
+            candidates = [os.path.join(BASE_DIR, module_name + ".py")]
+            if module_name.startswith("app"):
+                candidates.append(os.path.join(API_DIR, "server", module_name + ".py"))
+            for cand in candidates:
+                if os.path.exists(cand):
+                    registry["entries"][module_name] = _sm_core_registry_static_entry(module_name, cand, capability)
+                    break
+        for fn in SM_CORE_APPROVED_FILE_NAMES:
+            module_name = os.path.splitext(fn)[0]
+            cand = os.path.join(API_DIR, "server", fn)
+            if os.path.exists(cand) and module_name not in registry["entries"]:
+                registry["entries"][module_name] = _sm_core_registry_static_entry(module_name, cand, _SM_CORE_FILE_HINTS.get(module_name, "utility"))
+    except Exception:
+        pass
+    return registry
+
+
+def sm_load_core_registry_cache() -> dict | None:
+    try:
+        if not os.path.exists(CORE_REGISTRY_CACHE_FILE):
+            return None
+        with open(CORE_REGISTRY_CACHE_FILE, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        if not isinstance(payload, dict):
+            return None
+        payload.setdefault("entries", {})
+        payload.setdefault("quarantined", {})
+        payload.setdefault("ignored", {})
+        return payload
+    except Exception:
+        return None
 
 
 def sm_is_candidate_core_file(file_path: str) -> bool:
@@ -2424,6 +2511,7 @@ def sm_discover_core_files(force: bool = False) -> dict:
     for root_dir in sm_get_core_scan_dirs():
         try:
             for walk_root, dirnames, filenames in os.walk(root_dir):
+                dirnames[:] = [d for d in dirnames if not _sm_core_discovery_skip_dir(d)]
                 rel = os.path.relpath(walk_root, root_dir)
                 depth = 0 if rel == "." else rel.count(os.sep) + 1
                 if depth > max_depth:
@@ -2465,10 +2553,24 @@ def sm_persist_core_registry(registry: dict | None = None) -> bool:
     try:
         payload = registry or CORE_REGISTRY_CACHE
         os.makedirs(CORE_REGISTRY_DIR, exist_ok=True)
-        with open(CORE_REGISTRY_CACHE_FILE, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, sort_keys=True)
-        with open(CORE_QUARANTINE_REPORT, "w", encoding="utf-8") as fh:
-            json.dump(payload.get("quarantined", {}), fh, indent=2, sort_keys=True)
+        registry_text = json.dumps(payload, indent=2, sort_keys=True)
+        quarantine_text = json.dumps(payload.get("quarantined", {}), indent=2, sort_keys=True)
+
+        def _write_if_changed(path_value: str, text_value: str) -> None:
+            try:
+                if os.path.exists(path_value):
+                    with open(path_value, "r", encoding="utf-8", errors="ignore") as existing:
+                        if existing.read() == text_value:
+                            return
+            except Exception:
+                pass
+            tmp = path_value + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(text_value)
+            os.replace(tmp, path_value)
+
+        _write_if_changed(CORE_REGISTRY_CACHE_FILE, registry_text)
+        _write_if_changed(CORE_QUARANTINE_REPORT, quarantine_text)
         return True
     except Exception as exc:
         logger.warning("[CORE_DISCOVERY] persist failed: %s", exc)
@@ -2478,9 +2580,21 @@ def sm_persist_core_registry(registry: dict | None = None) -> bool:
 def sm_refresh_core_registry(force: bool = False) -> dict:
     global CORE_REGISTRY_CACHE
     try:
-        if force or not CORE_REGISTRY_CACHE.get("generated_at"):
-            CORE_REGISTRY_CACHE = sm_discover_core_files(force=force)
-            sm_persist_core_registry(CORE_REGISTRY_CACHE)
+        if not force and CORE_REGISTRY_CACHE.get("generated_at"):
+            return CORE_REGISTRY_CACHE
+
+        if not force:
+            cached = sm_load_core_registry_cache()
+            if cached:
+                CORE_REGISTRY_CACHE = cached
+                return CORE_REGISTRY_CACHE
+
+            # Optimized no-cache fallback: no broad walk/compile on normal import.
+            CORE_REGISTRY_CACHE = sm_build_static_core_registry()
+            return CORE_REGISTRY_CACHE
+
+        CORE_REGISTRY_CACHE = sm_discover_core_files(force=force)
+        sm_persist_core_registry(CORE_REGISTRY_CACHE)
     except Exception as exc:
         logger.warning("[CORE_DISCOVERY] refresh failed: %s", exc)
     return CORE_REGISTRY_CACHE
@@ -5268,10 +5382,11 @@ def _ensure_response_table(db_path=None):
             import logging; logging.warning("[DB] ensure `response` failed: %s", e)
         except Exception:
             pass
-try:
-    _ensure_response_table()
-except Exception:
-    pass
+if _env_flag("SARAH_GLOBALS_ENSURE_RESPONSE_TABLE_ON_IMPORT", "false"):
+    try:
+        _ensure_response_table()
+    except Exception:
+        pass
 # === v7.7.3 Emotional Realism Feature Gates (surgical, reversible) ===
 EMOTION_REALISM_ENABLED      = True
 FACIAL_FEEDBACK_ENABLED      = True
@@ -5660,9 +5775,12 @@ def get_mesh_sync_config() -> dict:
 try:
     if SM_CORE_DISCOVERY_ENABLED and SM_CORE_DISCOVERY_ON_BOOT:
         sm_refresh_core_registry(force=True)
+    elif SM_CORE_DISCOVERY_ENABLED:
+        # Load cached/static registry only. Do not scan/write on normal boot.
+        sm_refresh_core_registry(force=False)
 except Exception as e:
     try:
-        logger.warning("[CORE_DISCOVERY] bootstrap refresh failed: %s", e)
+        logger.warning("[CORE_DISCOVERY] bootstrap registry warm-up failed: %s", e)
     except Exception:
         pass
 

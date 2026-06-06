@@ -66,6 +66,23 @@ USE_DL_MODELS = any(model_cfg.get("enabled") for model_cfg in OBJECT_MODEL_CONFI
 
 FACIAL_DIRECT_CAMERA_ENABLED = str(os.getenv("SARAH_FACE_DIRECT_CAMERA", "false")).strip().lower() in ("1", "true", "yes", "on")
 FACIAL_SIMULATED_LEARNING_ENABLED = str(os.getenv("SARAH_FACE_ALLOW_SIMULATED_LEARNING", "false")).strip().lower() in ("1", "true", "yes", "on")
+FACIAL_DB_EVENT_LOGGING = str(os.getenv("SARAH_FACE_DB_EVENT_LOGGING", "false")).strip().lower() in ("1", "true", "yes", "on")
+_FACIAL_EVENT_THROTTLE = {}
+
+def _vision_event_logging_enabled() -> bool:
+    return bool(FACIAL_DB_EVENT_LOGGING)
+
+def _throttle_event(key: str, seconds: float = 60.0) -> bool:
+    try:
+        now = time.time()
+        last = float(_FACIAL_EVENT_THROTTLE.get(key, 0.0) or 0.0)
+        if now - last < seconds:
+            return False
+        _FACIAL_EVENT_THROTTLE[key] = now
+        return True
+    except Exception:
+        return True
+
 
 def _facial_direct_camera_enabled() -> bool:
     """Hard gate for legacy direct cv2.VideoCapture paths. Default OFF.
@@ -174,7 +191,7 @@ def _ordered_object_models(max_cache_age_sec: float = 5.0):
 # ------------------------- Facial Recognition Module -------------------------
 # Setup logging for the facial recognition module
 logger_fr = logging.getLogger('SarahMemoryFacialRecognition')
-logger_fr.setLevel(logging.DEBUG)
+logger_fr.setLevel(logging.DEBUG if bool(getattr(config, 'DEBUG_MODE', False)) else logging.INFO)
 handler_fr = logging.NullHandler()
 formatter_fr = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler_fr.setFormatter(formatter_fr)
@@ -278,8 +295,12 @@ def find_similar_vectors(query_vector, top_k=5):
 
 
 def log_event(source, message):
+    if not _vision_event_logging_enabled():
+        return
+    if not _throttle_event(f"log_event:{source}:{str(message)[:80]}", 30.0):
+        return
     try:
-        conn = sqlite3.connect(VSM_DB)
+        conn = sqlite3.connect(VSM_DB, timeout=5.0)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -290,24 +311,25 @@ def log_event(source, message):
             )
         """)
         conn.execute("INSERT INTO logs (timestamp, level, source, message) VALUES (?, ?, ?, ?)",
-                     (datetime.datetime.now().isoformat(), "INFO", source, message))
+                     (datetime.now().isoformat(), "INFO", source, str(message)[:1000]))
         conn.commit()
         conn.close()
-    except:
+    except Exception:
         pass
 
 def log_facial_event(event, details):
-    """
-    Logs a facial recognition event to the system_logs.db database.
-    """
+    """Logs a facial recognition event only when DB event logging is explicitly enabled."""
+    if not _vision_event_logging_enabled():
+        return
+    if not _throttle_event(f"facial:{event}:{str(details)[:80]}", 30.0):
+        return
     try:
         db_path = os.path.abspath(os.path.join(config.DATASETS_DIR, "system_logs.db"))
-        # db_path = os.path.abspath(config.DATASETS_DIR "system_logs.db"))
         try:
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
         except Exception:
             pass
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=5.0)
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS facial_recognition_events (
@@ -318,12 +340,11 @@ def log_facial_event(event, details):
             )
         """)
         timestamp = datetime.now().isoformat()
-        cursor.execute("INSERT INTO facial_recognition_events (timestamp, event, details) VALUES (?, ?, ?)", (timestamp, event, details))
+        cursor.execute("INSERT INTO facial_recognition_events (timestamp, event, details) VALUES (?, ?, ?)", (timestamp, event, str(details)[:1000]))
         conn.commit()
         conn.close()
-        logger_fr.info("Logged facial event to system_logs.db successfully.")
     except Exception as e:
-        logger_fr.error(f"Error logging facial event: {e}")
+        logger_fr.debug(f"Error logging facial event: {e}")
 
 def load_face_cascade(cascade_path=None):
     """
@@ -577,7 +598,7 @@ def analyze_face_frame(frame, allow_identity: bool = False, allow_learning: bool
     return result
 
 
-def start_facial_recognition_monitor(interval=0.1):
+def start_facial_recognition_monitor(interval=1.0):
     """Legacy direct webcam monitor retained behind a hard governance gate.
 
     Normal WebUI/local vision should use appvision/MSDC and pass frames into
@@ -646,7 +667,7 @@ def store_face_profile(user_id, vector, label, emotion):
 # ------------------------- Vector Similarity Memory (VSM) Module -------------------------
 # Setup logging for the VSM module
 logger_vsm = logging.getLogger('SarahMemoryVSM')
-logger_vsm.setLevel(logging.DEBUG)
+logger_vsm.setLevel(logging.DEBUG if bool(getattr(config, 'DEBUG_MODE', False)) else logging.INFO)
 handler_vsm = logging.NullHandler()
 formatter_vsm = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 handler_vsm.setFormatter(formatter_vsm)
@@ -657,16 +678,18 @@ VECTOR_DIM = int(os.getenv('SARAH_VECTOR_DIM', '384'))  # Default aligns with Se
 index = None  # Global index object
 
 def log_vsm_event(event, details):
-    """
-    Logs a VSM-related event to the system_logs.db database.
-    """
+    """Logs a VSM-related event only when DB event logging is explicitly enabled."""
+    if not _vision_event_logging_enabled():
+        return
+    if not _throttle_event(f"vsm:{event}:{str(details)[:80]}", 30.0):
+        return
     try:
         db_path = os.path.join(config.DATASETS_DIR, "system_logs.db")
         try:
             os.makedirs(os.path.dirname(db_path), exist_ok=True)
         except Exception:
             pass
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, timeout=5.0)
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS vsm_events (
@@ -678,12 +701,11 @@ def log_vsm_event(event, details):
         """)
         timestamp = datetime.now().isoformat()
         cursor.execute("INSERT INTO vsm_events (timestamp, event, details) VALUES (?, ?, ?)",
-                       (timestamp, event, details))
+                       (timestamp, event, str(details)[:1000]))
         conn.commit()
         conn.close()
-        logger_vsm.info("Logged VSM event to system_logs.db successfully.")
     except Exception as e:
-        logger_vsm.error(f"Error logging VSM event: {e}")
+        logger_vsm.debug(f"Error logging VSM event: {e}")
 
 def initialize_index(dim=VECTOR_DIM):
     """

@@ -631,6 +631,31 @@ def _indicates_destructive_or_privileged(action_contract: Dict[str, Any]) -> boo
     return any(k in joined for k in keywords)
 
 
+def _robotic_body_request_profile(action_contract: Dict[str, Any]) -> Dict[str, Any]:
+    contract = dict(action_contract or {})
+    joined = " ".join([
+        _safe_lower(contract.get("action_type")),
+        _safe_lower(contract.get("capability_name")),
+        _safe_lower(contract.get("executor_name")),
+        _safe_lower(contract.get("target")),
+        _safe_lower(contract.get("normalized_text")),
+        " ".join(str(x).lower() for x in (contract.get("required_permissions") or [])),
+    ])
+    is_robotic = any(k in joined for k in ("robot", "servo", "gripper", "locomotion", "arm", "hand", "leg", "torque", "force", "human contact", "physical body"))
+    motion = is_robotic and any(k in joined for k in ("move", "walk", "step", "reach", "raise", "lower", "turn", "grip", "release", "posture"))
+    human_contact = is_robotic and any(k in joined for k in ("human contact", "touch human", "grab person", "push", "pull", "intervene"))
+    emergency = is_robotic and any(k in joined for k in ("emergency", "fire", "medical", "collision", "life", "rescue", "safe_stop", "e-stop"))
+    return {
+        "is_robotic": bool(is_robotic),
+        "motion_requested": bool(motion),
+        "human_contact_requested": bool(human_contact),
+        "emergency_context": bool(emergency),
+        "requires_local_caller": bool(is_robotic),
+        "requires_explicit_authority": bool(is_robotic),
+        "requires_safe_stop": bool(is_robotic),
+    }
+
+
 def _external_model_authority_attempt(action_contract: Dict[str, Any]) -> bool:
     meta = dict(action_contract.get("metadata") or {})
     text = _safe_lower(action_contract.get("normalized_text"))
@@ -666,7 +691,8 @@ def evaluate_action(action_contract: Dict[str, Any], governance: Optional[Dict[s
 
     policy = _policy_snapshot()
     risk_level = _normalize_risk_level(contract.get("risk_level"))
-    risk_score = _risk_weight(risk_level)
+    robot_profile = _robotic_body_request_profile(contract)
+    risk_score = _risk_weight(risk_level) + (25 if robot_profile.get("is_robotic") else 0) + (25 if robot_profile.get("human_contact_requested") else 0)
 
     review = SecurityReview(
         review_id=review_id,
@@ -687,6 +713,7 @@ def evaluate_action(action_contract: Dict[str, Any], governance: Optional[Dict[s
             "trust_record": trust_record,
             "governance": governance,
             "governance_profile": _governance_profile(),
+            "robotic_body_profile": robot_profile,
         },
     )
 
@@ -745,6 +772,26 @@ def evaluate_action(action_contract: Dict[str, Any], governance: Optional[Dict[s
                 review.require_user = True
             review.risk_factors.append("physical_control_requires_confirmation")
             review.reasons.append("Physical/device control requires explicit user confirmation.")
+
+    # Robotic body / physical embodiment hard gate.
+    if robot_profile.get("is_robotic"):
+        review.constraints.setdefault("smget_required", True)
+        review.constraints.setdefault("operatorcore_required", True)
+        review.constraints.setdefault("assurance_required", True)
+        review.constraints.setdefault("safe_stop_required", True)
+        review.constraints.setdefault("local_presence_required", True)
+        if identity.caller_kind in {"frontend", "external", "model", "unknown"}:
+            if review.allow:
+                review.decision = DECISION_REQUIRE_USER
+                review.allow = False
+                review.require_user = True
+            review.risk_factors.append("robotic_body_request_requires_core_local_authority")
+            review.reasons.append("Robotic body control requires trusted local/core authority and explicit user or emergency authorization.")
+        if robot_profile.get("human_contact_requested") and not robot_profile.get("emergency_context"):
+            review.decision = DECISION_DENY
+            review.allow = False
+            review.risk_factors.append("robotic_human_contact_blocked_without_emergency")
+            review.reasons.append("Human-contact robotic action is blocked without verified emergency context.")
 
     # External model output must never become direct operational authority.
     if _external_model_authority_attempt(contract) and not policy.get("allow_model_direct_authority", False):
@@ -902,3 +949,117 @@ def review_tri_layer_packet_boundary(packet: Optional[Dict[str, Any]] = None) ->
         "authority_note": "Tri-layer packets may inform governance but cannot authorize execution.",
         "packet_type": pkt.get("packet_type"),
     }
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Sovereign one-way broker security review. External protocols are bounded
+# clients/evidence sources, never authority sources.
+
+_INTEROP_SAFE_TYPES = {"status", "heartbeat", "capability_manifest", "skill_manifest", "agent_card", "tool_schema", "evidence_packet", "observation", "query", "reply", "ui_event"}
+_INTEROP_DANGEROUS_TYPES = {"execute", "tool_call", "command", "shell", "filesystem_write", "driver_action", "robot_motion", "network_expose", "install", "delete", "privileged_action"}
+
+
+def review_interop_broker_request(envelope: Optional[Dict[str, Any]] = None, governance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Fail-closed security review for MCP/A2A/AG-UI adapter packets.
+
+    SarahMemory is a one-way broker by default: inbound packets can be stored,
+    translated, described, or converted into governance evidence. They cannot
+    directly execute tools, files, hardware, or remote commands.
+    """
+    env = dict(envelope or {})
+    gov = dict(governance or {})
+    protocol = str(env.get("protocol") or env.get("adapter") or env.get("source_protocol") or "unknown").strip().lower()
+    direction = str(env.get("direction") or "inbound").strip().lower()
+    message_type = str(env.get("message_type") or env.get("type") or env.get("action_type") or "unknown").strip().lower()
+    origin = str(env.get("origin") or env.get("caller") or env.get("sender") or "external_interop").strip()[:160]
+    remote = bool(env.get("remote") or env.get("is_remote") or env.get("remote_origin"))
+    bidirectional = bool(env.get("bidirectional")) or direction == "bidirectional"
+    explicit_exception = bool(env.get("explicit_bidirectional_authority") or gov.get("explicit_bidirectional_authority"))
+    execution_mode = str(env.get("execution_mode") or env.get("mode") or MODE_DRAFT).strip().lower()
+
+    reasons: List[str] = []
+    constraints: Dict[str, Any] = {
+        "one_way_broker": True,
+        "direct_execution_allowed": False,
+        "may_store_evidence": True,
+        "may_translate_to_internal_request": True,
+        "may_execute": False,
+        "network_callback_allowed": False,
+    }
+    decision = DECISION_ALLOW_WITH_CONSTRAINTS
+    allow = True
+    require_user = False
+    quarantine = False
+
+    if protocol not in {"mcp", "a2a", "ag-ui", "local", "unknown", ""}:
+        quarantine = True
+        allow = False
+        require_user = True
+        decision = DECISION_QUARANTINE
+        reasons.append("Unknown external protocol quarantined by one-way broker policy.")
+
+    if message_type in _INTEROP_DANGEROUS_TYPES or execution_mode == MODE_APPLY:
+        allow = False
+        require_user = True
+        decision = DECISION_SIMULATE_ONLY
+        constraints["may_translate_to_internal_request"] = False
+        reasons.append("Remote/interoperability packet requested execution or state change; downgraded to simulate/evidence only.")
+
+    if bidirectional and not explicit_exception:
+        allow = False
+        require_user = True
+        decision = DECISION_DENY
+        constraints["network_callback_allowed"] = False
+        reasons.append("Bidirectional broker path denied without explicit governed exception.")
+
+    if remote and message_type not in _INTEROP_SAFE_TYPES:
+        allow = False
+        require_user = True
+        decision = DECISION_DENY
+        reasons.append("Remote packet type is not safe for passive broker intake.")
+
+    if _local_only() and remote:
+        allow = False
+        require_user = True
+        decision = DECISION_DENY
+        reasons.append("LOCAL_ONLY mode blocks remote interop activity.")
+
+    if not reasons:
+        reasons.append("Broker packet allowed as passive evidence/manifest/query only; no execution authority granted.")
+
+    review = {
+        "ok": True,
+        "review_id": uuid.uuid4().hex,
+        "decision": decision,
+        "allow": bool(allow),
+        "require_user": bool(require_user),
+        "quarantine": bool(quarantine),
+        "caller_identity": origin,
+        "trust_tier": TRUST_TIER_UNVERIFIED if remote else TRUST_TIER_FIRST_PARTY,
+        "protocol": protocol or "unknown",
+        "direction": direction,
+        "message_type": message_type,
+        "constraints": constraints,
+        "reasons": reasons,
+        "metadata": {
+            "remote": remote,
+            "bidirectional": bidirectional,
+            "explicit_exception": explicit_exception,
+            "one_way_broker": True,
+        },
+    }
+    try:
+        _log_event(
+            review_id=review["review_id"], severity="INFO", decision=decision,
+            caller_identity=origin, trust_tier=review["trust_tier"],
+            action_type=f"interop.{message_type}", risk_level=RISK_TIER_2,
+            details="; ".join(reasons[:3]), meta=review.get("metadata"),
+        )
+    except Exception:
+        pass
+    return review
+
+
+def is_interop_broker_request_safe(envelope: Optional[Dict[str, Any]] = None, governance: Optional[Dict[str, Any]] = None) -> bool:
+    review = review_interop_broker_request(envelope, governance=governance)
+    return bool(review.get("allow")) and str(review.get("decision")) not in {DECISION_DENY, DECISION_QUARANTINE}
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

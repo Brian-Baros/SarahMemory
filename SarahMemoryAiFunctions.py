@@ -3194,3 +3194,64 @@ try:
     ])
 except Exception:
     pass
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# High-level agent runtime coordinator. It plans/stages only and routes execution
+# decisions into CognitiveServices/OperatorCore. No direct tool execution.
+
+class SarahMemoryAgentRuntime:
+    """RAM-first coordinator for agentic tasks under SarahMemory governance."""
+
+    def __init__(self, max_tasks: int = 64) -> None:
+        self.max_tasks = max(8, int(max_tasks or 64))
+        self.tasks: Dict[str, Dict[str, Any]] = {}
+
+    def submit_task(self, user_goal: str, *, context: Optional[Dict[str, Any]] = None, proposed_action: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        tid = uuid.uuid4().hex
+        task = {
+            "task_id": tid,
+            "created_ts": datetime.utcnow().isoformat() + "Z" if 'datetime' in globals() else str(time.time()),
+            "goal": str(user_goal or "")[:2000],
+            "status": "PROPOSED",
+            "context": dict(context or {}),
+            "proposed_action": dict(proposed_action or {}),
+            "one_way_broker": True,
+            "direct_execution": False,
+        }
+        governance = {"ok": False, "decision": "DEFER", "allow": False}
+        try:
+            import SarahMemoryCognitiveServices as _CogSvc  # type: ignore
+            fn = getattr(_CogSvc, "govern_interop_broker_request", None)
+            if callable(fn) and (proposed_action or {}).get("protocol"):
+                governance = fn(proposed_action or {}, caller_context=context or {})
+            else:
+                fn2 = getattr(_CogSvc, "process_cognitive_request", None)
+                if callable(fn2):
+                    governance = fn2(str(user_goal or ""), caller_context=context or {}, proposed_action=proposed_action or {})
+        except Exception as exc:
+            governance = {"ok": False, "decision": "DEFER", "allow": False, "error": str(exc)}
+        task["governance"] = governance
+        task["status"] = "APPROVED" if bool(governance.get("allow")) else "WAITING_USER"
+        self.tasks[tid] = task
+        if len(self.tasks) > self.max_tasks:
+            oldest = sorted(self.tasks.values(), key=lambda r: r.get("created_ts") or "")[:len(self.tasks)-self.max_tasks]
+            for rec in oldest:
+                self.tasks.pop(rec.get("task_id"), None)
+        return {"ok": True, "task": task, "execution_started": False}
+
+    def status(self, task_id: str = "") -> Dict[str, Any]:
+        if task_id:
+            return {"ok": bool(task_id in self.tasks), "task": self.tasks.get(task_id)}
+        return {"ok": True, "count": len(self.tasks), "tasks": list(self.tasks.values())}
+
+
+_AGENT_RUNTIME = SarahMemoryAgentRuntime()
+
+
+def submit_sovereign_agent_task(user_goal: str, *, context: Optional[Dict[str, Any]] = None, proposed_action: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _AGENT_RUNTIME.submit_task(user_goal, context=context, proposed_action=proposed_action)
+
+
+def get_sovereign_agent_runtime_status(task_id: str = "") -> Dict[str, Any]:
+    return _AGENT_RUNTIME.status(task_id)
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

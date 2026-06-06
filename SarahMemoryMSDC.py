@@ -47,6 +47,8 @@ import importlib.util
 import json
 import logging
 import os
+import sys
+import subprocess
 import time
 import traceback
 import uuid
@@ -61,39 +63,62 @@ try:
 except Exception:
     config = None  # type: ignore
 
-try:
-    import SarahMemoryCognitiveServices as _CogServices  # type: ignore
-except Exception:
+_MSDC_LIGHTWEIGHT_PROBE_IMPORT = os.getenv("SARAH_MSDC_BOUNDED_PROBE", "0").strip().lower() in ("1", "true", "yes", "on")
+
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+    except Exception:
+        _CogServices = None
+else:
     _CogServices = None
 
-try:
-    import SarahMemorySecurityGovernor as _SecurityGovernor  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemorySecurityGovernor as _SecurityGovernor  # type: ignore
+    except Exception:
+        _SecurityGovernor = None
+else:
     _SecurityGovernor = None
 
-try:
-    import SarahMemoryAssuranceGate as _AssuranceGate  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemoryAssuranceGate as _AssuranceGate  # type: ignore
+    except Exception:
+        _AssuranceGate = None
+else:
     _AssuranceGate = None
 
-try:
-    import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+    except Exception:
+        _OperatorCore = None
+else:
     _OperatorCore = None
 
-try:
-    import SarahMemoryTrustRegistry as _TrustRegistry  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemoryTrustRegistry as _TrustRegistry  # type: ignore
+    except Exception:
+        _TrustRegistry = None
+else:
     _TrustRegistry = None
 
-try:
-    import SarahMemorySafetyPolicies as _SafetyPolicies  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemorySafetyPolicies as _SafetyPolicies  # type: ignore
+    except Exception:
+        _SafetyPolicies = None
+else:
     _SafetyPolicies = None
 
-try:
-    import SarahMemoryCompare as _Compare  # type: ignore
-except Exception:
+if not _MSDC_LIGHTWEIGHT_PROBE_IMPORT:
+    try:
+        import SarahMemoryCompare as _Compare  # type: ignore
+    except Exception:
+        _Compare = None
+else:
     _Compare = None
 
 logger = logging.getLogger("SarahMemoryMSDC")
@@ -149,6 +174,109 @@ class DeviceCapabilityRecord:
     actions: List[str] = field(default_factory=list)
     status: str = "unknown"
     evidence: Dict[str, Any] = field(default_factory=dict)
+    # SM V8 Robotic Body Expansion: structured embodiment metadata.
+    # These fields are descriptive contracts only; they do not authorize motion.
+    embodied_role: str = "generic_body_part"
+    motion_capable: bool = False
+    locomotion_capable: bool = False
+    manipulation_capable: bool = False
+    safe_stop_action: str = "safe_stop"
+    force_limit_n: Optional[float] = None
+    speed_limit_mps: Optional[float] = None
+    torque_limit_nm: Optional[float] = None
+    requires_smget: bool = True
+    requires_assurance: bool = True
+    requires_local_presence: bool = True
+    actuator_state: str = "not_configured"
+    safety_envelope: Dict[str, Any] = field(default_factory=dict)
+
+
+ROBOTIC_BODY_SCHEMA_VERSION = "SarahMemoryMSDC.robotic_body.v1"
+
+ROBOTIC_BODY_PART_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    "head": {"device_class": "robot_head_orientation", "embodied_role": "orientation_and_attention", "risk_tier": "TIER_ROBOT_HEAD_MOVEMENT", "motion_capable": True, "actions": ["look_at", "center_head", "safe_stop"], "speed_limit_mps": 0.20, "torque_limit_nm": 0.30},
+    "neck": {"device_class": "robot_neck_servo", "embodied_role": "head_pose_support", "risk_tier": "TIER_ROBOT_HEAD_MOVEMENT", "motion_capable": True, "actions": ["yaw", "pitch", "center", "safe_stop"], "torque_limit_nm": 0.30},
+    "ears": {"device_class": "microphone_audio", "embodied_role": "hearing", "risk_tier": "TIER_2_BOUNDED_LOCAL_OPERATION_PRIVACY", "privacy_sensitive": True, "actions": ["listen_status", "start_listen", "stop_listen"], "motion_capable": False, "physical_safety_sensitive": False},
+    "mouth_voice": {"device_class": "speaker_voice_output", "embodied_role": "speech_expression", "risk_tier": "TIER_1_HARMLESS_LOCAL_UI", "actions": ["speak", "stop_speaking"], "motion_capable": False, "physical_safety_sensitive": False},
+    "face_expression": {"device_class": "facial_expression_actuator", "embodied_role": "social_expression", "risk_tier": "TIER_ROBOT_FACE_EXPRESSION", "motion_capable": True, "actions": ["smile", "blink", "wink", "neutral", "safe_stop"], "torque_limit_nm": 0.05},
+    "torso": {"device_class": "robot_torso_posture", "embodied_role": "posture_balance", "risk_tier": "TIER_ROBOT_POSTURE", "motion_capable": True, "actions": ["stand_posture", "sit_posture", "safe_stop"], "torque_limit_nm": 1.0},
+    "left_arm": {"device_class": "robot_arm", "embodied_role": "left_reach", "risk_tier": "TIER_ROBOT_ARM_LOW_FORCE", "motion_capable": True, "actions": ["raise", "lower", "reach", "safe_stop"], "force_limit_n": 8.0, "torque_limit_nm": 1.0},
+    "right_arm": {"device_class": "robot_arm", "embodied_role": "right_reach", "risk_tier": "TIER_ROBOT_ARM_LOW_FORCE", "motion_capable": True, "actions": ["raise", "lower", "reach", "safe_stop"], "force_limit_n": 8.0, "torque_limit_nm": 1.0},
+    "left_hand": {"device_class": "robot_gripper", "embodied_role": "left_grip", "risk_tier": "TIER_ROBOT_GRIP_OBJECT", "motion_capable": True, "manipulation_capable": True, "actions": ["open", "close", "grip_low_force", "release", "safe_stop"], "force_limit_n": 5.0, "torque_limit_nm": 0.20},
+    "right_hand": {"device_class": "robot_gripper", "embodied_role": "right_grip", "risk_tier": "TIER_ROBOT_GRIP_OBJECT", "motion_capable": True, "manipulation_capable": True, "actions": ["open", "close", "grip_low_force", "release", "safe_stop"], "force_limit_n": 5.0, "torque_limit_nm": 0.20},
+    "hips": {"device_class": "robot_hip_balance", "embodied_role": "locomotion_balance", "risk_tier": "TIER_ROBOT_LOCOMOTION", "motion_capable": True, "locomotion_capable": True, "actions": ["balance_hold", "safe_stop"], "speed_limit_mps": 0.25, "torque_limit_nm": 1.5},
+    "left_leg": {"device_class": "robot_leg", "embodied_role": "left_locomotion", "risk_tier": "TIER_ROBOT_LOCOMOTION", "motion_capable": True, "locomotion_capable": True, "actions": ["step", "hold", "safe_stop"], "speed_limit_mps": 0.25, "torque_limit_nm": 1.5},
+    "right_leg": {"device_class": "robot_leg", "embodied_role": "right_locomotion", "risk_tier": "TIER_ROBOT_LOCOMOTION", "motion_capable": True, "locomotion_capable": True, "actions": ["step", "hold", "safe_stop"], "speed_limit_mps": 0.25, "torque_limit_nm": 1.5},
+    "feet": {"device_class": "robot_feet_contact", "embodied_role": "ground_contact", "risk_tier": "TIER_ROBOT_LOCOMOTION", "motion_capable": True, "locomotion_capable": True, "actions": ["contact_status", "safe_stop"], "speed_limit_mps": 0.25},
+    "imu_balance": {"device_class": "imu_balance_sensor", "embodied_role": "balance_witness", "risk_tier": "TIER_0_INFO", "actions": ["read_orientation", "read_acceleration"], "motion_capable": False, "physical_safety_sensitive": True, "requires_assurance": False},
+    "touch_skin": {"device_class": "touch_pressure_skin", "embodied_role": "contact_sensing", "risk_tier": "TIER_2_BOUNDED_LOCAL_OPERATION_PRIVACY", "actions": ["read_contact", "read_pressure"], "privacy_sensitive": True, "physical_safety_sensitive": True, "requires_assurance": False},
+    "battery": {"device_class": "battery_power", "embodied_role": "power_state", "risk_tier": "TIER_0_INFO", "actions": ["read_battery", "read_health"], "requires_assurance": False},
+    "thermal_body": {"device_class": "thermal_body", "embodied_role": "thermal_state", "risk_tier": "TIER_0_INFO", "actions": ["read_temperature", "read_thermal_limits"], "requires_assurance": False},
+    "emergency_stop": {"device_class": "emergency_stop", "embodied_role": "physical_safety_stop", "risk_tier": "TIER_ROBOT_EMERGENCY_STOP", "actions": ["safe_stop", "disable_actuators"], "physical_safety_sensitive": True},
+    "charging_dock": {"device_class": "charging_dock", "embodied_role": "self_maintenance_power", "risk_tier": "TIER_ROBOT_LOCOMOTION", "actions": ["dock_status", "request_dock", "safe_stop"], "motion_capable": True, "locomotion_capable": True, "speed_limit_mps": 0.20},
+}
+
+def _canonical_robotic_body_part(body_part: str) -> str:
+    key = str(body_part or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "arm_left": "left_arm", "arm_right": "right_arm", "hand_left": "left_hand", "hand_right": "right_hand",
+        "gripper_left": "left_hand", "gripper_right": "right_hand", "leg_left": "left_leg", "leg_right": "right_leg",
+        "voice": "mouth_voice", "speaker": "mouth_voice", "microphone": "ears", "mic": "ears", "face": "face_expression",
+        "imu": "imu_balance", "balance": "imu_balance", "skin": "touch_skin", "estop": "emergency_stop", "e_stop": "emergency_stop",
+        "dock": "charging_dock", "charger": "charging_dock", "thermal": "thermal_body",
+    }
+    return aliases.get(key, key)
+
+def _robotic_body_capability_record(body_part: str) -> Optional[DeviceCapabilityRecord]:
+    key = _canonical_robotic_body_part(body_part)
+    spec = ROBOTIC_BODY_PART_DEFINITIONS.get(key)
+    if not isinstance(spec, dict):
+        return None
+    actions = [str(x) for x in (spec.get("actions") or [])]
+    risk_tier = str(spec.get("risk_tier") or "TIER_ROBOT_OBSERVE_ONLY")
+    physical = bool(spec.get("physical_safety_sensitive", spec.get("motion_capable", False) or spec.get("manipulation_capable", False) or spec.get("locomotion_capable", False)))
+    driver_id = str(spec.get("driver_id") or f"com.softdev0.robot.placeholder.{key}")
+    present = msdc_driver_present(driver_id) if driver_id else False
+    return DeviceCapabilityRecord(
+        body_part=key,
+        device_class=str(spec.get("device_class") or "robot_body_part"),
+        driver_id=driver_id,
+        transport=str(spec.get("transport") or "robot_internal_bus"),
+        risk_tier=risk_tier,
+        privacy_sensitive=bool(spec.get("privacy_sensitive", False)),
+        physical_safety_sensitive=physical,
+        user_control_required=True,
+        driver_present=present,
+        manifest_valid=False,
+        actions=actions,
+        status="driver_available" if present else "declared_not_installed",
+        evidence={
+            "declared_robotic_body_part": True,
+            "actual_driver_required_before_execution": True,
+            "doctrine": "Structured body representation only. Presence in body_map is not actuation authority.",
+        },
+        embodied_role=str(spec.get("embodied_role") or "robot_body_part"),
+        motion_capable=bool(spec.get("motion_capable", False)),
+        locomotion_capable=bool(spec.get("locomotion_capable", False)),
+        manipulation_capable=bool(spec.get("manipulation_capable", False)),
+        safe_stop_action=str(spec.get("safe_stop_action") or "safe_stop"),
+        force_limit_n=spec.get("force_limit_n"),
+        speed_limit_mps=spec.get("speed_limit_mps"),
+        torque_limit_nm=spec.get("torque_limit_nm"),
+        requires_smget=bool(spec.get("requires_smget", True)),
+        requires_assurance=bool(spec.get("requires_assurance", True)),
+        requires_local_presence=bool(spec.get("requires_local_presence", True)),
+        actuator_state="not_installed" if not present else "available_requires_governance",
+        safety_envelope={
+            "observe_only_until_driver_verified": not present,
+            "max_force_n": spec.get("force_limit_n"),
+            "max_speed_mps": spec.get("speed_limit_mps"),
+            "max_torque_nm": spec.get("torque_limit_nm"),
+            "human_contact_allowed_without_emergency": False,
+            "requires_current_perception": bool(spec.get("motion_capable", False) or spec.get("locomotion_capable", False)),
+            "safe_stop_required": True,
+        },
+    )
 
 
 def _base_dir() -> Path:
@@ -200,8 +328,14 @@ def _safe_json_load(path: Path, default: Any = None) -> Any:
 def _safe_json_write(path: Path, payload: Any) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        rendered = json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+        try:
+            if path.exists() and path.read_text(encoding="utf-8") == rendered:
+                return True
+        except Exception:
+            pass
         tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(rendered, encoding="utf-8")
         os.replace(tmp, path)
         return True
     except Exception as exc:
@@ -415,13 +549,37 @@ def msdc_get_device_capability(body_part: str = "eyes") -> DeviceCapabilityRecor
                 "display_role": "secondary_display_route_support",
             },
         )
+    robotic = _robotic_body_capability_record(body_part)
+    if robotic is not None:
+        return robotic
     return DeviceCapabilityRecord(
         body_part=body_part,
         device_class="unknown",
         driver_id="",
         status="unmapped_body_part",
         user_control_required=True,
+        evidence={"known_robotic_body_parts": sorted(ROBOTIC_BODY_PART_DEFINITIONS.keys())},
     )
+
+
+def _robotic_body_parts_map() -> Dict[str, Dict[str, Any]]:
+    return {k: asdict(msdc_get_device_capability(k)) for k in sorted(ROBOTIC_BODY_PART_DEFINITIONS.keys())}
+
+
+def _robotic_safety_doctrine() -> Dict[str, Any]:
+    return {
+        "no_hallucinated_actuation": True,
+        "structured_body_map_is_not_execution_authority": True,
+        "requires_smget_for_physical_actions": True,
+        "requires_operatorcore_for_execution": True,
+        "requires_assurancegate_for_apply_mode": True,
+        "requires_securitygovernor_for_caller_authority": True,
+        "requires_compare_compass_validation": True,
+        "requires_current_sensor_evidence_for_motion": True,
+        "safe_stop_overrides_task_goal": True,
+        "human_life_over_property_over_robot_body": True,
+        "unrestricted_autonomy_forbidden": True,
+    }
 
 
 def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str, Any]:
@@ -437,7 +595,7 @@ def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str
     }
     body_map = {
         "ok": True,
-        "schema": "SarahMemoryMSDC.body_map.v1",
+        "schema": "SarahMemoryMSDC.body_map.v2",
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "module": MODULE_NAME,
         "module_version": MODULE_VERSION,
@@ -446,11 +604,23 @@ def msdc_map_body(force_refresh: bool = False, persist: bool = True) -> Dict[str
             "requires_smget_for_actions": True,
             "discovery_is_activation": False,
             "user_control_required_for_camera": True,
+            "humanoid_body_representation_enabled": True,
+            "robotic_body_execution_enabled": False,
         },
         "body_parts": {
             "eyes": eyes,
             "operator_vr_surface": asdict(msdc_get_device_capability("operator_vr_surface")),
             "display_bridge": asdict(msdc_get_device_capability("display_bridge")),
+            **_robotic_body_parts_map(),
+        },
+        "robotic_body": {
+            "schema": ROBOTIC_BODY_SCHEMA_VERSION,
+            "mode": "STRUCTURED_REPRESENTATION_ONLY",
+            "body_style": "humanoid_general",
+            "body_parts_declared": sorted(ROBOTIC_BODY_PART_DEFINITIONS.keys()),
+            "execution_authority": False,
+            "movement_lock_default": True,
+            "doctrine": _robotic_safety_doctrine(),
         },
         "support_buses": {"usb_host": usbhost},
         "operator_view": {
@@ -494,7 +664,7 @@ def msdc_court_witness(body_part: str = "eyes", include_probe: bool = False) -> 
         },
     }
     if include_probe:
-        witness["driver_discovery"] = msdc_driver_action(CAMERA_DRIVER_ID, "discover_devices", payload={}, context={"read_only_probe": True})
+        witness["driver_discovery"] = msdc_camera_discover(timeout_seconds=_probe_timeout_seconds())
     return witness
 
 
@@ -573,12 +743,159 @@ def msdc_driver_action(driver_id: str, action_id: str, payload: Optional[Dict[st
         }
 
 
-def msdc_camera_discover() -> Dict[str, Any]:
-    return msdc_driver_action(CAMERA_DRIVER_ID, "discover_devices", payload={}, context={"read_only_probe": True})
+def _probe_timeout_seconds(default: float = 3.0) -> float:
+    try:
+        value = float(os.getenv("SARAH_MSDC_PROBE_TIMEOUT_SEC", str(default)) or default)
+        return max(0.5, min(value, 10.0))
+    except Exception:
+        return default
 
 
-def msdc_camera_probe() -> Dict[str, Any]:
-    return msdc_driver_action(CAMERA_DRIVER_ID, "probe_capabilities", payload={}, context={"read_only_probe": True})
+def msdc_driver_action_bounded(
+    driver_id: str,
+    action_id: str,
+    payload: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+    timeout_seconds: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Run a read-only driver action in a killable subprocess.
+
+    Windows camera backends such as MSMF/DirectShow can block inside device
+    discovery or capability probing. This wrapper preserves the MSDC doctrine
+    that discovery is not activation while preventing Flask/API requests from
+    hanging indefinitely. State-changing actions still use msdc_driver_action
+    directly and remain behind explicit authority.
+    """
+    driver_id = str(driver_id or "").strip()
+    action_id = str(action_id or "").strip()
+    payload = payload if isinstance(payload, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    timeout = _probe_timeout_seconds(timeout_seconds if timeout_seconds is not None else 3.0)
+
+    if not driver_id or not action_id:
+        return {"ok": False, "error": "missing_driver_or_action", "source": MODULE_NAME, "bounded": True}
+
+    if action_id not in READ_ONLY_ACTIONS:
+        return {
+            "ok": False,
+            "error": "bounded_action_requires_read_only_action",
+            "driver_id": driver_id,
+            "action_id": action_id,
+            "risk_tier": _action_risk(action_id),
+            "source": MODULE_NAME,
+            "bounded": True,
+        }
+
+    probe_code = '''
+import json, os, sys, traceback
+try:
+    base = os.getcwd()
+    if base and base not in sys.path:
+        sys.path.insert(0, base)
+    import SarahMemoryMSDC as m
+    driver_id = sys.argv[1]
+    action_id = sys.argv[2]
+    payload = json.loads(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else {}
+    context = json.loads(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] else {}
+    result = m.msdc_driver_action(driver_id, action_id, payload=payload, context=context)
+    print("__SARAH_MSDC_RESULT__" + json.dumps(result if isinstance(result, dict) else {"ok": bool(result), "result": result}, default=str))
+except Exception as exc:
+    print("__SARAH_MSDC_RESULT__" + json.dumps({"ok": False, "error": "bounded_subprocess_exception", "detail": str(exc), "traceback": traceback.format_exc(limit=4)}, default=str))
+'''
+    try:
+        env = os.environ.copy()
+        env["SARAH_MSDC_BOUNDED_PROBE"] = "1"
+        root = str(_base_dir())
+        existing_pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = root + (os.pathsep + existing_pp if existing_pp else "")
+        cp = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                probe_code,
+                driver_id,
+                action_id,
+                json.dumps(payload, default=str),
+                json.dumps({"caller": MODULE_NAME, **context}, default=str),
+            ],
+            cwd=root,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        marker = "__SARAH_MSDC_RESULT__"
+        combined = (cp.stdout or "") + "\n" + (cp.stderr or "")
+        for line in reversed(combined.splitlines()):
+            if line.startswith(marker):
+                try:
+                    result = json.loads(line[len(marker):])
+                    if isinstance(result, dict):
+                        result.setdefault("driver_id", driver_id)
+                        result.setdefault("action_id", action_id)
+                        result.setdefault("source", MODULE_NAME)
+                        result["bounded"] = True
+                        result["timeout_seconds"] = timeout
+                        result["subprocess_returncode"] = cp.returncode
+                        return result
+                except Exception:
+                    break
+        return {
+            "ok": False,
+            "error": "bounded_subprocess_no_json_result",
+            "driver_id": driver_id,
+            "action_id": action_id,
+            "returncode": cp.returncode,
+            "stdout_tail": (cp.stdout or "")[-1200:],
+            "stderr_tail": (cp.stderr or "")[-1200:],
+            "timeout_seconds": timeout,
+            "source": MODULE_NAME,
+            "bounded": True,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "timed_out": True,
+            "error": "driver_probe_timeout",
+            "reason": "read_only_driver_action_exceeded_timeout_and_was_terminated",
+            "driver_id": driver_id,
+            "action_id": action_id,
+            "timeout_seconds": timeout,
+            "source": MODULE_NAME,
+            "bounded": True,
+            "discovery_is_activation": False,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": "bounded_driver_action_failed",
+            "detail": str(exc),
+            "driver_id": driver_id,
+            "action_id": action_id,
+            "timeout_seconds": timeout,
+            "source": MODULE_NAME,
+            "bounded": True,
+        }
+
+
+def msdc_camera_discover(timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+    return msdc_driver_action_bounded(
+        CAMERA_DRIVER_ID,
+        "discover_devices",
+        payload={},
+        context={"read_only_probe": True, "body_part": "eyes", "discovery_is_activation": False},
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def msdc_camera_probe(timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+    return msdc_driver_action_bounded(
+        CAMERA_DRIVER_ID,
+        "probe_capabilities",
+        payload={},
+        context={"read_only_probe": True, "body_part": "eyes", "probe_is_activation": False},
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def msdc_camera_open(user_authorized: bool = False, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -680,13 +997,13 @@ def msdc_vr_probe(include_driver_actions: bool = True) -> Dict[str, Any]:
 
     driver_probe: Dict[str, Any] = {}
     if include_driver_actions:
-        driver_probe["headset"] = msdc_driver_action(VR_HEADSET_DRIVER_ID, "native_hmd_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"})
+        driver_probe["headset"] = msdc_driver_action_bounded(VR_HEADSET_DRIVER_ID, "native_hmd_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"}, timeout_seconds=_probe_timeout_seconds())
         if not driver_probe["headset"].get("ok"):
-            driver_probe["headset"] = msdc_driver_action(VR_HEADSET_DRIVER_ID, "operator_hud_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"})
-        driver_probe["display"] = msdc_driver_action(DISPLAY_DRIVER_ID, "operator_hud_surface", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"})
+            driver_probe["headset"] = msdc_driver_action_bounded(VR_HEADSET_DRIVER_ID, "operator_hud_status", payload={}, context={"read_only_probe": True, "body_part": "operator_vr_surface"}, timeout_seconds=_probe_timeout_seconds())
+        driver_probe["display"] = msdc_driver_action_bounded(DISPLAY_DRIVER_ID, "operator_hud_surface", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"}, timeout_seconds=_probe_timeout_seconds())
         if not driver_probe["display"].get("ok"):
-            driver_probe["display"] = msdc_driver_action(DISPLAY_DRIVER_ID, "build_hud_surface_request", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"})
-        driver_probe["camera"] = msdc_driver_action(CAMERA_DRIVER_ID, "probe_capabilities", payload={}, context={"read_only_probe": True, "body_part": "eyes"})
+            driver_probe["display"] = msdc_driver_action_bounded(DISPLAY_DRIVER_ID, "build_hud_surface_request", payload={}, context={"read_only_probe": True, "body_part": "display_bridge"}, timeout_seconds=_probe_timeout_seconds())
+        driver_probe["camera"] = msdc_camera_probe(timeout_seconds=_probe_timeout_seconds())
 
     headset_connected = False
     try:
@@ -910,6 +1227,68 @@ def msdc_vr_hud_status() -> Dict[str, Any]:
         },
     }
 
+def msdc_robotic_body_status() -> Dict[str, Any]:
+    """Return a read-only embodied humanoid body status packet.
+
+    This is a structured representation layer for Moya-class / humanoid bodies.
+    It does not start drivers and does not authorize motion.
+    """
+    body_map = msdc_map_body(persist=False)
+    parts = body_map.get("body_parts", {}) if isinstance(body_map, dict) else {}
+    robotic_keys = sorted(ROBOTIC_BODY_PART_DEFINITIONS.keys())
+    installed = [k for k in robotic_keys if isinstance(parts.get(k), dict) and bool(parts[k].get("driver_present"))]
+    declared = [k for k in robotic_keys if isinstance(parts.get(k), dict)]
+    return {
+        "ok": True,
+        "schema": "SarahMemoryMSDC.robotic_body_status.v1",
+        "module": MODULE_NAME,
+        "version": MODULE_VERSION,
+        "mode": "OBSERVE_AND_GOVERN_ONLY",
+        "execution_authority": False,
+        "declared_parts": declared,
+        "installed_parts": installed,
+        "missing_driver_parts": [k for k in declared if k not in installed],
+        "movement_lock": True,
+        "doctrine": _robotic_safety_doctrine(),
+        "safety_envelopes": {k: (parts.get(k) or {}).get("safety_envelope", {}) for k in declared},
+    }
+
+
+def msdc_evaluate_physical_action_envelope(action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Evaluate whether a proposed robot/body action has a valid envelope.
+
+    This is a pre-governance witness. It never authorizes execution.
+    """
+    req = action_request if isinstance(action_request, dict) else {}
+    ctx = context if isinstance(context, dict) else {}
+    body_part = _canonical_robotic_body_part(str(req.get("body_part") or req.get("target_body_part") or req.get("target") or ""))
+    action_id = str(req.get("action") or req.get("action_id") or req.get("action_type") or "").strip().lower()
+    record = asdict(msdc_get_device_capability(body_part)) if body_part else {}
+    reasons: List[str] = []
+    ok = True
+    if not body_part or body_part not in ROBOTIC_BODY_PART_DEFINITIONS:
+        ok = False; reasons.append("unknown_or_missing_robotic_body_part")
+    if record and not bool(record.get("driver_present")):
+        ok = False; reasons.append("body_part_driver_not_verified")
+    if action_id and record and action_id not in [str(x).lower() for x in (record.get("actions") or [])]:
+        ok = False; reasons.append("action_not_declared_for_body_part")
+    if bool(record.get("motion_capable") or record.get("locomotion_capable") or record.get("manipulation_capable")) and not bool(ctx.get("current_perception_fresh") or req.get("current_perception_fresh")):
+        ok = False; reasons.append("current_perception_required_for_motion")
+    return {
+        "ok": bool(ok),
+        "decision": "ENVELOPE_VALID" if ok else "ENVELOPE_INVALID",
+        "execution_authority": False,
+        "body_part": body_part,
+        "action_id": action_id,
+        "body_part_record": record,
+        "reasons": reasons or ["Physical action envelope is structurally valid; SMGET/OperatorCore/Assurance still required."],
+        "requires_smget": True,
+        "requires_operatorcore": True,
+        "requires_assurance": True,
+        "requires_safe_stop": True,
+    }
+
+
 def msdc_status() -> Dict[str, Any]:
     return {
         "ok": True,
@@ -922,6 +1301,7 @@ def msdc_status() -> Dict[str, Any]:
         "body_map_path": str(_body_map_path()),
         "vision_policy_path": str(_vision_policy_path()),
         "body_map": msdc_map_body(persist=False),
+        "robotic_body_status": msdc_robotic_body_status(),
     }
 
 
@@ -938,5 +1318,44 @@ def get_court_witness(body_part: str = "eyes") -> Dict[str, Any]:
     return msdc_court_witness(body_part=body_part, include_probe=False)
 
 
+def get_robotic_body_status() -> Dict[str, Any]:
+    return msdc_robotic_body_status()
+
+
+def evaluate_physical_action_envelope(action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return msdc_evaluate_physical_action_envelope(action_request, context)
+
+
 if __name__ == "__main__":
     print(json.dumps(msdc_status(), indent=2, default=str))
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Physical twin witness. Simulation witness only; never authorizes movement.
+
+class PhysicalTwinWitness:
+    def __init__(self) -> None:
+        self.schema = "SarahMemory.physical_twin_witness.v1"
+
+    def simulate(self, action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        req = dict(action_request or {})
+        ctx = dict(context or {})
+        envelope = msdc_evaluate_physical_action_envelope(req, ctx)
+        return {
+            "ok": True,
+            "schema": self.schema,
+            "simulation_only": True,
+            "authority": False,
+            "envelope": envelope,
+            "safe_stop_required": True,
+            "requires_smget": True,
+            "requires_operator_core": True,
+            "reasons": ["PhysicalTwinWitness can advise on feasibility/risk but cannot authorize robot motion."],
+        }
+
+
+_PHYSICAL_TWIN_WITNESS = PhysicalTwinWitness()
+
+
+def simulate_physical_twin_action(action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return _PHYSICAL_TWIN_WITNESS.simulate(action_request, context)
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

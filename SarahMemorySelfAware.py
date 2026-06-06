@@ -313,7 +313,8 @@ def scan_python_module(p: Path) -> Optional[ModuleScan]:
 def scan_codebase(root: Path, *, max_files: int = 250) -> List[ModuleScan]:
     scans: List[ModuleScan] = []
     try:
-        py_files = list(root.rglob("*.py"))
+        max_files = max(1, min(int(max_files or _SELF_AWARE_MAX_SCAN_FILES), _SELF_AWARE_MAX_SCAN_FILES))
+        py_files = _selfaware_walk_files(root, {".py"}, max_files=max_files)
         # prioritize core files first (SarahMemory*.py + api/server/app*.py)
         py_files.sort(key=lambda x: (0 if x.name.startswith("SarahMemory") else 1, 0 if "api" in str(x).lower() else 1, str(x)))
         for p in py_files[:max_files]:
@@ -329,6 +330,48 @@ def scan_codebase(root: Path, *, max_files: int = 250) -> List[ModuleScan]:
 # Log mining (lightweight)
 # ---------------------------------------------------------------------------
 ERROR_PAT = re.compile(r"(Traceback \(most recent call last\):|ERROR\s+-|CRITICAL\s+-|Exception:)", re.IGNORECASE)
+
+
+# Runtime optimization: SelfAware may be ARMED during development, but it must not
+# scan dependency folders, caches, models, backups, or generated UI packages. These
+# exclusions protect the active C: NVMe drive and keep the autonomous loop bounded.
+_SELF_AWARE_SKIP_DIR_NAMES = {
+    ".git", ".hg", ".svn", ".venv", "venv", "env", "__pycache__", ".pytest_cache",
+    "node_modules", "dist", "build", ".next", ".vite", "coverage",
+    "logs", "log", "cache", "tmp", "temp", "runtime", "backup", "backups", "archive", "archives",
+    "models", "checkpoints", "exports", "downloads", "sandbox",
+}
+_SELF_AWARE_SKIP_PARTS = {part.lower() for part in _SELF_AWARE_SKIP_DIR_NAMES}
+_SELF_AWARE_MAX_SCAN_FILES = int(os.getenv("SARAH_SELFAWARE_MAX_SCAN_FILES", "160") or 160)
+_SELF_AWARE_DEFAULT_LOOP_SECONDS = int(os.getenv("SARAH_SELFAWARE_LOOP_SECONDS", "300") or 300)
+_SELF_AWARE_AUTOINDEX_ENABLED = str(os.getenv("SARAH_SELFAWARE_AUTOINDEX_ENABLED", "0") or "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _selfaware_path_skipped(path: Path) -> bool:
+    try:
+        parts = {str(part).lower() for part in Path(path).parts}
+        return bool(parts & _SELF_AWARE_SKIP_PARTS)
+    except Exception:
+        return False
+
+
+def _selfaware_walk_files(root: Path, suffixes: set[str], max_files: int) -> List[Path]:
+    out: List[Path] = []
+    try:
+        for dirpath, dirnames, filenames in os.walk(str(root)):
+            dirnames[:] = [d for d in dirnames if d.lower() not in _SELF_AWARE_SKIP_PARTS]
+            if _selfaware_path_skipped(Path(dirpath)):
+                continue
+            for fn in filenames:
+                if len(out) >= max_files:
+                    return out
+                if Path(fn).suffix.lower() in suffixes:
+                    p = Path(dirpath) / fn
+                    if not _selfaware_path_skipped(p):
+                        out.append(p)
+    except Exception:
+        pass
+    return out
 
 def tail_text_file(p: Path, *, max_bytes: int = 256_000) -> str:
     try:
@@ -347,7 +390,8 @@ def find_recent_errors(log_dir: Path, *, max_files: int = 30) -> List[Dict[str, 
     try:
         if not log_dir.exists():
             return hits
-        files = sorted([p for p in log_dir.rglob("*.log")], key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
+        files = _selfaware_walk_files(log_dir, {".log"}, max_files=max(1, int(max_files or 30)))
+        files = sorted(files, key=lambda x: x.stat().st_mtime if x.exists() else 0, reverse=True)
         for p in files[:max_files]:
             txt = tail_text_file(p)
             if not txt:
@@ -433,8 +477,8 @@ def loop_sleep_seconds() -> int:
             return int(v)
     except Exception:
         pass
-    # default: tight enough for lab testing, not insane
-    return 10
+    # optimized runtime default: SelfAware is a deep reflection organ, not a tight poller.
+    return max(60, int(_SELF_AWARE_DEFAULT_LOOP_SECONDS))
 
 
 
@@ -520,7 +564,10 @@ class SystemIndexAutoLearner:
             try:
                 if not root.exists():
                     continue
-                for dirpath, _, filenames in os.walk(str(root)):
+                for dirpath, dirnames, filenames in os.walk(str(root)):
+                    dirnames[:] = [d for d in dirnames if d.lower() not in _SELF_AWARE_SKIP_PARTS]
+                    if _selfaware_path_skipped(Path(dirpath)):
+                        continue
                     for fn in filenames:
                         try:
                             p = os.path.join(dirpath, fn)
@@ -864,7 +911,7 @@ def run_autonomous_loop() -> None:
 
     forge = DualBrainLocalModelForge()
 
-    auto_learner = SystemIndexAutoLearner()
+    auto_learner = SystemIndexAutoLearner() if _SELF_AWARE_AUTOINDEX_ENABLED else None
 
     root = _base_dir()
     logs_dir_candidates = [
@@ -892,11 +939,12 @@ def run_autonomous_loop() -> None:
             except Exception:
                 pass
 
-            # 0) Index->Learn bridge (bounded)
-            try:
-                auto_learner.tick(cycle_id)
-            except Exception:
-                pass
+            # 0) Index->Learn bridge (bounded, disabled by default for NVMe protection)
+            if auto_learner is not None:
+                try:
+                    auto_learner.tick(cycle_id)
+                except Exception:
+                    pass
 
             # 1) Introspect codebase (bounded)
             scans = scan_codebase(root, max_files=220)

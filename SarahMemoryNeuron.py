@@ -72,6 +72,7 @@ import queue
 import sqlite3
 import logging
 import threading
+import atexit
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -222,6 +223,53 @@ def _connect_db() -> Optional[sqlite3.Connection]:
 
 _DB: Optional[sqlite3.Connection] = None
 
+_EVENT_LOCK = threading.RLock()
+_EVENT_QUEUE: List[Tuple[float, str, str, float, str, str]] = []
+_EVENT_LAST_FLUSH = 0.0
+_EVENT_ATEXIT_REGISTERED = False
+
+
+def _neuron_event_logging_enabled() -> bool:
+    try:
+        return bool(getattr(config, "NEURON_EVENT_LOG_ENABLED", True))
+    except Exception:
+        return True
+
+
+def _flush_event_queue(force: bool = False) -> None:
+    """Batch neuron route telemetry so chat traffic does not commit per request."""
+    global _EVENT_LAST_FLUSH
+    if _DB is None:
+        return
+    try:
+        batch_size = int(getattr(config, "NEURON_EVENT_BATCH_SIZE", 12) if config else 12)
+    except Exception:
+        batch_size = 12
+    try:
+        flush_seconds = float(getattr(config, "NEURON_EVENT_FLUSH_SECONDS", 5.0) if config else 5.0)
+    except Exception:
+        flush_seconds = 5.0
+    now = time.time()
+    with _EVENT_LOCK:
+        if not _EVENT_QUEUE:
+            return
+        if not force and len(_EVENT_QUEUE) < max(1, batch_size) and (now - _EVENT_LAST_FLUSH) < max(1.0, flush_seconds):
+            return
+        rows = list(_EVENT_QUEUE)
+        _EVENT_QUEUE.clear()
+    try:
+        cur = _DB.cursor()
+        cur.executemany(
+            "INSERT INTO neuron_events (ts, kind, intent, confidence, source, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        _DB.commit()
+        _EVENT_LAST_FLUSH = now
+    except Exception:
+        # If the DB is temporarily locked, keep the hot path quiet and do not
+        # spin-write retries.  Route answers remain unaffected.
+        pass
+
 def _init_db() -> None:
     global _DB
     if _DB is not None:
@@ -245,6 +293,13 @@ def _init_db() -> None:
             """
         )
         _DB.commit()
+        global _EVENT_ATEXIT_REGISTERED
+        if not _EVENT_ATEXIT_REGISTERED:
+            try:
+                atexit.register(lambda: _flush_event_queue(force=True))
+                _EVENT_ATEXIT_REGISTERED = True
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -1436,19 +1491,36 @@ def _curiosity_prompts(intent: str, text: str, budget: Dict[str, Any]) -> List[s
 # Event logging
 # -----------------------------------------------------------------------------
 def _log_event(kind: str, intent: str, confidence: float, source: str, payload: Dict[str, Any]) -> None:
-    if _DB is None:
+    if _DB is None or not _neuron_event_logging_enabled():
         return
     try:
-        s = json.dumps(payload, ensure_ascii=False)
-        max_kb = int(getattr(config, "NEURON_EVENT_MAX_KB", 96) if config else 96)
+        # Compress route telemetry.  Full traces are expensive and can create DB
+        # churn during active chat.  Keep the audit shape, but drop raw bulky data.
+        compact_payload = {}
+        if isinstance(payload, dict):
+            compact_payload = {
+                "input_preview": str(payload.get("input") or "")[:512],
+                "artifacts_keys": list(payload.get("artifacts_keys") or [])[:32],
+            }
+            trace = payload.get("trace") if isinstance(payload.get("trace"), dict) else {}
+            if trace:
+                compact_payload["trace"] = {
+                    "primary_lane": trace.get("primary_lane"),
+                    "primary_owner": trace.get("primary_owner"),
+                    "tiers_count": len(trace.get("tiers") or []) if isinstance(trace.get("tiers"), list) else 0,
+                    "approved_modules": trace.get("approved_modules"),
+                }
+        else:
+            compact_payload = {"payload_preview": str(payload)[:512]}
+
+        s = json.dumps(compact_payload, ensure_ascii=False, default=str)
+        max_kb = int(getattr(config, "NEURON_EVENT_MAX_KB", 24) if config else 24)
         if len(s) > max_kb * 1024:
             s = s[: max_kb * 1024] + "…"
-        cur = _DB.cursor()
-        cur.execute(
-            "INSERT INTO neuron_events (ts, kind, intent, confidence, source, payload) VALUES (?, ?, ?, ?, ?, ?)",
-            (time.time(), kind, intent, float(confidence), source, s),
-        )
-        _DB.commit()
+        row = (time.time(), str(kind), str(intent), float(confidence), str(source), s)
+        with _EVENT_LOCK:
+            _EVENT_QUEUE.append(row)
+        _flush_event_queue(force=False)
     except Exception:
         pass
 
