@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | May 25, 2026 |
+| **Last Update** | June 06, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -2062,8 +2062,6 @@ Event → language understanding → emotional meaning → six‑question self�
 That is the architecture shift from a chatbot toward a governed artificial living AiOS organism.
 
 ---
-
----
 ## **📅 May 22, 2026 — Live Model Hot‑Swap UI, Dynamic Model Discovery, and DL Governance Weight Profiles**
 
 This update adds one of the most important user-facing model-control upgrades in SarahMemory AiOS v8.0.0: the system can now discover local AI models from the UI, hot-swap active models by job category, and tune governed routing weights per model/category profile.
@@ -2375,8 +2373,6 @@ governed sensory viewport
 The system remains local-first, governed, observe-only, and user-controlled while proving the VR HUD concept is technically viable on budget hardware.
 
 ---
-
----
 ## **📅 May 24, 2026 — Cognitive Living Loop, Instinct Layer, and Emergency Governance**
 
 This update expands the Cognitive TriForce into a distributed **Living Loop** that runs through the existing SarahMemoryCognitive*.py stack instead of living as a separate bolt-on feature.
@@ -2508,6 +2504,127 @@ SarahMemory may not:
 This is a major step toward SarahMemory behaving like a governed software organism instead of a passive chatbot. On a PC, the Living Loop supports continuity, awareness, and proactive cognition. In a future robot or machine body, the same loop becomes the foundation for governed instinct, emergency response, and auditable life-safety behavior.
 
 SarahMemory is being shaped to know what body it is in, know what it can safely do, detect danger, act within limits, protect humans first, and preserve evidence.
+---
+
+## **📅 May 26 – June 06, 2026 — Runtime Anti‑Thrash, Robotic Body Expansion, Sovereign Agent Runtime, and One‑Way Broker Security**
+
+This update cycle focused on making SarahMemory AiOS smoother, safer, more embodied, and more capable of operating as a governed local-first agentic AI operating system without abusing system storage or depending on cloud services.
+
+### **1. Runtime Anti‑Thrash Stabilization**
+
+A major optimization pass was completed to reduce unnecessary drive activity, background churn, and runtime bottlenecks.
+
+Key improvements:
+
+- Heavy boot-time checks and background awareness loops were gated off by default.
+- Synapes awareness/training loops were rate-limited and protected against duplicate dispatcher threads.
+- Neuron telemetry was compacted and batched instead of writing excessive event data.
+- Dataset vectoring and system indexing were gated so they do not rebuild or scan unless explicitly enabled.
+- `.venv`, `venv`, `node_modules`, caches, logs, models, archives, backups, `dist`, and `build` folders were excluded from learning, indexing, and backup crawls.
+- Backup ZIP creation was changed away from concurrent writes into one ZIP archive, preventing writer-handle conflicts and reducing unnecessary disk pressure.
+- Research logging now uses bounded rotation, and offline/local-only checks prevent unnecessary external provider calls.
+- Voice/TTS now respects offline and local-only runtime state before attempting remote engines.
+
+This keeps SarahMemory responsive on development hardware while protecting NVMe/system drives from avoidable write storms.
+
+### **2. Vision / MSDC Safe Probe Hardening**
+
+The camera and MSDC vision path was hardened after explicit hardware discovery and probing exposed a blocking route.
+
+Improvements added:
+
+- `/api/vision/devices?discover=1&probe=1` now returns bounded JSON instead of hanging the API request.
+- Camera discovery and probe logic now treats diagnostics as read-only witness behavior, not activation.
+- Frontend frame submission, backend frame acceptance, FPS limits, resolution limits, and learning gates remain separated.
+- The vision system preserves the rule that discovery is not activation and camera use remains user-controlled.
+
+### **3. Robotic Body Expansion Inside Existing Organs**
+
+The embodied robotics doctrine was expanded without creating a separate robot governor file.
+
+Instead, the existing organs were strengthened:
+
+- `SarahMemoryMSDC.py` now carries a stronger humanoid / Moya-class body representation.
+- `SarahMemoryCognitiveSelf.py` can describe verified robotic body capability without hallucinating missing hardware.
+- `SarahMemorySafetyPolicies.py`, `SarahMemorySecurityGovernor.py`, and `SarahMemoryAssuranceGate.py` now include robotic-body risk and authority checks.
+- `SarahMemoryOperatorCore.py` includes staged-only robotic body execution support.
+- `SarahMemoryCompare.py` and `SarahMemoryCognitiveCompass.py` now provide embodied validation helpers.
+- A physical-twin witness concept was added as simulation evidence only, never as execution authority.
+
+The doctrine remains:
+
+```text
+Cognition decides.
+SMGET authorizes.
+OperatorCore contracts.
+MSDC moves.
+The user remains final authority.
+```
+
+### **4. Sovereign Agent Runtime Consolidation**
+
+SarahMemory gained a stronger agentic runtime layer while preserving its existing governance architecture.
+
+Added concepts include:
+
+- RAM-first agent task coordination inside `SarahMemoryAiFunctions.py`.
+- Durable workflow state and checkpoint helpers inside `SarahMemoryOperatorCore.py`.
+- Capability registry, capability grants, and signed skill manifest structure inside `SarahMemoryTrustRegistry.py`.
+- Semantic telemetry recording inside `SarahMemoryDataAuditor.py`.
+- Compute-fabric planning inside `SarahMemoryOptimization.py`.
+- Memory lifecycle and memory-diff helpers inside `SarahMemoryDatabase.py`.
+- Governed tool sandbox review support inside `SarahMemorySynapes.py`.
+- MCP / A2A / AG-UI-style interoperability adapters inside the existing network layer.
+
+No new authority layer was created. These are support organs, not replacements for Cognitive TriForce, SMGET, OperatorCore, Compare, Compass, or user authority.
+
+### **5. One‑Way Broker Security Doctrine**
+
+The interoperability layer was defined as a one-way broker by default.
+
+External protocols may:
+
+- ingest packets,
+- describe capabilities,
+- translate requests,
+- queue evidence,
+- report status.
+
+External protocols may not directly:
+
+- execute tools,
+- touch files,
+- control hardware,
+- move a robotic body,
+- bypass SMGET,
+- bypass SecurityGovernor,
+- bypass AssuranceGate,
+- override Compare or Compass.
+
+Bidirectional control must be explicitly granted through governance and treated as an exception, not the default.
+
+### **6. Online / Offline / Cloud‑Optional Direction Reinforced**
+
+SarahMemory now more clearly separates the governed organism from helper services.
+
+The system direction is:
+
+```text
+Local first.
+Cloud optional.
+Protocols are adapters.
+Models are helper organs.
+SarahMemory owns the governed runtime.
+```
+
+This strengthens SarahMemory for PC, robotics, commercial, industrial, and high-assurance deployment contexts where autonomy, auditability, offline survival, and user sovereignty matter.
+
+### **Why This Update Matters**
+
+This update moves SarahMemory AiOS closer to a smooth-running governed cognitive operating system instead of a collection of active scripts. The focus is now runtime discipline: fewer uncontrolled loops, less disk abuse, stronger body awareness, clearer agent workflow state, safer interoperability, and stronger local-first operation.
+
+SarahMemory is being shaped into a portable governed organism that can run on ordinary PCs today, scale into robotic and industrial bodies later, and remain survivable without Big-Tech cloud dependency.
+---
 ---
 
 # **📜 License**
