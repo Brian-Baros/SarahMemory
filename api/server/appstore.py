@@ -418,6 +418,54 @@ def api_store_addon_candidates():
     items = _scan_addon_candidates()
     return _cors_ok(_jok({"count": len(items), "candidates": items, "auto_run_performed": False}))
 
+@bp2.route("/api/store/addons/registry", methods=["GET", "OPTIONS"])
+def api_store_addon_registry():
+    """Read-only addon/capability registry surface for the AiOS shell.
+
+    This endpoint consolidates addon candidates and governance metadata into a
+    single UI-safe packet. It does not launch, activate, install, promote, or
+    mutate addons. Runtime activation remains behind the existing addon launcher,
+    TrustRegistry review, and explicit user approval.
+    """
+    if request.method == "OPTIONS":
+        return _cors_ok(_jok({"preflight": True}))
+    candidates = _scan_addon_candidates()
+    registry_items: list[Dict[str, Any]] = []
+    for cand in candidates:
+        manifest = cand.get("manifest") if isinstance(cand.get("manifest"), dict) else {}
+        governance = cand.get("governance") if isinstance(cand.get("governance"), dict) else {}
+        permissions = manifest.get("permissions") or manifest.get("capabilities") or []
+        if not isinstance(permissions, list):
+            permissions = [str(permissions)] if permissions else []
+        registry_items.append({
+            "id": cand.get("id"),
+            "name": cand.get("name"),
+            "zone": cand.get("zone"),
+            "path": cand.get("path"),
+            "has_manifest": bool(cand.get("has_manifest")),
+            "has_ui": bool(cand.get("has_ui")),
+            "version": manifest.get("version") or manifest.get("manifest_version") or "unknown",
+            "author": manifest.get("author") or manifest.get("owner") or "unknown",
+            "description": manifest.get("description") or manifest.get("summary") or "No description provided.",
+            "permissions": permissions[:50],
+            "risk_tier": manifest.get("risk_tier") or manifest.get("risk") or "UNDECLARED",
+            "trust_status": "manifest_present" if cand.get("has_manifest") else "manifest_missing",
+            "activation_status": "quarantined_review_required" if governance.get("explicit_approval_required", True) else "review_required",
+            "governance": governance,
+        })
+    return _cors_ok(_jok({
+        "schema": "SarahMemory.addon_registry.v1",
+        "count": len(registry_items),
+        "addons": registry_items,
+        "governance": {
+            "read_only": True,
+            "auto_run_performed": False,
+            "explicit_approval_required": True,
+            "activation_requires_registration": True,
+            "trust_registry_review_required": True,
+        },
+    }))
+
 @bp2.route("/api/store/health", methods=["GET", "OPTIONS"])
 def api_store_health():
     if request.method == "OPTIONS":

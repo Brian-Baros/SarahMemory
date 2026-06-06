@@ -1202,6 +1202,17 @@ def _cache_invalidate(prefix: str = ""):
         if k.startswith(prefix):
             _CACHE.pop(k, None)
 
+# Runtime anti-thrash: health/state writes are rate-limited because the UI polls /api/health.
+_LAST_HEALTH_STATE_WRITE_TS = 0.0
+_LAST_HEALTH_STATE_FINGERPRINT = ""
+_HEALTH_STATE_WRITE_INTERVAL_SECONDS = float(os.environ.get("SARAH_HEALTH_STATE_WRITE_INTERVAL_SECONDS", "60"))
+
+def _fingerprint_json(payload) -> str:
+    try:
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
 def load_state() -> dict:
     """Load persisted server state. Never raises."""
     try:
@@ -2110,8 +2121,13 @@ except Exception as e:
 def _connect_sqlite(path: str):
     """Establishes an SQLite database connection with row_factory set to sqlite3.Row."""
     try:
-        con = sqlite3.connect(path, timeout=5.0)
+        con = sqlite3.connect(path, timeout=10.0)
         con.row_factory = sqlite3.Row
+        try:
+            con.execute("PRAGMA busy_timeout=10000")
+            con.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
         return con
     except sqlite3.Error as e:
         app_logger.error(f"Failed to connect to SQLite DB at {path}: {e}")
@@ -2706,6 +2722,80 @@ def _cognitive_guard():
 
     return None
 
+
+@app.get("/api/ui/contracts")
+def api_ui_contracts():
+    """Read-only UI/backend contract map for the SarahMemory AiOS shell.
+
+    This endpoint lets the frontend discover which backend routes are actually
+    registered instead of guessing or calling hardcoded cloud paths. It does not
+    execute commands and does not grant authority.
+    """
+    try:
+        rules = []
+        for rule in sorted(app.url_map.iter_rules(), key=lambda r: str(r.rule)):
+            methods = sorted([m for m in rule.methods if m not in {"HEAD", "OPTIONS"}])
+            rules.append({"path": str(rule.rule), "endpoint": str(rule.endpoint), "methods": methods})
+        route_paths = sorted({r["path"] for r in rules})
+        def has(path: str) -> bool:
+            return path in route_paths
+        domains = {
+            "chat": {"ready": has("/api/chat"), "backend": "api/server/app.py + SarahMemoryNeuron.py"},
+            "vision": {"ready": has("/api/vision/policy") and has("/api/vision/frame/status"), "backend": "api/server/appvision.py + SarahMemoryMSDC.py"},
+            "media": {"ready": has("/api/media/capabilities") and has("/api/media/job/render"), "backend": "api/server/appmedia.py"},
+            "communications": {"ready": has("/api/comm/health") and has("/api/comm/contacts/list"), "backend": "api/server/appcomm.py"},
+            "sarahnet": {"ready": has("/api/net2/health") or has("/api/net/ui/status"), "backend": "api/server/appnet.py + appnet2.py"},
+            "addons": {"ready": has("/api/store/addons/registry") or has("/api/store/addons/candidates"), "backend": "api/server/appstore.py + SarahMemoryTrustRegistry.py"},
+            "terminal": {"ready": has("/api/terminal/status") and has("/api/terminal/execute"), "backend": "SarahMemoryTerminal.py"},
+            "dlengine": {"ready": any(p.startswith("/api/avatar/rem") or p.startswith("/api/dl") for p in route_paths), "backend": "SarahMemoryDL.py / REM routes"},
+        }
+        return jsonify({
+            "ok": True,
+            "schema": "SarahMemory.ui_contracts.v1",
+            "version": PROJECT_VERSION,
+            "route_count": len(route_paths),
+            "routes": rules,
+            "domains": domains,
+            "doctrine": {
+                "local_first": True,
+                "cloud_optional": True,
+                "one_way_broker": True,
+                "frontend_authority": False,
+                "smget_required_for_actions": True,
+            },
+            "ts": time.time(),
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.ui_contracts.v1"}), 500
+
+
+@app.get("/api/runtime/thrash/status")
+def api_runtime_thrash_status():
+    """Read-only runtime anti-thrash status for the AiOS System Center."""
+    try:
+        try:
+            from SarahMemoryOptimization import get_runtime_anti_thrash_profile
+            profile = get_runtime_anti_thrash_profile()
+        except Exception as exc:
+            profile = {"ok": False, "error": str(exc), "schema": "SarahMemory.runtime_anti_thrash.v1"}
+        return jsonify({
+            "ok": True,
+            "schema": "SarahMemory.runtime_status.v1",
+            "profile": profile,
+            "health_state_write_interval_seconds": _HEALTH_STATE_WRITE_INTERVAL_SECONDS,
+            "last_health_state_write_ts": _LAST_HEALTH_STATE_WRITE_TS,
+            "doctrine": {
+                "bounded_loops": True,
+                "rotating_logs_preferred": True,
+                "batched_writes_preferred": True,
+                "subprocess_timeouts_required": True,
+                "authority": False,
+            },
+            "ts": time.time(),
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.get("/api/status")
 def api_status():
     """
@@ -3003,7 +3093,7 @@ def _perform_health_checks():
     # 3) meta.db reachable (sqlite)
     try:
         con = _connect_sqlite(META_DB)
-        con.execute("CREATE TABLE IF NOT EXISTS _health_ping (id INTEGER PRIMARY KEY, ts TEXT)")
+        con.execute("SELECT 1")
         con.close()
     except Exception as e:
         ok = False
@@ -3040,25 +3130,31 @@ def api_health():
         "engine_mode": os.getenv("SARAH_AI_MODE", "standard"),
     }
 
-    # Keep persisted server_state.json aligned with live truth
+    # Keep persisted server_state.json aligned with live truth, but do not write on every health poll.
+    # The Web UI checks /api/health repeatedly; persisting volatile timestamps each poll causes unnecessary disk churn.
     try:
-        state = load_state() or {}
-        if not isinstance(state, dict):
-            state = {}
-
-        state.update({
+        global _LAST_HEALTH_STATE_WRITE_TS, _LAST_HEALTH_STATE_FINGERPRINT
+        state_payload = {
             "ok": bool(ok),
             "notes": notes if isinstance(notes, list) else [],
             "main_running": bool(main_running),
             "running": True,
             "status": status,
             "version": PROJECT_VERSION,
-            "ts": ts,
             "source": "api_health_writer",
             "routing": routing_meta,
-        })
-
-        save_state(state)
+        }
+        fp = _fingerprint_json(state_payload)
+        should_write = (fp != _LAST_HEALTH_STATE_FINGERPRINT) or ((time.time() - _LAST_HEALTH_STATE_WRITE_TS) >= _HEALTH_STATE_WRITE_INTERVAL_SECONDS)
+        if should_write:
+            state = load_state() or {}
+            if not isinstance(state, dict):
+                state = {}
+            state.update(state_payload)
+            state["last_health_ts"] = ts
+            save_state(state)
+            _LAST_HEALTH_STATE_WRITE_TS = time.time()
+            _LAST_HEALTH_STATE_FINGERPRINT = fp
     except Exception:
         pass
 
@@ -3101,8 +3197,8 @@ def api_vision_frame():
         app_logger.error(f"/api/vision/frame failed: {e}", exc_info=True)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-@app.get("/api/vision/frame/status")
-def api_vision_frame_status():
+@app.get("/api/vision/frame/status-legacy")
+def api_vision_frame_status_legacy():
     """Small debug/status endpoint for the active session vision cache."""
     try:
         payload = {
@@ -3112,6 +3208,8 @@ def api_vision_frame_status():
         rec = _get_latest_vision_frame(session_id)
         return jsonify({
             "ok": True,
+            "source": "app.py.legacy_frame_cache",
+            "canonical_endpoint": "/api/vision/frame/status",
             "session_id": session_id,
             "has_frame": bool(rec),
             "ts": (rec or {}).get("ts"),

@@ -2109,6 +2109,66 @@ def net_governance():
         },
     )
 
+@bp.get("/api/net/ui/status")
+def net_ui_status():
+    """Read-only SarahNet status packet for the AiOS shell.
+
+    This endpoint is intentionally UI-focused and side-effect free. It reports
+    the broker posture, storage readiness, one-way policy, file-transfer limits,
+    and interop status in one compact packet so the frontend does not need to
+    call public cloud URLs or infer policy from separate endpoints.
+
+    The broker remains a one-way/store-and-forward witness. This route never
+    executes commands, opens sockets, starts transfers, or contacts remote
+    agents.
+    """
+    storage_ready = bool(_CONNECT_SQLITE and _META_DB)
+    table_status: Dict[str, Any] = {"checked": False, "ok": False, "tables": [], "missing": []}
+    if storage_ready:
+        try:
+            con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+            cur = con.cursor()
+            cur.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = sorted([str(r[0]) for r in (cur.fetchall() or [])])
+            con.close()
+            required = ["net_presence", "net_messages", "net_files", "net_file_transfers", "net_privacy", "net_blocks"]
+            missing = [t for t in required if t not in tables]
+            table_status = {"checked": True, "ok": not missing, "tables": tables, "missing": missing}
+        except Exception as exc:
+            table_status = {"checked": True, "ok": False, "tables": [], "missing": [], "error": str(exc)}
+
+    return _ok(
+        schema="SarahMemory.net_ui_status.v1",
+        module="appnet",
+        route_base="/api/net",
+        local_first=True,
+        cloud_required=False,
+        storage_ready=storage_ready,
+        storage_path=bool(_META_DB),
+        table_status=table_status,
+        broker={
+            "mode": "ONE_WAY_STORE_AND_FORWARD",
+            "executes_remote_commands": False,
+            "direct_tool_execution_allowed": False,
+            "remote_agent_authority": False,
+            "requires_local_verification": True,
+            "requires_smget_for_actions": True,
+        },
+        limits={
+            "max_broker_file_bytes": MAX_BROKER_FILE_BYTES,
+            "max_chunk_bytes": MAX_CHUNK_BYTES,
+            "max_transfer_bytes": MAX_TRANSFER_BYTES,
+            "max_poll_chunks": MAX_POLL_CHUNKS,
+            "require_file_accept": REQUIRE_FILE_ACCEPT,
+        },
+        interop={
+            "mcp": "adapter_only",
+            "a2a": "adapter_only",
+            "ag_ui": "ui_event_stream_only",
+            "passive_ingest_only": True,
+        },
+    )
+
 def init_app(app, connect_sqlite, meta_db_path: str, api_key_auth_ok=None, sign_ok=None) -> None:
     """
     app.py should call:
