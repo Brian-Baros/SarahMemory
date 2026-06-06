@@ -1,0 +1,60 @@
+{
+  "builder": "SM-AVATARBUILD",
+  "version": "8.0.0",
+  "built_at": "2026-05-26T07:40:15.841860",
+  "local_only": true,
+  "mode": "build_3d_avatar",
+  "ok": true,
+  "concept_image": "S:\\SarahMemory\\SarahMemory_3D.png",
+  "concept_image_exists": true,
+  "avatar_name": "sarahmemory_3d_avatar",
+  "output_dir": "S:\\SarahMemory\\resources\\avatars\\3D",
+  "glb": "sarahmemory_3d_avatar.glb",
+  "blend": "sarahmemory_3d_avatar.blend",
+  "preview": "sarahmemory_3d_avatar_preview.png",
+  "blender_path": "C:\\Blender51\\blender.exe",
+  "gpu_backend_requested": "OPTIX",
+  "poly_target": 90000,
+  "palette": {
+    "source_image": "S:\\SarahMemory\\SarahMemory_3D.png",
+    "source_exists": true,
+    "palette_source": "concept_image_sampled",
+    "image_size": [
+      1055,
+      1491
+    ],
+    "hair": [
+      0.6521297788521802,
+      0.3434215238606858,
+      0.39552780016116035
+    ],
+    "suit": [
+      0.07570793855581986,
+      0.11556516012847909,
+      0.1415934093994006
+    ],
+    "glow": [
+      0.26358273621063155,
+      0.5698905737932567,
+      0.6638065877909237
+    ],
+    "skin": [
+      0.7980950375920662,
+      0.6970535603211514,
+      0.6735924107726708
+    ],
+    "boot": [
+      0.05792094615624027,
+      0.1068519715578539,
+      0.1395700160406043
+    ]
+  },
+  "blender_returncode": 0,
+  "blender_log": "sarahmemory_3d_avatar_blender_build.log",
+  "blender_script": "sarahmemory_3d_avatar_blender_build.py",
+  "notes": [
+    "Creates a deterministic concept-inspired 3D GLB proxy from the supplied model image.",
+    "The image is used for palette/style extraction and as the design target, not as impossible one-click perfect geometry.",
+    "Runtime output is the .glb file for AvatarPanel / Three.js loading."
+  ]
+}

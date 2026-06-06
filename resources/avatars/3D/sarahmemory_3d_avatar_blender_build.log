@@ -1,0 +1,124 @@
+00:03.485  cycles           | WARNING HIPEW initialization failed: Error opening HIP dynamic library
+00:03.860  reports          | WARNING Path 'C:\Blender51\5.1\datafiles\assets\brushes\essentials_brushes-gp_draw.blend' cannot be made relative for Material 'Dots Stroke'
+Blender 5.1.1 (hash b70da489d7f4 built 2026-04-14 01:37:22)
+00:03.860  reports          | WARNING Path 'C:\Blender51\5.1\datafiles\assets\brushes\essentials_brushes-gp_draw.blend' cannot be made relative for Material 'Material'
+Info: Saved as "sarahmemory_3d_avatar.blend"
+INFO Draco mesh compression is available, use library at C:\Blender51\5.1\scripts\addons_core\io_scene_gltf2\extern_draco.dll
+07:38:43 | INFO: Starting glTF 2.0 export
+07:38:43 | INFO: Extracting primitive: Sphere
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.001
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.002
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.003
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.004
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.005
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.001
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.002
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.006
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.007
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.003
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.004
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.008
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.005
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.006
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cube.001
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cube.002
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.007
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.008
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.009
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cube.003
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cube.004
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Cylinder.010
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.009
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.010
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: soft_smile_lip
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: Sphere.011
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_00
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_01
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_02
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_03
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_04
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_05
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_06
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_07
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_08
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_09
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: magenta_hair_strand_10
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_center_torso
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_chest_left_V
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_chest_right_V
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_waist_left
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_waist_right
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_pelvis_v
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_arm_L
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_leg_L
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_boot_L
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_arm_R
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_leg_R
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_boot_R
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_back_spine
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_back_cross_L
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Extracting primitive: neon_back_cross_R
+07:38:43 | INFO: Primitives created: 1
+07:38:43 | INFO: Finished glTF 2.0 export in 0.25478172302246094 s
+01:36.953  render           | Saved: 'S:\SarahMemory\resources\avatars\3D\sarahmemory_3d_avatar_preview.png'
+
+
+Blender quit
+
+--- STDERR ---
+S:\SarahMemory\resources\avatars\3D\sarahmemory_3d_avatar_blender_build.py:82: DeprecationWarning: 'Material.use_nodes' is expected to be removed in Blender 6.0
+  mat.use_nodes = True
