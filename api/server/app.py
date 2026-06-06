@@ -1213,11 +1213,33 @@ def load_state() -> dict:
         pass
     return {}
 
+def _write_json_if_changed(path: str, payload, *, ensure_ascii: bool = False) -> bool:
+    """Atomic JSON write that skips disk I/O when content is unchanged."""
+    try:
+        text = json.dumps(payload or {}, indent=2, sort_keys=True, ensure_ascii=ensure_ascii)
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    if f.read() == text:
+                        return False
+        except Exception:
+            pass
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def save_state(state_or_key, value=None) -> None:
     """Persist server state safely.
     - If called with a dict, overwrites state.
     - If called with (key, value), updates that key.
     Never raises.
+    Runtime optimization: skip write when JSON content is unchanged.
     """
     try:
         if value is None and isinstance(state_or_key, dict):
@@ -1226,10 +1248,7 @@ def save_state(state_or_key, value=None) -> None:
             key = str(state_or_key)
             state = load_state()
             state[key] = value
-        tmp = STATE_DB + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state or {}, f, indent=2, sort_keys=True)
-        os.replace(tmp, STATE_DB)
+        _write_json_if_changed(STATE_DB, state, ensure_ascii=False)
     except Exception:
         pass
 
@@ -1261,12 +1280,7 @@ def _read_browser_state() -> dict:
 
 def _write_browser_state(state: dict) -> None:
     try:
-        p = _browser_state_path()
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        tmp = p + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state or {}, f, indent=2, sort_keys=True, ensure_ascii=False)
-        os.replace(tmp, p)
+        _write_json_if_changed(_browser_state_path(), state or {}, ensure_ascii=False)
     except Exception:
         pass
 
@@ -1762,12 +1776,7 @@ def _vr_read_json(path: str, default=None):
 
 def _vr_write_json(path: str, payload) -> bool:
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, sort_keys=True, ensure_ascii=False)
-        os.replace(tmp, path)
-        return True
+        return _write_json_if_changed(path, payload or {}, ensure_ascii=False)
     except Exception as exc:
         app_logger.warning("VR JSON write failed %s: %s", path, exc)
         return False
@@ -2028,7 +2037,11 @@ def _vr_watcher_loop():
                 _vr_stop_renderer(reason="headset_disconnected")
         except Exception as exc:
             app_logger.debug("VR watcher tick failed: %s", exc)
-        time.sleep(2.0)
+        try:
+            _sleep_s = float(os.getenv("SM_VR_WATCHER_INTERVAL_SEC", "5.0") or 5.0)
+        except Exception:
+            _sleep_s = 5.0
+        time.sleep(max(2.0, _sleep_s))
 
 def _vr_ensure_watcher_started() -> None:
     global _VR_WATCHER_STARTED

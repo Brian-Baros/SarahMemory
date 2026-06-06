@@ -2127,3 +2127,62 @@ def init_app(app, connect_sqlite, meta_db_path: str, api_key_auth_ok=None, sign_
 
     _ensure_tables()
     app.register_blueprint(bp)
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
+# Read-only/one-way interop endpoints. These expose broker policy and allow
+# passive envelope translation only. They do not execute tools or commands.
+
+@bp.get("/api/net/interop/policy")
+def net_interop_policy():
+    try:
+        import SarahMemoryNetwork as _SMNet  # type: ignore
+        fn = getattr(_SMNet, "get_interop_broker_policy", None)
+        if callable(fn):
+            return jsonify(fn()), 200
+    except Exception as exc:
+        return _err("interop_policy_error", 500, detail=str(exc))
+    return _ok(
+        schema="SarahMemory.interop_broker_policy.v1",
+        broker_mode="ONE_WAY_BROKER",
+        direct_execution_allowed=False,
+        remote_tool_execution_allowed=False,
+        offline_capable=True,
+    )
+
+@bp.post("/api/net/interop/ingest")
+def net_interop_ingest():
+    packet = _j()
+    try:
+        import SarahMemoryNetwork as _SMNet  # type: ignore
+        translated = getattr(_SMNet, "translate_interop_packet", lambda x: {"ok": False, "error": "translator_missing"})(packet)
+    except Exception as exc:
+        translated = {"ok": False, "error": str(exc)}
+    governance = {"ok": False, "decision": "UNKNOWN", "allow": False}
+    try:
+        import SarahMemoryCognitiveServices as _CogSvc  # type: ignore
+        fn = getattr(_CogSvc, "govern_interop_broker_request", None)
+        if callable(fn):
+            governance = fn((translated or {}).get("envelope") or packet, caller_context={"surface": "appnet", "one_way_broker": True})
+    except Exception as exc:
+        governance = {"ok": False, "decision": "DENY", "allow": False, "error": str(exc)}
+    return jsonify({
+        "ok": True,
+        "one_way_broker": True,
+        "direct_execution_allowed": False,
+        "translated": translated,
+        "governance": governance,
+        "note": "Packet ingested as passive evidence/proposal only; no command/tool execution occurred.",
+    }), 200
+
+@bp.get("/api/net/interop/status")
+def net_interop_status():
+    return _ok(
+        schema="SarahMemory.interop_status.v1",
+        broker_mode="ONE_WAY_BROKER",
+        mcp="adapter_only",
+        a2a="adapter_only",
+        ag_ui="ui_event_stream_only",
+        executes_remote_commands=False,
+        requires_smget_for_actions=True,
+    )
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---

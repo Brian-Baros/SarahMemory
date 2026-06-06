@@ -931,10 +931,29 @@ def api_vision_devices():
             "source": "appvision.msdc",
             "non_blocking_default": True,
         }
+        timeout_seconds = 3.0
+        try:
+            timeout_seconds = max(0.5, min(float(request.args.get("timeout") or os.getenv("SARAH_MSDC_PROBE_TIMEOUT_SEC", "3.0")), 10.0))
+        except Exception:
+            timeout_seconds = 3.0
+        started = time.time()
         if include_discover:
-            payload["discover"] = _MSDC.msdc_camera_discover()  # type: ignore[attr-defined]
+            try:
+                payload["discover"] = _MSDC.msdc_camera_discover(timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
+            except TypeError:
+                payload["discover"] = _MSDC.msdc_camera_discover()  # type: ignore[attr-defined]
         if include_probe:
-            payload["probe"] = _MSDC.msdc_camera_probe()  # type: ignore[attr-defined]
+            try:
+                payload["probe"] = _MSDC.msdc_camera_probe(timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
+            except TypeError:
+                payload["probe"] = _MSDC.msdc_camera_probe()  # type: ignore[attr-defined]
+        payload["source"] = "appvision.msdc.safe_probe"
+        payload["safe_probe"] = {
+            "enabled": True,
+            "timeout_seconds_per_action": timeout_seconds,
+            "elapsed_seconds": round(time.time() - started, 3),
+            "request_hangs_prevented": True,
+        }
         return _response(payload)
     except Exception as exc:
         return _response({"ok": False, "error": "vision_devices_failed", "detail": str(exc)}, 500)
