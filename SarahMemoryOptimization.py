@@ -975,3 +975,103 @@ def get_compute_fabric_snapshot() -> Dict[str, Any]:
 def recommend_compute_lane(task: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return _COMPUTE_FABRIC_PLANNER.recommend_lane(task or {})
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+
+# --- SM V8.0 UI7/BACKEND1/RUNTIME1 START ---
+# Runtime anti-thrash guard: advisory/budgeting helpers for loops, scans, writes, and checkpoints.
+# This class is intentionally local-first and authority-free. It does not execute tasks;
+# callers use it to decide whether to defer, batch, rotate, or skip non-critical work.
+
+class RuntimeAntiThrashGuard:
+    """Bounded runtime budget advisor for SarahMemory AiOS.
+
+    Goals:
+    - Keep hot working state in RAM.
+    - Prefer durable writes only at state boundaries.
+    - Avoid retry storms and unbounded scans.
+    - Provide a compact status packet for the UI System Center.
+    """
+
+    def __init__(self) -> None:
+        self.schema = "SarahMemory.runtime_anti_thrash.v1"
+        self.started_at = time.time()
+        self.last_events: Dict[str, float] = {}
+        self.counters: Dict[str, int] = {
+            "allowed": 0,
+            "deferred": 0,
+            "write_checks": 0,
+            "scan_checks": 0,
+            "subprocess_checks": 0,
+        }
+        self.defaults = {
+            "min_interval_seconds": float(getattr(config, "RUNTIME_GUARD_MIN_INTERVAL_SECONDS", 1.0) or 1.0),
+            "max_scan_files": int(getattr(config, "RUNTIME_GUARD_MAX_SCAN_FILES", 5000) or 5000),
+            "max_write_bytes_per_event": int(getattr(config, "RUNTIME_GUARD_MAX_WRITE_BYTES", 2 * 1024 * 1024) or (2 * 1024 * 1024)),
+            "subprocess_timeout_seconds": float(getattr(config, "RUNTIME_GUARD_SUBPROCESS_TIMEOUT_SECONDS", 30.0) or 30.0),
+            "health_state_write_interval_seconds": float(getattr(config, "RUNTIME_GUARD_HEALTH_STATE_WRITE_SECONDS", 60.0) or 60.0),
+        }
+
+    def should_run(self, key: str, *, min_interval_seconds: Optional[float] = None) -> Dict[str, Any]:
+        now = time.time()
+        key = str(key or "generic")
+        interval = float(min_interval_seconds if min_interval_seconds is not None else self.defaults["min_interval_seconds"])
+        last = float(self.last_events.get(key) or 0.0)
+        elapsed = now - last
+        if elapsed >= interval:
+            self.last_events[key] = now
+            self.counters["allowed"] += 1
+            return {"ok": True, "allowed": True, "key": key, "elapsed": elapsed, "min_interval_seconds": interval}
+        self.counters["deferred"] += 1
+        return {"ok": True, "allowed": False, "key": key, "elapsed": elapsed, "min_interval_seconds": interval, "reason": "cadence_budget"}
+
+    def check_write(self, *, bytes_count: int = 0, critical: bool = False) -> Dict[str, Any]:
+        self.counters["write_checks"] += 1
+        limit = int(self.defaults["max_write_bytes_per_event"])
+        allowed = bool(critical or int(bytes_count or 0) <= limit)
+        return {"ok": True, "allowed": allowed, "bytes": int(bytes_count or 0), "limit": limit, "critical": bool(critical)}
+
+    def check_scan(self, *, expected_files: int = 0) -> Dict[str, Any]:
+        self.counters["scan_checks"] += 1
+        limit = int(self.defaults["max_scan_files"])
+        allowed = int(expected_files or 0) <= limit
+        return {"ok": True, "allowed": allowed, "expected_files": int(expected_files or 0), "limit": limit}
+
+    def check_subprocess(self, *, timeout_seconds: Optional[float] = None) -> Dict[str, Any]:
+        self.counters["subprocess_checks"] += 1
+        default_timeout = float(self.defaults["subprocess_timeout_seconds"])
+        timeout = float(timeout_seconds if timeout_seconds is not None else default_timeout)
+        timeout = max(1.0, min(timeout, default_timeout))
+        return {"ok": True, "allowed": True, "timeout_seconds": timeout, "default_timeout_seconds": default_timeout}
+
+    def profile(self) -> Dict[str, Any]:
+        return {
+            "ok": True,
+            "schema": self.schema,
+            "uptime_seconds": round(time.time() - self.started_at, 3),
+            "defaults": dict(self.defaults),
+            "counters": dict(self.counters),
+            "last_event_count": len(self.last_events),
+            "doctrine": {
+                "ram_first": True,
+                "durable_writes_at_state_boundaries": True,
+                "bounded_scans": True,
+                "subprocess_timeouts_required": True,
+                "network_retry_storms_disallowed": True,
+                "authority": False,
+            },
+        }
+
+_RUNTIME_ANTI_THRASH_GUARD = RuntimeAntiThrashGuard()
+
+
+def get_runtime_anti_thrash_profile() -> Dict[str, Any]:
+    return _RUNTIME_ANTI_THRASH_GUARD.profile()
+
+
+def runtime_guard_should_run(key: str, min_interval_seconds: Optional[float] = None) -> Dict[str, Any]:
+    return _RUNTIME_ANTI_THRASH_GUARD.should_run(key, min_interval_seconds=min_interval_seconds)
+
+
+def runtime_guard_check_write(bytes_count: int = 0, critical: bool = False) -> Dict[str, Any]:
+    return _RUNTIME_ANTI_THRASH_GUARD.check_write(bytes_count=bytes_count, critical=critical)
+# --- SM V8.0 UI7/BACKEND1/RUNTIME1 END ---
