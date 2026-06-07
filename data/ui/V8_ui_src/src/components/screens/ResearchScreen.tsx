@@ -225,7 +225,7 @@ function summarizeDevBridgeLatest(raw: unknown): Record<string, any> {
   return {
     ok: Boolean(root.ok),
     service: root.service || "devbridge",
-    version: root.version || "8.0.0",
+    version: root.version || "9.0.0",
     ts: root.ts || null,
     bridge_root: root.bridge_root || "",
     counts: root.counts || {},
