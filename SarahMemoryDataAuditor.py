@@ -1,8 +1,9 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDataAuditor.py
-Part of the SarahMemory Companion AI-bot Platform / SarahMemory AiOS
-Version: v8.0.0
-Date: 2026-05-21
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -12,38 +13,39 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-Purpose:
-    Read-only SarahMemory data-layout auditor, focused tree generator, and future
-    bootable-AiOS installation verifier foundation.
+Read-only SarahMemory data-layout auditor, focused tree generator, and future
+bootable-AiOS installation verifier foundation.
 
 Doctrine:
-    - Audit first. Do not move, delete, rewrite, or migrate files automatically.
-    - ../data/settings is the runtime configuration/state JSON home.
-    - ../data/memory/datasets is the SQLite DB home.
-    - ../data/logs is the log home.
-    - ../data/reports is the report home.
-    - ../data/drivers and ../data/boot/drivers are driver-package homes.
-    - ../data/models is the default local model inventory root.
-    - ../data/registry is deprecated for runtime JSON such as body_map.json and
-      vision_policy.json unless a future explicit registry-only contract is added.
+- Audit first. Do not move, delete, rewrite, or migrate files automatically.
+- ../data/settings is the runtime configuration/state JSON home.
+- ../data/memory/datasets is the SQLite DB home.
+- ../data/logs is the log home.
+- ../data/reports is the report home.
+- ../data/drivers and ../data/boot/drivers are driver-package homes.
+- ../data/models is the default local model inventory root.
+- ../data/registry is deprecated for runtime JSON such as body_map.json and
+vision_policy.json unless a future explicit registry-only contract is added.
 
 Usage examples:
-    python SarahMemoryDataAuditor.py
-    python SarahMemoryDataAuditor.py --audit
-    python SarahMemoryDataAuditor.py --tree settings
-    python SarahMemoryDataAuditor.py --tree drivers --max-depth 4
-    python SarahMemoryDataAuditor.py --tree models --dirs-only
-    python SarahMemoryDataAuditor.py --deprecated-registry
-    python SarahMemoryDataAuditor.py --orphans
-    python SarahMemoryDataAuditor.py --gui
+python SarahMemoryDataAuditor.py
+python SarahMemoryDataAuditor.py --audit
+python SarahMemoryDataAuditor.py --tree settings
+python SarahMemoryDataAuditor.py --tree drivers --max-depth 4
+python SarahMemoryDataAuditor.py --tree models --dirs-only
+python SarahMemoryDataAuditor.py --deprecated-registry
+python SarahMemoryDataAuditor.py --orphans
+python SarahMemoryDataAuditor.py --gui
 
 Notes:
-    This module is deliberately dependency-light and headless-safe. The optional
-    Tkinter GUI is launched only when requested and fails gracefully if Tkinter is
-    unavailable.
+This module is deliberately dependency-light and headless-safe. The optional
+Tkinter GUI is launched only when requested and fails gracefully if Tkinter is
+unavailable.
 """
+
 from __future__ import annotations
 
 # --- SARAHMETA START ---
@@ -63,6 +65,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Read-only data layout auditor and focused tree/report generator. Future bootable AiOS installation verifier foundation. No automatic moves/deletes."
 # --- SARAHMETA END ---
 
@@ -82,7 +90,7 @@ except Exception:  # pragma: no cover - expected to be usable standalone
     config = None  # type: ignore
 
 
-VERSION_STR = "v8.0.0"
+VERSION_STR = "v9.0.0"
 VERSION_TAG = "v800"
 MODULE_NAME = "SarahMemoryDataAuditor"
 
@@ -1126,10 +1134,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# ====================================================================
-# END OF SarahMemoryDataAuditor.py v8.0.0
-# ====================================================================
-
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
 # Local-first semantic telemetry. Default behavior is RAM-buffered only; disk
 # export is explicit and compact to avoid log/write storms.
@@ -1198,3 +1202,7 @@ def record_semantic_telemetry(**kwargs: Any) -> Dict[str, Any]:
 def get_semantic_telemetry_snapshot() -> Dict[str, Any]:
     return _SEMANTIC_TELEMETRY.snapshot()
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryDataAuditor.py v9.0.0
+# ====================================================================

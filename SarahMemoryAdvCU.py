@@ -1,8 +1,8 @@
-"""=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryAdvCU.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,12 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-ADVANCED CONTEXT UNIT (AdvCU) 
+ADVANCED CONTEXT UNIT (AdvCU)
 ===========================================================
 
-PURPOSE:
 --------
 The Advanced Context Unit is one of the most powerful core modules in SarahMemory.
 It serves as the central intelligence for understanding user intent and enabling
@@ -27,34 +27,34 @@ system automation capabilities.
 KEY CAPABILITIES:
 -----------------
 1. INTENT CLASSIFICATION
-   - Rule-based fast classification (offline-first)
-   - Neural embedding-based classification (when models available)
-   - Hybrid scoring with confidence levels
-   - 19+ distinct intent categories
+- Rule-based fast classification (offline-first)
+- Neural embedding-based classification (when models available)
+- Hybrid scoring with confidence levels
+- 19+ distinct intent categories
 
 2. COMMAND PARSING
-   - Action + Subject extraction
-   - Math expression detection
-   - URL/Domain recognition
-   - App/Site identification
-   - Structured ParsedCommand output
+- Action + Subject extraction
+- Math expression detection
+- URL/Domain recognition
+- App/Site identification
+- Structured ParsedCommand output
 
 3. TEXT EMBEDDINGS
-   - Sentence Transformer support (local models)
-   - Fallback hash-based embeddings (always works offline)
-   - Cosine similarity scoring
+- Sentence Transformer support (local models)
+- Fallback hash-based embeddings (always works offline)
+- Cosine similarity scoring
 
 4. CODE INTROSPECTION
-   - AST-based Python source analysis
-   - URL/Domain/Email extraction from codebase
-   - Prompt template detection
-   - Delta-aware database storage
+- AST-based Python source analysis
+- URL/Domain/Email extraction from codebase
+- Prompt template detection
+- Delta-aware database storage
 
 5. AUTOMATION SUPPORT
-   - Desktop app launching vocabulary
-   - System control commands
-   - Window management
-   - Agent control phrases
+- Desktop app launching vocabulary
+- System control commands
+- Window management
+- Agent control phrases
 
 INTEGRATION POINTS:
 -------------------
@@ -80,6 +80,7 @@ DATABASE TABLES (functions.db):
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "semantic_core"
@@ -97,8 +98,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Advanced Context Unit for intent classification, command parsing, embeddings, semantic compression, and code introspection. Foundational cognitive core module."
 # --- SARAHMETA END ---
+
 import re
 import os
 import json
@@ -2989,9 +2997,7 @@ __all__ = [
     "SUBJECT_LEXICON",
 ]
 
-# ====================================================================
-# END OF SarahMemoryAdvCU.py v8.0.0
-# ====================================================================
+
 
 # -----------------------------------------------------------------------------
 # V10/V9G Canonical SelfAware Query Packet bridge
@@ -3128,3 +3134,7 @@ def classify_intent_contextual(
 ) -> Tuple[str, float, Dict[str, Any]]:
     pkt = build_contextual_intent_packet(text, language_context_packet=language_context_packet, context_packet=context_packet)
     return str(pkt.get("intent") or "statement"), float(pkt.get("confidence") or 0.0), pkt
+
+# ====================================================================
+# END OF SarahMemoryAdvCU.py v9.0.0
+# ====================================================================

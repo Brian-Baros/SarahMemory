@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryFacialRecognition.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "vision_engine"
@@ -33,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Facial recognition and object-assisted vision engine with DNN/YOLO/ONNX/TorchScript fallback order, Haar cascade fallback, vector memory hooks, and facial event logging."
 # --- SARAHMETA END ---
+
 import cv2
 import logging
 import os
@@ -202,7 +212,7 @@ CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"  # 
 def add_vector(vector):
     """Add a vector to the VSM FAISS index (shared across SystemLearn + FacialRecognition).
 
-    v8.0.0 Fixes:
+    v9.0.0 Fixes:
       - Enforces a single VECTOR_DIM across the platform (default 384).
       - Normalizes and reshapes vectors to (1, VECTOR_DIM) float32 before indexing.
       - Writes index to disk atomically and logs events to DATASETS_DIR/system_logs.db.
@@ -891,6 +901,7 @@ def get_eyeglasses_cascade_path():
         return cv2.data.haarcascades + "haarcascade_eye_tree_eyeglasses.xml"
     except Exception:
         return None
+
 # ====================================================================
-# END OF SarahMemoryFacialRecognition.py v8.0.0
+# END OF SarahMemoryFacialRecognition.py v9.0.0
 # ====================================================================

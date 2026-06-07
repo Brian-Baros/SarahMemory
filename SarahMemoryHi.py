@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryHi.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,10 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-SYSTEM INFORMATION MODULE v8.0.0
+SYSTEM INFORMATION MODULE v9.0.0
 =============================================
 This module has standards with comprehensive hardware
 detection, advanced network monitoring, and real-time system metrics while maintaining
@@ -24,41 +25,41 @@ detection, advanced network monitoring, and real-time system metrics while maint
 KEY ENHANCEMENTS:
 -----------------
 1. COMPREHENSIVE HARDWARE DETECTION
-   - Cross-platform system information
-   - CPU, memory, disk, network metrics
-   - GPU detection and monitoring
-   - Thermal sensor readings
-   - Battery status (mobile devices)
-   - Hardware capabilities profiling
+- Cross-platform system information
+- CPU, memory, disk, network metrics
+- GPU detection and monitoring
+- Thermal sensor readings
+- Battery status (mobile devices)
+- Hardware capabilities profiling
 
 2. ADVANCED NETWORK MONITORING
-   - Real-time connectivity status
-   - Network state tracking (green/yellow/red)
-   - Bandwidth utilization monitoring
-   - Connection quality metrics
-   - Async network state updates
-   - Multi-interface support
+- Real-time connectivity status
+- Network state tracking (green/yellow/red)
+- Bandwidth utilization monitoring
+- Connection quality metrics
+- Async network state updates
+- Multi-interface support
 
 3. PERFORMANCE METRICS
-   - Real-time resource usage
-   - Historical trend analysis
-   - Performance bottleneck detection
-   - Resource allocation recommendations
-   - Predictive usage patterns
+- Real-time resource usage
+- Historical trend analysis
+- Performance bottleneck detection
+- Resource allocation recommendations
+- Predictive usage patterns
 
 4. CROSS-PLATFORM COMPATIBILITY
-   - Windows (including DXDiag integration)
-   - Linux (lscpu, lspci integration)
-   - macOS support
-   - Headless server compatibility
-   - Graceful feature degradation
+- Windows (including DXDiag integration)
+- Linux (lscpu, lspci integration)
+- macOS support
+- Headless server compatibility
+- Graceful feature degradation
 
 5. COMPREHENSIVE LOGGING
-   - Structured system logs
-   - JSON-formatted metrics
-   - Database persistence
-   - Historical data retention
-   - Audit trail generation
+- Structured system logs
+- JSON-formatted metrics
+- Database persistence
+- Historical data retention
+- Audit trail generation
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -88,7 +89,9 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "telemetry_engine"
@@ -106,8 +109,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "System information and network telemetry engine for hardware detection, health metrics, GPU/thermal info, connectivity state, and async network status updates."
 # --- SARAHMETA END ---
+
 import logging
 import platform
 import psutil
@@ -154,7 +164,7 @@ _network_state_cache = {"state": "unknown", "updated": None}
 # SarahMemory's answers aligned with the environment it actually booted into.
 _BOOT_ENVIRONMENT_CACHE: Dict[str, Any] = {"snapshot": None, "ts": 0.0, "boot_id": ""}
 _BOOT_ENVIRONMENT_BUILDING = False
-_BOOT_ENVIRONMENT_SCHEMA_VERSION = "8.0.0-env-unified-1"
+_BOOT_ENVIRONMENT_SCHEMA_VERSION = "9.0.0-env-unified-1"
 
 
 def _datasets_dir_path() -> Path:
@@ -695,7 +705,7 @@ def get_system_info() -> Dict[str, Any]:
             system_info['DXDiag Info'] = "Not available on non-Windows platforms"
         
         # Metadata
-        system_info['Version'] = "8.0.0"
+        system_info['Version'] = "9.0.0"
         system_info['Timestamp'] = datetime.now().isoformat()
         
         logger.info("[v8.0] System information retrieved successfully")
@@ -703,7 +713,7 @@ def get_system_info() -> Dict[str, Any]:
         
     except Exception as e:
         logger.error(f"[v8.0] Error retrieving system information: {e}")
-        return {"error": str(e), "version": "8.0.0"}
+        return {"error": str(e), "version": "9.0.0"}
 
 # =============================================================================
 # DXDiag INFORMATION - v8.0 Enhanced
@@ -941,7 +951,7 @@ def display_system_info(info: Dict[str, Any]) -> None:
         text_area.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         
         # Format and insert information
-        info_text = "SarahMemory System Information v8.0.0\n"
+        info_text = "SarahMemory System Information v9.0.0\n"
         info_text += "=" * 80 + "\n\n"
         
         for key, value in info.items():
@@ -994,7 +1004,7 @@ def log_system_info_to_db(info: Dict[str, Any]) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
                 info TEXT NOT NULL,
-                version TEXT DEFAULT '8.0.0',
+                version TEXT DEFAULT '9.0.0',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -1005,7 +1015,7 @@ def log_system_info_to_db(info: Dict[str, Any]) -> None:
         
         cursor.execute(
             "INSERT INTO system_logs (timestamp, info, version) VALUES (?, ?, ?)",
-            (timestamp, info_json, "8.0.0")
+            (timestamp, info_json, "9.0.0")
         )
         
         conn.commit()
@@ -1143,7 +1153,7 @@ def get_system_health_score() -> Dict[str, Any]:
             'network_health': round(net_score, 2),
             'status': 'excellent' if overall >= 80 else 'good' if overall >= 60 else 'fair' if overall >= 40 else 'poor',
             'timestamp': datetime.now().isoformat(),
-            'version': '8.0.0'
+            'version': '9.0.0'
         }
         
     except Exception as e:
@@ -1580,7 +1590,7 @@ def _build_b_level_driver_readiness_snapshot_uncached(drivers_root: Optional[Uni
         'ready_count': ready_count,
         'not_ready_count': max(0, len(entries) - ready_count),
         'timestamp': datetime.now().isoformat(),
-        'version': '8.0.0',
+        'version': '9.0.0',
     }
 
 
@@ -1622,7 +1632,7 @@ def boot_probe_b_level_driver_readiness(drivers_root: Optional[Union[str, Path]]
 # =============================================================================
 if __name__ == '__main__':
     print("=" * 80)
-    print("SarahMemory System Information v8.0.0 - Test Mode")
+    print("SarahMemory System Information v9.0.0 - Test Mode")
     print("=" * 80)
     
     logger.info("[v8.0] Starting SarahMemoryHi test suite")
@@ -1669,7 +1679,6 @@ if __name__ == '__main__':
 
 logger.info("[v8.0] SarahMemoryHi module loaded successfully")
 
-
 # ====================================================================
-# END OF SarahMemoryHi.py v8.0.0
+# END OF SarahMemoryHi.py v9.0.0
 # ====================================================================

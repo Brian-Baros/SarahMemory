@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryEncryption.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,11 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
 
-
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "security_core"
@@ -35,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Core encryption and cryptographic utility layer for Fernet data encryption, SarahNet transport crypto, and license-signing/verification helpers."
 # --- SARAHMETA END ---
+
 import logging
 import os
 from cryptography.fernet import Fernet
@@ -526,7 +534,7 @@ class SarahMemoryEncryptionGUI:
         self.messagebox = messagebox
 
         self.root = tk.Tk()
-        self.root.title("SarahMemory Encryption Tools (v8.0.0)")
+        self.root.title("SarahMemory Encryption Tools (v9.0.0)")
         self.root.geometry("920x700")
 
         # state
@@ -786,7 +794,6 @@ except Exception as _e_gui:
     except Exception:
         pass
 
-
 # ====================================================================
-# END OF SarahMemoryEncryption.py v8.0.0
+# END OF SarahMemoryEncryption.py v9.0.0
 # ====================================================================

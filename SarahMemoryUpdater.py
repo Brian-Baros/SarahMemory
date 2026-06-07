@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryUpdater.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,10 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-AUTO-UPDATER SYSTEM v8.0.0
+AUTO-UPDATER SYSTEM v9.0.0
 ======================================
 This module has standards with enhanced self-update
 capabilities, intelligent file analysis, comprehensive backup systems, and robust
@@ -24,32 +25,32 @@ error handling for safe autonomous updates.
 KEY ENHANCEMENTS:
 -----------------
 1. INTELLIGENT UPDATE SYSTEM
-   - Smart file change detection with SHA256 hashing
-   - Schedule-aware update execution
-   - Non-blocking startup integration
-   - Graceful degradation on errors
-   - Cross-platform compatibility
+- Smart file change detection with SHA256 hashing
+- Schedule-aware update execution
+- Non-blocking startup integration
+- Graceful degradation on errors
+- Cross-platform compatibility
 
 2. ENHANCED SAFETY MECHANISMS
-   - Full-system backup before updates
-   - Per-file backup for rollback
-   - Syntax validation before deployment
-   - Sandbox testing environment
-   - Windows Defender integration
+- Full-system backup before updates
+- Per-file backup for rollback
+- Syntax validation before deployment
+- Sandbox testing environment
+- Windows Defender integration
 
 3. ADVANCED FILE MANAGEMENT
-   - Root-only file iteration (non-recursive)
-   - Intelligent exclude patterns
-   - Extension-based filtering
-   - State tracking and persistence
-   - Differential updates
+- Root-only file iteration (non-recursive)
+- Intelligent exclude patterns
+- Extension-based filtering
+- State tracking and persistence
+- Differential updates
 
 4. MULTI-MODE OPERATION
-   - SarahMemoryAPI integration (preferred)
-   - OpenAI SDK fallback support
-   - Offline-safe operation
-   - Auto-approve mode for CI/CD
-   - Git push automation
+- SarahMemoryAPI integration (preferred)
+- OpenAI SDK fallback support
+- Offline-safe operation
+- Auto-approve mode for CI/CD
+- Git push automation
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -74,6 +75,7 @@ INTEGRATION POINTS:
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "update_engine"
@@ -91,8 +93,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Governed auto-updater with backup, hashing, syntax validation, patch-feed sync, license-gated corporate feeds, rollback, and safe multi-mode update handling."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import re
@@ -484,7 +493,7 @@ def _manifest_iter_files(manifest: dict) -> List[dict]:
     {
       "channel": "community|corporate|enterprise",
       "generated_at": "2025-12-21T00:00:00Z",
-      "min_app_version": "8.0.0",
+      "min_app_version": "9.0.0",
       "files": [
         {"path": "v800/patches/SM_v800_patch_20251221_214953_rankings_fix.py",
          "sha256": "<hex>",
@@ -1613,7 +1622,7 @@ def update_from_zip(zip_path: str) -> bool:
 
 if __name__ == "__main__":
     logger.info("[v8.0] SarahMemoryUpdater module test")
-    print("SarahMemory Auto-Updater v8.0.0")
+    print("SarahMemory Auto-Updater v9.0.0")
     print("=" * 60)
     print(f"Base Directory: {BASE_DIR}")
     print(f"Data Directory: {DATA_DIR}")
@@ -1636,5 +1645,5 @@ if __name__ == "__main__":
         logger.error(f"[v8.0] Test error: {e}")
 
 # ====================================================================
-# END OF SarahMemoryUpdater.py v8.0.0
+# END OF SarahMemoryUpdater.py v9.0.0
 # ====================================================================

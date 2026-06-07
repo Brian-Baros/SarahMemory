@@ -1,27 +1,65 @@
-# --==The SarahMemory Project==--
-# File: SarahMemoryPreTokenAnalyzer.py
-# Purpose: Governed pre-token semantic analysis and ambiguity control for SarahMemory AiOS
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: Draft generated for Brian Lee Baros / SarahMemory Project
-# Version: 8.0.0-draft
-# Notes:
-# - This module is intentionally local-first and deterministic.
-# - It does NOT execute actions and it does NOT answer the user directly.
-# - It prepares text for SarahMemoryAdvCU / SarahMemoryNeuron by:
-#     * normalizing raw text
-#     * detecting abbreviations and opaque text
-#     * scoring ambiguity / compression safety
-#     * building compact symbolic packet drafts
-#     * generating targeted clarification questions
-#     * merging clarification answers into the same conceptual query frame
-#
-# Enterprise design goals:
-# - Safe by default
-# - Readable / auditable output
-# - No third-party dependencies required
-# - Graceful degradation when context is limited
+"""--==The SarahMemory Project==--
+File: SarahMemoryPreTokenAnalyzer.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: Governed pre-token semantic analysis and ambiguity control for SarahMemory AiOS
+Notes:
+- This module is intentionally local-first and deterministic.
+- It does NOT execute actions and it does NOT answer the user directly.
+- It prepares text for SarahMemoryAdvCU / SarahMemoryNeuron by:
+* normalizing raw text
+* detecting abbreviations and opaque text
+* scoring ambiguity / compression safety
+* building compact symbolic packet drafts
+* generating targeted clarification questions
+* merging clarification answers into the same conceptual query frame
+
+Enterprise design goals:
+- Safe by default
+- Readable / auditable output
+- No third-party dependencies required
+- Graceful degradation when context is limited
+"""
 
 from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "pretoken_semantic_gate"
+# CATEGORY = "semantic_analysis_and_ambiguity_control"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "pretoken_analyzer"
+# FAMILY = "language_governance"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Local-first governed pre-token semantic analyzer for normalization, ambiguity scoring, clarification framing, and safe packet preparation before response/routing."
+# --- SARAHMETA END ---
 
 import copy
 import json
@@ -34,7 +72,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-PROJECT_VERSION = "8.0.0-draft"
+PROJECT_VERSION = "9.0.0-draft"
 MODULE_NAME = "SarahMemoryPreTokenAnalyzer"
 
 
@@ -1725,3 +1763,7 @@ def candidate_blocked_by_language_packet(candidate: str, language_packet: Dict[s
         return _CIL.candidate_blocked_by_language_packet(candidate, language_packet)
     except Exception:
         return {"blocked": False, "candidate": str(candidate or "")}
+
+# ====================================================================
+# END OF SarahMemoryPreTokenAnalyzer.py v9.0.0
+# ====================================================================

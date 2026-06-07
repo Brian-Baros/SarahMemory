@@ -1,9 +1,8 @@
-"""
---==The SarahMemory Project==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryLLM.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-04-09
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 Purpose: Model verification, download manager, and lightweight routing helpers.
@@ -22,7 +22,9 @@ Notes:
 - Only downloads models when missing/invalid locally.
 - Uses category-based stacks + hardware tier recommendations from SarahMemoryGlobals.
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "model_manager"
@@ -40,8 +42,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Model verification, download, integrity, storage-budget, and tier-aware model installation manager. Headless-safe and helper-only."
 # --- SARAHMETA END ---
+
 import os
 import json
 import logging
@@ -960,7 +969,7 @@ def get_model_manager_status(*, refresh: bool = True) -> Dict[str, Any]:
 
     return {
         "ok": True,
-        "version": "8.0.0",
+        "version": "9.0.0",
         "registry_path": model_registry_path(),
         "models_dir": MODELS_DIR,
         "external_roots": registry.get("external_roots") or [],
@@ -1524,13 +1533,13 @@ class SarahMemoryHydraModelManager:
 
         # Load persisted state (resumable)
         self._state = self._load_json(self._state_path, default={
-            "version": "8.0.0",
+            "version": "9.0.0",
             "pending": [],
             "inflight": None,
             "last_gc_ts": 0,
         })
         self._active = self._load_json(self._active_path, default={
-            "version": "8.0.0",
+            "version": "9.0.0",
             "active": {},   # category -> {repo, local_dir, ts}
             "rollback": {}, # category -> {repo, local_dir, ts}
         })
@@ -2159,3 +2168,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# ====================================================================
+# END OF SarahMemoryLLM.py v9.0.0
+# ====================================================================

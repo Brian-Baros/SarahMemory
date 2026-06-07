@@ -1,8 +1,8 @@
-"""=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryUIupdater.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,35 +13,37 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemoryUIupdater.py
 SarahMemory Web UI Auto Updater (PythonAnywhere, .env-driven)
 
 Behavior:
-    - Loads GITHUB_TOKEN (and optional UI_REPO_URL) from .env
-    - Ensures the following directory layout under the SarahMemory project:
+- Loads GITHUB_TOKEN (and optional UI_REPO_URL) from .env
 
-        /home/Softdev0/SarahMemory/
-            data/
-                ui/
-                    app.js
-                    index.html
-                    styles.css
-                    V8/          <-- built static UI (served to users)
-                    V8_ui_src/   <-- GitHub repo source (sarah-s-dashboard)
+/home/Softdev0/SarahMemory/
+data/
+ui/
+app.js
+index.html
+styles.css
+V8/          <-- built static UI (served to users)
+V8_ui_src/   <-- GitHub repo source (sarah-s-dashboard)
 
-    - Clones or updates the sarah-s-dashboard repo into:
-        data/ui/V8_ui_src
+- Clones or updates the sarah-s-dashboard repo into:
+data/ui/V8_ui_src
 
-    - Runs `npm install` (first time) and `npm run build` in V8_ui_src
-    - Copies the built `dist/` (or `build/`) contents into:
-        data/ui/V8
+- Runs `npm install` (first time) and `npm run build` in V8_ui_src
+- Copies the built `dist/` (or `build/`) contents into:
+data/ui/V8
 
-    - Creates missing folders:
-        data/ui, data/ui/V8, data/ui/V8_ui_src
+- Creates missing folders:
+data/ui, data/ui/V8, data/ui/V8_ui_src
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "ui_update_tool"
@@ -59,8 +61,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Web UI repo sync/build/deploy updater for V8_ui_src to V8. Handles clone/pull, npm install, npm build, backup, and static deployment."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import subprocess
@@ -468,7 +477,7 @@ def main() -> int:
     args = parser.parse_args()
 
     print("============================================================")
-    print("         SarahMemory AiOS v8.0.0 Web UI Updater             ")
+    print("         SarahMemory AiOS v9.0.0 Web UI Updater             ")
     print("============================================================")
     print(f"[INFO] BASE_DIR    = {BASE_DIR}")
     print(f"[INFO] DATA_UI_DIR = {DATA_UI_DIR}")
@@ -512,5 +521,5 @@ if __name__ == "__main__":
     sys.exit(main())
 
 # ====================================================================
-# END OF SarahMemoryUIupdater.py v8.0.0
+# END OF SarahMemoryUIupdater.py v9.0.0
 # ====================================================================

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDiagnostics.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "diagnostics_engine"
@@ -33,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "System diagnostics and health-check engine for required files, governed core status, response-memory schema, network/API reachability, WebUI bridge checks, and module self-tests."
 # --- SARAHMETA END ---
+
 import os
 import logging
 import platform
@@ -3022,7 +3032,7 @@ def run_full_diagnostics_suite(write_aggregate_log: bool = False) -> dict:
 
 
 # ============================
-# PHASE X: SarahNet / MCP Diagnostics + Self-Repair (v8.0.0)
+# PHASE X: SarahNet / MCP Diagnostics + Self-Repair (v9.0.0)
 # ============================
 
 def run_sarahnet_mcp_diagnostics(
@@ -3398,9 +3408,6 @@ if __name__ == '__main__':
     else:
         # No arguments => show interactive diagnostics menu
         diagnostics_menu()
-# ====================================================================
-# END OF SarahMemoryDiagnostics.py v8.0.0
-# ====================================================================
 
 # =============================================================================
 # SARAH_REM_DIAGNOSTICS_LANE_V1
@@ -3733,3 +3740,7 @@ def collect_thermal_hard_evidence(requested_component="body_thermal", claim="", 
         'read_only':True,
         'action_taken':False,
     }
+
+# ====================================================================
+# END OF SarahMemoryDiagnostics.py v9.0.0
+# ====================================================================

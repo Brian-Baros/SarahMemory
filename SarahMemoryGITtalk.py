@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+
+"""--==The SarahMemory Project==--
+File: SarahMemoryGITtalk.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,35 +16,35 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
 
-
 SarahMemoryGITtalk.py  (MASTER monkey patch - FRONTEND ONLY)
 
 TEMP placement (as you requested):
-  /home/Softdev0/SarahMemory/data/mods/v800/SarahMemoryGITtalk.py
+/home/Softdev0/SarahMemory/data/mods/v800/SarahMemoryGITtalk.py
 
 What this file does (when present on PythonAnywhere):
 - Exposes secure API endpoints (Flask Blueprint) so you can:
-    1) chat/plan a patch (OpenAI → unified diff)
-    2) preview the patch in the WebUI
-    3) apply the patch (git apply → commit → PUSH to sarah-s-dashboard)
-    4) automatically run SarahMemoryUIupdater.py (build/deploy WebUI)
+1) chat/plan a patch (OpenAI → unified diff)
+2) preview the patch in the WebUI
+3) apply the patch (git apply → commit → PUSH to sarah-s-dashboard)
+4) automatically run SarahMemoryUIupdater.py (build/deploy WebUI)
 - ALSO supports CLI modes (optional), but you can run everything via WebUI.
 
 STRICT RULES:
 - ONLY operates on frontend checkout:
-    /home/Softdev0/SarahMemory/data/ui/V8_ui_src
+/home/Softdev0/SarahMemory/data/ui/V8_ui_src
 - PUSHES ONLY to sarah-s-dashboard repo (origin url must contain "sarah-s-dashboard")
 - NEVER touches sarahmemory repo
 - NEVER touches sarahmemory-api repo
 
 SECURITY:
 - All API endpoints require header:
-    X-Sarah-Admin-Key: <secret>
-  Secret must be set server-side in .env as SARAH_ADMIN_KEY (or SARAH_WEBUI_ADMIN_KEY).
+X-Sarah-Admin-Key: <secret>
+Secret must be set server-side in .env as SARAH_ADMIN_KEY (or SARAH_WEBUI_ADMIN_KEY).
 - No secrets are ever sent to the browser except via your own backend.
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "frontend_patch_tool"
@@ -60,8 +62,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Restricted frontend-only patch planning/apply/push tool for sarah-s-dashboard with admin-key gating, git safety checks, and optional UI rebuild trigger."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import re
@@ -766,3 +775,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# ====================================================================
+# END OF SarahMemoryGITtalk.py v9.0.0
+# ====================================================================

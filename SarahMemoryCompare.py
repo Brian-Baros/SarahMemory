@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryCompare.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,10 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-RESPONSE COMPARISON ENGINE v8.0.0
+RESPONSE COMPARISON ENGINE v9.0.0
 ==============================================
 
 This module provides multi-source comparison, advanced semantic analysis,
@@ -24,15 +25,17 @@ with existing SarahMemory modules.
 
 This file is patched to hardcode the Compare GuardDogs required by the
 SarahMemory foundation framework:
-  1. Output Validity Guard
-  2. Source Consensus Guard
-  3. Intent Policy Guard
+1. Output Validity Guard
+2. Source Consensus Guard
+3. Intent Policy Guard
 
 These guarddogs act as the final answer acceptance judge before a response
 may move into presentation generation.
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "guarddog_engine"
@@ -50,8 +53,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Response comparison and final-answer judging engine implementing Output Validity, Source Consensus, and Intent Policy GuardDogs."
 # --- SARAHMETA END ---
+
 import datetime
 import hashlib
 import json
@@ -641,7 +651,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
             "accepted": True,
             "decision": "SKIPPED",
             "guarddogs": {},
-            "version": "8.0.0",
+            "version": "9.0.0",
         }
 
     timestamp = datetime.datetime.now().isoformat()
@@ -673,7 +683,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
                     "consensus": {"decision": "SKIPPED"},
                     "intent_policy": {"decision": "SKIPPED"},
                 },
-                "version": "8.0.0",
+                "version": "9.0.0",
             }
             logger.info(f"[v8.0][Compare] Validity REJECT | Issues: {validity.get('issues')}")
             return result
@@ -773,7 +783,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
                     "recommended_next": recommended_next,
                 },
             },
-            "version": "8.0.0",
+            "version": "9.0.0",
         }
 
         try:
@@ -821,7 +831,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
                     "recommended_next": recommended_next,
                 },
             },
-            "version": "8.0.0",
+            "version": "9.0.0",
         }
 
         logger.info(
@@ -843,7 +853,7 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
             "decision": "ERROR",
             "recommended_next": "fallback_to_lower_deterministic_tier",
             "guarddogs": {},
-            "version": "8.0.0",
+            "version": "9.0.0",
         }
 
 
@@ -1109,7 +1119,7 @@ def select_best_suggestion(user_text: str, candidates: Dict[str, str], intent: s
 # =============================================================================
 if __name__ == "__main__":
     print("=" * 80)
-    print("SarahMemory Compare v8.0.0 - Test Mode")
+    print("SarahMemory Compare v9.0.0 - Test Mode")
     print("=" * 80)
 
     input_text = input("\nEnter prompt for test comparison: ").strip()
@@ -1144,9 +1154,6 @@ if __name__ == "__main__":
         print(f"\n{summary}\n")
 
 logger.info("[v8.0] SarahMemoryCompare module loaded successfully")
-# ====================================================================
-# END OF SarahMemoryCompare.py v8.0.0
-# ====================================================================
 
 # -----------------------------------------------------------------------------
 # V10/V9G SelfAware answer-shape guard
@@ -1288,3 +1295,7 @@ def compare_interop_envelope(envelope: Optional[Dict[str, Any]] = None, expected
         review.setdefault("reasons", []).append("Protocol does not match expected adapter contract.")
     return review
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryCompare.py v9.0.0
+# ====================================================================

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryReply.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,7 +13,38 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-==============================================================================="""
+
+===============================================================================
+"""
+
+from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "reply_router"
+# CATEGORY = "response_generation"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "reply_pipeline"
+# HARDWARE_DOMAIN = "audio_visual_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "reply"
+# FAMILY = "presentation"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Central reply-routing and response-bundle generator connecting GUI/WebUI input to local reasoning, research, personality styling, and presentation-safe output."
+# --- SARAHMETA END ---
+
 # =============================================================================
 #  Description:
 #    Enhanced local DB path with vector-based recall and one-shot bootstrap of embeddings when missing.
@@ -58,26 +89,6 @@ https://store.sarahmemory.com
 #
 # =============================================================================
 
-from __future__ import annotations
-# --- SARAHMETA START ---
-# GRADE = "A"
-# ROLE = "reply_router"
-# CATEGORY = "response_generation"
-# USER_FACING = False
-# UI_EXPOSURE = "backend_only"
-# DEPLOYMENT_TARGET = "core"
-# API_DOMAIN = "reply_pipeline"
-# HARDWARE_DOMAIN = "audio_visual_optional"
-# INTERNAL_ONLY = False
-# CAPABILITY_NAME = "reply"
-# FAMILY = "presentation"
-# GOVERNANCE_LEVEL = "critical"
-# AUTONOMOUS_SAFE = False
-# FRONTEND_CANDIDATE = False
-# ADDON_CANDIDATE = False
-# DRIVER_CANDIDATE = False
-# NOTES = "Central reply-routing and response-bundle generator connecting GUI/WebUI input to local reasoning, research, personality styling, and presentation-safe output."
-# --- SARAHMETA END ---
 import os
 import re
 import sys
@@ -1666,9 +1677,9 @@ def generate_reply(self, user_text: str) -> Dict[str, Any]:
         if "version" in low_ident:
             try:
                 _ident = _sm_active_identity_payload()
-                ans = f"I am {_ident.get('active_name') or 'Sarah'} — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0')}."
+                ans = f"I am {_ident.get('active_name') or 'Sarah'} — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '9.0.0')}."
             except Exception:
-                ans = "I am Sarah — your SarahMemory AiOS companion. Version: 8.0.0."
+                ans = "I am Sarah — your SarahMemory AiOS companion. Version: 9.0.0."
         elif re.search(r"\b(who\s+(made|created|built|developed|engineered|designed)\s+you|creator|engineer|designer)\b", low_ident):
             ans = "I was created by Brian Lee Baros (SOFTDEV0 LLC) as part of SarahMemory AiOS."
         else:
@@ -2046,10 +2057,6 @@ def _log_emotion_safe(emotion: str, intensity: float = 0.5):
             pass
 
 
-# ====================================================================
-# END OF SarahMemoryReply.py v8.0.0
-# ====================================================================
-
 
 # -----------------------------------------------------------------------------
 # V10/V9F presentation helper for SelfAware thermal evidence packets
@@ -2117,3 +2124,7 @@ def _sm_try_runtime_identity_rename(text: str, meta: Optional[Dict[str, Any]] = 
 def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ignore[override]
     ident = _sm_active_identity_payload()
     return f"I'm {ident.get('active_name') or 'Sarah'} — your SarahMemory AiOS companion."
+
+# ====================================================================
+# END OF SarahMemoryReply.py v9.0.0
+# ====================================================================

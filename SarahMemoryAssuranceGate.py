@@ -1,8 +1,9 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAssuranceGate.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2026-03-31
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -12,16 +13,16 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-PURPOSE:
 - Assurance and confidence hard-gate for SarahMemory AiOS / SMGET.
 - Converts "the system thinks this is okay" into "the system has enough assurance to proceed."
 - Blocks low-confidence, weakly-specified, or under-verified action requests before real execution.
 - Enforces the doctrine that risky execution requires stronger confidence, stronger verification planning,
-  and stronger rollback readiness.
+and stronger rollback readiness.
 - Closes the "no hallucinated actuation" gap by refusing high-risk action flows that lack adequate
-  evidence, structure, or confirmation.
+evidence, structure, or confirmation.
 
 CORE DOCTRINE:
 - No hallucinated actuation.
@@ -59,6 +60,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SMGET assurance gate. Evaluates confidence, verification readiness, rollback readiness, and execution risk before real action dispatch."
 # --- SARAHMETA END ---
 
@@ -110,7 +117,7 @@ logger.propagate = False
 # Constants
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryAssuranceGate"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 _DB_NAME = "assurance_gate.db"
 _JSON_NAME = "assurance_gate_snapshot.json"
 
@@ -1144,3 +1151,7 @@ def assure_interop_broker_request(
         },
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryAssuranceGate.py v9.0.0
+# ====================================================================

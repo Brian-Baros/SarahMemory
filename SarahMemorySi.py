@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySi.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-26
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,10 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-SOFTWARE INTERACTION MODULE v8.0.0
+SOFTWARE INTERACTION MODULE v9.0.0
 ===============================================
 This module has standards with intelligent application
 management, cross-platform software control, and advanced media playback while
@@ -24,39 +25,39 @@ maintaining 100% backward compatibility for testing purposes.
 KEY ENHANCEMENTS:
 -----------------
 1. INTELLIGENT APPLICATION DETECTION
-   - Multi-source software discovery (Registry, PATH, common locations)
-   - Fuzzy name matching for user-friendly commands
-   - Automatic path caching and learning
-   - Cross-platform compatibility (Windows, Linux, macOS)
-   - Smart fallback strategies
+- Multi-source software discovery (Registry, PATH, common locations)
+- Fuzzy name matching for user-friendly commands
+- Automatic path caching and learning
+- Cross-platform compatibility (Windows, Linux, macOS)
+- Smart fallback strategies
 
 2. ADVANCED WINDOW MANAGEMENT
-   - Focus, minimize, maximize controls
-   - Multi-monitor support
-   - Window state tracking
-   - Accessibility features
-   - Keyboard shortcut integration
+- Focus, minimize, maximize controls
+- Multi-monitor support
+- Window state tracking
+- Accessibility features
+- Keyboard shortcut integration
 
 3. MEDIA PLAYBACK CONTROL
-   - Spotify integration with search
-   - YouTube playback
-   - Local media player support
-   - Multi-platform media handling
-   - Smart query parsing
+- Spotify integration with search
+- YouTube playback
+- Local media player support
+- Multi-platform media handling
+- Smart query parsing
 
 4. PROCESS LIFECYCLE MANAGEMENT
-   - Launch tracking and monitoring
-   - Graceful termination
-   - Resource cleanup
-   - Process state verification
-   - Zombie process prevention
+- Launch tracking and monitoring
+- Graceful termination
+- Resource cleanup
+- Process state verification
+- Zombie process prevention
 
 5. COMPREHENSIVE EVENT LOGGING
-   - Software interaction tracking
-   - Usage pattern analysis
-   - Error recovery logging
-   - Performance metrics
-   - Audit trail generation
+- Software interaction tracking
+- Usage pattern analysis
+- Error recovery logging
+- Performance metrics
+- Audit trail generation
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -98,7 +99,9 @@ PLATFORM SUPPORT:
 
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "software_control_engine"
@@ -116,8 +119,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Software interaction module for app discovery, launching, focus/minimize/maximize, media playback control, and process lifecycle management across platforms."
 # --- SARAHMETA END ---
+
 import os
 import subprocess
 import sqlite3
@@ -409,7 +419,7 @@ def connect_software_db() -> sqlite3.Connection:
                 platform TEXT,
                 last_used TEXT,
                 usage_count INTEGER DEFAULT 0,
-                version TEXT DEFAULT '8.0.0',
+                version TEXT DEFAULT '9.0.0',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -422,7 +432,7 @@ def connect_software_db() -> sqlite3.Connection:
                 details TEXT,
                 app_name TEXT,
                 success BOOLEAN DEFAULT 1,
-                version TEXT DEFAULT '8.0.0',
+                version TEXT DEFAULT '9.0.0',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -447,7 +457,7 @@ def connect_software_db() -> sqlite3.Connection:
             if "usage_count" not in app_cols:
                 cursor.execute("ALTER TABLE software_apps ADD COLUMN usage_count INTEGER DEFAULT 0")
             if "version" not in app_cols:
-                cursor.execute("ALTER TABLE software_apps ADD COLUMN version TEXT DEFAULT '8.0.0'")
+                cursor.execute("ALTER TABLE software_apps ADD COLUMN version TEXT DEFAULT '9.0.0'")
             if "created_at" not in app_cols:
                 cursor.execute("ALTER TABLE software_apps ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
 
@@ -472,7 +482,7 @@ def connect_software_db() -> sqlite3.Connection:
             if "success" not in evt_cols:
                 cursor.execute("ALTER TABLE software_events ADD COLUMN success BOOLEAN DEFAULT 1")
             if "version" not in evt_cols:
-                cursor.execute("ALTER TABLE software_events ADD COLUMN version TEXT DEFAULT '8.0.0'")
+                cursor.execute("ALTER TABLE software_events ADD COLUMN version TEXT DEFAULT '9.0.0'")
             if "created_at" not in evt_cols:
                 cursor.execute("ALTER TABLE software_events ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         except Exception:
@@ -1223,7 +1233,7 @@ def get_software_metrics() -> Dict[str, Any]:
             "recent_events": recent_events,
             "active_processes": len(active_launched_apps),
             "top_apps": [{"name": name, "count": count} for name, count in top_apps],
-            "version": "8.0.0"
+            "version": "9.0.0"
         }
 
     except Exception as e:
@@ -1325,7 +1335,7 @@ def register_operator_executor() -> bool:
 # =============================================================================
 if __name__ == '__main__':
     print("=" * 80)
-    print("SarahMemory Software Interaction v8.0.0 - Test Mode")
+    print("SarahMemory Software Interaction v9.0.0 - Test Mode")
     print("=" * 80)
 
     # Test application detection
@@ -1346,5 +1356,5 @@ if __name__ == '__main__':
 logger.info("[v8.0] SarahMemorySi module loaded successfully")
 
 # ====================================================================
-# END OF SarahMemorySi.py v8.0.0
+# END OF SarahMemorySi.py v9.0.0
 # ====================================================================

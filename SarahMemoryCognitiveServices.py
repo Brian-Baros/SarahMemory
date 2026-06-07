@@ -1,8 +1,8 @@
-"""--== SarahMemory Project ==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryCognitiveServices.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,14 +13,15 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-PURPOSE (v8.0.0):
+PURPOSE (v9.0.0):
 - This module is the COGNITIVE GOVERNOR (Cortex / Judge) of SarahMemory AiOS.
 - It does NOT execute upgrades, patches, file writes, or background schedulers.
 - It evaluates intent, risk, ethics, safety flags, and the user's autonomy rules.
 - It returns structured decisions:
-    ALLOW / DENY / DEFER / REQUIRE_USER
+ALLOW / DENY / DEFER / REQUIRE_USER
 - It is OFFLINE-FIRST by default and enforces kill-switch behavior.
 
 DESIGN RULES (OWNER-ALIGNED):
@@ -32,26 +33,27 @@ DESIGN RULES (OWNER-ALIGNED):
 
 COMPATIBILITY:
 - Preserves legacy entry points (analyze_text, analyze_image, process_cognitive_request),
-  but routes them through governance and safe defaults.
+but routes them through governance and safe defaults.
 
 ===============================================================================
 COGNITIVE QUESTIONING (THE HEART):
 This file implements a deterministic “self-questioning” framework:
 - It asks itself structured questions per intent category
 - It answers those questions from:
-    - policy snapshot (Globals)
-    - caller context
-    - proposed_action metadata (optional)
+- policy snapshot (Globals)
+- caller context
+- proposed_action metadata (optional)
 - It produces:
-    - decision: ALLOW / DENY / DEFER / REQUIRE_USER
-    - risk_score: 0..100
-    - risk_factors: list
-    - reasons: list
-    - recommended_next: routing guidance
+- decision: ALLOW / DENY / DEFER / REQUIRE_USER
+- risk_score: 0..100
+- risk_factors: list
+- reasons: list
+- recommended_next: routing guidance
 ===============================================================================
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "governor"
@@ -69,8 +71,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Cognitive governor / judge. Returns ALLOW, DENY, DEFER, REQUIRE_USER. Does not execute upgrades, patches, file writes, or schedulers."
 # --- SARAHMETA END ---
+
 import importlib
 import json
 import logging
@@ -2180,7 +2189,7 @@ def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             "lane_family": "SYSTEM",
             "primary_lane": "SYSTEM",
             "emergency_instinct": instinct,
-            "version": "8.0.0",
+            "version": "9.0.0",
         }
         return response
 
@@ -2193,7 +2202,7 @@ def process_cognitive_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         proposed_action=pa,
     )
 
-    response = {"ok": True, "governance": dec, "lane_family": dec.get("lane_family"), "primary_lane": dec.get("primary_lane"), "version": "8.0.0"}
+    response = {"ok": True, "governance": dec, "lane_family": dec.get("lane_family"), "primary_lane": dec.get("primary_lane"), "version": "9.0.0"}
     if isinstance(dec.get("smget"), dict):
         response["smget"] = dec.get("smget")
     return response
@@ -2286,9 +2295,7 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-# ====================================================================
-# END OF SarahMemoryCognitiveServices.py v8.0.0
-# ====================================================================
+
 
 # -----------------------------------------------------------------------------
 # SARAH_REM_GOVERNOR_V1
@@ -2433,7 +2440,7 @@ def build_six_question_governance_packet(
         "packet_type": "SixQuestionGovernancePacket",
         "schema": "SarahMemory.six_question_governance.v1",
         "module": "SarahMemoryCognitiveServices",
-        "module_version": "8.0.0",
+        "module_version": "9.0.0",
         "packet_id": "six-" + uuid.uuid4().hex[:12],
         "ts": datetime.now().isoformat(),
         "entry_point": entry,
@@ -3027,7 +3034,7 @@ def evaluate_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, cal
         "packet_type": "EmergencyInstinctGovernancePacket",
         "schema": "SarahMemory.living.instinct.governance.v1",
         "module": "SarahMemoryCognitiveServices",
-        "module_version": "8.0.0",
+        "module_version": "9.0.0",
         "packet_id": "emgov-" + uuid.uuid4().hex[:12],
         "ts": _sm_living_now_iso(),
         "incident_id": incident_id,
@@ -3439,3 +3446,7 @@ def get_sovereign_agent_runtime_contract() -> Dict[str, Any]:
         "never_direct": ["remote_tool_execute", "external_agent_command", "ui_authority", "model_self_authority"],
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryCognitiveServices.py v9.0.0
+# ====================================================================

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryLyricsToSong.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemory Lyrics To Song - Vocal Synthesis & Performance Engine
@@ -20,69 +21,69 @@ SarahMemory Lyrics To Song - Vocal Synthesis & Performance Engine
 
 OVERVIEW:
 ---------
-LyricsToSong is the premier vocal synthesis and performance engine for 
-SarahMemory, providing professional-grade text-to-speech, vocal synthesis, 
-singing voice generation, and audio processing capabilities. This module 
-transforms written lyrics into expressive vocal performances with emotion, 
+LyricsToSong is the premier vocal synthesis and performance engine for
+SarahMemory, providing professional-grade text-to-speech, vocal synthesis,
+singing voice generation, and audio processing capabilities. This module
+transforms written lyrics into expressive vocal performances with emotion,
 pitch control, harmonies, and professional audio effects.
 
 CAPABILITIES:
 -------------
 1. Advanced Vocal Synthesis
-   - Multiple TTS engines (pyttsx3, gTTS, edge-tts, Bark, Coqui TTS)
-   - Custom voice profiles with emotion control
-   - Pitch shifting and formant adjustment
-   - Vibrato and vocal effects
-   - Breath and natural pause insertion
-   - Multi-language support (40+ languages)
-   
+- Multiple TTS engines (pyttsx3, gTTS, edge-tts, Bark, Coqui TTS)
+- Custom voice profiles with emotion control
+- Pitch shifting and formant adjustment
+- Vibrato and vocal effects
+- Breath and natural pause insertion
+- Multi-language support (40+ languages)
+
 2. Singing Voice Synthesis
-   - Melodic line generation from lyrics
-   - Pitch-accurate singing synthesis
-   - Auto-tuning and pitch correction
-   - Harmony generation (2-part, 3-part, 4-part)
-   - Vocal layering and doubling
-   - Choir and ensemble modes
-   
+- Melodic line generation from lyrics
+- Pitch-accurate singing synthesis
+- Auto-tuning and pitch correction
+- Harmony generation (2-part, 3-part, 4-part)
+- Vocal layering and doubling
+- Choir and ensemble modes
+
 3. Lyric Processing & Analysis
-   - Syllable counting and phoneme extraction
-   - Rhyme scheme detection
-   - Stress pattern analysis
-   - Automatic verse/chorus/bridge detection
-   - Tempo and timing alignment
-   - Multi-lingual lyric parsing
-   
+- Syllable counting and phoneme extraction
+- Rhyme scheme detection
+- Stress pattern analysis
+- Automatic verse/chorus/bridge detection
+- Tempo and timing alignment
+- Multi-lingual lyric parsing
+
 4. Performance Enhancement
-   - Emotional expression mapping
-   - Dynamic range control
-   - Articulation and pronunciation fine-tuning
-   - Vocal inflection patterns
-   - Natural phrasing and breathing
-   - Performance style templates (pop, rock, jazz, classical, rap)
-   
+- Emotional expression mapping
+- Dynamic range control
+- Articulation and pronunciation fine-tuning
+- Vocal inflection patterns
+- Natural phrasing and breathing
+- Performance style templates (pop, rock, jazz, classical, rap)
+
 5. Audio Processing Pipeline
-   - Noise reduction and cleanup
-   - EQ and frequency shaping
-   - Compression and limiting
-   - Reverb and spatial effects
-   - Stereo widening
-   - Professional mastering chain
-   
+- Noise reduction and cleanup
+- EQ and frequency shaping
+- Compression and limiting
+- Reverb and spatial effects
+- Stereo widening
+- Professional mastering chain
+
 6. Integration Features
-   - MIDI export for music generator sync
-   - Timestamped lyric output (SRT/LRC)
-   - Backing track alignment
-   - Real-time preview
-   - Batch processing
-   - Voice cloning (with consent)
-   
+- MIDI export for music generator sync
+- Timestamped lyric output (SRT/LRC)
+- Backing track alignment
+- Real-time preview
+- Batch processing
+- Voice cloning (with consent)
+
 7. AI-Powered Features
-   - Lyric sentiment analysis
-   - Auto melody suggestion
-   - Style transfer
-   - Vocal effect recommendations
-   - Mix optimization
-   - Genre-specific tuning
+- Lyric sentiment analysis
+- Auto melody suggestion
+- Style transfer
+- Vocal effect recommendations
+- Mix optimization
+- Genre-specific tuning
 
 INTEGRATION POINTS:
 ------------------
@@ -96,68 +97,68 @@ INTEGRATION POINTS:
 FILE STRUCTURE:
 --------------
 {DATASETS_DIR}/
-    lyrics/
-        projects/          # Vocal project files (.slp format)
-        source/            # Original lyric text files
-        outputs/           # Rendered vocal performances
-        cache/             # Processing cache
-        profiles/          # Custom voice profiles
-        harmonies/         # Generated harmony tracks
-        exports/           # Final mixed outputs
-        midi/              # MIDI note exports
-        lrc/               # Synced lyric files
-        
+lyrics/
+projects/          # Vocal project files (.slp format)
+source/            # Original lyric text files
+outputs/           # Rendered vocal performances
+cache/             # Processing cache
+profiles/          # Custom voice profiles
+harmonies/         # Generated harmony tracks
+exports/           # Final mixed outputs
+midi/              # MIDI note exports
+lrc/               # Synced lyric files
+
 USAGE EXAMPLES:
 --------------
-    # Initialize the vocal synthesizer
-    vocal_engine = VocalSynthesizer()
-    
-    # Create a new vocal project
-    project = vocal_engine.create_project(
-        name="My Song",
-        lyrics="Amazing lyrics here",
-        style="pop",
-        tempo=120
-    )
-    
-    # Generate vocal performance
-    vocal_track = project.synthesize_vocals(
-        voice="female_soprano",
-        emotion="happy",
-        pitch_shift=0,
-        vibrato=0.3
-    )
-    
-    # Add harmonies
-    harmony_tracks = project.generate_harmonies(
-        vocal_track,
-        parts=3,
-        intervals=["major_third", "perfect_fifth"]
-    )
-    
-    # Apply professional effects
-    project.apply_vocal_effects(
-        eq=True,
-        compression=True,
-        reverb="hall",
-        reverb_amount=0.4
-    )
-    
-    # Generate melody from lyrics
-    melody = vocal_engine.generate_melody_from_lyrics(
-        lyrics=project.lyrics,
-        key="C",
-        scale="major",
-        style="pop"
-    )
-    
-    # Export final performance
-    output_path = project.export(
-        filename="my_vocals.wav",
-        format="wav",
-        quality="high",
-        include_harmonies=True
-    )
+Initialize the vocal synthesizer
+vocal_engine = VocalSynthesizer()
+
+Create a new vocal project
+project = vocal_engine.create_project(
+name="My Song",
+lyrics="Amazing lyrics here",
+style="pop",
+tempo=120
+)
+
+Generate vocal performance
+vocal_track = project.synthesize_vocals(
+voice="female_soprano",
+emotion="happy",
+pitch_shift=0,
+vibrato=0.3
+)
+
+Add harmonies
+harmony_tracks = project.generate_harmonies(
+vocal_track,
+parts=3,
+intervals=["major_third", "perfect_fifth"]
+)
+
+Apply professional effects
+project.apply_vocal_effects(
+eq=True,
+compression=True,
+reverb="hall",
+reverb_amount=0.4
+)
+
+Generate melody from lyrics
+melody = vocal_engine.generate_melody_from_lyrics(
+lyrics=project.lyrics,
+key="C",
+scale="major",
+style="pop"
+)
+
+Export final performance
+output_path = project.export(
+filename="my_vocals.wav",
+format="wav",
+quality="high",
+include_harmonies=True
+)
 
 TECHNICAL SPECIFICATIONS:
 ------------------------
@@ -182,7 +183,9 @@ PERFORMANCE NOTES:
 
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "creative_engine"
@@ -200,8 +203,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = True
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Vocal synthesis and performance engine for lyrics, singing, harmony generation, TTS/voice models, and audio export workflows."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import logging
@@ -1615,5 +1625,5 @@ if __name__ == '__main__':
     print("=" * 80)
 
 # ====================================================================
-# END OF SarahMemoryLyricsToSong.py v8.0.0
+# END OF SarahMemoryLyricsToSong.py v9.0.0
 # ====================================================================

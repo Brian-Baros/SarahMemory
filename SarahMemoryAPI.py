@@ -1,8 +1,8 @@
-"""=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryAPI.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-03
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,56 +13,55 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-MULTI-PROVIDER API ORCHESTRATION MODULE 
+MULTI-PROVIDER API ORCHESTRATION MODULE
 =====================================================================
 
-PURPOSE:
 --------
 SarahMemoryAPI is the central API orchestration layer for SarahMemory with multi=redundancies
-It manages connections to multiple AI providers including Local Downloaded Models, 
-API keys must be set in the .env file or system enviorments, API providers must be selected 
+It manages connections to multiple AI providers including Local Downloaded Models,
+API keys must be set in the .env file or system enviorments, API providers must be selected
 to 'True' in the SarahMemoryGlobals.py file approx line number (1446-1466)
-(OpenAI, Claude, Mistral,Gemini, HuggingFace, etc.) 
+(OpenAI, Claude, Mistral,Gemini, HuggingFace, etc.)
 and provides intelligent failover, caching,
 and context-aware prompt building.
-The SarahMemory 'SarahNET' Network node mesh is the "Last Resort Endpoint" if all else fails.
 
 KEY CAPABILITIES:
 -----------------
 1. MULTI-PROVIDER SUPPORT
-   - OpenAI (GPT-5[.0,.1,.2,etc], GPT-4, GPT-4o, GPT-4.1, o1, o3, etc.)
-   - Anthropic Claude (claude-3-opus, claude-3-sonnet, etc.)
-   - Mistral AI (mistral-large, mistral-medium, etc.)
-   - Google Gemini (gemini-pro, gemini-1.5-pro, etc.)
-   - HuggingFace Inference API
-   - DeepSeek, Groq, Cohere, and more
+- OpenAI (GPT-5[.0,.1,.2,etc], GPT-4, GPT-4o, GPT-4.1, o1, o3, etc.)
+- Anthropic Claude (claude-3-opus, claude-3-sonnet, etc.)
+- Mistral AI (mistral-large, mistral-medium, etc.)
+- Google Gemini (gemini-pro, gemini-1.5-pro, etc.)
+- HuggingFace Inference API
+- DeepSeek, Groq, Cohere, and more
 
 2. INTELLIGENT ROUTING
-   - Automatic provider selection based on intent
-   - Cost-tier aware model selection
-   - Capability-based routing (vision, TTS, STT)
-   - Automatic fallback on failure
+- Automatic provider selection based on intent
+- Cost-tier aware model selection
+- Capability-based routing (vision, TTS, STT)
+- Automatic fallback on failure
 
 3. CONTEXT-AWARE PROMPTING
-   - Intent-based role assignment (60+ specialized roles)
-   - Emotional state integration
-   - Conversation context injection
-   - Complexity and tone adaptation
+- Intent-based role assignment (60+ specialized roles)
+- Emotional state integration
+- Conversation context injection
+- Complexity and tone adaptation
 
 4. RESILIENCE FEATURES
-   - Multi-tier fallback chain
-   - Response caching
-   - Mesh network fallback (SarahNet)
-   - Offline mode handling
-   - Rate limit handling
+- Multi-tier fallback chain
+- Response caching
+- Mesh network fallback (SarahNet)
+- Offline mode handling
+- Rate limit handling
 
 5. COMPREHENSIVE LOGGING
-   - API event logging to SQLite
-   - Research path tracking
-   - Performance metrics
-   - Error diagnostics
+- API event logging to SQLite
+- Research path tracking
+- Performance metrics
+- Error diagnostics
 
 INTEGRATION POINTS:
 -------------------
@@ -83,6 +82,7 @@ DATABASE TABLES (system_logs.db):
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "api_orchestrator"
@@ -100,8 +100,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Central multi-provider API orchestration layer for local models, external AI APIs, routing, failover, caching, and prompt/context assembly."
 # --- SARAHMETA END ---
+
 import json
 import re
 import logging
@@ -2699,9 +2706,6 @@ __all__ = [
     "cache",
 ]
 
-# ====================================================================
-# END OF SarahMemoryAPI.py v8.0.0
-# ===================================================================
 # -----------------------------------------------------------------------------
 # Output Sanitization (hide system prompts / chain-of-thought from UI & TTS)
 # -----------------------------------------------------------------------------
@@ -2745,3 +2749,7 @@ def _sm_sanitize_llm_text(text: str) -> str:
     if "Assistant:" in t:
         t = t.split("Assistant:")[-1].strip()
     return t
+
+# ====================================================================
+# END OF SarahMemoryAPI.py v9.0.0
+# ====================================================================

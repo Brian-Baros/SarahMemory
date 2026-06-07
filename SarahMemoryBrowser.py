@@ -1,9 +1,8 @@
-
 """--==The SarahMemory Project==--
 File: SarahMemoryBrowser.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,14 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
 
-# Description:
-# A) Legacy lightweight embedded browser (HtmlFrame when available; Text fallback).
-# B) New WebUI wrapper that prefers pywebview for modern HTML/JS/CSS and JS↔Python bridge.
-#    Falls back to HtmlFrame if pywebview is unavailable. No def renames of existing parts.
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "ui_app"
@@ -39,8 +36,19 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = True
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "User-facing browser and WebUI wrapper with legacy embedded browser, pywebview bridge, drag-drop ingest helper, and JS/Python interface."
 # --- SARAHMETA END ---
+
+# Description:
+# A) Legacy lightweight embedded browser (HtmlFrame when available; Text fallback).
+# B) New WebUI wrapper that prefers pywebview for modern HTML/JS/CSS and JS↔Python bridge.
+#    Falls back to HtmlFrame if pywebview is unavailable. No def renames of existing parts.
 import os, sys, threading, time, base64, io, logging, webbrowser
 from pathlib import Path
 import tkinter as tk
@@ -727,5 +735,5 @@ class WebUIApi(WebUIApi):  # extend
         return c.telecom_get_remote_frame(payload) if c else None
 
 # ====================================================================
-# END OF SarahMemoryBrowser.py v8.0.0
+# END OF SarahMemoryBrowser.py v9.0.0
 # ====================================================================

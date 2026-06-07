@@ -1,8 +1,9 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySecurityGovernor.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2026-03-31
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -12,12 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-PURPOSE:
 - Core sovereignty, trust, and runtime security governor for SarahMemory AiOS / SMGET.
 - Enforces trust boundaries between cognition, operator execution, frontends, addons,
-  drivers, models, and runtime actions.
+drivers, models, and runtime actions.
 - Prevents authority inversion where UI/addon/model output is mistaken for execution authority.
 - Applies fail-closed rules for risky, remote, destructive, or physically consequential actions.
 - Preserves user control, model containment, non-degradation doctrine, and auditability.
@@ -58,6 +59,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SMGET trust, sovereignty, integrity, caller-boundary, and runtime security governor. Blocks authority inversion, unsafe execution paths, and untrusted escalation."
 # --- SARAHMETA END ---
 
@@ -114,7 +121,7 @@ logger.propagate = False
 # Constants
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemorySecurityGovernor"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 _DB_NAME = "security_governor.db"
 
 DECISION_ALLOW = "ALLOW"
@@ -1063,3 +1070,7 @@ def is_interop_broker_request_safe(envelope: Optional[Dict[str, Any]] = None, go
     review = review_interop_broker_request(envelope, governance=governance)
     return bool(review.get("allow")) and str(review.get("decision")) not in {DECISION_DENY, DECISION_QUARANTINE}
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemorySecurityGovernor.py v9.0.0
+# ====================================================================

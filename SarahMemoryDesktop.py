@@ -1,13 +1,20 @@
-# --==The SarahMemory Project==--
-# File: SarahMemoryDesktop.py
-# Part of the SarahMemory Companion AI-bot Platform / SarahMemory AiOS
-# Version: v8.0.0
-# Date: 2026-05-26
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.sarahmemory.com
-#==============================================================================================
-"""
-SarahMemoryDesktop.py
+"""--==The SarahMemory Project==--
+File: SarahMemoryDesktop.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+─────────────────────────────────────────────────────────────────────────────
 
 Single-file desktop mirror + desktop-task foundation for SarahMemory AiOS.
 
@@ -28,6 +35,32 @@ Governance doctrine:
 """
 
 from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "desktop_runtime"
+# CATEGORY = "desktop_mirror_and_operator_surface"
+# USER_FACING = True
+# UI_EXPOSURE = "direct_screen_candidate"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = "desktop"
+# HARDWARE_DOMAIN = "display_screen_capture_mouse_keyboard_future"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "desktop_mirror"
+# FAMILY = "operator_surface"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = True
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Single-file governed desktop mirror and future desktop-task foundation. Screen capture is read-only; mouse, keyboard, file, network, and OS actions require OperatorCore/SMGET authorization before execution."
+# --- SARAHMETA END ---
 
 import base64
 import io
@@ -523,3 +556,7 @@ DesktopRuntime = SarahMemoryDesktopRuntime
 if __name__ == "__main__":
     rt = get_desktop_runtime()
     print(json.dumps(rt.status(), indent=2, sort_keys=True, default=str))
+
+# ====================================================================
+# END OF SarahMemoryDesktop.py v9.0.0
+# ====================================================================

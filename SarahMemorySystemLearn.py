@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySystemLearn.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "learning_engine"
@@ -33,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Indexed learning and dataset-ingestion engine with Tk GUI, text/media extraction, vectorization hooks, external dataset import, and database learning flows."
 # --- SARAHMETA END ---
+
 import sys
 import os
 import sqlite3
@@ -1401,5 +1411,5 @@ def ensure_responses_timestamp_column():
             pass
 
 # ====================================================================
-# END OF SarahMemorySystemLearn.py v8.0.0
+# END OF SarahMemorySystemLearn.py v9.0.0
 # ====================================================================

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
-File: SarahMemoryTree.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+File: SarahMemoryTree_PATCHED.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,25 +13,27 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemoryTree.py (PythonAnywhere-safe)
 - Generates focused directory inventory reports for SarahMemory.
 - Default mode focuses on driver bodies:
-    ./data/boot/drivers
-    ./data/drivers
+./data/boot/drivers
+./data/drivers
 - Excludes noisy/heavy trees such as venv, __pycache__, node_modules, models,
-  backups, docs, data/ui, generated dist/build output, cache folders, and logs.
+backups, docs, data/ui, generated dist/build output, cache folders, and logs.
 - Writes timestamped tree reports without overwriting prior output.
 - Flushes output as it goes so partial output survives interrupts.
 
 Usage:
-    python SarahMemoryTree.py
-    python SarahMemoryTree.py --mode drivers
-    python SarahMemoryTree.py --mode project
-    python SarahMemoryTree.py --include-ui
-    python SarahMemoryTree.py --max-depth 6
+python SarahMemoryTree.py
+python SarahMemoryTree.py --mode drivers
+python SarahMemoryTree.py --mode project
+python SarahMemoryTree.py --include-ui
+python SarahMemoryTree.py --max-depth 6
 """
+
 from __future__ import annotations
 
 # --- SARAHMETA START ---
@@ -51,6 +53,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Focused project directory tree/report generator. Defaults to driver inventory under data/boot/drivers and data/drivers while excluding noisy/heavy runtime trees."
 # --- SARAHMETA END ---
 
@@ -420,5 +428,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # ====================================================================
-# END OF SarahMemoryTree.py v8.0.0
+# END OF SarahMemoryTree_PATCHED.py v9.0.0
 # ====================================================================

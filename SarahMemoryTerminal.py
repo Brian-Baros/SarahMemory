@@ -1,8 +1,8 @@
-"""--== SarahMemory Project ==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryTerminal.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,29 +13,30 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-PURPOSE:
 - Enterprise-grade Developer Terminal execution service (server-side).
 - HARD GATED by DEVELOPERSMODE (SarahMemoryGlobals.py OR env var).
 - Cross-platform:
-    - Windows commands via cmd.exe (default on Windows)
-    - Bash commands via /bin/bash on Linux/macOS
-    - Bash on Windows via WSL (wsl.exe) when available
+- Windows commands via cmd.exe (default on Windows)
+- Bash commands via /bin/bash on Linux/macOS
+- Bash on Windows via WSL (wsl.exe) when available
 - NO UI here. This module is a backend capability provider for WebUI.
 
 SECURITY MODEL:
 - Disabled unless DEVELOPERSMODE == True.
 - Default sandboxing:
-    - Working directory scoped to BASE_DIR (or BASE_DIR/data by default)
-    - Optional allowlist/denylist controls
-    - Timeouts, output caps, and audit logging
+- Working directory scoped to BASE_DIR (or BASE_DIR/data by default)
+- Optional allowlist/denylist controls
+- Timeouts, output caps, and audit logging
 - This is a developer tool. Keep it OFF for end-users.
 
 ===============================================================================
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "developer_terminal"
@@ -53,8 +54,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Enterprise-grade terminal execution backend gated by DEVELOPERSMODE with constrained workdir, denylist controls, timeouts, audit logging, and cross-platform shell routing."
 # --- SARAHMETA END ---
+
 import os
 import json
 import time
@@ -681,3 +689,7 @@ def terminal_api_execute(payload: Dict[str, Any], *, caller: str = "api") -> Dic
         max_output_chars=int(payload.get("max_output_chars") or 20000),
         caller=str(payload.get("caller") or caller),
     )
+
+# ====================================================================
+# END OF SarahMemoryTerminal.py v9.0.0
+# ====================================================================

@@ -1,8 +1,8 @@
-"""=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryADDONLCHR.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,18 +13,20 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 ADDON LAUNCHER ENGINE
 ======================================================
 
-PURPOSE:
 --------
 This module serves as the launching platform for MODS and Additional Modules that an END-UUSER may want to add
-to the SarahMemory Platform, The Ai should be able to Learn and adapt to other Modules and 
+to the SarahMemory Platform, The Ai should be able to Learn and adapt to other Modules and
 to user preferences, patterns, timing, and operational habits. Making SarahMemory the dynamic functional foundation.
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "addon_manager"
@@ -42,8 +44,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Tk-based addon launcher and manifest-aware loader for addons, bundles, legacy scripts, lifecycle control, and shutdown handling."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import subprocess
@@ -417,7 +426,7 @@ class AddonLauncher:
             "manifest": manifest,
             "hooks": {},
             "context": {
-                "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
+                "platform_version": getattr(config, "PROJECT_VERSION", "9.0.0"),
                 "addon_path": bundle_root,
                 "run_mode": getattr(config, "RUN_MODE", "local"),
                 "device_mode": getattr(config, "DEVICE_MODE", "local_agent"),
@@ -472,7 +481,7 @@ class AddonLauncher:
         addon_id = (manifest.get("addon_id") or os.path.basename(addon_root)).strip()
 
         context = {
-            "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
+            "platform_version": getattr(config, "PROJECT_VERSION", "9.0.0"),
             "addon_path": addon_root,
             "permissions": (manifest.get("permissions") or manifest.get("permission") or manifest.get("capabilities") or []),
             "run_mode": getattr(config, "RUN_MODE", "local"),
@@ -505,7 +514,7 @@ class AddonLauncher:
         logfile = open(log_path, "w", encoding="utf-8", errors="ignore")
 
         ctx = {
-            "platform_version": getattr(config, "PROJECT_VERSION", "8.0.0"),
+            "platform_version": getattr(config, "PROJECT_VERSION", "9.0.0"),
             "addon_path": addon_root,
             "permissions": (manifest.get("permissions") or manifest.get("permission") or manifest.get("capabilities") or []),
             "run_mode": getattr(config, "RUN_MODE", "local"),
@@ -538,6 +547,7 @@ class AddonLauncher:
 
         log_gui_event("Addon Launch", f"{manifest.get('name', addon_id)} launched (subprocess)")
         messagebox.showinfo("Add-on Launched", f"{manifest.get('name', addon_id)} is now running (subprocess).")
+
 # ====================================================================
-# END OF SarahMemoryAdvCU.py v8.0.0
+# END OF SarahMemoryADDONLCHR.py v9.0.0
 # ====================================================================

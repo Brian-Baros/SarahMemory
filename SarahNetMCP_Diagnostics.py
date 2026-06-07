@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+
 """--==The SarahMemory Project==--
-File: SarahNetMCP_DEiagnostics.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+File: SarahNetMCP_Diagnostics.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -29,10 +30,11 @@ IMPORTANT:
 - Real duplex voice/video should be done P2P (e.g., WebRTC). The broker relays signaling envelopes privately.
 
 Usage:
-  python SarahNetMCP_Diagnostics.py --base https://api.sarahmemory.com --a BrianLaptopNode01 --b BeachLaptopNode02 --send-file .\test.png
+python SarahNetMCP_Diagnostics.py --base https://api.sarahmemory.com --a BrianLaptopNode01 --b BeachLaptopNode02 --send-file .\test.png
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "D"
 # ROLE = "diagnostic_tool"
@@ -50,8 +52,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Standalone SarahNet/MCP broker diagnostics suite for ping, rendezvous, message, file, and signaling round-trip tests."
 # --- SARAHMETA END ---
+
 import argparse
 import base64
 import hashlib
@@ -216,7 +225,7 @@ def run_all(base: str, a: str, b: str, send_file: str | None = None, timeout: fl
 
     s = requests.Session()
     s.headers.update({
-        "User-Agent": "SarahNetMCP_Diagnostics/8.0.0",
+        "User-Agent": "SarahNetMCP_Diagnostics/9.0.0",
         "Accept": "application/json",
     })
     if api_key:
@@ -227,7 +236,7 @@ def run_all(base: str, a: str, b: str, send_file: str | None = None, timeout: fl
         "platform": sys.platform,
         "ts": time.time(),
         "client": "SarahNetMCP_Diagnostics",
-        "version": "8.0.0",
+        "version": "9.0.0",
     }
 
     try:
@@ -355,3 +364,7 @@ def build_sarahnet_hard_evidence_packet(base: str = "", node_id: str = "", reque
     except Exception as exc:
         out["errors"].append(f"{type(exc).__name__}:{exc}")
     return out
+
+# ====================================================================
+# END OF SarahNetMCP_Diagnostics.py v9.0.0
+# ====================================================================

@@ -1,25 +1,35 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryMSDC.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
 Motor, Servo, Device Controller (MSDC)
 ======================================
-Purpose:
 - Brainstem / motor-function and device-manager organ for SarahMemory AiOS.
 - Maps body parts to governed driver packages without granting itself authority.
 - Provides court-grade read-only witness packets for devices/body parts.
 - Dispatches bounded device operations only when an upstream governance/SMGET
-  contract or explicit user authority is present.
+contract or explicit user authority is present.
 
 Doctrine:
 - Cognition decides. SMGET authorizes. OperatorCore contracts. MSDC moves.
 - MSDC never self-authorizes physical/device actions.
 - Discovery is not activation. Driver presence is not runtime authority.
 - User control remains final authority, especially for cameras, servos, robots,
-  vehicles, forklifts, and other physical devices.
+vehicles, forklifts, and other physical devices.
 """
+
 from __future__ import annotations
 
 # --- SARAHMETA START ---
@@ -39,6 +49,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Brainstem motor-function/device-manager organ. Maps body parts to governed drivers and dispatches only approved operations. No self-authorization."
 # --- SARAHMETA END ---
 
@@ -130,7 +146,7 @@ if not logger.hasHandlers():
 logger.propagate = False
 
 MODULE_NAME = "SarahMemoryMSDC"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 CAMERA_DRIVER_ID = "com.softdev0.camera.uvc.usb"
 USBHOST_DRIVER_ID = "com.softdev0.boot.usbhost"
 VR_HEADSET_DRIVER_ID = "com.softdev0.vr.headset.usb"
@@ -1359,3 +1375,7 @@ _PHYSICAL_TWIN_WITNESS = PhysicalTwinWitness()
 def simulate_physical_twin_action(action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return _PHYSICAL_TWIN_WITNESS.simulate(action_request, context)
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryMSDC.py v9.0.0
+# ====================================================================

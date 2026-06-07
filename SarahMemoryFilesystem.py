@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryFilesystem.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-05-04
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemoryFilesystem.py - Backup System & File Manager
@@ -29,9 +30,10 @@ This module provides:
 - Smart backup rotation and retention policies
 - Quarantine system for suspicious files
 - File analysis and reporting
-
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "filesystem_engine"
@@ -49,8 +51,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Core filesystem action layer for backup/restore, file operations, integrity checks, malware scanning, quarantine, audit logging, and retention management."
 # --- SARAHMETA END ---
+
 import os
 import sys
 import zipfile
@@ -1014,7 +1023,7 @@ class BackupManager:
                     "excluded_policy": "anti_thrash_runtime_safe",
                     "excluded_summary": dict(skipped),
                     "max_file_bytes": _BACKUP_MAX_FILE_BYTES,
-                    "sarah_memory_version": "8.0.0",
+                    "sarah_memory_version": "9.0.0",
                 }
                 backup_zip.writestr("BACKUP_METADATA.json", json.dumps(metadata, indent=2))
 
@@ -2322,6 +2331,7 @@ def rem_filesystem_study_tick(root_paths: Optional[List[str]] = None, max_files:
         pass
     summary["duration_ms"] = int((time.time() - started) * 1000)
     return summary
+
 # ====================================================================
-# END OF SarahMemoryFilesystem.py v8.0.0
+# END OF SarahMemoryFilesystem.py v9.0.0
 # ====================================================================

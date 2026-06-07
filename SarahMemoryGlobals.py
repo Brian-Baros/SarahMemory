@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryGlobals.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-05-14
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "configuration_core"
@@ -33,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Central runtime configuration and governance plane for environment identity, modes, hardware scoring, model selection, feature flags, paths, and safety policy."
 # --- SARAHMETA END ---
+
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -447,10 +457,10 @@ def get_runtime_meta():
 # ---------------- Global Configuration ----------------
 ### Static constants###
 # --- Version ---
-PROJECT_VERSION = "8.0.0"  # minor: updater scheduling, SR/TTS polish, research order fixes
+PROJECT_VERSION = "9.0.0"  # minor: updater scheduling, SR/TTS polish, research order fixes
 AUTHOR = "Brian Lee Baros"
 # --- Runtime/debug flags (unchanged lines may already exist above/below) ---
-REVISION_START_DATE  = "03/01/2026" #Date of System Overhaul
+REVISION_START_DATE  = "06/06/2026" #Date of System Overhaul
 DEBUG_MODE = True # Helps with SarahMemoryCompare and other debugging issues.
 ENABLE_RESEARCH_LOGGING = True # Track Message/query of the GUI from Start to Finished Response/Reply
 # This constant ensures downstream modules interpret API responses
@@ -2109,7 +2119,7 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 
 
 # =============================================================================
-# CANVAS STUDIO (Media Creators) - v8.0.0 Core Paths
+# CANVAS STUDIO (Media Creators) - v9.0.0 Core Paths
 # -----------------------------------------------------------------------------
 # All Canvas Studio assets, projects, caches, and exports MUST live under:
 #   {BASE_DIR}/data/canvas/
@@ -4164,7 +4174,7 @@ def launch_settings_gui():
     )
     subtitle_label.pack(side="left", padx=(14, 0))
 
-    version_label = ttk.Label(header_frame, text=f"Version: {globals().get('PROJECT_VERSION', '8.0.0')}", font=("Segoe UI", 10))
+    version_label = ttk.Label(header_frame, text=f"Version: {globals().get('PROJECT_VERSION', '9.0.0')}", font=("Segoe UI", 10))
     version_label.pack(side="right")
 
     notebook = ttk.Notebook(root)
@@ -5014,7 +5024,7 @@ def launch_settings_gui():
         print(f"[Settings GUI] Mainloop error: {e}")
 
 
-# === API Model Registry & Selector (v8.0.0) ==================================
+# === API Model Registry & Selector (v9.0.0) ==================================
 # Purpose:
 # - Centralize OpenAI model inventory (text/code, image, audio STT/TTS, realtime, video)
 # - Provide deterministic task-based selection with cost tiers + local/offline gating
@@ -5833,10 +5843,6 @@ if __name__ == "__main__":
         print("[INFO] You can edit settings.json directly or set environment variables")
         sys.exit(1)
 
-# ====================================================================
-# END OF SarahMemoryGlobals.py v8.0.0
-# ====================================================================
-
 # =============================================================================
 # V10/V9C Universal Runtime Body + Memory Authority Contract
 # =============================================================================
@@ -5971,3 +5977,7 @@ def get_chat_runtime_contract() -> dict:
         "memory_policy": get_memory_authority_contract(),
         "model_state": get_model_availability_contract("reasoning"),
     }
+
+# ====================================================================
+# END OF SarahMemoryGlobals.py v9.0.0
+# ====================================================================

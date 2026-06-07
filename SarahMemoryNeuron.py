@@ -1,9 +1,8 @@
-"""
-=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryNeuron.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,9 +13,9 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ==============================================================================================================================================================
 
-PURPOSE:
 --------
 SarahMemoryNeuron is a cognitive axis module.
 It consolidates:
@@ -41,6 +40,7 @@ It consolidates:
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "router"
@@ -58,8 +58,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Central cognitive axis and lane selector. Owns primary routing, deterministic-first reasoning, helper delegation, research insertion, creative tickets, and QA gating."
 # --- SARAHMETA END ---
+
 import os
 import re
 import shutil
@@ -2987,7 +2994,7 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     if intent == "identity":
         low_ident = (inp.text or "").strip().lower()
         if "version" in low_ident:
-            reply = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '8.0.0') if config else '8.0.0'}."
+            reply = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '9.0.0') if config else '9.0.0'}."
         elif any(k in low_ident for k in ("who made you", "who created you", "creator", "who built you", "who designed you", "designer", "engineer", "who engineered you")):
             reply = "I was created by Brian Lee Baros (SOFTDEV0 LLC) as part of SarahMemory AiOS."
         else:
@@ -3584,10 +3591,6 @@ if __name__ == "__main__":
     print(json.dumps(out.to_dict(), indent=2))
     
     
-# ====================================================================
-# END OF SarahMemoryNeuron.py v8.0.0
-# ====================================================================
-
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
 def build_layered_cognition_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build Layer 2 language + Layer 3 emotion + identity packets for Neuron routing evidence."""
@@ -3606,3 +3609,7 @@ def build_layered_cognition_packet(text: str, context_packet: Optional[Dict[str,
     except Exception as e:
         tri.setdefault("errors", []).append({"advcu_contextual_intent": str(e)})
     return tri
+
+# ====================================================================
+# END OF SarahMemoryNeuron.py v9.0.0
+# ====================================================================

@@ -1,10 +1,10 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryStartup.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-12-21
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
-Author: © 2025 Brian Lee Baros. All Rights Reserved.
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
 brian.baros@sarahmemory.com
@@ -12,9 +12,11 @@ brian.baros@sarahmemory.com
 https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
 ===============================================================================
 
-STARTUP REGISTRATION MODULE v8.0.0
+STARTUP REGISTRATION MODULE v9.0.0
 ==============================================
 
 This module has standards with enhanced cross-platform
@@ -23,28 +25,28 @@ support, better error handling, and comprehensive logging for system startup reg
 KEY ENHANCEMENTS:
 -----------------
 1. CROSS-PLATFORM STARTUP SUPPORT
-   - Windows: Registry-based startup (HKCU Run key)
-   - Linux: systemd service + autostart desktop entries
-   - macOS: LaunchAgents support
-   - Universal fallback mechanisms
+- Windows: Registry-based startup (HKCU Run key)
+- Linux: systemd service + autostart desktop entries
+- macOS: LaunchAgents support
+- Universal fallback mechanisms
 
 2. ENHANCED ERROR HANDLING
-   - Detailed error messages with recovery suggestions
-   - Graceful degradation when permissions unavailable
-   - Automatic retry logic with exponential backoff
-   - Comprehensive validation checks
+- Detailed error messages with recovery suggestions
+- Graceful degradation when permissions unavailable
+- Automatic retry logic with exponential backoff
+- Comprehensive validation checks
 
 3. SECURITY IMPROVEMENTS
-   - Path sanitization and validation
-   - Registry key permission verification
-   - Secure file operations
-   - Audit logging for all operations
+- Path sanitization and validation
+- Registry key permission verification
+- Secure file operations
+- Audit logging for all operations
 
 4. MONITORING & DIAGNOSTICS
-   - Startup verification tests
-   - Health check integration
-   - Performance metrics
-   - Detailed operation logging
+- Startup verification tests
+- Health check integration
+- Performance metrics
+- Detailed operation logging
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -67,7 +69,9 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "startup_manager"
@@ -85,8 +89,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Cross-platform startup registration and verification module for Windows registry, Linux autostart/systemd, and macOS LaunchAgents with validation and retry handling."
 # --- SARAHMETA END ---
+
 import logging
 import sys
 import os
@@ -652,5 +663,5 @@ if __name__ == '__main__':
     logger.info("="*70)
 
 # ====================================================================
-# END OF SarahMemoryStartup.py v8.0.0
+# END OF SarahMemoryStartup.py v9.0.0
 # ====================================================================

@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryVault.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "security_core"
@@ -33,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Encrypted vault and secure configuration layer providing Fernet-based storage plus passphrase-protected secure config with KDF-derived keys."
 # --- SARAHMETA END ---
+
 import os
 import json
 import logging
@@ -273,10 +283,6 @@ if __name__ == '__main__':
     initialize_secure_config(pwd, sample)
     print("[Vault Demo] unlocked =>", unlock_vault_config(pwd))
 
-# ====================================================================
-# END OF SarahMemoryVault.py v8.0.0
-# ====================================================================
-
 
 # -----------------------------------------------------------------------------
 # Storage bridge helpers (v8 hardware integration)
@@ -325,3 +331,7 @@ def register_vault_mount_state(device: str, mountpoint: str, state: str = "mount
     if isinstance(extra, dict) and extra:
         payload["extra"] = extra
     return _save_mount_state(payload)
+
+# ====================================================================
+# END OF SarahMemoryVault.py v9.0.0
+# ====================================================================

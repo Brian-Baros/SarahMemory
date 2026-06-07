@@ -1,11 +1,22 @@
-"""--== SarahMemory Project ==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryCognitiveIdentityLayer.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
+===============================================================================
 Tri-layer identity/context packet helpers for SarahMemory AiOS.
 
-Purpose:
 - Build governed, read-only input packets for the Artificial Living System stack.
 - Layer 1: Six-question governance seed support.
 - Layer 2: language/context identity ring support.
@@ -17,7 +28,34 @@ Doctrine:
 - This module does not persist private content by default.
 - Helper models are evidence only; packet construction is deterministic-first.
 """
+
 from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "cognitive_identity_layer"
+# CATEGORY = "cognitive_language_identity_context"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "identity_layer"
+# FAMILY = "cognitive_triforce"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Deterministic language, identity, context, and affect packet layer for the Cognitive TriForce. Builds packets only; does not authorize or execute actions."
+# --- SARAHMETA END ---
 
 import os
 import re
@@ -38,7 +76,7 @@ if not logger.handlers:
     logger.addHandler(logging.NullHandler())
 
 MODULE_NAME = "SarahMemoryCognitiveIdentityLayer"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 
 QUESTION_WORDS = ("who", "why", "what", "when", "where", "how")
 DETERMINERS = {"a", "an", "the", "this", "that", "these", "those", "my", "your", "our", "his", "her", "their"}
@@ -723,3 +761,6 @@ def build_emergency_emotion_packet(hazard_packet: Optional[Dict[str, Any]] = Non
         },
     }
 
+# ====================================================================
+# END OF SarahMemoryCognitiveIdentityLayer.py v9.0.0
+# ====================================================================

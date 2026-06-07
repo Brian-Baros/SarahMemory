@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahWalletVisualizer.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,12 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
-# Visualizes wallet balance over time.
-# - Primary source: SarahMemory Ledger API  (env: LEDGER_API_BASE, SARAH_NODE_ID)
-# - Fallback: legacy JSON wallet at data/crypto/wallet.srh
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "D"
 # ROLE = "utility_tool"
@@ -36,8 +36,18 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Wallet balance visualization utility using Ledger API or legacy wallet data to plot transaction-derived balance history."
 # --- SARAHMETA END ---
+
+# Visualizes wallet balance over time.
+# - Primary source: SarahMemory Ledger API  (env: LEDGER_API_BASE, SARAH_NODE_ID)
+# - Fallback: legacy JSON wallet at data/crypto/wallet.srh
 import os
 import json
 import math
@@ -162,5 +172,5 @@ if __name__ == "__main__":
             plot_balance(times, balances, title=title)
 
 # ====================================================================
-# END OF SarahMemoryVisualizer.py v8.0.0
+# END OF SarahWalletVisualizer.py v9.0.0
 # ====================================================================

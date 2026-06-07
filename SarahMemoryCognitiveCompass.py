@@ -1,8 +1,9 @@
-"""--== SarahMemory Project ==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryCognitiveCompass.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2026-03-29
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -12,15 +13,15 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
-PURPOSE:
 - Orientation watchdog, anti-drift guide, and task-completion compass for SarahMemory AiOS.
 - Keeps SarahMemoryNeuron.py pointed at the ORIGINAL user goal until task completion is
-  verified, or until the system safely aborts / clarifies / escapes a loop.
+verified, or until the system safely aborts / clarifies / escapes a loop.
 - Works with the governed triforce:
-    * SarahMemoryCognitiveSelf.py      -> what exists / what is possible right now
-    * SarahMemoryCognitiveServices.py  -> what may proceed right now
-    * SarahMemoryCognitiveThinker.py   -> alternate safer / more meaningful paths
+* SarahMemoryCognitiveSelf.py      -> what exists / what is possible right now
+* SarahMemoryCognitiveServices.py  -> what may proceed right now
+* SarahMemoryCognitiveThinker.py   -> alternate safer / more meaningful paths
 - Uses SarahMemoryPreTokenAnalyzer.py whenever possible to preserve semantic clarity.
 - Selects sidekick FAMILIES and candidate helper modules without becoming the executor.
 - Holds outward success / Reply release until completion proof and Compare acceptance exist.
@@ -31,7 +32,7 @@ DESIGN RULES:
 - Compass must detect drift, procedural gaps, premature completion, mirror-state logic, and loop risk.
 - Compass must provide escape hatches so Neuron cannot get stuck in a constant loop.
 - Compass is universal: it must work for Answer / Action / Creative / System / Network tasks,
-  desktop software, drivers, browser workflows, creative studios, and future sidekicks.
+desktop software, drivers, browser workflows, creative studios, and future sidekicks.
 - Discovery is not activation. Module presence alone is not approval.
 - Local-first, fail-soft, auditable, and restart-safe.
 ===============================================================================
@@ -56,6 +57,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Anti-drift, anti-loop, task-completion watchdog that keeps Neuron on bearing until Compare-validated completion or safe abort."
 # --- SARAHMETA END ---
 
@@ -167,7 +174,7 @@ logger.propagate = False
 # Constants
 # -----------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryCognitiveCompass"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 _DB_NAME = "cognitive_compass.db"
 _CACHE_TTL = 10.0
 
@@ -1768,3 +1775,7 @@ def assess_sovereign_agent_bearing(goal: str = "", envelope: Optional[Dict[str, 
         "reasons": reasons,
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryCognitiveCompass.py v9.0.0
+# ====================================================================

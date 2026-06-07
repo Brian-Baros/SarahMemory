@@ -1,9 +1,8 @@
-"""
---==The SarahMemory Project==--
+"""--==The SarahMemory Project==--
 File: SarahMemoryGUI.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,9 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "C"
 # ROLE = "ui_shell"
@@ -34,8 +36,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = True
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Primary classic desktop GUI shell with chat, camera/video panels, addon launcher access, browser integration, avatar display, and user interaction surface."
 # --- SARAHMETA END ---
+
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -4190,7 +4199,7 @@ def visual_query(self, text: str):
         return {"response": reply or "(no OCR result)", "meta":{"source":"local","intent":"ocr"}}
     except Exception as e:
         return {"response": f"OCR error: {e}", "meta":{"source":"local","intent":"ocr"}}
-    
+
 # ====================================================================
-# END OF SarahMemoryGUI.py v8.0.0
+# END OF SarahMemoryGUI.py v9.0.0
 # ====================================================================

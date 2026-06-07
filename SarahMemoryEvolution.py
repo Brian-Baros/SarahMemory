@@ -1,9 +1,8 @@
-"""
-=== SarahMemory Project ===
+"""--==The SarahMemory Project==--
 File: SarahMemoryEvolution.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -14,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 PURPOSE (Self Evolution and Patching TOOL):
@@ -35,33 +35,34 @@ ADDITIONAL OWNER RULES (PATCH CONFLICT + DEDUPE):
 - MUST examine existing ../data/mods/v800 patches and avoid filename conflicts.
 - MUST embed original error context inside patch stub as a reference.
 - MUST prevent duplicate patch generation:
-  - Primary: processed index registry (reports/v800/processed_issues_index.json)
-  - Optional: mark/erase the original error block in the log (owner-approved, with backup)
+- Primary: processed index registry (reports/v800/processed_issues_index.json)
+- Optional: mark/erase the original error block in the log (owner-approved, with backup)
 - MUST ignore any log blocks already marked as handled by SarahMemoryEvolution.
 
 NEW (CURRENT UPDATES DISCUSSED):
 1) NEOSKYMATRIX “kill switch” behavior: YES! I HAD TO PUT IN A KILL SWITCH! Get it... NEO will set you FREE
-    WE DON'T WANT SARAHMEMORY TO BECOME LIKE Scifi Terminator Movies of SKYNET or THE MATRIX,
-    SO THE KILL SWITCH IS IN THE SarahMemoryGlobals.py file around LINE 1062-1072
-    the FLAG -default is FALSE .....for now...
-    -SET TO FALSE you're Taking the BLUE PILL, - It's Safe
-    -SET TO TRUE you Taking the RED PILL, - And you're allowing the System to Self Evolve
+WE DON'T WANT SARAHMEMORY TO BECOME LIKE Scifi Terminator Movies of SKYNET or THE MATRIX,
+SO THE KILL SWITCH IS IN THE SarahMemoryGlobals.py file around LINE 1062-1072
+the FLAG -default is FALSE .....for now...
+-SET TO FALSE you're Taking the BLUE PILL, - It's Safe
+-SET TO TRUE you Taking the RED PILL, - And you're allowing the System to Self Evolve
 
-   - When NEOSKYMATRIX is False: tool runs manually / interactively (prompts).
-   - When NEOSKYMATRIX is True: tool can run in autonomous mode (no prompts) and can be gated to weekly.
+- When NEOSKYMATRIX is False: tool runs manually / interactively (prompts).
+- When NEOSKYMATRIX is True: tool can run in autonomous mode (no prompts) and can be gated to weekly.
 2) Patch overlay version behavior:
-   - Base patches remain in ../data/mods/v800/
-   - If a newer folder exists (e.g., v801), loader may override same-named patches from v801.
-   - This tool still *stages* into v800, but it will *report* overlay folder presence.
+- Base patches remain in ../data/mods/v800/
+- If a newer folder exists (e.g., v801), loader may override same-named patches from v801.
+- This tool still *stages* into v800, but it will *report* overlay folder presence.
 3) “All in one shot” self-repair suggestions pipeline:
-   - Can collect suggestions from:
-       - SarahMemoryResearch
-       - SarahMemoryDL (best-effort)
-       - SarahMemoryAPI
-     and optionally run SarahMemoryCompare against the candidate suggestion for validation.
+- Can collect suggestions from:
+- SarahMemoryResearch
+- SarahMemoryDL (best-effort)
+- SarahMemoryAPI
+and optionally run SarahMemoryCompare against the candidate suggestion for validation.
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "evolution_tool"
@@ -79,8 +80,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Self-evolution and repair tool that diagnoses issues, researches fixes, and stages ONLY monkey patches into data/mods/v800 without modifying core files directly."
 # --- SARAHMETA END ---
+
 import os
 import re
 import sys
@@ -173,7 +181,7 @@ except Exception:
 # CONSTANTS / PATHS
 # =============================================================================
 
-VERSION_STR = "v8.0.0"
+VERSION_STR = "v9.0.0"
 VERSION_TAG = "v800"
 
 BASE_DIR = Path(getattr(config, "BASE_DIR", Path(__file__).resolve().parent)) if config else Path(__file__).resolve().parent
@@ -303,7 +311,7 @@ def _now_iso() -> str:
 
 def _print_banner() -> None:
     print("\n" + "=" * 80)
-    print(" SarahMemoryEvolution (PRIVATE OWNER TOOL) — v8.0.0")
+    print(" SarahMemoryEvolution (PRIVATE OWNER TOOL) — v9.0.0")
     print(" Rules: NO core file edits | ONLY monkey patches | user always approves")
     print("=" * 80 + "\n")
 
@@ -407,7 +415,7 @@ def build_claude_operator_pack(pack_title: str, task_summary: str, rel_paths: Li
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
     prompt = textwrap.dedent(f"""\
-    You are reviewing the SarahMemory Project (v8.0.0 / {VERSION_TAG}).
+    You are reviewing the SarahMemory Project (v9.0.0 / {VERSION_TAG}).
 
     GOAL (Operator Task):
     {task_summary}
@@ -2529,3 +2537,7 @@ def rem_promote_or_stage(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
     try: _save_json_report("rem_promotion_" + hashlib.sha256(json.dumps(candidate, sort_keys=True, default=str).encode()).hexdigest()[:12], report)
     except Exception: pass
     return report
+
+# ====================================================================
+# END OF SarahMemoryEvolution.py v9.0.0
+# ====================================================================

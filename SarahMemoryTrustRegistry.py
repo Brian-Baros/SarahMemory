@@ -1,8 +1,9 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryTrustRegistry.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2026-03-31
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -12,17 +13,17 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-PURPOSE:
 - Canonical trust, subject, and capability registry for SarahMemory AiOS / SMGET.
 - Tracks trusted identities across core modules, frontends, addons, drivers, and other
-  bounded execution surfaces without granting authority merely because code exists.
+bounded execution surfaces without granting authority merely because code exists.
 - Supplies the trust record used by SarahMemorySecurityGovernor.py and the broader
-  governed execution stack.
+governed execution stack.
 - Separates registration, trust tier, capability grant, exposure, and quarantine state.
 - Provides one auditable place to answer: who is calling, what are they allowed to ask for,
-  and how much runtime trust should be assigned to that caller.
+and how much runtime trust should be assigned to that caller.
 
 CORE DOCTRINE:
 - Registration does not imply trust.
@@ -59,6 +60,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SMGET canonical subject trust and capability registry. Tracks callers, trust tiers, scoped grants, manifests, quarantine state, and registry-backed authority boundaries."
 # --- SARAHMETA END ---
 
@@ -101,7 +108,7 @@ logger.propagate = False
 # Constants
 # ---------------------------------------------------------------------------
 MODULE_NAME = "SarahMemoryTrustRegistry"
-MODULE_VERSION = "8.0.0"
+MODULE_VERSION = "9.0.0"
 _DB_NAME = "trust_registry.db"
 _JSON_SNAPSHOT_NAME = "trust_registry_snapshot.json"
 
@@ -1120,3 +1127,7 @@ def declare_capability(subject_id: str, capability_name: str, **metadata: Any) -
 def get_capability_registry_snapshot() -> Dict[str, Any]:
     return _CAPABILITY_REGISTRY.snapshot()
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF SarahMemoryTrustRegistry.py v9.0.0
+# ====================================================================

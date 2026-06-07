@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryExpressOut.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,9 +13,10 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
-EXPRESSIVE OUTPUT ENGINE v8.0.0
+EXPRESSIVE OUTPUT ENGINE v9.0.0
 ============================================
 
 UPGRADE SUMMARY:
@@ -27,39 +28,39 @@ maintaining 100% backward compatibility.
 KEY ENHANCEMENTS:
 -----------------
 1. ADVANCED EMOTIONAL EXPRESSION
-   - Extended emotion palette (Plutchik's 8 emotions + nuances)
-   - Context-sensitive phrase selection
-   - Emotional momentum tracking
-   - Personality-aligned expression
-   - Cultural emoji adaptation
+- Extended emotion palette (Plutchik's 8 emotions + nuances)
+- Context-sensitive phrase selection
+- Emotional momentum tracking
+- Personality-aligned expression
+- Cultural emoji adaptation
 
 2. MULTI-MODAL OUTPUT FORMATTING
-   - Text channel optimization
-   - Voice prosody parameters
-   - Visual expression hints
-   - Cross-platform emoji support
-   - Accessibility-friendly alternatives
+- Text channel optimization
+- Voice prosody parameters
+- Visual expression hints
+- Cross-platform emoji support
+- Accessibility-friendly alternatives
 
 3. ETHICS AND SAFETY
-   - Content filtering system
-   - Context-aware appropriateness checks
-   - Tone moderation
-   - Safe mode compliance
-   - PG-rated fallbacks
+- Content filtering system
+- Context-aware appropriateness checks
+- Tone moderation
+- Safe mode compliance
+- PG-rated fallbacks
 
 4. PERFORMANCE OPTIMIZATION
-   - Expression caching
-   - Lazy emoji loading
-   - Database connection pooling
-   - Efficient logging
-   - Memory-conscious operations
+- Expression caching
+- Lazy emoji loading
+- Database connection pooling
+- Efficient logging
+- Memory-conscious operations
 
 5. COMPREHENSIVE LOGGING
-   - Detailed event tracking
-   - Performance metrics
-   - User interaction patterns
-   - Quality assurance data
-   - Audit trail generation
+- Detailed event tracking
+- Performance metrics
+- User interaction patterns
+- Quality assurance data
+- Audit trail generation
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -85,7 +86,9 @@ INTEGRATION POINTS:
 
 ===============================================================================
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "expression_engine"
@@ -103,8 +106,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Expressive output engine for emotional phrasing, emoji policy, voice prosody parameters, ethics filtering, and multi-modal presentation formatting."
 # --- SARAHMETA END ---
+
 import logging
 import random
 import os
@@ -319,7 +329,7 @@ def log_expressive_event(event: str, details: str) -> None:
                 timestamp TEXT NOT NULL,
                 event TEXT NOT NULL,
                 details TEXT,
-                version TEXT DEFAULT '8.0.0',
+                version TEXT DEFAULT '9.0.0',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -329,7 +339,7 @@ def log_expressive_event(event: str, details: str) -> None:
             cursor.execute("PRAGMA table_info(expressive_events)")
             cols = {row[1] for row in cursor.fetchall()}  # row[1] = column name
             if "version" not in cols:
-                cursor.execute("ALTER TABLE expressive_events ADD COLUMN version TEXT DEFAULT '8.0.0'")
+                cursor.execute("ALTER TABLE expressive_events ADD COLUMN version TEXT DEFAULT '9.0.0'")
             if "created_at" not in cols:
                 cursor.execute("ALTER TABLE expressive_events ADD COLUMN created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
         except Exception:
@@ -340,7 +350,7 @@ def log_expressive_event(event: str, details: str) -> None:
         timestamp = datetime.now().isoformat()
         cursor.execute(
             "INSERT INTO expressive_events (timestamp, event, details, version) VALUES (?, ?, ?, ?)",
-            (timestamp, event, details, "8.0.0")
+            (timestamp, event, details, "9.0.0")
         )
 
         conn.commit()
@@ -529,7 +539,7 @@ def format_expressive_output(
             "voice": voice_params,
             "mood": mood,
             "channel": channel,
-            "version": "8.0.0"
+            "version": "9.0.0"
         }
 
         logger.debug(f"[v8.0][Format] {mood} → {channel} → {len(decorated)} chars")
@@ -657,7 +667,7 @@ def get_expression_metrics() -> Dict[str, Any]:
             "recent_events": recent_count,
             "available_emotions": len(expressions),
             "emoji_variants": sum(len(e["emojis"]) for e in expressions.values()),
-            "version": "8.0.0"
+            "version": "9.0.0"
         }
 
     except Exception as e:
@@ -669,7 +679,7 @@ def get_expression_metrics() -> Dict[str, Any]:
 # =============================================================================
 if __name__ == '__main__':
     print("=" * 80)
-    print("SarahMemory ExpressOut v8.0.0 - Test Mode")
+    print("SarahMemory ExpressOut v9.0.0 - Test Mode")
     print("=" * 80)
 
     logger.info("[v8.0] Starting ExpressOut test suite")
@@ -712,9 +722,6 @@ if __name__ == '__main__':
 
 logger.info("[v8.0] SarahMemoryExpressOut module loaded successfully")
 
-# ====================================================================
-# END OF SarahMemoryExpressOust.py v8.0.0
-# ====================================================================
 
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
 def format_output_with_emotion_packet(text: str, emotion_affect_packet: Optional[Dict[str, Any]] = None, channel: str = "text") -> Dict[str, Any]:
@@ -739,3 +746,7 @@ def format_output_with_emotion_packet(text: str, emotion_affect_packet: Optional
         "constraints": constraints,
         "factual_content_changed": False,
     }
+
+# ====================================================================
+# END OF SarahMemoryExpressOut.py v9.0.0
+# ====================================================================

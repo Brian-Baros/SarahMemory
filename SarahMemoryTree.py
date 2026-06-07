@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryTree.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -13,6 +13,7 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
+
 ===============================================================================
 
 SarahMemoryTree.py (PythonAnywhere-safe)
@@ -20,7 +21,9 @@ SarahMemoryTree.py (PythonAnywhere-safe)
 - Writes to tree_YYYYMMDD-HHMMSS.txt (never overwrites to 0 bytes)
 - Flushes output as it goes (so partial output survives interrupts)
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "D"
 # ROLE = "utility_tool"
@@ -38,8 +41,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Project directory tree/report generator that writes timestamped tree outputs safely without overwriting prior output."
 # --- SARAHMETA END ---
+
 import os
 from datetime import datetime, timezone
 
@@ -120,5 +130,5 @@ if __name__ == "__main__":
     main()
 
 # ====================================================================
-# END OF SarahMemoryTree.py v8.0.0
+# END OF SarahMemoryTree.py v9.0.0
 # ====================================================================

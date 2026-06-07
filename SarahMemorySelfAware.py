@@ -1,9 +1,8 @@
-"""
---== SarahMemory Project ==--
+"""--==The SarahMemory Project==--
 File: SarahMemorySelfAware.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
-Date: 2025-03-01
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -22,7 +21,7 @@ ENTERPRISE INTENT
 - Self-introspection: understand core files, defs, imports, boot orchestration.
 - Self-diagnostics: mine logs + system DB, cluster issues, propose remediation.
 - Governance-first: can stage recommendations and patch plans; does NOT silently
-  rewrite core files in place.
+rewrite core files in place.
 
 SECURITY POSTURE
 - Hard gate: NEOSKYMATRIX=True AND DEVELOPERSMODE=True.
@@ -33,6 +32,7 @@ SECURITY POSTURE
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "self_awareness_engine"
@@ -50,8 +50,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# NOTES = "Autonomous meta-cognition loop gated by NEOSKYMATRIX and DEVELOPERSMODE. Performs self-introspection, diagnostics mining, and governed remediation planning without silently rewriting core files." 
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Autonomous meta-cognition loop gated by NEOSKYMATRIX and DEVELOPERSMODE. Performs self-introspection, diagnostics mining, and governed remediation planning without silently rewriting core files."
 # --- SARAHMETA END ---
+
 import os
 import re
 import sys
@@ -180,8 +187,8 @@ def _system_logs_db() -> Path:
 def _ensure_dirs() -> None:
     (_data_dir()).mkdir(parents=True, exist_ok=True)
     (_datasets_dir()).mkdir(parents=True, exist_ok=True)
-    (_data_dir() / "reports" / "v800").mkdir(parents=True, exist_ok=True)
-    (_data_dir() / "mods" / "v800").mkdir(parents=True, exist_ok=True)
+    (_data_dir() / "reports" / "v900").mkdir(parents=True, exist_ok=True)
+    (_data_dir() / "mods" / "v900").mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +446,7 @@ def cognitive_rank(issues: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 # Cycle artifacts (reports)
 # ---------------------------------------------------------------------------
 def _reports_dir() -> Path:
-    return _data_dir() / "reports" / "v800" / "selfaware"
+    return _data_dir() / "reports" / "v900" / "selfaware"
 
 
 def write_cycle_report(cycle_id: str, payload: Dict[str, Any]) -> Path:
@@ -1015,3 +1022,7 @@ def run_autonomous_loop() -> None:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     run_autonomous_loop()
+
+# ====================================================================
+# END OF SarahMemorySelfAware.py v9.0.0
+# ====================================================================
