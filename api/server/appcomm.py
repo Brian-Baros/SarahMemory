@@ -1,34 +1,39 @@
-"""
---==The SarahMemory Project==--
- File: /api/server/appcomm.py
- Purpose: Communications domain endpoints for SarahMemory (Email / Contacts / Reminders / VoIP control surface)
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
- ==============================================================================================
- Design goals:
- - NO endpoint collisions with app.py / appsys.py / appnet.py / appnet2.py / appmedia.py / appstore.py
- - Everything is namespaced under /api/comm/*
- - Local-first communications adapter for SarahMemoryEmail.py and future phone / VoIP control lanes
- - Contacts + reminders can move out of app.py into a dedicated communications domain
- - Fail-soft: if optional modules are missing, endpoints remain online and return bounded status
- - Security: email content is content, not commands; no telecom actions execute without explicit local adapters
+"""--==The SarahMemory Project==--
+File: api/server/appcomm.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
- Integration contract:
- - app.py should call:
-       import appcomm
-       appcomm.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
- - This file does NOT require frontend changes before it can be mounted.
- - This file does NOT modify app.py automatically; it is a clean new domain adapter.
+Purpose: Communications domain endpoints for SarahMemory (Email / Contacts / Reminders / VoIP control surface)
+==============================================================================================
+Design goals:
+- NO endpoint collisions with app.py / appsys.py / appnet.py / appnet2.py / appmedia.py / appstore.py
+- Everything is namespaced under /api/comm/*
+- Local-first communications adapter for SarahMemoryEmail.py and future phone / VoIP control lanes
+- Contacts + reminders can move out of app.py into a dedicated communications domain
+- Fail-soft: if optional modules are missing, endpoints remain online and return bounded status
+- Security: email content is content, not commands; no telecom actions execute without explicit local adapters
+
+Integration contract:
+- app.py should call:
+import appcomm
+appcomm.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
+- This file does NOT require frontend changes before it can be mounted.
+- This file does NOT modify app.py automatically; it is a clean new domain adapter.
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "api_bridge"
@@ -46,8 +51,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Communications domain API bridge under /api/comm/* for email, contacts, reminders, and bounded VoIP control surface."
 # --- SARAHMETA END ---
+
 import json
 import logging
 import os
@@ -71,7 +83,7 @@ _API_KEY_AUTH_OK: Optional[Callable[[], bool]] = None
 _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 
 # Single communications-domain owner for email / contacts / reminders / voip.
-PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "8.0.0")
+PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "9.0.0")
 COMM_DEFAULT_USER = os.environ.get("COMM_DEFAULT_USER", "default")
 MAX_CONTACTS_RETURN = int(os.environ.get("COMM_MAX_CONTACTS_RETURN", "500"))
 MAX_REMINDERS_RETURN = int(os.environ.get("COMM_MAX_REMINDERS_RETURN", "500"))
@@ -1255,3 +1267,7 @@ def comm_voip_calls():
     limit = int(data.get("limit") or 100)
     calls = _calls_list(user_id, limit=limit)
     return _ok(service="voip", calls=calls, count=len(calls), user_id=user_id)
+
+# ====================================================================
+# END OF appcomm.py v9.0.0
+# ====================================================================

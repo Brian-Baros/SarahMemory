@@ -1,31 +1,35 @@
-"""
- --==The SarahMemory Project==--
- File: /app/server/appnet2.py
- Purpose: SarahNet "Bravo" — Identity/Trust + Overlay Tunnel Control + Virtual DNS/Name Directory
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
+"""--==The SarahMemory Project==--
+File: api/server/appnet2.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: SarahNet "Bravo" — Identity/Trust + Overlay Tunnel Control + Virtual DNS/Name Directory
 ==============================================================================================
- Design goals:
- - NO endpoint collisions with appnet.py
- - Everything is namespaced under /api/net2/*
- - Pure control-plane (HTTP + sqlite). No OS-level VPN claims here.
- - Cross-platform safe: Windows/Linux/macOS/headless/cloud.
- - app.py should call:
-     import appnet
-     import appnet2
-     appnet.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
-     appnet2.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
+Design goals:
+- NO endpoint collisions with appnet.py
+- Everything is namespaced under /api/net2/*
+- Pure control-plane (HTTP + sqlite). No OS-level VPN claims here.
+- Cross-platform safe: Windows/Linux/macOS/headless/cloud.
+- app.py should call:
+import appnet
+import appnet2
+appnet.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
+appnet2.init_app(app, CONNECT_SQLITE, META_DB, api_key_auth_ok=..., sign_ok=...)
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "api_bridge"
@@ -43,8 +47,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SarahNet Bravo control-plane API under /api/net2/* for node identity, trust tiers, challenge/attest flows, virtual DNS/name directory, and overlay tunnel session control."
 # --- SARAHMETA END ---
+
 import base64
 import hashlib
 import json
@@ -242,7 +253,7 @@ def net2_ping():
     return _ok(
         pong=True,
         ts=_now(),
-        version=os.environ.get("PROJECT_VERSION", "8.0.0"),
+        version=os.environ.get("PROJECT_VERSION", "9.0.0"),
         module="appnet2",
     )
 
@@ -252,7 +263,7 @@ def net2_health():
         "ok": True,
         "enabled": bool(_CONNECT_SQLITE and _META_DB),
         "ts": _now(),
-        "version": os.environ.get("PROJECT_VERSION", "8.0.0"),
+        "version": os.environ.get("PROJECT_VERSION", "9.0.0"),
     }
     if not payload["enabled"]:
         payload["ok"] = False
@@ -798,3 +809,7 @@ def init_app(app, connect_sqlite, meta_db_path: str, api_key_auth_ok=None, sign_
 
     _ensure_tables()
     app.register_blueprint(bp2)
+
+# ====================================================================
+# END OF appnet2.py v9.0.0
+# ====================================================================

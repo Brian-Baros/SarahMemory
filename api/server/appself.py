@@ -1,19 +1,53 @@
-# --==The SarahMemory Project==--
-# File: /api/server/appself.py
-# Purpose: SarahMemory SelfAware / CognitiveSelf fact-ticket API bridge
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-# ==============================================================================================
+"""--==The SarahMemory Project==--
+File: api/server/appself.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: SarahMemory SelfAware / CognitiveSelf fact-ticket API bridge
+==============================================================================================
 """
-SarahMemory appself.py v8.0.0 EvidenceCourt V8 topology-aware body capability cleanup
+
+from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_bridge"
+# CATEGORY = "self_awareness_fact_ticketing"
+# USER_FACING = False
+# UI_EXPOSURE = "backend_only"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "self"
+# HARDWARE_DOMAIN = "system_sensors_filesystem_runtime"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "selfaware_api"
+# FAMILY = "core_cognition"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "SelfAware/CognitiveSelf API bridge under /api/self/* for fact tickets, 3-probe evidence quorum, body-map exposure, and REM MEDIUM interrogation. No execution or patching."
+# --- SARAHMETA END ---
+
+"""
+SarahMemory appself.py v9.0.0 EvidenceCourt V8 topology-aware body capability cleanup
 
 SelfAware / CognitiveSelf API bridge.
 
@@ -49,27 +83,6 @@ This module is an API bridge. It does not replace:
 - SarahMemoryOperatorCore.py       action contract executor choke-point
 """
 
-from __future__ import annotations
-
-# --- SARAHMETA START ---
-# GRADE = "A"
-# ROLE = "api_bridge"
-# CATEGORY = "self_awareness_fact_ticketing"
-# USER_FACING = False
-# UI_EXPOSURE = "backend_only"
-# DEPLOYMENT_TARGET = "api_server"
-# API_DOMAIN = "self"
-# HARDWARE_DOMAIN = "system_sensors_filesystem_runtime"
-# INTERNAL_ONLY = False
-# CAPABILITY_NAME = "selfaware_api"
-# FAMILY = "core_cognition"
-# GOVERNANCE_LEVEL = "critical"
-# AUTONOMOUS_SAFE = False
-# FRONTEND_CANDIDATE = False
-# ADDON_CANDIDATE = False
-# DRIVER_CANDIDATE = False
-# NOTES = "SelfAware/CognitiveSelf API bridge under /api/self/* for fact tickets, 3-probe evidence quorum, body-map exposure, and REM MEDIUM interrogation. No execution or patching."
-# --- SARAHMETA END ---
 
 import hashlib
 import json
@@ -97,7 +110,7 @@ _META_DB: Optional[str] = None
 _API_KEY_AUTH_OK: Optional[Callable[[], bool]] = None
 _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 
-PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "8.0.0")
+PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "9.0.0")
 TICKET_TABLE = "selfaware_fact_tickets"
 MAX_TICKETS_RETURN = int(os.environ.get("SELFWARE_MAX_TICKETS_RETURN", "200") or 200)
 MAX_CLAIM_CHARS = int(os.environ.get("SELFWARE_MAX_CLAIM_CHARS", "12000") or 12000)
@@ -4368,10 +4381,6 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
     return True
 
 
-# ============================================================================
-# END OF appself.py v8.0.0 EvidenceCourt V8 Topology-Aware
-# ============================================================================
-
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
 @bp.route("/identity", methods=["GET", "POST"])
 def api_self_identity():
@@ -4389,3 +4398,7 @@ def api_self_identity():
         return jsonify(_json_safe({"ok": True, "identity": fn({}) if callable(fn) else {}}))
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+# ====================================================================
+# END OF appself.py v9.0.0
+# ====================================================================

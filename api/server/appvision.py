@@ -1,18 +1,28 @@
 """--==The SarahMemory Project==--
-File: /api/server/appvision.py
-Part of the SarahMemory Companion AI-bot Platform
-Version: v8.0.0
+File: api/server/appvision.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
 Governed Vision API Bridge
 ==========================
-Purpose:
 - Backend-owned vision policy, camera/device witness, and frame analysis bridge.
 - Keeps frontend authority limited to ON/OFF and presentation buttons.
 - Uses SarahMemoryMSDC.py for body/device/driver mapping.
 - Uses SOBJE and FacialRecognition as frame interpreters, not hardware owners.
 - Does not mutate SarahMemoryGlobals.py.
 """
+
 from __future__ import annotations
 
 # --- SARAHMETA START ---
@@ -32,6 +42,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Backend-owned vision policy and bridge. MSDC maps device/body. SOBJE/FacialRecognition interpret frames. Frontend remains ON/OFF only."
 # --- SARAHMETA END ---
 
@@ -1061,3 +1077,7 @@ def init_app(app, connect_sqlite=None, meta_db=None, api_key_auth_ok=None, sign_
 
 def apply(app):
     return init_app(app)
+
+# ====================================================================
+# END OF appvision.py v9.0.0
+# ====================================================================

@@ -1,28 +1,33 @@
-"""
- --==The SarahMemory Project==--
- File: /app/server/appstore.py
- Purpose: SarahMemory Power Store Endpoints
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
-==============================================================================================
- Design goals:
- - NO endpoint collisions with ANY of the other app*.py files
- - Everything is namespaced under /api/store/
- - Reference implementation for store + storefront integrations (PayPal/Printify/Kittl)
+"""--==The SarahMemory Project==--
+File: api/server/appstore.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
- Key rules:
- - No secrets in frontend. All secrets live in PythonAnywhere .env and are read server-side.
- - "Kitchen sink" module: store/auth/products/payments/integrations, without endpoint collisions.
+Purpose: SarahMemory Power Store Endpoints
+==============================================================================================
+Design goals:
+- NO endpoint collisions with ANY of the other app*.py files
+- Everything is namespaced under /api/store/
+- Reference implementation for store + storefront integrations (PayPal/Printify/Kittl)
+
+Key rules:
+- No secrets in frontend. All secrets live in PythonAnywhere .env and are read server-side.
+- "Kitchen sink" module: store/auth/products/payments/integrations, without endpoint collisions.
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "api_bridge"
@@ -40,8 +45,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Storefront and Power Store API bridge under /api/store/* for auth, products, payments/integrations, generated product concepts, and server-side secret handling."
 # --- SARAHMETA END ---
+
 import base64
 import hashlib
 import hmac
@@ -1228,3 +1240,7 @@ def api_store_kittl_create_design():
     imageUrl = ""
     category = "kittl"
     return _cors_ok(_jok({"id": kid, "name": name, "imageUrl": imageUrl, "keywords": keywords, "category": category}))
+
+# ====================================================================
+# END OF appstore.py v9.0.0
+# ====================================================================

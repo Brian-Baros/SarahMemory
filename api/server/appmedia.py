@@ -1,17 +1,20 @@
-"""
- --==The SarahMemory Project==--
- File: /api/server/appmedia.py
- Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
+"""--==The SarahMemory Project==--
+File: api/server/appmedia.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: Creative Studio "media broker" endpoints (images/music/video + hybrid outputs)
 ==============================================================================================
 
 Enterprise intent
@@ -33,6 +36,7 @@ Notes
 """
 
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "api_bridge"
@@ -50,8 +54,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Creative Studio media broker API under /api/media/* and /api/creative/* for job packaging, render orchestration, manifest/download handling, and fail-soft engine exposure."
 # --- SARAHMETA END ---
+
 import base64
 import hashlib
 import json
@@ -79,7 +90,7 @@ _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 # ---------------------------
 # Config / Limits
 # ---------------------------
-PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "8.0.0")
+PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "9.0.0")
 
 MAX_PROMPT_CHARS = int(os.environ.get("MEDIA_MAX_PROMPT_CHARS", "12000"))
 MAX_INLINE_B64_BYTES = int(os.environ.get("MEDIA_MAX_INLINE_B64_BYTES", str(8 * 1024 * 1024)))  # 8 MB
@@ -502,7 +513,7 @@ def media_capabilities():
 
 
 # ---------------------------------------------------------------------------
-# WebUI Convenience Endpoints (v8.0.0)
+# WebUI Convenience Endpoints (v9.0.0)
 # These match the frontend contract used by CreativeToolsPanel.tsx:
 #   POST /api/creative/image | /api/creative/music | /api/creative/video
 # They are thin wrappers over the job system, returning a direct downloadable URL.
@@ -1052,3 +1063,7 @@ def init_app(
     init_appmedia(connect_sqlite, meta_db_path, api_key_auth_ok=api_key_auth_ok, sign_ok=sign_ok)
     _ensure_tables()
     app.register_blueprint(bp)
+
+# ====================================================================
+# END OF appmedia.py v9.0.0
+# ====================================================================

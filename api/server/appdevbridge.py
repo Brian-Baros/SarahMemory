@@ -1,36 +1,27 @@
-# --==The SarahMemory Project==--
-# File: /app/server/appdevbridge.py
-# Purpose: SarahMemory Developer Bridge endpoints for ChatGPT-assisted engineering packets
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-# ==============================================================================================
-# Design goals:
-# - NO endpoint collisions with app.py or app*.py files.
-# - Everything is namespaced under /api/devbridge/*.
-# - Temporary supervised bridge for ChatGPT Project Session collaboration.
-# - Packet export/import/staging/validation/audit without bloating app.py.
-# - No autonomous code application. Real file writes require explicit approval + developer gate.
-"""
-SarahMemory DevBridge v8.0.0
+"""--==The SarahMemory Project==--
+File: api/server/appdevbridge.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
-This module creates a governed bridge lane for the SarahMemory ResearchPanel.
-It lets the FrontEnd generate structured engineering packets, import ChatGPT
-responses, stage patch candidates, validate staged files, and apply only after
-explicit approval and local developer gating.
-
-Important governance rule:
-    observe -> packetize -> import response -> stage -> validate -> approve -> apply
-
-The bridge does not call OpenAI APIs. It is a user-mediated bridge for the
-ChatGPT web/project session and SarahMemory runtime.
+Purpose: SarahMemory Developer Bridge endpoints for ChatGPT-assisted engineering packets
+==============================================================================================
+Design goals:
+- NO endpoint collisions with app.py or app*.py files.
+- Everything is namespaced under /api/devbridge/*.
+- Temporary supervised bridge for ChatGPT Project Session collaboration.
+- Packet export/import/staging/validation/audit without bloating app.py.
+- No autonomous code application. Real file writes require explicit approval + developer gate.
 """
 
 from __future__ import annotations
@@ -52,8 +43,30 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Developer bridge API under /api/devbridge/* for ChatGPT packet exchange, response import, staging, validation, and explicitly approved patch application."
 # --- SARAHMETA END ---
+
+"""
+SarahMemory DevBridge v9.0.0
+
+This module creates a governed bridge lane for the SarahMemory ResearchPanel.
+It lets the FrontEnd generate structured engineering packets, import ChatGPT
+responses, stage patch candidates, validate staged files, and apply only after
+explicit approval and local developer gating.
+
+Important governance rule:
+    observe -> packetize -> import response -> stage -> validate -> approve -> apply
+
+The bridge does not call OpenAI APIs. It is a user-mediated bridge for the
+ChatGPT web/project session and SarahMemory runtime.
+"""
+
 
 import ast
 import hashlib
@@ -77,7 +90,7 @@ _META_DB: Optional[str] = None
 _API_KEY_AUTH_OK: Optional[Callable[[], bool]] = None
 _SIGN_OK: Optional[Callable[[bytes, str], bool]] = None
 
-PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "8.0.0")
+PROJECT_VERSION = os.environ.get("PROJECT_VERSION", "9.0.0")
 DEFAULT_CHATGPT_SESSION_URL = (
     "https://chatgpt.com/g/g-p-67e0408d2a048191ae36592e6e45ae89-"
     "the-sarahmemory-project-v8-0-0-aios/c/69fde7eb-0204-83e8-8b9e-65636d3ece39"
@@ -2856,7 +2869,6 @@ def devbridge_response_get(response_id: str):
         return _err("Response not found", 404)
     return _ok(response=data, response_id=response_id)
 
-
 # ====================================================================
-# END OF appdevbridge.py v8.0.0
+# END OF appdevbridge.py v9.0.0
 # ====================================================================

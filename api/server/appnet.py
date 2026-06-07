@@ -1,47 +1,52 @@
-"""
- --==The SarahMemory Project==--
- File: /app/server/appnet.py
- Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
+"""--==The SarahMemory Project==--
+File: api/server/appnet.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
 ==============================================================================================
- Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
- Design goals:
- - NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
- - Everything is namespaced under /api/net/*
- - Broker stores presence/messages/commands/groups/signals/files
- - Broker does NOT execute commands; nodes verify/auth/execute locally
+Purpose: SarahNet / MCP "one-way broker" endpoints (store-and-forward + signaling)
+Design goals:
+- NO duplicate endpoints with app.py (avoids Flask AssertionError collisions)
+- Everything is namespaced under /api/net/*
+- Broker stores presence/messages/commands/groups/signals/files
+- Broker does NOT execute commands; nodes verify/auth/execute locally
 
- IMPORTANT:
- - This file FIXES your current bug: you had DUPLICATE Flask routes:
-     /api/net/file/send
-     /api/net/file/poll
-     /api/net/file/ack
-   defined TWICE (one “small file” version and one “chunked” version).
-   That WILL cause endpoint collisions / undefined behavior.
+IMPORTANT:
+- This file FIXES your current bug: you had DUPLICATE Flask routes:
+/api/net/file/send
+/api/net/file/poll
+/api/net/file/ack
+defined TWICE (one “small file” version and one “chunked” version).
+That WILL cause endpoint collisions / undefined behavior.
 
- WHAT THIS VERSION DOES:
- - Keeps your working “small broker file” API (Test3 compatible):
-     POST /api/net/file/send
-     GET  /api/net/file/poll
-     POST /api/net/file/ack
- - Adds CHUNKED transfers without collisions using NEW endpoints:
-     POST /api/net/file/start
-     POST /api/net/file/chunk
-     GET  /api/net/file/chunk/poll
-     POST /api/net/file/chunk/ack
-     POST /api/net/file/finish
- - Adds CRC32 + SHA256 per chunk, optional zlib compression, resume-friendly polling.
+WHAT THIS VERSION DOES:
+- Keeps your working “small broker file” API (Test3 compatible):
+POST /api/net/file/send
+GET  /api/net/file/poll
+POST /api/net/file/ack
+- Adds CHUNKED transfers without collisions using NEW endpoints:
+POST /api/net/file/start
+POST /api/net/file/chunk
+GET  /api/net/file/chunk/poll
+POST /api/net/file/chunk/ack
+POST /api/net/file/finish
+- Adds CRC32 + SHA256 per chunk, optional zlib compression, resume-friendly polling.
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "api_bridge"
@@ -59,8 +64,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "SarahNet broker API under /api/net/* for store-and-forward messaging, commands, signaling, file transfer, privacy controls, and broker persistence. Broker never executes commands."
 # --- SARAHMETA END ---
+
 import base64
 import hashlib
 import json
@@ -624,7 +636,7 @@ def net_ping():
         pong=True,
         ts=_now(),
         broker="api.sarahmemory.com",
-        version=os.environ.get("PROJECT_VERSION", "8.0.0"),
+        version=os.environ.get("PROJECT_VERSION", "9.0.0"),
     )
 
 
@@ -643,7 +655,7 @@ def net_health():
         "ok": True,
         "enabled": bool(_CONNECT_SQLITE and _META_DB),
         "ts": _now(),
-        "version": PROJECT_VERSION if "PROJECT_VERSION" in globals() else "8.0.0",
+        "version": PROJECT_VERSION if "PROJECT_VERSION" in globals() else "9.0.0",
     }
 
     if not payload["enabled"]:
@@ -2246,3 +2258,7 @@ def net_interop_status():
         requires_smget_for_actions=True,
     )
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
+
+# ====================================================================
+# END OF appnet.py v9.0.0
+# ====================================================================

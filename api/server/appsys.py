@@ -1,32 +1,37 @@
-"""
- --==The SarahMemory Project==--
- File: /api/server/appsys.py
- System endpoints module for SarahMemory (v8.0.0)
- Part of the SarahMemory Companion AI-bot Platform
- Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
- www.linkedin.com/in/brian-baros-29962a176
- https://www.facebook.com/bbaros
- brian.baros@sarahmemory.com
- 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
- https://www.sarahmemory.com
- https://api.sarahmemory.com
- https://ai.sarahmemory.com
- https://store.sarahmemory.com
-==============================================================================================
- Purpose: System endpoints for local-only features (Files / OS utilities)
- Notes:
-  - MUST NOT expose PythonAnywhere server filesystem on ai.sarahmemory.com
-  - Local browsing is enabled ONLY for localhost requests by default
-  - app.py mounts this via appsys.init_app(app)
+"""--==The SarahMemory Project==--
+File: api/server/appsys.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
 
- v8.0.0 hardening:
-  - Path traversal protection (canonicalize + enforce under BASE_DIR)
-  - /api/files/upload (multipart + base64 JSON fallback) -> BASE_DIR/downloads
-  - Trash workflow (BASE_DIR/dumpster/items + index.json)
-  - Append-only activity log (DATA_DIR/logs/api_events.log)
-  - Browser proxy fetch endpoints (Reader Mode) + native open hooks
+System endpoints module for SarahMemory (v9.0.0)
+==============================================================================================
+Purpose: System endpoints for local-only features (Files / OS utilities)
+Notes:
+- MUST NOT expose PythonAnywhere server filesystem on ai.sarahmemory.com
+- Local browsing is enabled ONLY for localhost requests by default
+- app.py mounts this via appsys.init_app(app)
+
+v9.0.0 hardening:
+- Path traversal protection (canonicalize + enforce under BASE_DIR)
+- /api/files/upload (multipart + base64 JSON fallback) -> BASE_DIR/downloads
+- Trash workflow (BASE_DIR/dumpster/items + index.json)
+- Append-only activity log (DATA_DIR/logs/api_events.log)
+- Browser proxy fetch endpoints (Reader Mode) + native open hooks
 """
+
 from __future__ import annotations
+
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "api_bridge"
@@ -44,8 +49,15 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "System/local-operations API bridge for files, local OS utilities, guarded ingestion, browser reader-mode helpers, and cloud-safe local-only controls."
 # --- SARAHMETA END ---
+
 import base64
 import hashlib
 import json
@@ -1418,3 +1430,7 @@ def init_app(app) -> None:
     if "appsys_v800" in getattr(app, "blueprints", {}):
         return
     app.register_blueprint(bp)
+
+# ====================================================================
+# END OF appsys.py v9.0.0
+# ====================================================================

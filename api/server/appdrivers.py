@@ -1,29 +1,33 @@
-""" --==The SarahMemory Project==--
-# File: /app/server/appdrivers.py
-# Purpose: Universal Driver API Router (v8.0.0)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#
-# Purpose:
-# - Handles governed driver discovery, configuration, validation, connection,
-#   status, and generic action routing for attached or currently unattached hardware.
-# - Drivers live under ../data/drivers/<driver_id>/ with:
-#     manifest.json, ui.json, defaults.json, config.json, driver.py
-# - No driver code is imported at boot unless an endpoint needs it.
-# - SAFE_MODE blocks live connection/session start while still allowing discovery,
-#   schema reads, config management, and validation.
-# - Supports both legacy patch-style apply(app) mounting and modern init_app(...)
-#   mounting from app.py.
-#==================================================================================================
+"""--==The SarahMemory Project==--
+File: api/server/appdrivers.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+Purpose: Universal Driver API Router (v9.0.0)
+
+- Handles governed driver discovery, configuration, validation, connection,
+status, and generic action routing for attached or currently unattached hardware.
+- Drivers live under ../data/drivers/<driver_id>/ with:
+manifest.json, ui.json, defaults.json, config.json, driver.py
+- No driver code is imported at boot unless an endpoint needs it.
+- SAFE_MODE blocks live connection/session start while still allowing discovery,
+schema reads, config management, and validation.
+- Supports both legacy patch-style apply(app) mounting and modern init_app(...)
+mounting from app.py.
+==================================================================================================
 """
+
 from __future__ import annotations
 
 # --- SARAHMETA START ---
@@ -43,6 +47,12 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = True
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Universal governed driver surface for discovery, config, validation, session control, and action routing for hardware integrations under /api/drivers/*."
 # --- SARAHMETA END ---
 
@@ -1015,3 +1025,7 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
     _API_KEY_AUTH_OK = api_key_auth_ok
     _SIGN_OK = sign_ok
     return apply(app)
+
+# ====================================================================
+# END OF appdrivers.py v9.0.0
+# ====================================================================

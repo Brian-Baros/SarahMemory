@@ -1,28 +1,60 @@
-# --==The SarahMemory Project==--
-# File: /app/server/app.py
-# ULTIMATE merged Flask server for SarahMemory (v8.0.0)
-# Part of the SarahMemory Companion AI-bot Platform
-# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
-# www.linkedin.com/in/brian-baros-29962a176
-# https://www.facebook.com/bbaros
-# brian.baros@sarahmemory.com
-# 'The SarahMemory Companion AI-Bot Platform, are property of SOFTDEV0 LLC., & Brian Lee Baros'
-# https://www.sarahmemory.com
-# https://api.sarahmemory.com
-# https://ai.sarahmemory.com
-# https://store.sarahmemory.com
-#==============================================================================================
-# - Serves Web UI
-# - Hub (HMAC) endpoints
-# - Node registration / embeddings / context / jobs
-# - Leaderboard + wallet (with Ledger module preference + local fallback)
-# - Settings/Themes/Voices + Contacts + Reminders + Cleanup Tools
-# - Calendar/Chat History fetchers for Web UI
-# - File ingest / remote transfer
-# - Camera/Mic/Voice toggles + simple telecom stubs
-# - Safe fallbacks against missing core modules
+"""--==The SarahMemory Project==--
+File: api/server/app.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-06-06
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+ULTIMATE merged Flask server for SarahMemory (v9.0.0)
+==============================================================================================
+- Serves Web UI
+- Hub (HMAC) endpoints
+- Node registration / embeddings / context / jobs
+- Leaderboard + wallet (with Ledger module preference + local fallback)
+- Settings/Themes/Voices + Contacts + Reminders + Cleanup Tools
+- Calendar/Chat History fetchers for Web UI
+- File ingest / remote transfer
+- Camera/Mic/Voice toggles + simple telecom stubs
+- Safe fallbacks against missing core modules
+"""
 
 from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "api_server_core"
+# CATEGORY = "flask_api_and_webui_runtime"
+# USER_FACING = False
+# UI_EXPOSURE = "api_surface"
+# DEPLOYMENT_TARGET = "api_server"
+# API_DOMAIN = "core"
+# HARDWARE_DOMAIN = "filesystem_network_camera_microphone_optional"
+# INTERNAL_ONLY = False
+# CAPABILITY_NAME = "api_server"
+# FAMILY = "api_runtime"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-06-06"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Primary Flask API/WebUI server surface for SarahMemory routes, subsystem mounting, safe fallbacks, and governed runtime exposure."
+# --- SARAHMETA END ---
+
 import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error, subprocess, signal
 from pathlib import Path
 from decimal import Decimal
@@ -111,14 +143,14 @@ try:
     PUBLIC_DIR = getattr(config, "PUBLIC_DIR", os.path.join(BASE_DIR, "public_html"))
     WEB_DIR = getattr(config, "WEB_DIR", os.path.join(PUBLIC_DIR, "web"))
     DATA_DIR = getattr(config, "DATA_DIR", os.path.join(BASE_DIR, "data"))
-    PROJECT_VERSION = getattr(config, "PROJECT_VERSION", "8.0.0") # Ensure v8.0.0 as per spec
+    PROJECT_VERSION = getattr(config, "PROJECT_VERSION", "9.0.0") # Ensure v9.0.0 as per spec
 except Exception as e:
     app_logger.warning(f"SarahMemoryGlobals (config) import failed or missing attributes. Falling back to local defaults: {e}")
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /api/server
     PUBLIC_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))  # /api
     WEB_DIR = PUBLIC_DIR  # serve index.html from /api
     DATA_DIR = os.path.join(BASE_DIR, "data")  # /api/server/data
-    PROJECT_VERSION = "8.0.0" # Ensure v8.0.0 as per spec
+    PROJECT_VERSION = "9.0.0" # Ensure v9.0.0 as per spec
 
 
 # Identity / branding (server-side source of truth)
@@ -8287,5 +8319,5 @@ if __name__ == "__main__":
     app.run(host="0.0.0.0", port=port, debug=debug_mode)
 
 # ====================================================================
-# END OF app.py v8.0.0
+# END OF app.py v9.0.0
 # ====================================================================
