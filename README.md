@@ -3,7 +3,7 @@
 ![SMAIOS_BANNER](documents/SarahMemoryAiOS-10x3-Banner.png)
 
 # **SarahMemory AI Operating System (AiOS)**  
-### **Version 8.0.0 — Developer & Functional Release**
+### **Version 9.0.0 — Developer & Functional Release**
 
 ---
 ## **📌 Project Metadata**
@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | June 06, 2026 |
+| **Last Update** | June 07, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -2760,7 +2760,8 @@ This update moves SarahMemory closer to being a true AI operating shell. The int
 The UI is no longer being treated as a visual wrapper. It is becoming the control surface for a governed cognitive AiOS designed to operate across many machine bodies.
 
 SarahMemory AiOS is being refined into a professional workstation shell for the AI/agentic/robotics era — not a chatbot window, not a toy dashboard, and not a cloud-dependent assistant.
-
+---
+# **📅 June 6th-7th, 2026 — Updating Entire AiOS to Version 9.0.0 Init Starts**
 ---
 
 # **📜 License**
