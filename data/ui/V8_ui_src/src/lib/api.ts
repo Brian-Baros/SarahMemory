@@ -1292,7 +1292,7 @@ export const metaApi = {
 
 function getDefaultCapabilities(): BackendCapabilities {
   return {
-    version: "8.0.0",
+    version: "9.0.0",
     features: ["chat", "voice", "avatar", "reminders", "contacts"],
     tools: [
       { id: "chat", name: "Chat", description: "Conversational AI", enabled: true },
