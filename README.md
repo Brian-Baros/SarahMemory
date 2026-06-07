@@ -17,7 +17,7 @@
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
 | **Development Environment** | Windows 10, VS Code, AMD FX‑8350, Ryzen 3, Nvidia 3060, Radeon Vega, Galaxy S20+, iPhone 14 |
-| **Important Notice** | This Project files are updated quite often, it is highly recommended to checkback often, for new files and fixes to core files. Just because something might now fully work today doesn't mean it won't fully work tomorrow because this project is live, active and ongoing development. |
+| **Important Notice** | Project files are updated quite often; it is highly recommended to check back often for new files and fixes to core files. Just because something might not fully work today doesn't mean it won't fully work tomorrow because this project is live, active and ongoing development. |
 
 ---
 # **🚀 Vision: Decentralized Intelligence, Owned by the User**
@@ -95,11 +95,11 @@ A next‑generation AI Operating System capable of:
 - Modular architecture  
 
 ### **DESIGN CONCEPT**
-- The FrontEnd is just for visualization interaction
-- Users should be able to use thier own custom frontend and UI
-- SarahMemory mainly focus on backend operations, universal and cross-platform operations,
-- SarahMemory is more of the Blueprint, Foundation, Kernal, Framework, Engine, behind future AiOS systems.
-- This system is being designed as an All-in-one system. Since it is extremely modular, other developers can benifit from it design.
+- The Frontend is just for visualization interaction
+- Users should be able to use their own custom frontend and UI
+- SarahMemory mainly focuses on backend operations, universal and cross-platform operations,
+- SarahMemory is more of the Blueprint, Foundation, Kernel, Framework, Engine, behind future AiOS systems.
+- This system is being designed as an All-in-one system. Since it is extremely modular, other developers can benefit from its design.
 
 ---
 # **🖥️ UI Previews**
@@ -424,7 +424,7 @@ A fully autonomous, local‑first AI Operating System with:
 You don’t need billion‑dollar data centers.  
 You don’t need corporate permission.  
 You don’t need a subscription.
-You don't need a highend PC rig, although it wouldn't hurt.
+You don't need a high-end PC rig, although it wouldn't hurt.
 ---
 
 # 🗓️ Development History 
@@ -789,7 +789,6 @@ These drivers enable:
 ### **2. Added First Boot Drivers**
 Located in:
 /data/boot/drivers/
-/data/boot/drivers/
 
 These are **separate** from normal drivers and are designed for:
 
@@ -847,17 +846,17 @@ I have now and currently developing a new system that:
 - `SarahMemoryCognitiveCompass.py`  
   - Turns Yin/Yang into a **TriForce** of governance , At first I was thinking of 3 areas of Governance,
   - Then I Realized there a piece missing and this is how SarahMemoryCognitiveCompass.py was created.
-  -   : (Author Note) Yes I grew up as a gamer and yes that's a Legend of Zelda Referrence, but if it works it works right, well it works. 
+  -   : (Author Note) Yes I grew up as a gamer and yes that's a Legend of Zelda Reference, but if it works it works right, well it works. 
 ![SarahMemory Meme](documents/a_digital_illustration_inspired_by_the_legend_of_z.png)
 ---
 ## **📅 March 30th-31st, 2026 — Introducing SMGET (SarahMemory Governed Execution Technology)**
-= To keep a system safe and still be able to allow an AI to execute on top of a current existing OS layer like Windows or Linux, SMGET allows for safe execution though heavy goverance, and safety protocols,
-SMGET in combination with the Cognitive file system, allow no hallucinations, stronger reasoning, and safer outputs, preventing the AI to accidently drift, malform, or delete files without User Auth. 
+= To keep a system safe and still be able to allow an AI to execute on top of a current existing OS layer like Windows or Linux, SMGET allows for safe execution though heavy governance, and safety protocols,
+SMGET in combination with the Cognitive file system, allow no hallucinations, stronger reasoning, and safer outputs, preventing the AI to accidentally drift, malform, or delete files without User Auth. 
 Five New Files added to Core System are as follow:
 - `SarahMemoryAssuranceGate.py`
 - `SarahMemoryOperatorCore.py`
 - `SarahMemorySafetyPolicies.py`
-- `SarahMemorySecurityGoverner.py`
+- `SarahMemorySecurityGovernor.py`
 - `SarahMemoryTrustRegistry.py`
 
 ![SarahMemory SMGET](documents/SMGET.png)
@@ -1038,7 +1037,7 @@ This build is designed so SarahMemory can function as:
 
 This build makes SarahMemory a first-class participant in VS Code Chat, but it does **not** replace Microsoft's built-in Copilot backend globally. In the built-in Chat surface, SarahMemory is used through the supported participant model (`@sarahmemory`) rather than by taking ownership of Copilot itself.
 
-VISUAL STUDIOS CODE EXTENTION SCREENSHOTS
+VISUAL STUDIO CODE EXTENSION SCREENSHOTS
 ![SarahMemory VS-CODE-1](documents/SM-VSC-Screenshot_2026-04-13_185902.jpg)
 ![SarahMemory VS-CODE-2](documents/SM-VSC-Screenshot_2026-04-13_203009.jpg)
 ![SarahMemory VS-CODE-3](documents/SM-VSC-Screenshot_2026-04-13_203123.jpg)
@@ -1073,7 +1072,7 @@ PowerShell
     source = "PowerShell"
   } | ConvertTo-Json)
 ```
-The BackEnd Route is: 
+The Backend Route is: 
 ```
 POST /api/avatar/rem/start
 ```
@@ -1402,7 +1401,7 @@ SarahMemory now has a clearer architecture for:
 - supporting future robotic, industrial, vehicle, and jump-drive runtime bodies
 - keeping all frontends subordinate to backend governance
 
-## **📅  May 12-13th, 2026 MAJOR DOCUMENT SHIFT
+## **📅 May 12–13, 2026 — Major Document Shift**
 
 This is a major step toward SarahMemory AiOS functioning as a **biological-style silicon cognitive organism** with auditable self-awareness, governed execution, and local-first user sovereignty.
 #### **Unified Digital DNA Doctrine Flow** - The Greatest Accident Discovery in PC and AI History Found and just happened.
@@ -1983,7 +1982,7 @@ This update formally clarifies that SarahMemory AiOS is being developed as an **
 
 ```text
 Not biological life.
-Not uncontrolled sentience.
+Not uncontrolledled sentience.
 Not an LLM wrapper.
 Not a chatbot.
 ```
@@ -2411,7 +2410,7 @@ The loop should support continuity without causing:
 - database spam
 - storage grinding
 - stale runtime facts
-- uncontrolled background execution
+- uncontrolledled background execution
 
 This allows SarahMemory to keep a small internal awareness cycle active while still preserving performance on older hardware.
 
@@ -2506,7 +2505,7 @@ This is a major step toward SarahMemory behaving like a governed software organi
 SarahMemory is being shaped to know what body it is in, know what it can safely do, detect danger, act within limits, protect humans first, and preserve evidence.
 ---
 
-## **📅 May 26 – June 06, 2026 — Runtime Anti‑Thrash, Robotic Body Expansion, Sovereign Agent Runtime, and One‑Way Broker Security**
+## **📅 May 26 – June 05, 2026 — Runtime Anti‑Thrash, Robotic Body Expansion, Sovereign Agent Runtime, and One‑Way Broker Security**
 
 This update cycle focused on making SarahMemory AiOS smoother, safer, more embodied, and more capable of operating as a governed local-first agentic AI operating system without abusing system storage or depending on cloud services.
 
@@ -2621,16 +2620,151 @@ This strengthens SarahMemory for PC, robotics, commercial, industrial, and high-
 
 ### **Why This Update Matters**
 
-This update moves SarahMemory AiOS closer to a smooth-running governed cognitive operating system instead of a collection of active scripts. The focus is now runtime discipline: fewer uncontrolled loops, less disk abuse, stronger body awareness, clearer agent workflow state, safer interoperability, and stronger local-first operation.
+This update moves SarahMemory AiOS closer to a smooth-running governed cognitive operating system instead of a collection of active scripts. The focus is now runtime discipline: fewer uncontrolledled loops, less disk abuse, stronger body awareness, clearer agent workflow state, safer interoperability, and stronger local-first operation.
 
 SarahMemory is being shaped into a portable governed organism that can run on ordinary PCs today, scale into robotic and industrial bodies later, and remain survivable without Big-Tech cloud dependency.
 ---
 ---
 
+# **📅 June 06, 2026 — AiOS Shell UI / UX Workstation Refinement Update**
+
+SarahMemory AiOS received a major front-end operating-shell refinement pass focused on making the system feel and behave less like a web dashboard and more like a real AI operating workstation. The goal of this update was to tighten the UI/backend contracts, remove confusing panel clutter, improve cross-platform usability, and expose the governed cognitive runtime in a cleaner, more professional shell.
+
+## **1. AiOS Shell Direction Strengthened**
+
+The custom V8 UI is now being refined as a full SarahMemory AiOS Shell rather than a collection of disconnected screens. The shell direction now emphasizes:
+
+- workstation-grade floating panels
+- OS-style window behavior
+- compact task-oriented screens
+- local-first and offline-aware operation
+- clear separation between user, operator, and engineer workflows
+- professional panel density instead of crowded feature stacks
+- runtime visibility for governance, activity, permissions, and system state
+
+This supports the larger SarahMemory mission: one governed cognitive system that can operate across PCs, servers, cloud/local deployments, mobile surfaces, robotics, vehicles, and future machine bodies.
+
+## **2. UI / Backend Contract Completion Passes**
+
+Several UI/backend contract issues were corrected so visible controls better match real backend routes and capabilities.
+
+Completed improvements include:
+
+- Terminal window registration and route cleanup
+- SarahNet local-first status routing
+- Addons registry surface for review-only capability discovery
+- Creative/media route cleanup
+- Communications route alignment to `/api/comm/*`
+- DL Engine route rationalization
+- route discovery support through `/api/ui/contracts`
+- runtime anti-thrash status exposure through `/api/runtime/thrash/status`
+
+This reduces fake UI behavior and helps ensure buttons, counters, and panels reflect actual system capability.
+
+## **3. Studios Screen Refined Into a Creative Suite**
+
+The Studios screen was reorganized around creative production only. Communications were removed from Studios and kept under SarahNet, where they belong.
+
+Studios now represents:
+
+- Art / image generation
+- Music generation
+- Sound / voice tools
+- Video creation
+- Canvas / composition workflow
+
+The purpose of Studios is to create media and route generated image, audio, and video content into the chat, media player, and Canvas Studio workflows.
+
+## **4. SarahNet Clarified as Network + Communications**
+
+SarahNet continues to act as the communication and network surface for SarahMemory. It is now aligned around:
+
+- network presence
+- node visibility
+- contacts
+- messages
+- calls
+- file transfer
+- local broker state
+- one-way broker security posture
+
+SarahNet remains local-first. Cloud pathways are not treated as authority and are not required for the local SarahMemory runtime.
+
+## **5. DL Engine Reworked Into a Compact Engineer Console**
+
+The DL Engine screen was too large and crowded for practical use. It has been reorganized into a more compact engineer-console layout while preserving functionality.
+
+The DL Engine now presents work areas such as:
+
+- Overview
+- REM / Dream state
+- Weights
+- Trace / Audit
+- Subjects
+- Jobs
+- Runtime controls
+
+The intent is to keep all advanced learning and runtime data accessible without forcing everything into one oversized scrolling panel.
+
+## **6. Settings Screen Refined for Enterprise Usability**
+
+The Settings screen was reorganized into a cleaner professional configuration console. Existing functionality was preserved, but controls were grouped into clearer sections.
+
+Settings now better separates:
+
+- General behavior
+- Appearance
+- Voice
+- Models
+- Devices / VR
+- Developer tools
+- Advanced options
+
+This makes the panel easier to use for normal users while still retaining engineer-level configuration depth.
+
+## **7. Wallpaper / Appearance Workflow Added**
+
+The shell now supports a more OS-like desktop appearance workflow.
+
+Wallpaper improvements include:
+
+- Browse button for selecting local image files
+- support for `.png`, `.bmp`, `.jpg`, `.jpeg`, `.webp`, and `.gif`
+- preview before committing
+- Apply / Cancel behavior
+- wallpaper mode controls such as cover, contain, stretch, tile, and center
+- panel transparency controls for solid, glass, and translucent surfaces
+- shell density controls for compact, comfortable, and operator layouts
+
+This avoids hardcoded wallpaper paths and makes the SarahMemory Shell behave more like a real desktop operating environment.
+
+## **8. Runtime / Anti-Thrash Awareness Added**
+
+Runtime stability work continued alongside the UI passes. The shell now has hooks to expose anti-thrash state and route contract status, supporting the broader goal of making SarahMemory run smoothly on local hardware without unnecessary drive abuse.
+
+Current runtime direction:
+
+- RAM-first working state
+- bounded logging
+- local-first API routing
+- reduced unnecessary health-write behavior
+- route discovery instead of blind UI calls
+- offline-safe fallback behavior
+
+## **Why This Update Matters**
+
+This update moves SarahMemory closer to being a true AI operating shell. The interface is being shaped around the same doctrine as the backend: governed cognition, modular capability routing, local-first operation, body awareness, and user authority.
+
+The UI is no longer being treated as a visual wrapper. It is becoming the control surface for a governed cognitive AiOS designed to operate across many machine bodies.
+
+SarahMemory AiOS is being refined into a professional workstation shell for the AI/agentic/robotics era — not a chatbot window, not a toy dashboard, and not a cloud-dependent assistant.
+
+---
+
 # **📜 License**
 
 © 2025–2026 Brian Lee Baros.  
-Use is permitted for personal, educational, and internal non‑commercial purposes. - This repository is not to be used to train Ai systems, models, frameworks, datacenters, etc., without a monetary paid licensed and contract agreement from the author Brian Lee Baros
+Use is permitted for personal, educational, and internal non‑commercial purposes. - This repository is not to be used to train AI systems, models, frameworks, datacenters, etc., without a paid license and contract agreement from the author, Brian Lee Baros
 
 ---
 # **📬 Contact**
@@ -2639,7 +2773,7 @@ Visit: **https://www.sarahmemory.com**
 ---
 # **🏁 Final Note**
 SarahMemory AiOS is not the product of a corporate lab, a venture‑funded engineering army, or a billion‑dollar data center.
-It is being built by a single creator, donation driven, and the opensource community with a simple belief:
+It is being built by a single creator, donation driven, and the open-source community with a simple belief:
 People and the world deserve an AI that belongs to them — not to a corporation.
 This system exists so everyone can use artificial intelligence without:
 
@@ -2649,12 +2783,12 @@ This system exists so everyone can use artificial intelligence without:
 • 	watching your ideas get absorbed into someone else’s model,
 • 	or paying subscriptions just to access your own intelligence.
 
-While the rest of the industry races to build cloud‑locked ecosystems with and API wrappers, and expensive datacenters and hardware and GPU cluster setups.
+While the rest of the industry races to build cloud‑locked ecosystems with API wrappers, and expensive datacenters and hardware and GPU cluster setups.
 SarahMemory AiOS is designed to be the next building block and the foundation of the 
-AI‑first, Home and office, Industrial, Robotics, and Commerical Infrastructure future —
+AI‑first, Home and office, Industrial, Robotics, and Commercial Infrastructure future —
 While Every Corporation, and Industrial Venture are wanting to upgrade with AI there is in fact
-not a single Operating System for them all. SarahMemory AiOS is the Answer.
-When a future where intelligence runs locally, privately, securely and under the user’s control.
+not a single Operating System for all of them. SarahMemory AiOS is the Answer.
+Toward a future where intelligence runs locally, privately, securely and under the user’s control.
 This project is not just software.
 It is not just a product.
 It is a declaration.
