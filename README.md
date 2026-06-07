@@ -2737,6 +2737,8 @@ Wallpaper improvements include:
 - shell density controls for compact, comfortable, and operator layouts
 
 This avoids hardcoded wallpaper paths and makes the SarahMemory Shell behave more like a real desktop operating environment.
+#### **SarahMemory AIOS Desktop ScreenShot showing UI Wallpaper capability**
+![SM_UI_UPDATE](documents/SM_UI_update20260606.jfif)
 
 ## **8. Runtime / Anti-Thrash Awareness Added**
 
