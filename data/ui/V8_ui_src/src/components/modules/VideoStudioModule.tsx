@@ -63,9 +63,9 @@ export function VideoStudioModule() {
     }, 1000);
 
     try {
-      const response = await api.proxy.call('/api/creative/video', {
+      const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
-        body: {
+        body: { kind: 'video',
           prompt: prompt.trim(),
           source_items: selectedItems,
         },
@@ -74,7 +74,16 @@ export function VideoStudioModule() {
       clearInterval(progressInterval);
       setProgress(100);
 
-      const resultUrl = (response as any)?.url || (response as any)?.video_url;
+      if ((response as any)?.ok === false || (response as any)?.fallback) {
+        throw new Error((response as any)?.error || 'video_backend_unavailable');
+      }
+      const artifact = (response as any)?.result?.artifacts?.[0] || (response as any)?.artifact;
+      const jobId = (response as any)?.result?.job_id || (response as any)?.job_id;
+      const resultUrl = (response as any)?.url || (response as any)?.video_url ||
+        (jobId && artifact?.filename ? `/api/media/job/download?job_id=${encodeURIComponent(jobId)}&filename=${encodeURIComponent(artifact.filename)}` : undefined);
+      if (!resultUrl) {
+        throw new Error('video_generation_returned_no_artifact');
+      }
 
       const itemId = addItem('video', {
         type: 'video',
@@ -98,20 +107,14 @@ export function VideoStudioModule() {
       setSelectedItems([]);
     } catch (error) {
       clearInterval(progressInterval);
-      
-      // Demo placeholder
-      addItem('video', {
-        type: 'video',
-        prompt: prompt.trim() || 'Stacked composition',
-        metadata: { demo: true, sourceItems: selectedItems },
-      });
+      console.error('[VideoStudioModule] Generation failed:', error);
 
       addMessage({
         role: 'assistant',
-        content: `[Video Demo] Render job queued${stackInfo}`,
+        content: `[Video Unavailable] Video generation failed or backend capability is unavailable${stackInfo}`,
       });
 
-      toast.info('Video generation demo - backend coming soon');
+      toast.error('Video generation unavailable or failed. No demo placeholder was created.');
     } finally {
       setIsGenerating(false);
       setProgress(0);
@@ -210,7 +213,7 @@ export function VideoStudioModule() {
                 <div className="flex-1 min-w-0">
                   <p className="text-xs truncate">{item.prompt}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    {(item.metadata as any)?.demo ? 'Demo' : 'Ready'}
+                    {item.url ? 'Ready' : 'Unavailable'}
                   </p>
                 </div>
                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

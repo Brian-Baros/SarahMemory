@@ -81,8 +81,14 @@ export function ImageGenerationModule() {
       clearInterval(progressInterval);
       setProgress(100);
 
+      if ((response as any)?.ok === false || (response as any)?.fallback) {
+        throw new Error((response as any)?.error || 'image_backend_unavailable');
+      }
       const resultUrl = (response as any)?.url || (response as any)?.result_url;
       const preview = (response as any)?.preview || (response as any)?.thumbnail || resultUrl;
+      if (!resultUrl && !preview) {
+        throw new Error('image_generation_returned_no_artifact');
+      }
 
       const itemId = addItem('image', {
         type: 'image',
@@ -106,23 +112,14 @@ export function ImageGenerationModule() {
       setSeedImage(null);
     } catch (error) {
       clearInterval(progressInterval);
-      
-      // Demo placeholder
-      const itemId = addItem('image', {
-        type: 'image',
-        prompt: prompt.trim(),
-        preview: 'https://via.placeholder.com/256x256?text=Generated+Image',
-      });
-
-      // Show demo in preview
-      showImage(itemId, 'https://via.placeholder.com/256x256?text=Generated+Image');
+      console.error('[ImageGenerationModule] Generation failed:', error);
 
       addMessage({
         role: 'assistant',
-        content: `[Image Demo] Generated placeholder for: "${prompt}"`,
+        content: `[Image Unavailable] Image generation failed or backend capability is unavailable for: "${prompt}"`,
       });
 
-      toast.info('Image generation demo - backend coming soon');
+      toast.error('Image generation unavailable or failed. No demo placeholder was created.');
     } finally {
       setIsGenerating(false);
       setProgress(0);

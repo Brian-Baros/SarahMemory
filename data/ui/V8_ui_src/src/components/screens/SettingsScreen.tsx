@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
-import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, Cpu, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, Cpu, ShieldCheck, AlertTriangle, Monitor, Settings2, Bot, Wrench } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useNavigationStore } from "@/stores/useNavigationStore";
@@ -93,6 +94,12 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
   const [selectedModelDomain, setSelectedModelDomain] = useState("general");
   const [lastModelScanAt, setLastModelScanAt] = useState<string>("");
 
+  const wallpaperInputRef = useRef<HTMLInputElement | null>(null);
+  const [wallpaperDraftUrl, setWallpaperDraftUrl] = useState<string>(() => String((settings as any).wallpaperUrl || ""));
+  const [wallpaperOriginalUrl, setWallpaperOriginalUrl] = useState<string>(() => String((settings as any).wallpaperUrl || ""));
+  const [wallpaperFileName, setWallpaperFileName] = useState<string>("");
+  const [wallpaperHasPendingChange, setWallpaperHasPendingChange] = useState(false);
+
   // Load voices/themes/mode/model status on mount. Modal remounts when opened.
   useEffect(() => {
     loadVoices();
@@ -123,6 +130,14 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings.mode]);
+
+  // Keep wallpaper editor synchronized with stored settings when no staged edit is active.
+  useEffect(() => {
+    if (wallpaperHasPendingChange) return;
+    const current = String((settings as any).wallpaperUrl || "");
+    setWallpaperDraftUrl(current);
+    setWallpaperOriginalUrl(current);
+  }, [(settings as any).wallpaperUrl, wallpaperHasPendingChange]);
 
   const loadVoices = async () => {
     setIsLoadingVoices(true);
@@ -504,6 +519,101 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     }
   };
 
+  const handleWallpaperBrowse = () => {
+    wallpaperInputRef.current?.click();
+  };
+
+  const handleWallpaperFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    const allowedTypes = new Set([
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/bmp",
+      "image/webp",
+      "image/gif",
+    ]);
+    const lowerName = file.name.toLowerCase();
+    const extensionAllowed = /\.(png|bmp|jpg|jpeg|webp|gif)$/.test(lowerName);
+    if (!allowedTypes.has(file.type) && !extensionAllowed) {
+      toast.error("Select a wallpaper image: PNG, BMP, JPG, JPEG, WEBP, or GIF.");
+      return;
+    }
+
+    const maxBytes = 20 * 1024 * 1024;
+    if (file.size > maxBytes) {
+      toast.error("Wallpaper image is too large. Use an image under 20 MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (!result) {
+        toast.error("Could not read wallpaper image.");
+        return;
+      }
+
+      if (!wallpaperHasPendingChange) {
+        setWallpaperOriginalUrl(String((settings as any).wallpaperUrl || ""));
+      }
+
+      setWallpaperDraftUrl(result);
+      setWallpaperFileName(file.name);
+      setWallpaperHasPendingChange(true);
+
+      // Apply immediately as a live preview. Apply keeps it; Cancel restores the previous wallpaper.
+      updateSettings({ wallpaperUrl: result } as any);
+      toast.success(`Wallpaper preview loaded: ${file.name}`);
+    };
+    reader.onerror = () => toast.error("Could not read wallpaper image.");
+    reader.readAsDataURL(file);
+  };
+
+  const handleWallpaperDraftChange = (value: string) => {
+    if (!wallpaperHasPendingChange) {
+      setWallpaperOriginalUrl(String((settings as any).wallpaperUrl || ""));
+    }
+    setWallpaperDraftUrl(value);
+    setWallpaperFileName("");
+    setWallpaperHasPendingChange(true);
+  };
+
+  const handleWallpaperApply = async () => {
+    const trimmed = wallpaperDraftUrl.trim();
+    updateSettings({ wallpaperUrl: trimmed } as any);
+    setWallpaperOriginalUrl(trimmed);
+    setWallpaperHasPendingChange(false);
+
+    try {
+      await api.settings.setSetting('wallpaperUrl', trimmed);
+    } catch {
+      // non-fatal: the UI store persists locally
+    }
+    toast.success(trimmed ? "Wallpaper applied" : "Wallpaper cleared");
+  };
+
+  const handleWallpaperCancel = () => {
+    updateSettings({ wallpaperUrl: wallpaperOriginalUrl } as any);
+    setWallpaperDraftUrl(wallpaperOriginalUrl);
+    setWallpaperFileName("");
+    setWallpaperHasPendingChange(false);
+    toast.info("Wallpaper change canceled");
+  };
+
+  const handleWallpaperClear = () => {
+    if (!wallpaperHasPendingChange) {
+      setWallpaperOriginalUrl(String((settings as any).wallpaperUrl || ""));
+    }
+    setWallpaperDraftUrl("");
+    setWallpaperFileName("");
+    setWallpaperHasPendingChange(true);
+    updateSettings({ wallpaperUrl: "" } as any);
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
 
@@ -520,6 +630,12 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
       await api.settings.setSetting('api_mode', selectedMode);
       // Also save under 'mode' for compatibility
       await api.settings.setSetting('mode', selectedMode);
+
+      // Save shell appearance settings best-effort; local persisted store remains active if backend unavailable.
+      await api.settings.setSetting('wallpaperUrl', String((settings as any).wallpaperUrl || ''));
+      await api.settings.setSetting('wallpaperMode', String((settings as any).wallpaperMode || 'cover'));
+      await api.settings.setSetting('panelTransparency', String((settings as any).panelTransparency || 'glass'));
+      await api.settings.setSetting('shellDensity', String((settings as any).shellDensity || 'comfortable'));
 
       // Update store with final mode
       updateSettings({ mode: selectedMode });
@@ -566,222 +682,45 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     return c === selectedModelCategory || c === "unknown" || String(m?.id) === activeModelId;
   });
 
-  return (
-    <div className={embedded ? "p-4" : "space-y-6 py-4"}>
-      {/* Mode Selection */}
-      <div className="space-y-3">
-        <Label className="flex items-center gap-2 text-sm font-medium">
-          <Zap className="h-4 w-4 text-muted-foreground" />
-          Mode
-        </Label>
-        <div className="grid grid-cols-4 gap-2">
-          {MODES.map((mode) => {
-            const Icon = mode.icon;
-            const isSelected = selectedMode === mode.id;
-            return (
-              <Button
-                key={mode.id}
-                variant={isSelected ? 'default' : 'outline'}
-                size="sm"
-                className={`flex flex-col items-center gap-1 h-auto py-2 ${isSelected ? 'bg-primary text-primary-foreground' : ''}`}
-                onClick={() => handleModeChange(mode.id)}
-                title={mode.description}
-              >
-                <Icon className="h-4 w-4" />
-                <span className="text-xs">{mode.name}</span>
-              </Button>
-            );
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {MODES.find((m) => m.id === selectedMode)?.description}
-        </p>
+  const modeSection = (
+    <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {MODES.map((mode) => {
+          const Icon = mode.icon;
+          const isSelected = selectedMode === mode.id;
+          return (
+            <Button
+              key={mode.id}
+              variant={isSelected ? 'default' : 'outline'}
+              size="sm"
+              className={`justify-start gap-2 h-auto py-3 ${isSelected ? 'bg-primary text-primary-foreground' : ''}`}
+              onClick={() => handleModeChange(mode.id)}
+              title={mode.description}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span className="flex min-w-0 flex-col items-start text-left">
+                <span className="text-xs font-semibold">{mode.name}</span>
+                <span className="line-clamp-1 text-[11px] opacity-80">{mode.description}</span>
+              </span>
+            </Button>
+          );
+        })}
       </div>
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 text-xs text-muted-foreground">
+        Active runtime mode: <span className="font-medium text-foreground">{MODES.find((m) => m.id === selectedMode)?.name || selectedMode}</span>. This controls how SarahMemory chooses local, web, and API sources.
+      </div>
+    </div>
+  );
 
-      {/* AI Model Manager */}
+  const voiceSection = (
+    <div className="grid gap-4 xl:grid-cols-[1fr_1fr]">
       <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <Label className="flex items-center gap-2 text-sm font-medium">
-              <Cpu className="h-4 w-4 text-muted-foreground" />
-              AI Models
-            </Label>
-            <p className="text-xs text-muted-foreground mt-1">
-              Choose what local model SarahMemory uses for each job. The backend scans and verifies the folders.
-            </p>
-            <p className="mt-1 text-[11px] text-muted-foreground">
-              Live folder watch: every {liveScanSeconds}s · Last scan: {lastModelScanLabel}
-            </p>
-          </div>
-          <Button variant="outline" size="sm" onClick={() => void handleModelScan()} disabled={isLoadingModels || isModelBusy}>
-            {isLoadingModels || isModelBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-            Scan Now
-          </Button>
-        </div>
-
-        <div className="grid gap-2 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">What should SarahMemory be better at?</Label>
-            <Select value={selectedModelCategory} onValueChange={setSelectedModelCategory}>
-              <SelectTrigger className="bg-secondary border-border">
-                <SelectValue placeholder="Choose a job" />
-              </SelectTrigger>
-              <SelectContent className="z-[100000]">
-                {modelCategories.map((cat: any) => (
-                  <SelectItem key={cat.id} value={cat.id}>
-                    {cat.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">{selectedCategoryHint}</p>
-          </div>
-
-          <div className="space-y-1.5">
-            <Label className="text-xs text-muted-foreground">Active model</Label>
-            <Select value={activeModelId || "__none"} onValueChange={(value) => void handleModelSelect(value)} disabled={isModelBusy || isLoadingModels}>
-              <SelectTrigger className="bg-secondary border-border">
-                <SelectValue placeholder="Pick a model" />
-              </SelectTrigger>
-              <SelectContent className="z-[100000]">
-                <SelectItem value="__none">No model selected</SelectItem>
-                {visibleModelOptions.map((model: any) => (
-                  <SelectItem key={model.id} value={String(model.id)}>
-                    {(model.simple_label || model.display_name || model.id)}
-                    {model.status_label ? ` · ${model.status_label}` : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-muted-foreground">
-              {activeModel
-                ? `${activeModel.simple_label || activeModel.display_name || activeModel.id} · ${activeModel.status_label || activeModel.status || "Ready"}`
-                : "No active model selected for this job yet."}
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-3 gap-2 text-xs">
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Models Found</div>
-            <div className="font-medium">{modelCount}</div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Ready</div>
-            <div className="font-medium">{readyModelCount}</div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Review</div>
-            <div className={modelError || unclassifiedModelCount > 0 ? "font-medium text-yellow-500" : "font-medium"}>
-              {modelError ? "Error" : unclassifiedModelCount > 0 ? unclassifiedModelCount : "Clear"}
-            </div>
-          </div>
-        </div>
-
-        {modelError ? (
-          <div className="flex items-start gap-2 text-xs text-yellow-500">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
-            <span>{modelError}</span>
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            Unknown models can be assigned to a job before use. New folders added to data/models appear automatically while this panel is open.
-          </p>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={() => void handleModelVerify()} disabled={isModelBusy || !activeModelId}>
-            Verify Active Model
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => void handleModelReset()} disabled={isModelBusy}>
-            Reset to Recommended
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setAdvancedModelControls(!advancedModelControls)}>
-            {advancedModelControls ? "Hide Advanced" : "Advanced"}
-          </Button>
-        </div>
-
-        {advancedModelControls && (
-          <div className="rounded-lg border border-border bg-background/40 p-3 space-y-3">
-            <div className="grid gap-2 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Domain</Label>
-                <Select value={selectedModelDomain} onValueChange={setSelectedModelDomain}>
-                  <SelectTrigger className="bg-secondary border-border">
-                    <SelectValue placeholder="Choose a domain" />
-                  </SelectTrigger>
-                  <SelectContent className="z-[100000]">
-                    {MODEL_DOMAIN_OPTIONS.map((domain) => (
-                      <SelectItem key={domain.id} value={domain.id}>
-                        {domain.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="space-y-1.5">
-                <Label className="text-xs text-muted-foreground">Registry</Label>
-                <div className="rounded-md border border-border bg-secondary px-3 py-2 text-xs truncate">
-                  {modelStatus?.registry_path || "data/settings/model_registry.json"}
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Link a model folder from another drive</Label>
-              <div className="flex gap-2">
-                <input
-                  value={externalModelPath}
-                  onChange={(e) => setExternalModelPath(e.target.value)}
-                  placeholder="D:\\AIModels\\Gemma4"
-                  className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none"
-                />
-                <Button variant="outline" size="sm" onClick={() => void handleAddExternalPath()} disabled={isModelBusy}>
-                  Link
-                </Button>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">Download a Hugging Face model into data/models</Label>
-              <div className="flex gap-2">
-                <input
-                  value={customModelRepo}
-                  onChange={(e) => setCustomModelRepo(e.target.value)}
-                  placeholder="google/gemma-2-2b-it"
-                  className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none"
-                />
-                <Button variant="outline" size="sm" onClick={() => void handleDownloadCustomModel()} disabled={isModelBusy}>
-                  Download
-                </Button>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Large downloads may be blocked by backend storage policy or require local confirmation.
-              </p>
-            </div>
-
-            {activeModel?.path && (
-              <div className="rounded-md border border-border bg-secondary px-3 py-2 text-xs break-all">
-                Active folder: {activeModel.path}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Voice Selection */}
-      <div className="space-y-3">
         <Label className="flex items-center gap-2 text-sm font-medium">
           <Volume2 className="h-4 w-4 text-muted-foreground" />
-          Voice
+          Voice Output
         </Label>
         <div className="flex gap-2">
-          <Select
-            value={pendingVoice || settings.selectedVoice}
-            onValueChange={handleVoiceChange}
-            disabled={isLoadingVoices}
-          >
+          <Select value={pendingVoice || settings.selectedVoice} onValueChange={handleVoiceChange} disabled={isLoadingVoices}>
             <SelectTrigger className="bg-secondary border-border flex-1">
               {isLoadingVoices ? (
                 <div className="flex items-center gap-2">
@@ -804,24 +743,46 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
               ))}
             </SelectContent>
           </Select>
-
-          <Button
-            variant="outline"
-            size="icon"
-            onClick={handlePreviewVoice}
-            disabled={isPreviewingVoice}
-            title="Preview voice"
-          >
+          <Button variant="outline" size="icon" onClick={handlePreviewVoice} disabled={isPreviewingVoice} title="Preview voice">
             {isPreviewingVoice ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
           </Button>
         </div>
-        <p className="text-xs text-muted-foreground">
-          This voice will be used for all spoken responses when auto-speak is enabled.
-        </p>
+        <p className="text-xs text-muted-foreground">This voice is used when auto-speak is enabled.</p>
       </div>
 
-      {/* Theme Selection */}
-      <div className="space-y-3">
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+        <Label className="flex items-center gap-2 text-sm font-medium">
+          <Sparkles className="h-4 w-4 text-muted-foreground" />
+          User Preferences
+        </Label>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <Label htmlFor="auto-speak" className="text-sm">Auto-speak responses</Label>
+            <Switch id="auto-speak" checked={settings.autoSpeak} onCheckedChange={(checked) => updateSettings({ autoSpeak: checked })} />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <Label htmlFor="sound-effects" className="text-sm">Sound effects</Label>
+            <Switch id="sound-effects" checked={settings.soundEffects} onCheckedChange={(checked) => updateSettings({ soundEffects: checked })} />
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <Label htmlFor="notifications" className="text-sm">Notifications</Label>
+            <Switch id="notifications" checked={settings.notifications} onCheckedChange={(checked) => updateSettings({ notifications: checked })} />
+          </div>
+          <div className="hidden sm:flex items-center justify-between gap-3 rounded-lg border border-border bg-background/40 px-3 py-2">
+            <div>
+              <Label htmlFor="advanced-studio" className="text-sm">Advanced Studio Mode</Label>
+              <p className="text-[11px] text-muted-foreground">Show creative modules in accordion layout.</p>
+            </div>
+            <Switch id="advanced-studio" checked={settings.advancedStudioMode ?? false} onCheckedChange={(checked) => updateSettings({ advancedStudioMode: checked })} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const appearanceSection = (
+    <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
         <Label className="flex items-center gap-2 text-sm font-medium">
           <Palette className="h-4 w-4 text-muted-foreground" />
           Theme
@@ -832,196 +793,330 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
           </SelectTrigger>
           <SelectContent className="z-[100000]">
             {displayThemes.map((theme: any) => (
-              <SelectItem key={theme.id} value={theme.id}>
-                {theme.name}
-              </SelectItem>
+              <SelectItem key={theme.id} value={theme.id}>{theme.name}</SelectItem>
             ))}
           </SelectContent>
         </Select>
+        <p className="text-xs text-muted-foreground">Themes are applied immediately for preview and persisted when saved.</p>
       </div>
 
-
-      {/* Vision / VR Operator HUD */}
       <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
         <Label className="flex items-center gap-2 text-sm font-medium">
-          <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          Vision / VR Operator HUD
+          <Monitor className="h-4 w-4 text-muted-foreground" />
+          Desktop Wallpaper / Shell
         </Label>
-        <p className="text-xs text-muted-foreground">
-          Native SarahMemory VR surface: Start/Stop/Status/Probe are backend-managed. Stopping the headset display does not stop appvision, SOBJE, or FacialRecognition analysis.
-        </p>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Renderer</div>
-            <div className={vrStatus?.running ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>
-              {vrStatus?.running ? "Running" : "Stopped"}
+
+        <input
+          ref={wallpaperInputRef}
+          type="file"
+          accept=".png,.bmp,.jpg,.jpeg,.webp,.gif,image/png,image/bmp,image/jpeg,image/webp,image/gif"
+          className="hidden"
+          onChange={handleWallpaperFileSelected}
+        />
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">Wallpaper Source</Label>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={wallpaperDraftUrl.startsWith('data:') ? (wallpaperFileName ? `Selected file: ${wallpaperFileName}` : 'Selected local image') : wallpaperDraftUrl}
+                  onChange={(e) => handleWallpaperDraftChange(e.target.value)}
+                  placeholder="Browse for an image, or enter /wallpapers/example.jpg"
+                  disabled={wallpaperDraftUrl.startsWith('data:')}
+                  className="min-w-0 flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none disabled:opacity-80"
+                />
+                <div className="flex shrink-0 gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={handleWallpaperBrowse}>Browse</Button>
+                  <Button type="button" variant="default" size="sm" onClick={() => void handleWallpaperApply()} disabled={!wallpaperHasPendingChange}>Apply</Button>
+                  <Button type="button" variant="ghost" size="sm" onClick={handleWallpaperCancel} disabled={!wallpaperHasPendingChange}>Cancel</Button>
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Use Browse for local files. Browser shells usually block raw file:/// paths, so selected images are loaded safely through the picker and stored in the UI setting.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Wallpaper Fit</Label>
+                <Select value={(settings as any).wallpaperMode || 'cover'} onValueChange={(value) => updateSettings({ wallpaperMode: value as any } as any)}>
+                  <SelectTrigger className="bg-secondary border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent className="z-[100000]">
+                    <SelectItem value="cover">Cover</SelectItem>
+                    <SelectItem value="contain">Contain</SelectItem>
+                    <SelectItem value="stretch">Stretch</SelectItem>
+                    <SelectItem value="tile">Tile</SelectItem>
+                    <SelectItem value="center">Center</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Panel Style</Label>
+                <Select value={(settings as any).panelTransparency || 'glass'} onValueChange={(value) => updateSettings({ panelTransparency: value as any } as any)}>
+                  <SelectTrigger className="bg-secondary border-border"><SelectValue /></SelectTrigger>
+                  <SelectContent className="z-[100000]">
+                    <SelectItem value="solid">Solid</SelectItem>
+                    <SelectItem value="glass">Glass</SelectItem>
+                    <SelectItem value="translucent">Translucent</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" variant="outline" size="sm" onClick={handleWallpaperClear}>Clear Wallpaper</Button>
+              <Button type="button" variant={(settings as any).shellDensity === 'compact' ? 'default' : 'outline'} size="sm" onClick={() => updateSettings({ shellDensity: 'compact' } as any)}>Compact</Button>
+              <Button type="button" variant={(settings as any).shellDensity === 'comfortable' ? 'default' : 'outline'} size="sm" onClick={() => updateSettings({ shellDensity: 'comfortable' } as any)}>Comfortable</Button>
+              <Button type="button" variant={(settings as any).shellDensity === 'operator' ? 'default' : 'outline'} size="sm" onClick={() => updateSettings({ shellDensity: 'operator' } as any)}>Operator</Button>
             </div>
           </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Runtime</div>
-            <div className="font-medium">{vrStatus?.native_runtime || vrStatus?.probe?.native_runtime || "sarahmemory_native"}</div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Headset</div>
-            <div className="font-medium">
-              {vrStatus?.probe?.readiness?.headset_connected ? "Connected" : "Probe Required"}
+
+          <div className="rounded-lg border border-border bg-background/40 p-2">
+            <div
+              className="aspect-video w-full overflow-hidden rounded-md border border-border bg-secondary"
+              style={wallpaperDraftUrl ? {
+                backgroundImage: `linear-gradient(rgba(0,0,0,.22), rgba(0,0,0,.22)), url("${wallpaperDraftUrl.replace(/"/g, '\\"')}")`,
+                backgroundSize: (settings as any).wallpaperMode === 'stretch' ? '100% 100%' : (settings as any).wallpaperMode === 'tile' ? 'auto' : ((settings as any).wallpaperMode || 'cover'),
+                backgroundRepeat: (settings as any).wallpaperMode === 'tile' ? 'repeat' : 'no-repeat',
+                backgroundPosition: 'center',
+              } : undefined}
+            >
+              {!wallpaperDraftUrl && (
+                <div className="flex h-full items-center justify-center text-center text-xs text-muted-foreground">
+                  No wallpaper selected
+                </div>
+              )}
             </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Movement</div>
-            <div className="font-medium">{vrStatus?.movement_lock === false ? "Unlocked" : "Locked"}</div>
+            <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+              <span>{wallpaperHasPendingChange ? 'Pending wallpaper change' : 'Current wallpaper'}</span>
+              <span>{wallpaperDraftUrl ? 'Preview active' : 'Default shell'}</span>
+            </div>
           </div>
         </div>
-        {vrError ? (
-          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
-            {vrError}
+      </div>
+    </div>
+  );
+
+  const modelsSection = (
+    <div className="space-y-4">
+      <div className="grid gap-3 md:grid-cols-4">
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Models Found</div>
+          <div className="text-lg font-semibold">{modelCount}</div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Ready</div>
+          <div className="text-lg font-semibold">{readyModelCount}</div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Review</div>
+          <div className={modelError || unclassifiedModelCount > 0 ? "text-lg font-semibold text-yellow-500" : "text-lg font-semibold"}>
+            {modelError ? "Error" : unclassifiedModelCount > 0 ? unclassifiedModelCount : "Clear"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Last Scan</div>
+          <div className="text-sm font-medium">{lastModelScanLabel}</div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <Label className="flex items-center gap-2 text-sm font-medium">
+              <Cpu className="h-4 w-4 text-muted-foreground" />
+              AI Models
+            </Label>
+            <p className="mt-1 text-xs text-muted-foreground">Choose what local model SarahMemory uses for each job. Backend discovery remains the source of truth.</p>
+            <p className="mt-1 text-[11px] text-muted-foreground">Live folder watch: every {liveScanSeconds}s</p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => void handleModelScan()} disabled={isLoadingModels || isModelBusy}>
+            {isLoadingModels || isModelBusy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+            Scan Now
+          </Button>
+        </div>
+
+        <div className="grid gap-3 lg:grid-cols-2">
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Model job category</Label>
+            <Select value={selectedModelCategory} onValueChange={setSelectedModelCategory}>
+              <SelectTrigger className="bg-secondary border-border"><SelectValue placeholder="Choose a job" /></SelectTrigger>
+              <SelectContent className="z-[100000]">
+                {modelCategories.map((cat: any) => <SelectItem key={cat.id} value={cat.id}>{cat.label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{selectedCategoryHint}</p>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">Active model</Label>
+            <Select value={activeModelId || "__none"} onValueChange={(value) => void handleModelSelect(value)} disabled={isModelBusy || isLoadingModels}>
+              <SelectTrigger className="bg-secondary border-border"><SelectValue placeholder="Pick a model" /></SelectTrigger>
+              <SelectContent className="z-[100000]">
+                <SelectItem value="__none">No model selected</SelectItem>
+                {visibleModelOptions.map((model: any) => (
+                  <SelectItem key={model.id} value={String(model.id)}>
+                    {(model.simple_label || model.display_name || model.id)}{model.status_label ? ` · ${model.status_label}` : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              {activeModel ? `${activeModel.simple_label || activeModel.display_name || activeModel.id} · ${activeModel.status_label || activeModel.status || "Ready"}` : "No active model selected for this job yet."}
+            </p>
+          </div>
+        </div>
+
+        {modelError ? (
+          <div className="flex items-start gap-2 rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">
+            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
+            <span>{modelError}</span>
           </div>
         ) : null}
+
         <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={handleVrProbe} disabled={isVrBusy}>
-            {isVrBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-            Probe
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleVrStart} disabled={isVrBusy}>
-            Start VR
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleVrStop} disabled={isVrBusy}>
-            Stop VR
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => void loadVrStatus(true)} disabled={isVrBusy}>
-            Status
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}>
-            Open Mirror
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}>
-            Browser HUD
-          </Button>
+          <Button variant="outline" size="sm" onClick={() => void handleModelVerify()} disabled={isModelBusy || !activeModelId}>Verify Active Model</Button>
+          <Button variant="outline" size="sm" onClick={() => void handleModelReset()} disabled={isModelBusy}>Reset to Recommended</Button>
+          <Button variant="ghost" size="sm" onClick={() => setAdvancedModelControls(!advancedModelControls)}>{advancedModelControls ? "Hide Advanced" : "Advanced"}</Button>
         </div>
-      </div>
 
-
-      {/* DeveloperMode / DevBridge Visibility */}
-      <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-2">
-        <Label className="flex items-center gap-2 text-sm font-medium">
-          <ShieldCheck className="h-4 w-4 text-muted-foreground" />
-          Developer Mode / DevBridge
-        </Label>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Backend</div>
-            <div className={devBridgeStatus?.ok ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>
-              {devBridgeStatus?.ok ? "Reachable" : "Unavailable"}
+        {advancedModelControls && (
+          <div className="rounded-lg border border-border bg-background/40 p-3 space-y-3">
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Domain</Label>
+                <Select value={selectedModelDomain} onValueChange={setSelectedModelDomain}>
+                  <SelectTrigger className="bg-secondary border-border"><SelectValue placeholder="Choose a domain" /></SelectTrigger>
+                  <SelectContent className="z-[100000]">
+                    {MODEL_DOMAIN_OPTIONS.map((domain) => <SelectItem key={domain.id} value={domain.id}>{domain.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Registry</Label>
+                <div className="truncate rounded-md border border-border bg-secondary px-3 py-2 text-xs">{modelStatus?.registry_path || "data/settings/model_registry.json"}</div>
+              </div>
             </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Apply Gate</div>
-            <div className="font-medium">
-              {devBridgeStatus?.apply_gate?.developer_mode ? "Developer" : "Normal"}
-              {devBridgeStatus?.apply_gate?.loopback ? " / Loopback" : ""}
+            <div className="grid gap-3 xl:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Link external model folder</Label>
+                <div className="flex gap-2">
+                  <input value={externalModelPath} onChange={(e) => setExternalModelPath(e.target.value)} placeholder="D:\\AIModels\\Gemma4" className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none" />
+                  <Button variant="outline" size="sm" onClick={() => void handleAddExternalPath()} disabled={isModelBusy}>Link</Button>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Download Hugging Face model</Label>
+                <div className="flex gap-2">
+                  <input value={customModelRepo} onChange={(e) => setCustomModelRepo(e.target.value)} placeholder="google/gemma-2-2b-it" className="flex-1 rounded-md border border-border bg-secondary px-3 py-2 text-sm outline-none" />
+                  <Button variant="outline" size="sm" onClick={() => void handleDownloadCustomModel()} disabled={isModelBusy}>Download</Button>
+                </div>
+              </div>
             </div>
+            {activeModel?.path && <div className="break-all rounded-md border border-border bg-secondary px-3 py-2 text-xs">Active folder: {activeModel.path}</div>}
           </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Cmd Tickets</div>
-            <div className="font-medium">
-              P {Number(devBridgeStatus?.cmd_tickets?.pending || 0)} / F {Number(devBridgeStatus?.cmd_tickets?.failed || 0)} / Done {Number(devBridgeStatus?.cmd_tickets?.processed || 0)}
-            </div>
-          </div>
-          <div className="rounded-lg border border-border bg-background/40 px-3 py-2">
-            <div className="text-muted-foreground">Repair Backlog</div>
-            <div className="font-medium">
-              T {Number(devBridgeStatus?.repair_counts?.tickets || 0)} / B {Number(devBridgeStatus?.repair_counts?.batches || 0)}
-            </div>
-          </div>
-        </div>
-        {devBridgeError ? (
-          <div className="flex items-start gap-2 text-xs text-yellow-500">
-            <AlertTriangle className="h-3.5 w-3.5 mt-0.5" />
-            <span>{devBridgeError}</span>
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            This panel is read-only. It reports DeveloperMode/DevBridge gates without enabling unsafe behavior from Normal Mode.
-          </p>
         )}
-        <Button variant="outline" size="sm" onClick={() => void loadDevBridgeStatus()}>
-          Refresh DevBridge Status
-        </Button>
+      </div>
+    </div>
+  );
+
+  const devicesSection = (
+    <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+      <Label className="flex items-center gap-2 text-sm font-medium">
+        <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+        Vision / VR Operator HUD
+      </Label>
+      <p className="text-xs text-muted-foreground">Native SarahMemory VR surface. Start/Stop/Status/Probe are backend-managed. Stopping headset display does not stop vision analysis.</p>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Renderer</div><div className={vrStatus?.running ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>{vrStatus?.running ? "Running" : "Stopped"}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Runtime</div><div className="font-medium">{vrStatus?.native_runtime || vrStatus?.probe?.native_runtime || "sarahmemory_native"}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Headset</div><div className="font-medium">{vrStatus?.probe?.readiness?.headset_connected ? "Connected" : "Probe Required"}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Movement</div><div className="font-medium">{vrStatus?.movement_lock === false ? "Unlocked" : "Locked"}</div></div>
+      </div>
+      {vrError ? <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">{vrError}</div> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" size="sm" onClick={handleVrProbe} disabled={isVrBusy}>{isVrBusy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}Probe</Button>
+        <Button variant="outline" size="sm" onClick={handleVrStart} disabled={isVrBusy}>Start VR</Button>
+        <Button variant="outline" size="sm" onClick={handleVrStop} disabled={isVrBusy}>Stop VR</Button>
+        <Button variant="outline" size="sm" onClick={() => void loadVrStatus(true)} disabled={isVrBusy}>Status</Button>
+        <Button variant="outline" size="sm" onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}>Open Mirror</Button>
+        <Button variant="outline" size="sm" onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}>Browser HUD</Button>
+      </div>
+    </div>
+  );
+
+  const developerSection = (
+    <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+      <Label className="flex items-center gap-2 text-sm font-medium">
+        <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+        Developer Mode / DevBridge
+      </Label>
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Backend</div><div className={devBridgeStatus?.ok ? "text-green-500 font-medium" : "text-yellow-500 font-medium"}>{devBridgeStatus?.ok ? "Reachable" : "Unavailable"}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Apply Gate</div><div className="font-medium">{devBridgeStatus?.apply_gate?.developer_mode ? "Developer" : "Normal"}{devBridgeStatus?.apply_gate?.loopback ? " / Loopback" : ""}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Cmd Tickets</div><div className="font-medium">P {Number(devBridgeStatus?.cmd_tickets?.pending || 0)} / F {Number(devBridgeStatus?.cmd_tickets?.failed || 0)} / Done {Number(devBridgeStatus?.cmd_tickets?.processed || 0)}</div></div>
+        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Repair Backlog</div><div className="font-medium">T {Number(devBridgeStatus?.repair_counts?.tickets || 0)} / B {Number(devBridgeStatus?.repair_counts?.batches || 0)}</div></div>
+      </div>
+      {devBridgeError ? (
+        <div className="flex items-start gap-2 text-xs text-yellow-500"><AlertTriangle className="h-3.5 w-3.5 mt-0.5" /><span>{devBridgeError}</span></div>
+      ) : (
+        <p className="text-xs text-muted-foreground">This panel is read-only. It reports gates without enabling unsafe behavior from Normal Mode.</p>
+      )}
+      <Button variant="outline" size="sm" onClick={() => void loadDevBridgeStatus()}>Refresh DevBridge Status</Button>
+    </div>
+  );
+
+  const actions = (
+    <div className={embedded ? "flex justify-end gap-2 pt-4 border-t border-border" : "flex justify-end gap-2 pt-4 border-t border-border"}>
+      {!embedded && <Button variant="outline" onClick={() => onRequestClose?.()}>Close</Button>}
+      <Button onClick={handleSave} disabled={isSaving}>
+        {isSaving ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" />Saving...</> : 'Save Changes'}
+      </Button>
+    </div>
+  );
+
+  return (
+    <div className={embedded ? "flex h-full flex-col p-4" : "flex max-h-[78vh] flex-col py-2"}>
+      <div className="mb-3 grid gap-3 md:grid-cols-4">
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Runtime</div>
+          <div className="text-sm font-semibold">{MODES.find((m) => m.id === selectedMode)?.name || selectedMode}</div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Theme</div>
+          <div className="truncate text-sm font-semibold">{displayThemes.find((t: any) => t.id === settings.selectedTheme)?.name || settings.selectedTheme}</div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">Models</div>
+          <div className="text-sm font-semibold">{readyModelCount}/{modelCount} ready</div>
+        </div>
+        <div className="rounded-xl border border-border bg-secondary/20 px-3 py-2">
+          <div className="text-xs text-muted-foreground">VR HUD</div>
+          <div className={vrStatus?.running ? "text-sm font-semibold text-green-500" : "text-sm font-semibold text-yellow-500"}>{vrStatus?.running ? "Running" : "Stopped"}</div>
+        </div>
       </div>
 
-      {/* Toggle Settings */}
-      <div className="space-y-4 pt-2">
-        <div className="flex items-center justify-between">
-          <Label htmlFor="auto-speak" className="flex items-center gap-2 text-sm">
-            <Volume2 className="h-4 w-4 text-muted-foreground" />
-            Auto-speak responses
-          </Label>
-          <Switch
-            id="auto-speak"
-            checked={settings.autoSpeak}
-            onCheckedChange={(checked) => updateSettings({ autoSpeak: checked })}
-          />
+      <Tabs defaultValue="general" className="flex min-h-0 flex-1 flex-col">
+        <TabsList className="grid h-auto grid-cols-2 gap-1 bg-secondary/30 p-1 sm:grid-cols-4 xl:grid-cols-7">
+          <TabsTrigger value="general" className="gap-1 text-xs"><Settings2 className="h-3.5 w-3.5" />General</TabsTrigger>
+          <TabsTrigger value="appearance" className="gap-1 text-xs"><Palette className="h-3.5 w-3.5" />Look</TabsTrigger>
+          <TabsTrigger value="voice" className="gap-1 text-xs"><Volume2 className="h-3.5 w-3.5" />Voice</TabsTrigger>
+          <TabsTrigger value="models" className="gap-1 text-xs"><Bot className="h-3.5 w-3.5" />Models</TabsTrigger>
+          <TabsTrigger value="devices" className="gap-1 text-xs"><Monitor className="h-3.5 w-3.5" />Devices</TabsTrigger>
+          <TabsTrigger value="developer" className="gap-1 text-xs"><Wrench className="h-3.5 w-3.5" />Dev</TabsTrigger>
+          <TabsTrigger value="advanced" className="gap-1 text-xs"><ShieldCheck className="h-3.5 w-3.5" />Advanced</TabsTrigger>
+        </TabsList>
+        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-xl border border-border bg-background/25 p-3">
+          <TabsContent value="general" className="m-0 space-y-4">{modeSection}{voiceSection}</TabsContent>
+          <TabsContent value="appearance" className="m-0 space-y-4">{appearanceSection}</TabsContent>
+          <TabsContent value="voice" className="m-0 space-y-4">{voiceSection}</TabsContent>
+          <TabsContent value="models" className="m-0 space-y-4">{modelsSection}</TabsContent>
+          <TabsContent value="devices" className="m-0 space-y-4">{devicesSection}</TabsContent>
+          <TabsContent value="developer" className="m-0 space-y-4">{developerSection}</TabsContent>
+          <TabsContent value="advanced" className="m-0 space-y-4">{appearanceSection}{devicesSection}{developerSection}</TabsContent>
         </div>
-
-        <div className="flex items-center justify-between">
-          <Label htmlFor="sound-effects" className="flex items-center gap-2 text-sm">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            Sound effects
-          </Label>
-          <Switch
-            id="sound-effects"
-            checked={settings.soundEffects}
-            onCheckedChange={(checked) => updateSettings({ soundEffects: checked })}
-          />
-        </div>
-
-        <div className="flex items-center justify-between">
-          <Label htmlFor="notifications" className="flex items-center gap-2 text-sm">
-            <Bell className="h-4 w-4 text-muted-foreground" />
-            Notifications
-          </Label>
-          <Switch
-            id="notifications"
-            checked={settings.notifications}
-            onCheckedChange={(checked) => updateSettings({ notifications: checked })}
-          />
-        </div>
-
-        {/* Advanced Studio Mode - hidden on mobile */}
-        <div className="hidden sm:flex items-center justify-between">
-          <div>
-            <Label htmlFor="advanced-studio" className="flex items-center gap-2 text-sm">
-              <Sparkles className="h-4 w-4 text-muted-foreground" />
-              Advanced Studio Mode
-            </Label>
-            <p className="text-xs text-muted-foreground mt-0.5">Show modules in accordion layout (desktop)</p>
-          </div>
-          <Switch
-            id="advanced-studio"
-            checked={settings.advancedStudioMode ?? false}
-            onCheckedChange={(checked) => updateSettings({ advancedStudioMode: checked })}
-          />
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className={embedded ? "flex justify-end gap-2 pt-4 border-t border-border mt-6" : "flex justify-end gap-2 pt-4 border-t border-border"}>
-        {!embedded && (
-          <Button variant="outline" onClick={() => onRequestClose?.()}>
-            Close
-          </Button>
-        )}
-        <Button onClick={handleSave} disabled={isSaving}>
-          {isSaving ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Saving...
-            </>
-          ) : (
-            'Save Changes'
-          )}
-        </Button>
-      </div>
+      </Tabs>
+      <div className="mt-3 shrink-0">{actions}</div>
     </div>
   );
 }

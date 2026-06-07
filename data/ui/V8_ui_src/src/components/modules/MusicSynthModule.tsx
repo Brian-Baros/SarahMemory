@@ -40,15 +40,24 @@ export function MusicSynthModule() {
     }, 800);
 
     try {
-      const response = await api.proxy.call('/api/creative/music', {
+      const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
-        body: { prompt: prompt.trim() },
+        body: { kind: 'music', prompt: prompt.trim(), output: { format: 'wav', filename: 'music.wav' } },
       });
 
       clearInterval(progressInterval);
       setProgress(100);
 
-      const resultUrl = (response as any)?.url || (response as any)?.audio_url;
+      if ((response as any)?.ok === false || (response as any)?.fallback) {
+        throw new Error((response as any)?.error || 'music_backend_unavailable');
+      }
+      const artifact = (response as any)?.result?.artifacts?.[0] || (response as any)?.artifact;
+      const jobId = (response as any)?.result?.job_id || (response as any)?.job_id;
+      const resultUrl = (response as any)?.url || (response as any)?.audio_url ||
+        (jobId && artifact?.filename ? `/api/media/job/download?job_id=${encodeURIComponent(jobId)}&filename=${encodeURIComponent(artifact.filename)}` : undefined);
+      if (!resultUrl) {
+        throw new Error('music_generation_returned_no_artifact');
+      }
 
       const itemId = addItem('music', {
         type: 'music',
@@ -70,20 +79,14 @@ export function MusicSynthModule() {
       setPrompt('');
     } catch (error) {
       clearInterval(progressInterval);
-      
-      // Demo placeholder
-      addItem('music', {
-        type: 'music',
-        prompt: prompt.trim(),
-        metadata: { demo: true },
-      });
+      console.error('[MusicSynthModule] Generation failed:', error);
 
       addMessage({
         role: 'assistant',
-        content: `[Music Demo] Placeholder created for: "${prompt}"`,
+        content: `[Music Unavailable] Music generation failed or backend capability is unavailable for: "${prompt}"`,
       });
 
-      toast.info('Music generation demo - backend coming soon');
+      toast.error('Music generation unavailable or failed. No demo placeholder was created.');
     } finally {
       setIsGenerating(false);
       setProgress(0);

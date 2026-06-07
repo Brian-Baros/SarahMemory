@@ -896,6 +896,9 @@ export function DLEngineScreen() {
   const [isDlCommanding, setIsDlCommanding] = useState(false);
   const [isSavingWeights, setIsSavingWeights] = useState(false);
   const [devBridgeSummary, setDevBridgeSummary] = useState<DevBridgeSummaryState | null>(null);
+  const [activeConsoleTab, setActiveConsoleTab] = useState<
+    "overview" | "rem" | "weights" | "trace" | "subjects" | "jobs"
+  >("overview");
 
   const selectedSubject = useMemo(
     () => subjects.find((s) => s.id === selectedSubjectId) || null,
@@ -1205,14 +1208,10 @@ export function DLEngineScreen() {
       const modelStatusResponse = await tryCall("/api/models/status?refresh=1");
       const remStatusResponse = await tryCall("/api/avatar/rem/status");
       const remReportResponse = await tryCall(`/api/avatar/rem/report?limit=${DL_ENGINE_REM_REPORT_LIMIT}`);
-      const thoughtResponse =
-        (await tryCall("/api/dlengine/thoughts")) ||
-        (await tryCall("/api/cognitive/thoughts")) ||
-        (await tryCall("/api/cognitive/trace"));
+      const thoughtResponse = await tryCall("/api/dlengine/thoughts");
       const subjectResponse =
         (await tryCall("/api/dlengine/subjects")) ||
-        (await tryCall("/api/dlengine/tickets")) ||
-        (await tryCall("/api/cognitive/tickets"));
+        (await tryCall("/api/dlengine/tickets"));
       const devBridgeStatusResponse = await tryCall("/api/devbridge/status");
       const devBridgeLatestResponse = await tryCall("/api/devbridge/latest");
       const devBridgeCmdTicketsResponse = await tryCall("/api/devbridge/cmd-tickets?limit=25&detail_limit=10");
@@ -1409,7 +1408,6 @@ export function DLEngineScreen() {
       const endpoints = [
         "/api/dlengine/subject_action",
         "/api/dlengine/ticket_action",
-        "/api/cognitive/ticket_action",
       ];
 
       for (const path of endpoints) {
@@ -1431,7 +1429,6 @@ export function DLEngineScreen() {
     const endpoints = [
       "/api/dlengine/finetune/config",
       "/api/dlengine/controls",
-      "/api/cognitive/controls",
     ];
 
     for (const path of endpoints) {
@@ -1576,7 +1573,6 @@ export function DLEngineScreen() {
       "/api/dlengine/weights",
       "/api/dlengine/tuning_weights",
       "/api/dlengine/controls",
-      "/api/cognitive/weights",
     ];
 
     let sent = false;
@@ -1751,13 +1747,36 @@ export function DLEngineScreen() {
     return () => window.removeEventListener("sarah:ui", handler as any);
   }, [checkStatus, controls.showOnlyHighSignal, mergeSubjects, mergeThoughts, normalizeSubjects, normalizeThoughts, remSummary.running, selectedSubjectId, setControl, setCurrentScreen, subjects, submitDlRuntimeMode, submitSubjectAction, toggleRemSleep]);
 
+  const consoleTabs = [
+    { id: "overview", label: "Overview", icon: Gauge },
+    { id: "rem", label: "REM", icon: Moon },
+    { id: "weights", label: "Weights", icon: SlidersHorizontal },
+    { id: "trace", label: "Trace", icon: Brain },
+    { id: "subjects", label: "Subjects", icon: Search },
+    { id: "jobs", label: "Jobs", icon: TrendingUp },
+  ] as const;
+
+  const summaryCards = [
+    { label: "Mode", value: dlMode.toUpperCase(), tone: dlMode === "paused" ? "text-yellow-500" : "text-primary" },
+    { label: "REM", value: remSummary.running ? "ACTIVE" : "AWAKE", tone: remSummary.running ? "text-blue-500" : "text-muted-foreground" },
+    { label: "Models", value: String(effectiveModelsLoaded), tone: "text-foreground" },
+    { label: "Jobs", value: String(Math.max(stats?.activeJobs || 0, remSummary.running ? 1 : 0)), tone: "text-foreground" },
+    { label: "Dreams", value: String(remSummary.dreams), tone: "text-foreground" },
+    { label: "Tickets", value: String(subjects.length), tone: "text-foreground" },
+  ];
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       {/* Header */}
-      <div className="shrink-0 border-b border-border bg-card/50 p-4">
-        <div className="flex items-center gap-2">
+      <div className="shrink-0 border-b border-border bg-card/70 p-4 backdrop-blur-sm">
+        <div className="flex flex-wrap items-center gap-2">
           <Cpu className="h-5 w-5 text-primary" />
-          <h1 className="text-lg font-semibold">DL Engine</h1>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold leading-tight">DL Engine</h1>
+            <p className="text-xs text-muted-foreground">
+              Runtime intelligence, REM review, governed tuning, traces, and learning queues.
+            </p>
+          </div>
           <div className="ml-auto flex items-center gap-2">
             <span className={cn("rounded-full px-2 py-1 text-[11px]", remSummary.running ? "bg-blue-500/10 text-blue-500" : "bg-muted text-muted-foreground")}>
               {remSummary.running ? "REM ACTIVE" : "AWAKE"}
@@ -1774,692 +1793,232 @@ export function DLEngineScreen() {
             </Button>
           </div>
         </div>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Master control surface for Deep Learning, REM Sleep, subject review, sandbox routing, governance, and AI tuning.
-        </p>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground/80">
+
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-6">
+          {summaryCards.map((card) => (
+            <div key={card.label} className="rounded-lg border border-border bg-background/55 px-3 py-2">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">{card.label}</p>
+              <p className={cn("mt-1 truncate text-sm font-semibold", card.tone)}>{card.value}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground/80">
           {lastUpdated && <span>Last updated: {safeDate(lastUpdated).toLocaleString()}</span>}
           {remSummary.cycleId && <span>• REM cycle: {remSummary.cycleId}</span>}
           {statusMessage && <span className="text-primary">• {statusMessage}</span>}
         </div>
       </div>
 
-      {/* Fixed control deck: separated from live trace scroll so polling cannot jump controls around. */}
-      <div className="shrink-0 border-b border-border bg-background/95 p-3 shadow-sm">
-        <div className="max-h-[46vh] overflow-y-auto pr-1">
-          {isAvailable === false && (
-            <div className="mb-3 rounded-xl border border-border bg-muted/50 p-3">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">Backend DL Engine unavailable</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    The screen remains active in local review mode. Controls are preserved and will sync when backend endpoints respond.
-                  </p>
+      {/* Console mode tabs */}
+      <div className="shrink-0 border-b border-border bg-background/95 px-3 py-2">
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          {consoleTabs.map((tab) => {
+            const Icon = tab.icon;
+            const active = activeConsoleTab === tab.id;
+            return (
+              <Button
+                key={tab.id}
+                variant={active ? "default" : "outline"}
+                size="sm"
+                className="shrink-0 gap-2"
+                onClick={() => setActiveConsoleTab(tab.id as any)}
+              >
+                <Icon className="h-4 w-4" />
+                {tab.label}
+              </Button>
+            );
+          })}
+        </div>
+      </div>
+
+      {isAvailable === false && (
+        <div className="shrink-0 border-b border-border bg-yellow-500/10 px-4 py-2 text-xs text-yellow-600 dark:text-yellow-400">
+          Backend DL Engine unavailable. Screen remains active in local review mode and will sync when backend endpoints respond.
+        </div>
+      )}
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="p-4">
+          {activeConsoleTab === "overview" && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="flex items-center gap-2 text-sm font-medium">
+                      <Power className="h-4 w-4 text-primary" />
+                      Runtime Command Center
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">Manual DL and REM controls. All commands remain backend-governed.</p>
+                  </div>
+                  <span className={cn("rounded-full px-2 py-1 text-[11px]", remSummary.neoskyEnabled ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500")}>
+                    NeoSky {remSummary.neoskyEnabled ? "ON" : "LOCKED"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Button variant={remSummary.running ? "destructive" : "default"} size="sm" onClick={() => void toggleRemSleep()} disabled={isRemCommanding} className="justify-start">
+                    {remSummary.running ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
+                    {isRemCommanding ? "Sending…" : remSummary.running ? "Wake Sarah" : "Force REM Sleep"}
+                  </Button>
+                  <Button variant={dlMode === "manual" ? "default" : "outline"} size="sm" onClick={() => void submitDlRuntimeMode("manual")} disabled={isDlCommanding} className="justify-start">
+                    <Zap className="mr-2 h-4 w-4" /> Manual DL Run
+                  </Button>
+                  <Button variant={dlMode === "auto" ? "default" : "outline"} size="sm" onClick={() => void submitDlRuntimeMode("auto")} disabled={isDlCommanding} className="justify-start">
+                    <Activity className="mr-2 h-4 w-4" /> DL Auto Mode
+                  </Button>
+                  <Button variant={dlMode === "paused" ? "destructive" : "outline"} size="sm" onClick={() => void submitDlRuntimeMode("paused")} disabled={isDlCommanding} className="justify-start">
+                    <PauseCircle className="mr-2 h-4 w-4" /> Pause DL
+                  </Button>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2 text-[11px]">
+                  <div className="rounded-lg border border-border bg-background/50 p-2"><p className="text-muted-foreground">REM Phase</p><p className="truncate font-semibold">{remSummary.phase}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-2"><p className="text-muted-foreground">Idle Ready</p><p className="font-semibold">{remSummary.idleReady ? "Yes" : "No"}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-2"><p className="text-muted-foreground">Provider</p><p className="truncate font-semibold">{modelCapability.activeProvider || remSummary.activeProvider || "core"}</p></div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="mb-3 flex items-center gap-2 text-sm font-medium"><Gauge className="h-4 w-4 text-primary" /> Runtime Health</p>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Auto-Applied</p><p className="mt-1 text-xl font-bold text-green-500">{remSummary.autoApplied}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Staged</p><p className="mt-1 text-xl font-bold text-blue-500">{remSummary.staged}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Rejected</p><p className="mt-1 text-xl font-bold text-yellow-500">{remSummary.rejected}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Lane Issues</p><p className="mt-1 text-xl font-bold">{remSummary.lanesDegraded + remSummary.lanesFailed}</p></div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="rounded-lg border border-border bg-background/50 p-3">
+                    <p className="text-[11px] text-muted-foreground">Active AI Capability</p>
+                    <p className="mt-1 truncate text-sm font-semibold">{modelCapability.activeProvider || remSummary.activeProvider || "core"}</p>
+                    <p className="mt-1 truncate text-xs text-muted-foreground">{modelCapability.activeModel || remSummary.activeModel || "SarahMemory Core Runtime"}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3">
+                    <p className="mb-2 text-[11px] text-muted-foreground">Memory / GPU / Thinking</p>
+                    <div className="space-y-1.5">
+                      <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>Memory</span><Progress value={stats?.memoryUsage || 0} className="h-2" /><span>{stats?.memoryUsage || 0}%</span></div>
+                      <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>GPU</span><Progress value={stats?.gpuUsage || 0} className="h-2" /><span>{stats?.gpuUsage || 0}%</span></div>
+                      <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>Think</span><Progress value={stats?.thinkingLoad || 0} className="h-2" /><span>{stats?.thinkingLoad || 0}%</span></div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-[1fr_1.05fr_1.15fr]">
-            {/* Runtime command center */}
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3 flex items-start justify-between gap-3">
-                <div>
-                  <p className="flex items-center gap-2 text-sm font-medium">
-                    <Power className="h-4 w-4 text-primary" />
-                    Runtime Command Center
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Manual REM and DL controls for fast validation without PowerShell.
-                  </p>
+          {activeConsoleTab === "rem" && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.85fr_1.15fr]">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="mb-3 flex items-center gap-2 text-sm font-medium"><Moon className="h-4 w-4 text-primary" /> REM / Dream State</p>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Phase</p><p className="mt-1 font-semibold">{remSummary.phase}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Cycles</p><p className="mt-1 font-semibold">{remSummary.cyclesCompleted}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Dreams</p><p className="mt-1 font-semibold">{remSummary.dreams}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Sandbox Passed</p><p className="mt-1 font-semibold text-green-500">{remSummary.sandboxPassed}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Sandbox Failed</p><p className="mt-1 font-semibold text-yellow-500">{remSummary.sandboxFailed}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Lanes</p><p className="mt-1 font-semibold">{remSummary.lanesOk}/{remSummary.lanesTotal} OK</p></div>
                 </div>
-                <span className={cn("rounded-full px-2 py-1 text-[11px]", remSummary.neoskyEnabled ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500")}>
-                  NeoSky {remSummary.neoskyEnabled ? "ON" : "LOCKED"}
-                </span>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button variant={remSummary.running ? "destructive" : "default"} size="sm" onClick={() => void toggleRemSleep()} disabled={isRemCommanding}>{remSummary.running ? "Wake Sarah" : "Force REM Sleep"}</Button>
+                  <Button variant="outline" size="sm" onClick={() => void checkStatus()}>Refresh REM</Button>
+                </div>
               </div>
-
-              <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
-                <Button
-                  variant={remSummary.running ? "destructive" : "default"}
-                  size="sm"
-                  onClick={() => void toggleRemSleep()}
-                  disabled={isRemCommanding}
-                  className="justify-start"
-                  title="Toggle SarahMemory REM Sleep manually. When NeoSky is locked, REM runs in observation-only mode."
-                >
-                  {remSummary.running ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}
-                  {isRemCommanding ? "Sending…" : remSummary.running ? "Wake Sarah" : "Force REM Sleep"}
-                </Button>
-
-                <Button
-                  variant={dlMode === "manual" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => void submitDlRuntimeMode("manual")}
-                  disabled={isDlCommanding}
-                  className="justify-start"
-                >
-                  <Zap className="mr-2 h-4 w-4" />
-                  Manual DL Run
-                </Button>
-
-                <Button
-                  variant={dlMode === "auto" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => void submitDlRuntimeMode("auto")}
-                  disabled={isDlCommanding}
-                  className="justify-start"
-                >
-                  <Activity className="mr-2 h-4 w-4" />
-                  DL Auto Mode
-                </Button>
-
-                <Button
-                  variant={dlMode === "paused" ? "destructive" : "outline"}
-                  size="sm"
-                  onClick={() => void submitDlRuntimeMode("paused")}
-                  disabled={isDlCommanding}
-                  className="justify-start"
-                >
-                  <PauseCircle className="mr-2 h-4 w-4" />
-                  Pause DL
-                </Button>
-              </div>
-
-              <div className="mt-3 grid grid-cols-3 gap-2 text-[11px]">
-                <div className="rounded-lg border border-border bg-background/50 p-2">
-                  <p className="text-muted-foreground">REM Phase</p>
-                  <p className="truncate font-semibold">{remSummary.phase}</p>
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="mb-3 flex items-center gap-2 text-sm font-medium"><Database className="h-4 w-4 text-primary" /> DevBridge / Repair Lane</p>
+                <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Packets</p><p className="mt-1 font-semibold">{devBridgeSummary?.counts.packets || 0}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Responses</p><p className="mt-1 font-semibold">{devBridgeSummary?.counts.responses || 0}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Stages</p><p className="mt-1 font-semibold">{devBridgeSummary?.counts.stages || 0}</p></div>
+                  <div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Cmd Pending</p><p className="mt-1 font-semibold">{devBridgeSummary?.cmdTicketsPending || 0}</p></div>
                 </div>
-                <div className="rounded-lg border border-border bg-background/50 p-2">
-                  <p className="text-muted-foreground">Idle Ready</p>
-                  <p className="font-semibold">{remSummary.idleReady ? "Yes" : "No"}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-2">
-                  <p className="text-muted-foreground">DL Mode</p>
-                  <p className="font-semibold uppercase">{dlMode}</p>
+                <div className="mt-3 rounded-lg border border-border bg-background/50 p-3 text-xs text-muted-foreground">
+                  {devBridgeSummary?.available ? devBridgeSummary.latestSummary || "DevBridge available." : "DevBridge status unavailable or disabled."}
                 </div>
               </div>
             </div>
+          )}
 
-            {/* Metrics deck */}
+          {activeConsoleTab === "weights" && (
             <div className="rounded-xl border border-border bg-card p-4">
-              <p className="mb-3 flex items-center gap-2 text-sm font-medium">
-                <Gauge className="h-4 w-4 text-primary" />
-                Live Counters / Runtime Health
-              </p>
-
-              <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Models / Providers</p>
-                  <p className="mt-1 text-xl font-bold">{effectiveModelsLoaded}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Active Jobs / REM</p>
-                  <p className="mt-1 text-xl font-bold">{Math.max(stats?.activeJobs || 0, remSummary.running ? 1 : 0)}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">REM Cycles</p>
-                  <p className="mt-1 text-xl font-bold">{remSummary.cyclesCompleted}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Dreams</p>
-                  <p className="mt-1 text-xl font-bold">{remSummary.dreams}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Auto-Applied</p>
-                  <p className="mt-1 text-xl font-bold text-green-500">{remSummary.autoApplied}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Staged</p>
-                  <p className="mt-1 text-xl font-bold text-blue-500">{remSummary.staged}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Rejected</p>
-                  <p className="mt-1 text-xl font-bold text-yellow-500">{remSummary.rejected}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Lane Issues</p>
-                  <p className="mt-1 text-xl font-bold">{remSummary.lanesDegraded + remSummary.lanesFailed}</p>
-                </div>
-              </div>
-
-              <div className="mt-3 rounded-lg border border-border bg-background/50 p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="flex items-center gap-2 text-xs font-medium">
-                      <ShieldCheck className="h-3.5 w-3.5 text-primary" />
-                      DevBridge Repair Lane
-                    </p>
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      {devBridgeSummary?.available
-                        ? `Packets ${devBridgeSummary.counts.packets} • Responses ${devBridgeSummary.counts.responses} • Stages ${devBridgeSummary.counts.stages} • Cmd inventory pending ${devBridgeSummary.cmdTicketsPending}`
-                        : "No DevBridge telemetry loaded yet."}
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span
-                      className={cn(
-                        "rounded-full px-2 py-1 text-[10px] font-medium",
-                        devBridgeSummary?.developerMode || devBridgeSummary?.envAllowApply
-                          ? "bg-green-500/10 text-green-500"
-                          : "bg-muted text-muted-foreground"
-                      )}
-                    >
-                      {devBridgeSummary?.developerMode || devBridgeSummary?.envAllowApply ? "DEV GATE OPEN" : "DEV GATE CLOSED"}
-                    </span>
-                    <Button variant="outline" size="sm" onClick={() => setCurrentScreen("research" as any)}>
-                      Open Bridge
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Latest Stage</p>
-                    <p className="mt-1 truncate text-xs font-semibold">{devBridgeSummary?.latestStageId || "—"}</p>
-                    <p className="mt-1 text-[10px] capitalize text-muted-foreground">{devBridgeSummary?.latestStageStatus || "idle"}</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Validation</p>
-                    <p className="mt-1 text-xs font-semibold">
-                      {devBridgeSummary?.latestStageApplied
-                        ? "Applied"
-                        : devBridgeSummary?.latestStageValidated
-                          ? "Validated"
-                          : devBridgeSummary?.latestStageId
-                            ? "Pending"
-                            : "Idle"}
-                    </p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Files: {devBridgeSummary?.latestStageFiles || 0}</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Latest Response</p>
-                    <p className="mt-1 truncate text-xs font-semibold">{devBridgeSummary?.latestResponseId || "—"}</p>
-                    <p className="mt-1 truncate text-[10px] text-muted-foreground">{devBridgeSummary?.latestSummary || "No imported repair summary."}</p>
-                  </div>
-                </div>
-
-                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-4 2xl:grid-cols-5">
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Repair Tickets</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.repairTickets || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Buffered issues</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Repair Batches</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.repairBatches || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Grouped by file</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Sandboxes</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.sandboxes || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Apps / panels / IoT drafts</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Pending Queue</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.cmdTicketsPending || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Processable now</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Processed Archive</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.cmdTicketsProcessed || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Historical success files</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Active Failed</p>
-                    <p className={cn("mt-1 text-xs font-semibold", devBridgeSummary?.cmdTicketsFailed ? "text-red-500" : "")}>{devBridgeSummary?.cmdTicketsFailed || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Failed folder inventory</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Failed Archive</p>
-                    <p className="mt-1 text-xs font-semibold">{devBridgeSummary?.cmdTicketsArchivedFailed || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Preserved audit evidence</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Invalid Pending</p>
-                    <p className={cn("mt-1 text-xs font-semibold", devBridgeSummary?.cmdTicketsInvalidPending ? "text-red-500" : "")}>{devBridgeSummary?.cmdTicketsInvalidPending || 0}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Malformed queued JSON</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Cmd Snapshot</p>
-                    <p className="mt-1 truncate text-xs font-semibold">{devBridgeSummary?.cmdTicketsGeneratedAt ? safeDate(devBridgeSummary.cmdTicketsGeneratedAt).toLocaleTimeString() : "—"}</p>
-                    <p className="mt-1 text-[10px] text-muted-foreground">Static inventory refresh</p>
-                  </div>
-                  <div className="rounded-md border border-border bg-card/50 p-2">
-                    <p className="text-[10px] text-muted-foreground">Rollback</p>
-                    <p className={cn("mt-1 text-xs font-semibold", devBridgeSummary?.rollbackAvailable ? "text-yellow-500" : "")}>{devBridgeSummary?.rollbackAvailable ? "Available" : devBridgeSummary?.rollbackStatus || "Idle"}</p>
-                    <p className="mt-1 truncate text-[10px] text-muted-foreground">{devBridgeSummary?.backupRoot || "No active backup root."}</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground">Active AI Capability</p>
-                  <p className="mt-1 truncate text-sm font-semibold">{modelCapability.activeProvider || remSummary.activeProvider || "core"}</p>
-                  <p className="mt-1 truncate text-xs text-muted-foreground">{modelCapability.activeModel || remSummary.activeModel || "SarahMemory Core Runtime"}</p>
-                </div>
-                <div className="rounded-lg border border-border bg-background/50 p-3">
-                  <p className="text-[11px] text-muted-foreground mb-2">Memory / GPU / Thinking</p>
-                  <div className="space-y-1.5">
-                    <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>Memory</span><Progress value={stats?.memoryUsage || 0} className="h-2" /><span>{stats?.memoryUsage || 0}%</span></div>
-                    <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>GPU</span><Progress value={stats?.gpuUsage || 0} className="h-2" /><span>{stats?.gpuUsage || 0}%</span></div>
-                    <div className="grid grid-cols-[58px_1fr_34px] items-center gap-2 text-[11px]"><span>Think</span><Progress value={stats?.thinkingLoad || 0} className="h-2" /><span>{stats?.thinkingLoad || 0}%</span></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Governance + model tuner */}
-            <div className="rounded-xl border border-border bg-card p-4">
-              <div className="mb-3 flex items-start justify-between gap-3">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="flex items-center gap-2 text-sm font-medium">
-                    <SlidersHorizontal className="h-4 w-4 text-primary" />
-                    Governance + Model Weight Controller
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Operator-facing AI tuner. These sliders are governed routing/policy weights, not raw tensor edits.
-                  </p>
+                  <p className="flex items-center gap-2 text-sm font-medium"><SlidersHorizontal className="h-4 w-4 text-primary" /> Governance + Model Weight Controller</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Governed routing/policy weights, not raw tensor edits.</p>
                 </div>
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => void resetWeights()} title="Reset current model profile to defaults">
-                    <RotateCcw className="h-4 w-4" />
-                  </Button>
-                  <Button variant="default" size="sm" onClick={() => void submitWeightControls()} disabled={isSavingWeights}>
-                    <Save className="mr-2 h-4 w-4" />
-                    Save Weights
-                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => void resetWeights()} title="Reset current model profile to defaults"><RotateCcw className="h-4 w-4" /></Button>
+                  <Button variant="default" size="sm" onClick={() => void submitWeightControls()} disabled={isSavingWeights}><Save className="mr-2 h-4 w-4" /> Save Weights</Button>
                 </div>
               </div>
-
               <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-2">
                 <label className="rounded-lg border border-border bg-background/50 p-2">
                   <span className="text-[11px] text-muted-foreground">Model job</span>
-                  <select
-                    value={selectedWeightCategory}
-                    onChange={(e) => {
-                      const nextCategory = e.target.value;
-                      const rememberedModelId = loadJson<string>(`${DL_ENGINE_WEIGHT_MODEL_KEY}:${nextCategory}`, "");
-                      setSelectedWeightCategory(nextCategory);
-                      setSelectedWeightModelId(rememberedModelId);
-                      saveJson(DL_ENGINE_WEIGHT_CATEGORY_KEY, nextCategory);
-                      saveJson(DL_ENGINE_WEIGHT_MODEL_KEY, rememberedModelId);
-                    }}
-                    className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none"
-                  >
-                    {weightCategories.map((cat: any) => (
-                      <option key={String(cat.id)} value={String(cat.id)}>
-                        {String(cat.label || cat.id)}
-                      </option>
-                    ))}
+                  <select value={selectedWeightCategory} onChange={(e) => { const nextCategory = e.target.value; const rememberedModelId = loadJson<string>(`${DL_ENGINE_WEIGHT_MODEL_KEY}:${nextCategory}`, ""); setSelectedWeightCategory(nextCategory); setSelectedWeightModelId(rememberedModelId); saveJson(DL_ENGINE_WEIGHT_CATEGORY_KEY, nextCategory); saveJson(DL_ENGINE_WEIGHT_MODEL_KEY, rememberedModelId); }} className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none">
+                    {weightCategories.map((cat: any) => (<option key={String(cat.id)} value={String(cat.id)}>{String(cat.label || cat.id)}</option>))}
                   </select>
                 </label>
-
                 <label className="rounded-lg border border-border bg-background/50 p-2">
                   <span className="text-[11px] text-muted-foreground">Model profile</span>
-                  <select
-                    value={selectedWeightModelId || "__category_default__"}
-                    onChange={(e) => {
-                      const nextModelId = e.target.value === "__category_default__" ? "" : e.target.value;
-                      setSelectedWeightModelId(nextModelId);
-                      saveJson(DL_ENGINE_WEIGHT_MODEL_KEY, nextModelId);
-                      saveJson(`${DL_ENGINE_WEIGHT_MODEL_KEY}:${selectedWeightCategory}`, nextModelId);
-                    }}
-                    className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none"
-                  >
+                  <select value={selectedWeightModelId || "__category_default__"} onChange={(e) => { const nextModelId = e.target.value === "__category_default__" ? "" : e.target.value; setSelectedWeightModelId(nextModelId); saveJson(DL_ENGINE_WEIGHT_MODEL_KEY, nextModelId); saveJson(`${DL_ENGINE_WEIGHT_MODEL_KEY}:${selectedWeightCategory}`, nextModelId); }} className="mt-1 w-full rounded-md border border-border bg-background px-2 py-1.5 text-xs outline-none">
                     <option value="__category_default__">Category default</option>
-                    {weightModelOptions.map((model: any) => (
-                      <option key={String(model.id)} value={String(model.id)}>
-                        {String(model.simple_label || model.display_name || model.repo || model.id)}
-                        {model.status_label ? ` · ${String(model.status_label)}` : ""}
-                      </option>
-                    ))}
+                    {weightModelOptions.map((model: any) => (<option key={String(model.id)} value={String(model.id)}>{String(model.simple_label || model.display_name || model.repo || model.id)}{model.status_label ? ` · ${String(model.status_label)}` : ""}</option>))}
                   </select>
                 </label>
               </div>
-
-              <div className="mb-3 rounded-lg border border-border bg-background/50 p-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Active weight profile:</span>{" "}
-                {selectedWeightContextLabel}
-                {isLoadingWeightProfile ? " · loading profile…" : ""}
-                <span className="block pt-1 text-[10px]">
-                  Profiles are stored by category/model context. These sliders change governed routing weights only.
-                </span>
-              </div>
-
+              <div className="mb-3 rounded-lg border border-border bg-background/50 p-2 text-xs text-muted-foreground"><span className="font-medium text-foreground">Active weight profile:</span> {selectedWeightContextLabel}{isLoadingWeightProfile ? " · loading profile…" : ""}</div>
               <div className="grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-3">
                 {MODEL_WEIGHT_SLIDERS.map((item) => (
                   <label key={item.key} className="rounded-lg border border-border bg-background/50 p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium">{item.label}</span>
-                      <span className="text-[11px] text-muted-foreground">{modelWeights[item.key]}%</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={modelWeights[item.key]}
-                      onChange={(e) => setWeight(item.key, Number(e.target.value))}
-                      className="mt-2 w-full accent-primary"
-                    />
+                    <div className="flex items-center justify-between gap-2"><span className="text-xs font-medium">{item.label}</span><span className="text-[11px] text-muted-foreground">{modelWeights[item.key]}%</span></div>
+                    <input type="range" min={0} max={100} step={1} value={modelWeights[item.key]} onChange={(e) => setWeight(item.key, Number(e.target.value))} className="mt-2 w-full accent-primary" />
                     <p className="mt-1 truncate text-[10px] text-muted-foreground">{item.description}</p>
                   </label>
                 ))}
               </div>
-
-              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-3">
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>Autonomy Visible</span>
-                  <input type="checkbox" checked={controls.autonomyEnabled} onChange={(e) => setControl({ autonomyEnabled: e.target.checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>Sandbox First</span>
-                  <input type="checkbox" checked={controls.sandboxFirst} onChange={(e) => setControl({ sandboxFirst: e.target.checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>Require Evaluation</span>
-                  <input type="checkbox" checked={controls.requireEvaluation} onChange={(e) => setControl({ requireEvaluation: e.target.checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>Require Approval</span>
-                  <input type="checkbox" checked={controls.requireApproval} onChange={(e) => setControl({ requireApproval: e.target.checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>High Signal Only</span>
-                  <input type="checkbox" checked={controls.showOnlyHighSignal} onChange={(e) => setControl({ showOnlyHighSignal: e.target.checked })} />
-                </label>
-                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs">
-                  <span>Poll sec</span>
-                  <input
-                    type="number"
-                    min={3}
-                    max={60}
-                    value={controls.pollIntervalSec}
-                    onChange={(e) => setControl({ pollIntervalSec: Math.max(3, Number(e.target.value || 8)) })}
-                    className="w-16 rounded border border-border bg-background px-2 py-1 text-xs"
-                  />
-                </label>
+              <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs"><span>Autonomy Visible</span><input type="checkbox" checked={controls.autonomyEnabled} onChange={(e) => setControl({ autonomyEnabled: e.target.checked })} /></label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs"><span>Sandbox First</span><input type="checkbox" checked={controls.sandboxFirst} onChange={(e) => setControl({ sandboxFirst: e.target.checked })} /></label>
+                <label className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/50 p-2 text-xs"><span>Require Approval</span><input type="checkbox" checked={controls.requireApproval} onChange={(e) => setControl({ requireApproval: e.target.checked })} /></label>
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-2"><Button variant="default" size="sm" onClick={() => void submitFineTuneControls()}>Save Governance</Button><Button variant="outline" size="sm" onClick={() => void checkStatus()}>Sync Now</Button></div>
+            </div>
+          )}
 
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Button variant="default" size="sm" onClick={() => void submitFineTuneControls()}>
-                  Save Governance
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => void checkStatus()}>
-                  Sync Now
-                </Button>
+          {activeConsoleTab === "trace" && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3"><p className="flex items-center gap-2 text-sm font-medium"><Brain className="h-4 w-4" /> Cognitive Trace</p><span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">{thoughts.length} records</span></div>
+              <div className="mt-3 max-h-[60vh] overflow-y-auto pr-2">
+                {isLoading && thoughts.length === 0 ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div> : thoughts.length === 0 ? <div className="rounded-xl border border-border bg-background/50 py-8 text-center"><Eye className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" /><p className="text-sm text-muted-foreground">No trace available</p></div> : <div className="space-y-2 pb-2">{thoughts.map((trace) => (<div key={trace.id} className={cn("rounded-xl border p-3", thoughtLevelClass(trace.level))}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{trace.title}</p><p className="mt-1 text-[11px] text-muted-foreground">{trace.source} • {safeDate(trace.ts).toLocaleString()}</p></div><span className="text-[10px] uppercase tracking-wide text-muted-foreground">{trace.level}</span></div><p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{trace.content}</p>{trace.tags.length > 0 && <div className="mt-2 flex flex-wrap gap-1">{trace.tags.map((tag) => (<span key={`${trace.id}-${tag}`} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">{tag}</span>))}</div>}</div>))}</div>}
               </div>
             </div>
-          </div>
+          )}
+
+          {activeConsoleTab === "subjects" && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-[0.9fr_1.1fr]">
+              <div className="rounded-xl border border-border bg-card p-4">
+                <div className="flex items-center justify-between gap-3"><p className="flex items-center gap-2 text-sm font-medium"><Search className="h-4 w-4" /> Subject Boxes / Concepts</p><span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">{filteredSubjects.length} queued</span></div>
+                <div className="mt-3 max-h-[60vh] overflow-y-auto pr-2">
+                  {filteredSubjects.length === 0 ? <div className="rounded-xl border border-border bg-background/50 py-8 text-center"><Search className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" /><p className="text-sm text-muted-foreground">No concepts queued</p></div> : <div className="space-y-2 pb-2">{filteredSubjects.map((subject) => { const isActive = selectedSubjectId === subject.id; return (<button key={subject.id} onClick={() => setSelectedSubjectId(subject.id)} className={cn("w-full rounded-xl border p-3 text-left transition-all", "border-border bg-background/50 hover:bg-card/80", isActive && "border-primary/50 bg-primary/5")}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{subject.title}</p><p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{subject.summary}</p></div><span className={cn("text-[11px] font-medium capitalize", stageBadgeClass(subject.stage))}>{subject.stage}</span></div><div className="mt-3 grid grid-cols-2 gap-2"><div><p className="mb-1 text-[10px] text-muted-foreground">Confidence</p><Progress value={subject.confidence} className="h-2" /></div><div><p className="mb-1 text-[10px] text-muted-foreground">Risk</p><Progress value={subject.risk} className="h-2" /></div></div></button>); })}</div>}
+                </div>
+              </div>
+              <div className="rounded-xl border border-border bg-card p-4">
+                <p className="flex items-center gap-2 text-sm font-medium"><ShieldCheck className="h-4 w-4" /> Subject Review / Operator Decision</p>
+                <div className="mt-3 max-h-[60vh] overflow-y-auto pr-2">
+                  {!selectedSubject ? <div className="rounded-xl border border-border bg-background/50 py-8 text-center"><ShieldCheck className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" /><p className="text-sm text-muted-foreground">Select a subject to review</p></div> : <div className="space-y-3 pb-2"><div><p className="text-sm font-medium">{selectedSubject.title}</p><p className="mt-1 text-xs text-muted-foreground">{selectedSubject.source}</p></div><div className="grid grid-cols-2 gap-3"><div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Confidence</p><p className="mt-1 text-lg font-semibold">{selectedSubject.confidence}%</p></div><div className="rounded-lg border border-border bg-background/50 p-3"><p className="text-[11px] text-muted-foreground">Risk</p><p className="mt-1 text-lg font-semibold">{selectedSubject.risk}%</p></div></div><div className="rounded-lg border border-border bg-background/50 p-3"><p className="mb-1 text-[11px] text-muted-foreground">Summary</p><p className="whitespace-pre-wrap text-sm text-foreground">{selectedSubject.summary}</p></div><div className="rounded-lg border border-border bg-background/50 p-3"><p className="mb-2 text-[11px] text-muted-foreground">Review Notes</p><textarea value={selectedSubject.notes} onChange={(e) => updateSubject(selectedSubject.id, { notes: e.target.value })} rows={4} className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Operator notes, tuning feedback, guardrail notes, or sandbox instructions..." /></div><div className="grid grid-cols-2 gap-2"><Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "sandbox")}><FlaskConical className="mr-2 h-4 w-4" />Sandbox</Button><Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "testing")}><PlayCircle className="mr-2 h-4 w-4" />Test</Button><Button variant="default" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "approved")}><CheckCircle2 className="mr-2 h-4 w-4" />Approve</Button><Button variant="destructive" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "rejected")}><XCircle className="mr-2 h-4 w-4" />Reject</Button></div></div>}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {activeConsoleTab === "jobs" && (
+            <div className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-center justify-between gap-3"><p className="flex items-center gap-2 text-sm font-medium"><TrendingUp className="h-4 w-4" /> Training Jobs</p><span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">{jobs.length} active</span></div>
+              <div className="mt-3 max-h-[60vh] overflow-y-auto pr-2">
+                {isLoading && jobs.length === 0 ? <div className="flex items-center justify-center py-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div> : jobs.length === 0 ? <div className="rounded-xl border border-border bg-background/50 py-8 text-center"><BarChart3 className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" /><p className="text-sm text-muted-foreground">{isAvailable ? "No active jobs" : "Engine not available"}</p></div> : <div className="space-y-2 pb-2">{jobs.map((job) => (<div key={job.id} className="rounded-xl border border-border bg-background/50 p-3"><div className="mb-2 flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{job.name}</p>{job.details && <p className="mt-1 truncate text-xs text-muted-foreground">{job.details}</p>}</div><span className={cn("text-xs font-medium capitalize", getStatusColor(job.status))}>{job.status}</span></div><Progress value={job.progress} className="mb-1 h-2" /><div className="flex items-center justify-between text-xs text-muted-foreground"><span>{job.progress}% complete</span><span>{job.startedAt ? job.startedAt.toLocaleString() : "Queued"}</span></div></div>))}</div>}
+              </div>
+            </div>
+          )}
         </div>
-      </div>
-
-      {/* Bottom split-screen: live trace and subject review are isolated in scroll panes. */}
-      <div className="min-h-0 flex-1 p-4">
-        <div className="grid h-full min-h-0 grid-cols-1 gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-          <div className="flex min-h-0 flex-col gap-4">
-            {/* Thought Stream */}
-            <div className="flex min-h-0 flex-1 flex-col rounded-xl border border-border bg-card p-4">
-              <div className="flex shrink-0 items-center justify-between gap-3">
-                <p className="flex items-center gap-2 text-sm font-medium">
-                  <Brain className="h-4 w-4" />
-                  Chat Thinking Process / Cognitive Trace
-                </p>
-                <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                  {thoughts.length} records
-                </span>
-              </div>
-
-              <ScrollArea className="mt-3 min-h-0 flex-1 pr-3">
-                {isLoading && thoughts.length === 0 ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                  </div>
-                ) : thoughts.length === 0 ? (
-                  <div className="rounded-xl border border-border bg-background/50 py-8 text-center">
-                    <Eye className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">No trace available</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 pb-2">
-                    {thoughts.map((trace) => (
-                      <div key={trace.id} className={cn("rounded-xl border p-3", thoughtLevelClass(trace.level))}>
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{trace.title}</p>
-                            <p className="mt-1 text-[11px] text-muted-foreground">
-                              {trace.source} • {safeDate(trace.ts).toLocaleString()}
-                            </p>
-                          </div>
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">{trace.level}</span>
-                        </div>
-                        <p className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">{trace.content}</p>
-                        {trace.tags.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1">
-                            {trace.tags.map((tag) => (
-                              <span key={`${trace.id}-${tag}`} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                                {tag}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-
-            {/* Training Jobs */}
-            <div className="flex max-h-[28vh] min-h-[160px] flex-col rounded-xl border border-border bg-card p-4">
-              <div className="flex shrink-0 items-center justify-between gap-3">
-                <p className="flex items-center gap-2 text-sm font-medium">
-                  <TrendingUp className="h-4 w-4" />
-                  Training Jobs
-                </p>
-                <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                  {jobs.length} active
-                </span>
-              </div>
-
-              <ScrollArea className="mt-3 min-h-0 flex-1 pr-3">
-                {isLoading && jobs.length === 0 ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                  </div>
-                ) : jobs.length === 0 ? (
-                  <div className="rounded-xl border border-border bg-background/50 py-8 text-center">
-                    <BarChart3 className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">{isAvailable ? "No active jobs" : "Engine not available"}</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 pb-2">
-                    {jobs.map((job) => (
-                      <div key={job.id} className="rounded-xl border border-border bg-background/50 p-3">
-                        <div className="mb-2 flex items-center justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-medium">{job.name}</p>
-                            {job.details && <p className="mt-1 truncate text-xs text-muted-foreground">{job.details}</p>}
-                          </div>
-                          <span className={cn("text-xs font-medium capitalize", getStatusColor(job.status))}>{job.status}</span>
-                        </div>
-                        <Progress value={job.progress} className="mb-1 h-2" />
-                        <div className="flex items-center justify-between text-xs text-muted-foreground">
-                          <span>{job.progress}% complete</span>
-                          <span>{job.startedAt ? job.startedAt.toLocaleString() : "Queued"}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-          </div>
-
-          <div className="grid min-h-0 grid-rows-[0.95fr_1.05fr] gap-4">
-            {/* Subjects / Concepts */}
-            <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
-              <div className="flex shrink-0 items-center justify-between gap-3">
-                <p className="flex items-center gap-2 text-sm font-medium">
-                  <Search className="h-4 w-4" />
-                  Subject Boxes / New Concepts
-                </p>
-                <span className="rounded-full bg-muted px-2 py-1 text-[11px] text-muted-foreground">
-                  {filteredSubjects.length} queued
-                </span>
-              </div>
-
-              <ScrollArea className="mt-3 min-h-0 flex-1 pr-3">
-                {filteredSubjects.length === 0 ? (
-                  <div className="rounded-xl border border-border bg-background/50 py-8 text-center">
-                    <Search className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">No concepts queued</p>
-                  </div>
-                ) : (
-                  <div className="space-y-2 pb-2">
-                    {filteredSubjects.map((subject) => {
-                      const isActive = selectedSubjectId === subject.id;
-                      return (
-                        <button
-                          key={subject.id}
-                          onClick={() => setSelectedSubjectId(subject.id)}
-                          className={cn(
-                            "w-full rounded-xl border p-3 text-left transition-all",
-                            "border-border bg-background/50 hover:bg-card/80",
-                            isActive && "border-primary/50 bg-primary/5"
-                          )}
-                        >
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-medium">{subject.title}</p>
-                              <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{subject.summary}</p>
-                            </div>
-                            <span className={cn("text-[11px] font-medium capitalize", stageBadgeClass(subject.stage))}>{subject.stage}</span>
-                          </div>
-
-                          <div className="mt-3 grid grid-cols-2 gap-2">
-                            <div>
-                              <p className="mb-1 text-[10px] text-muted-foreground">Confidence</p>
-                              <Progress value={subject.confidence} className="h-2" />
-                            </div>
-                            <div>
-                              <p className="mb-1 text-[10px] text-muted-foreground">Risk</p>
-                              <Progress value={subject.risk} className="h-2" />
-                            </div>
-                          </div>
-
-                          <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-                            <span>{subject.source}</span>
-                            <span>{safeDate(subject.updatedAt).toLocaleString()}</span>
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-
-            {/* Subject review */}
-            <div className="flex min-h-0 flex-col rounded-xl border border-border bg-card p-4">
-              <div className="shrink-0">
-                <p className="flex items-center gap-2 text-sm font-medium">
-                  <ShieldCheck className="h-4 w-4" />
-                  Subject Review / Operator Decision
-                </p>
-              </div>
-
-              <ScrollArea className="mt-3 min-h-0 flex-1 pr-3">
-                {!selectedSubject ? (
-                  <div className="rounded-xl border border-border bg-background/50 py-8 text-center">
-                    <ShieldCheck className="mx-auto mb-2 h-10 w-10 text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">Select a subject to review</p>
-                  </div>
-                ) : (
-                  <div className="space-y-3 pb-2">
-                    <div>
-                      <p className="text-sm font-medium">{selectedSubject.title}</p>
-                      <p className="mt-1 text-xs text-muted-foreground">{selectedSubject.source}</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-border bg-background/50 p-3">
-                        <p className="text-[11px] text-muted-foreground">Confidence</p>
-                        <p className="mt-1 text-lg font-semibold">{selectedSubject.confidence}%</p>
-                      </div>
-                      <div className="rounded-lg border border-border bg-background/50 p-3">
-                        <p className="text-[11px] text-muted-foreground">Risk</p>
-                        <p className="mt-1 text-lg font-semibold">{selectedSubject.risk}%</p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border bg-background/50 p-3">
-                      <p className="mb-1 text-[11px] text-muted-foreground">Summary</p>
-                      <p className="whitespace-pre-wrap text-sm text-foreground">{selectedSubject.summary}</p>
-                    </div>
-
-                    <div className="rounded-lg border border-border bg-background/50 p-3">
-                      <p className="mb-2 text-[11px] text-muted-foreground">Review Notes</p>
-                      <textarea
-                        value={selectedSubject.notes}
-                        onChange={(e) => updateSubject(selectedSubject.id, { notes: e.target.value })}
-                        rows={5}
-                        className="w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm"
-                        placeholder="Operator notes, tuning feedback, guardrail notes, or sandbox instructions..."
-                      />
-                    </div>
-
-                    {selectedSubject.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        {selectedSubject.tags.map((tag) => (
-                          <span key={`${selectedSubject.id}-${tag}`} className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "sandbox")}>
-                        <FlaskConical className="mr-2 h-4 w-4" />
-                        Sandbox
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "testing")}>
-                        <PlayCircle className="mr-2 h-4 w-4" />
-                        Test
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "evaluation")}>
-                        <Activity className="mr-2 h-4 w-4" />
-                        Evaluate
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "hold")}>
-                        <PauseCircle className="mr-2 h-4 w-4" />
-                        Hold
-                      </Button>
-                      <Button variant="default" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "approved")}>
-                        <CheckCircle2 className="mr-2 h-4 w-4" />
-                        Approve
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={() => void submitSubjectAction(selectedSubject, "rejected")}>
-                        <XCircle className="mr-2 h-4 w-4" />
-                        Reject
-                      </Button>
-                    </div>
-
-                    <div className="text-[11px] text-muted-foreground">
-                      Current stage:{" "}
-                      <span className={cn("font-medium capitalize", stageBadgeClass(selectedSubject.stage))}>{selectedSubject.stage}</span>
-                    </div>
-                  </div>
-                )}
-              </ScrollArea>
-            </div>
-          </div>
-        </div>
-      </div>
+      </ScrollArea>
     </div>
   );
 }

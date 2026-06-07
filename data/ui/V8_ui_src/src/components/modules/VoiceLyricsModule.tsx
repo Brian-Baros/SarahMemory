@@ -48,19 +48,27 @@ export function VoiceLyricsModule() {
     }, 600);
 
     try {
-      const endpoint = mode === 'tts' ? '/api/voice/speak' : '/api/creative/lyrics-to-song';
+      const endpoint = mode === 'tts' ? '/api/tts/speak' : '/api/media/job/render';
       const response = await api.proxy.call(endpoint, {
         method: 'POST',
-        body: {
-          text: text.trim(),
-          voice: settings.selectedVoice,
-        },
+        body: mode === 'tts'
+          ? { text: text.trim(), voice: settings.selectedVoice }
+          : { kind: 'music', prompt: text.trim(), lyrics: text.trim(), voice: settings.selectedVoice, output: { format: 'wav', filename: 'lyrics_song.wav' } },
       });
 
       clearInterval(progressInterval);
       setProgress(100);
 
-      const audioUrl = (response as any)?.audio_url || (response as any)?.url;
+      if ((response as any)?.ok === false || (response as any)?.fallback) {
+        throw new Error((response as any)?.error || 'voice_backend_unavailable');
+      }
+      const artifact = (response as any)?.result?.artifacts?.[0] || (response as any)?.artifact;
+      const jobId = (response as any)?.result?.job_id || (response as any)?.job_id;
+      const audioUrl = (response as any)?.audio_url || (response as any)?.url ||
+        (jobId && artifact?.filename ? `/api/media/job/download?job_id=${encodeURIComponent(jobId)}&filename=${encodeURIComponent(artifact.filename)}` : undefined);
+      if (!audioUrl) {
+        throw new Error('voice_generation_returned_no_artifact');
+      }
 
       const itemId = addItem('voice', {
         type: 'voice',
@@ -83,20 +91,14 @@ export function VoiceLyricsModule() {
       setText('');
     } catch (error) {
       clearInterval(progressInterval);
-      
-      // Demo placeholder
-      addItem('voice', {
-        type: 'voice',
-        prompt: text.trim(),
-        metadata: { mode, demo: true },
-      });
+      console.error('[VoiceLyricsModule] Generation failed:', error);
 
       addMessage({
         role: 'assistant',
-        content: `[${label} Demo] Placeholder for: "${text.slice(0, 50)}..."`,
+        content: `[${label} Unavailable] Generation failed or backend capability is unavailable for: "${text.slice(0, 50)}..."`,
       });
 
-      toast.info(`${label} demo - backend coming soon`);
+      toast.error(`${label} unavailable or failed. No demo placeholder was created.`);
     } finally {
       setIsGenerating(false);
       setProgress(0);

@@ -22,6 +22,11 @@ import { cn } from "@/lib/utils";
 export function DesktopShell() {
   const { windows, openWindow } = useWindowStore();
   const { settings, updateSettings } = useSarahStore();
+  const wallpaperUrl = String((settings as any)?.wallpaperUrl || "").trim();
+  const wallpaperMode = String((settings as any)?.wallpaperMode || "cover");
+  const panelTransparency = String((settings as any)?.panelTransparency || "glass");
+  const shellDensity = String((settings as any)?.shellDensity || "comfortable");
+  const safeWallpaperCssUrl = wallpaperUrl.replace(/"/g, '\\"');
 
   // Open Chat window by default if no windows are open
   useEffect(() => {
@@ -120,9 +125,16 @@ export function DesktopShell() {
 
   // ---- Layout mode
   const isVerticalDock = dock === "left" || dock === "right";
-  const shellClass = isVerticalDock
-    ? "min-h-[100dvh] max-h-[100dvh] flex flex-row overflow-hidden bg-background"
-    : "min-h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden bg-background";
+  const shellClass = cn(
+    isVerticalDock
+      ? "min-h-[100dvh] max-h-[100dvh] flex flex-row overflow-hidden bg-background"
+      : "min-h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden bg-background",
+    shellDensity === "compact" && "text-[13px]",
+    shellDensity === "operator" && "tracking-wide",
+    panelTransparency === "solid" && "[--panel-bg:hsl(var(--card))]",
+    panelTransparency === "glass" && "[--panel-bg:hsl(var(--card)/0.78)]",
+    panelTransparency === "translucent" && "[--panel-bg:hsl(var(--card)/0.62)]",
+  );
 
   // Dock container placement order
   const taskbarFirst = dock === "top" || dock === "left";
@@ -177,7 +189,19 @@ export function DesktopShell() {
       {/* Desktop workspace area */}
       <div className="flex-1 relative min-h-0">
         {/* Wallpaper/Background pattern */}
-        <div className="absolute inset-0 bg-gradient-to-br from-background via-muted/20 to-background">
+        <div
+          className="absolute inset-0 bg-gradient-to-br from-background via-muted/20 to-background"
+          style={
+            wallpaperUrl
+              ? {
+                  backgroundImage: `linear-gradient(rgba(0,0,0,.42), rgba(0,0,0,.42)), url("${safeWallpaperCssUrl}")`,
+                  backgroundSize: wallpaperMode === "stretch" ? "100% 100%" : wallpaperMode === "tile" ? "auto" : wallpaperMode,
+                  backgroundRepeat: wallpaperMode === "tile" ? "repeat" : "no-repeat",
+                  backgroundPosition: "center",
+                }
+              : undefined
+          }
+        >
           <div
             className="absolute inset-0 opacity-5"
             style={{

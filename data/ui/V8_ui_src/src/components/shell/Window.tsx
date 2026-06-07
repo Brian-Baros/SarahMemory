@@ -135,7 +135,7 @@ export function Window({ window: win, children }: WindowProps) {
       ref={windowRef}
       className={cn(
         "absolute flex flex-col rounded-lg overflow-hidden shadow-2xl",
-        "bg-card border border-border",
+        "bg-[var(--panel-bg,hsl(var(--card)))] border border-border backdrop-blur-md",
         "transition-shadow duration-150",
         isFocused ? "ring-2 ring-primary/50 shadow-primary/10" : "opacity-95",
         isDragging && "cursor-grabbing",

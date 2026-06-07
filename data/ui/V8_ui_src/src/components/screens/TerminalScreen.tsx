@@ -101,8 +101,9 @@ export default function TerminalScreen() {
   const isMobile = useIsMobile();
   const store = useSarahStore();
 
+  const uiMode: any = (store as any)?.settings?.uiMode || 'simple';
   const devMode = Boolean((store as any)?.developersMode ?? (store as any)?.DEVELOPERSMODE ?? false);
-  const enabled = !isMobile && devMode;
+  const enabled = !isMobile && devMode && uiMode === 'engineer';
 
   const [command, setCommand] = useState("");
   const [isRunning, setIsRunning] = useState(false);
@@ -283,8 +284,14 @@ export default function TerminalScreen() {
         };
 
         const response =
-          (await tryBackendCall("/api/terminal/execute", payload)) ||
-          (await tryBackendCall("/api/terminal/ai", payload)) ||
+        // Execute the command via the local terminal bridge first.  If that fails,
+        // fall back to the main chat endpoint.  The previous implementation
+        // attempted to call `/api/terminal/ai`, which does not exist on the
+        // backend.  Attempting to call a non-existent endpoint resulted in
+        // unnecessary errors and delays.  A unified fallback path keeps the
+        // terminal responsive and avoids dead calls.  Do not add new endpoints
+        // here without confirming backend support.
+        (await tryBackendCall("/api/terminal/execute", payload)) ||
           (await tryBackendCall("/api/chat", {
             message: text,
             input: text,

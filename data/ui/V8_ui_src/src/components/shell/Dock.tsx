@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Wifi,
   Terminal,
+  LayoutGrid,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
@@ -41,6 +42,7 @@ const DOCK_ITEMS: DockItem[] = [
   { id: "media", label: "Media", icon: <Play className="h-5 w-5" /> },
   { id: "dlengine", label: "DL Engine", icon: <Cpu className="h-5 w-5" /> },
   { id: "terminal", label: "Terminal", icon: <Terminal className="h-5 w-5" /> },
+  { id: "addons", label: "Addons", icon: <LayoutGrid className="h-5 w-5" /> },
   { id: "settings", label: "Settings", icon: <Settings className="h-5 w-5" /> },
 ];
 

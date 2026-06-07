@@ -28,6 +28,7 @@ import { config } from "@/lib/config";
 import { api } from "@/lib/api";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { useWindowStore } from "@/stores/useWindowStore";
+import { AiOSShellCenter } from "@/components/shell/AiOSShellCenter";
 
 interface SystemStatus {
   local: boolean;
@@ -461,6 +462,8 @@ export function StatusBar() {
             {formatClock(now)}
           </span>
         </div>
+
+        <AiOSShellCenter status={status} />
 
         <div className="h-4 w-px bg-border hidden sm:block" />
 

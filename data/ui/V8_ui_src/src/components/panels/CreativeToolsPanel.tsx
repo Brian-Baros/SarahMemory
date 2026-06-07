@@ -43,21 +43,34 @@ export function CreativeToolsPanel() {
 
     try {
       // Call the appropriate backend endpoint via edge function
-      const response = await api.proxy.call(`/api/creative/${activeTab}`, {
+      const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
         body: {
+          kind: activeTab === 'image' ? 'image' : activeTab === 'music' ? 'music' : 'video',
           prompt: prompt.trim(),
           mode: activeTab,
+          output: activeTab === 'music' ? { format: 'wav', filename: 'music.wav' } : activeTab === 'video' ? { format: 'mp4', filename: 'video.mp4' } : { format: 'png', filename: 'image.png' },
         },
       });
 
       clearInterval(progressInterval);
       setProgress(100);
 
+      if ((response as any)?.ok === false || (response as any)?.fallback) {
+        throw new Error((response as any)?.error || 'creative_backend_unavailable');
+      }
+      const artifact = (response as any)?.result?.artifacts?.[0] || (response as any)?.artifact;
+      const jobId = (response as any)?.result?.job_id || (response as any)?.job_id;
+      const artifactUrl = (response as any)?.url || (response as any)?.result_url ||
+        (jobId && artifact?.filename ? `/api/media/job/download?job_id=${encodeURIComponent(jobId)}&filename=${encodeURIComponent(artifact.filename)}` : undefined);
+      if (!artifactUrl) {
+        throw new Error('creative_generation_returned_no_artifact');
+      }
+
       const result: GeneratedResult = {
         type: activeTab,
-        url: (response as any)?.url || (response as any)?.result_url,
-        preview: (response as any)?.preview || (response as any)?.thumbnail,
+        url: artifactUrl,
+        preview: activeTab === 'image' ? artifactUrl : undefined,
         status: 'completed',
       };
 
@@ -66,17 +79,13 @@ export function CreativeToolsPanel() {
     } catch (error) {
       clearInterval(progressInterval);
       console.error('Generation error:', error);
-      
-      // Add placeholder result for demo
-      const demoResult: GeneratedResult = {
+      const unavailableResult: GeneratedResult = {
         type: activeTab,
-        status: 'completed',
-        preview: activeTab === 'image' 
-          ? 'https://via.placeholder.com/200x200?text=Generated+Image'
-          : undefined,
+        status: 'error',
+        error: error instanceof Error ? error.message : 'creative_backend_unavailable',
       };
-      setResults(prev => [demoResult, ...prev]);
-      toast.info('Creative tools demo - backend integration coming soon');
+      setResults(prev => [unavailableResult, ...prev]);
+      toast.error('Creative backend unavailable or failed. No demo placeholder was created.');
     } finally {
       setIsGenerating(false);
       setProgress(0);
@@ -240,6 +249,7 @@ export function CreativeToolsPanel() {
                         {result.type === 'image' && <Image className="h-6 w-6 text-muted-foreground" />}
                         {result.type === 'music' && <Music className="h-6 w-6 text-muted-foreground" />}
                         {result.type === 'video' && <Video className="h-6 w-6 text-muted-foreground" />}
+                        {result.status === 'error' && <span className="text-[10px] text-destructive px-2 text-center">Unavailable</span>}
                       </div>
                     )}
                     

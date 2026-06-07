@@ -592,19 +592,13 @@ export function TerminalPanel() {
           })(),
         };
 
-        let aiResp: { status: number; data: TerminalAIResponse } | null = null;
-
-        try {
-          aiResp = await requestJSON<TerminalAIResponse>("/api/terminal/ai", {
-            method: "POST",
-            body: JSON.stringify(aiPayload),
-          });
-        } catch {
-          aiResp = await requestJSON<TerminalAIResponse>("/api/chat", {
-            method: "POST",
-            body: JSON.stringify(aiPayload),
-          });
-        }
+        // There is no `/api/terminal/ai` backend route in the current contract.
+        // Non-shell terminal prompts route through the governed chat path so
+        // Neuron/CognitiveServices/SMGET remain the authority layer.
+        const aiResp = await requestJSON<TerminalAIResponse>("/api/chat", {
+          method: "POST",
+          body: JSON.stringify(aiPayload),
+        });
 
         const resp = aiResp.data || {};
         const reply = buildAiReply(resp) || "Sarah accepted the terminal task, but no response text was returned.";

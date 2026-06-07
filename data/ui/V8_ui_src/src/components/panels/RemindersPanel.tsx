@@ -128,16 +128,13 @@ export function RemindersPanel() {
       : new Date(Date.now() + 86400000); // Tomorrow by default
 
     try {
-      await api.proxy.call('/api/reminders', {
-        method: 'POST',
-        body: {
-          title: formData.title,
-          description: formData.description,
-          due_date: dueDate.toISOString(),
-          priority: formData.priority,
-          category: formData.category,
-        },
-      });
+      await api.reminders.create({
+        title: formData.title,
+        description: formData.description,
+        dueDate,
+        completed: false,
+        priority: formData.priority,
+      } as any);
       toast.success('Reminder created');
       fetchReminders();
     } catch (error) {
@@ -165,10 +162,7 @@ export function RemindersPanel() {
 
   const handleToggleComplete = async (id: string, currentCompleted: boolean) => {
     try {
-      await api.proxy.call(`/api/reminders/${id}`, {
-        method: 'PUT',
-        body: { completed: !currentCompleted },
-      });
+      await api.reminders.update(id, { completed: !currentCompleted } as any);
       fetchReminders();
     } catch (error) {
       toggleLocalComplete(id);
@@ -177,9 +171,7 @@ export function RemindersPanel() {
 
   const handleDeleteReminder = async (id: string) => {
     try {
-      await api.proxy.call(`/api/reminders/${id}`, {
-        method: 'DELETE',
-      });
+      await api.reminders.delete(id);
       toast.success('Reminder deleted');
       fetchReminders();
     } catch (error) {
@@ -191,10 +183,7 @@ export function RemindersPanel() {
   const handleSnooze = async (id: string) => {
     const snoozeTime = new Date(Date.now() + 3600000); // 1 hour later
     try {
-      await api.proxy.call(`/api/reminders/${id}`, {
-        method: 'PUT',
-        body: { due_date: snoozeTime.toISOString() },
-      });
+      await api.reminders.update(id, { dueDate: snoozeTime } as any);
       toast.success('Snoozed for 1 hour');
       fetchReminders();
     } catch (error) {

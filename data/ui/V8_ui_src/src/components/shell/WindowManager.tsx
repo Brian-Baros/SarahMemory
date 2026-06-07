@@ -12,13 +12,8 @@ import { SarahNetScreen } from "@/components/screens/SarahNetScreen";
 import { MediaScreen } from "@/components/screens/MediaScreen";
 import { DLEngineScreen } from "@/components/screens/DLEngineScreen";
 import { SettingsScreen } from "@/components/screens/SettingsScreen";
+import { AddonsScreen } from "@/components/screens/AddonsScreen";
 import TerminalScreen from "@/components/screens/TerminalScreen";
-
-const AddonsPlaceholder = () => (
-  <div className="p-4 text-sm text-muted-foreground">
-    Addons launcher coming next… (dynamic from ../data/addons)
-  </div>
-);
 
 const WINDOW_CONTENT: Record<string, JSX.Element> = {
   chat: <ChatPanel />,
@@ -31,7 +26,7 @@ const WINDOW_CONTENT: Record<string, JSX.Element> = {
   media: <MediaScreen />,
   dlengine: <DLEngineScreen />,
   terminal: <TerminalScreen />,
-  addons: <AddonsPlaceholder />,
+  addons: <AddonsScreen />,
   settings: <SettingsScreen />,
 };
 

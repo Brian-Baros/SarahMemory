@@ -100,11 +100,8 @@ export function ContactsPanel() {
     }
 
     try {
-      // Try backend first
-      await api.proxy.call('/api/contacts', {
-        method: 'POST',
-        body: formData,
-      });
+      // Try canonical communications backend first
+      await api.contacts.create(formData as any);
       toast.success('Contact added');
       fetchContacts(); // Refresh list
     } catch (error) {
@@ -127,10 +124,7 @@ export function ContactsPanel() {
     if (!editingContact) return;
 
     try {
-      await api.proxy.call(`/api/contacts/${editingContact.id}`, {
-        method: 'PUT',
-        body: formData,
-      });
+      await api.contacts.update(editingContact.id, formData as any);
       toast.success('Contact updated');
       fetchContacts();
     } catch (error) {
@@ -143,9 +137,7 @@ export function ContactsPanel() {
 
   const handleDeleteContact = async (id: string) => {
     try {
-      await api.proxy.call(`/api/contacts/${id}`, {
-        method: 'DELETE',
-      });
+      await api.contacts.delete(id);
       toast.success('Contact deleted');
       fetchContacts();
     } catch (error) {
