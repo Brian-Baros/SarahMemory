@@ -12,7 +12,8 @@ export type WindowId =
   | "media"
   | "dlengine"
   | "addons"   // ✅ ADDED (Apps/Addons launcher)
-  | "settings"; // ✅ ADDED
+  | "settings" // ✅ ADDED
+  | "terminal"; // 🚀 Added terminal window type
 
 export interface WindowState {
   id: WindowId;
@@ -42,6 +43,7 @@ interface WindowStore {
   restoreWindow: (id: WindowId) => void;
   moveWindow: (id: WindowId, x: number, y: number) => void;
   resizeWindow: (id: WindowId, width: number, height: number) => void;
+  applyWorkspacePreset: (preset: "chat" | "research" | "operator" | "engineer" | "media") => void;
 
   // UI Control Bus hook
   applyUiAction: (action: UiAction) => boolean;
@@ -61,6 +63,7 @@ const WINDOW_DEFAULTS: Record<
   sarahnet: { id: "sarahnet", title: "SarahNet", icon: "network", width: 540, height: 500 },
   media: { id: "media", title: "Media", icon: "play", width: 480, height: 420 },
   dlengine: { id: "dlengine", title: "DL Engine", icon: "cpu", width: 520, height: 460 },
+  terminal: { id: "terminal", title: "Terminal", icon: "terminal", width: 620, height: 520 },
 
   // ✅ ADDONS LAUNCHER WINDOW
   addons: {
@@ -85,6 +88,42 @@ const getInitialPosition = (count: number) => ({
   x: 80 + (count % 6) * 30,
   y: 60 + (count % 6) * 30,
 });
+
+const MIN_WINDOW_WIDTH = 320;
+const MIN_WINDOW_HEIGHT = 240;
+
+function workspaceBounds() {
+  if (typeof window === "undefined") {
+    return { width: 1280, height: 720 };
+  }
+  try {
+    const root = getComputedStyle(document.documentElement);
+    const dock = root.getPropertyValue("--taskbar-dock").trim();
+    const taskbarSize = parseInt(root.getPropertyValue("--taskbar-size").trim() || "56", 10) || 56;
+    const width = Math.max(MIN_WINDOW_WIDTH, window.innerWidth - (dock === "left" || dock === "right" ? taskbarSize : 0));
+    const height = Math.max(MIN_WINDOW_HEIGHT, window.innerHeight - (dock === "top" || dock === "bottom" ? taskbarSize : 0));
+    return { width, height };
+  } catch {
+    return { width: Math.max(MIN_WINDOW_WIDTH, window.innerWidth || 1280), height: Math.max(MIN_WINDOW_HEIGHT, window.innerHeight || 720) };
+  }
+}
+
+function clampWindowRect(x: number, y: number, width: number, height: number) {
+  const bounds = workspaceBounds();
+  const safeWidth = Math.max(MIN_WINDOW_WIDTH, Math.min(Math.floor(width), bounds.width));
+  const safeHeight = Math.max(MIN_WINDOW_HEIGHT, Math.min(Math.floor(height), bounds.height));
+  const safeX = Math.max(0, Math.min(Math.floor(x), Math.max(0, bounds.width - safeWidth)));
+  const safeY = Math.max(0, Math.min(Math.floor(y), Math.max(0, bounds.height - safeHeight)));
+  return { x: safeX, y: safeY, width: safeWidth, height: safeHeight };
+}
+
+const WORKSPACE_PRESETS: Record<string, WindowId[]> = {
+  chat: ["chat", "history", "avatar"],
+  research: ["research", "files", "chat"],
+  operator: ["avatar", "sarahnet", "media", "settings"],
+  engineer: ["terminal", "dlengine", "addons", "settings"],
+  media: ["studio", "media", "files"],
+};
 
 export const useWindowStore = create<WindowStore>()(
   persist(
@@ -111,13 +150,14 @@ export const useWindowStore = create<WindowStore>()(
         const base = WINDOW_DEFAULTS[id];
         const pos = getInitialPosition(windows.length);
 
+        const rect = clampWindowRect(pos.x, pos.y, base.width, base.height);
+
         set({
           windows: [
             ...windows,
             {
               ...base,
-              x: pos.x,
-              y: pos.y,
+              ...rect,
               isMinimized: false,
               isMaximized: false,
               zIndex: nextZIndex,
@@ -171,7 +211,11 @@ export const useWindowStore = create<WindowStore>()(
 
       moveWindow: (id, x, y) =>
         set((s) => ({
-          windows: s.windows.map((w) => (w.id === id ? { ...w, x, y } : w)),
+          windows: s.windows.map((w) => {
+            if (w.id !== id) return w;
+            const rect = clampWindowRect(x, y, w.width, w.height);
+            return { ...w, x: rect.x, y: rect.y };
+          }),
         })),
 
 
@@ -216,17 +260,26 @@ export const useWindowStore = create<WindowStore>()(
           if (Number.isFinite(w) && Number.isFinite(h)) get().resizeWindow(id, w, h);
           return true;
         }
+        if ((type === "workspace.apply" || type === "workspace.preset") && p?.preset) {
+          get().applyWorkspacePreset(String(p.preset) as any);
+          return true;
+        }
         return false;
       },
 
       resizeWindow: (id, width, height) =>
         set((s) => ({
-          windows: s.windows.map((w) =>
-            w.id === id
-              ? { ...w, width: Math.max(320, width), height: Math.max(240, height) }
-              : w,
-          ),
+          windows: s.windows.map((w) => {
+            if (w.id !== id) return w;
+            const rect = clampWindowRect(w.x, w.y, width, height);
+            return { ...w, ...rect };
+          }),
         })),
+
+      applyWorkspacePreset: (preset) => {
+        const ids = WORKSPACE_PRESETS[preset] || WORKSPACE_PRESETS.chat;
+        for (const id of ids) get().openWindow(id);
+      },
     }),
     { name: "sarah-windows" },
   ),

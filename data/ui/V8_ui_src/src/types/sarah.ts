@@ -81,4 +81,13 @@ export interface Settings {
   notifications: boolean;
   mode?: string;
   advancedStudioMode?: boolean;
+  uiMode?: 'simple' | 'operator' | 'engineer';
+  localOnlyMode?: boolean;
+  wallpaperUrl?: string;
+  wallpaperMode?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
+  panelTransparency?: 'solid' | 'glass' | 'translucent';
+  shellDensity?: 'compact' | 'comfortable' | 'operator';
+  activeWorkspace?: 'chat' | 'research' | 'operator' | 'engineer' | 'media';
 }
+
+

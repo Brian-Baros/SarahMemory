@@ -446,6 +446,17 @@ async function directCall<T>(endpoint: string, options: RequestInit = {}): Promi
   return apiFetch<T>(endpoint, withJsonHeaders(options));
 }
 
+function isLocalOnlyRuntime(): boolean {
+  try {
+    const raw = window.localStorage.getItem("sarah-memory-storage");
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed?.state?.settings?.localOnlyMode);
+  } catch {
+    return false;
+  }
+}
+
 async function tryDirectEndpoints<T>(
   endpoints: string[],
   options: RequestInit,
@@ -595,13 +606,13 @@ export const chatApi = {
 };
 
 // ============================================================================
-// VOICE API (canonical: /api/voice with {action:...})
+// VOICE API (canonical local route: /api/tts/speak)
 // ============================================================================
 
 export const voiceApi = {
   async speak(text: string, voice?: string): Promise<VoiceResponse> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/voice", "/api/voice/speak", "/api/tts", "/tts"], {
+      const { data } = await tryDirectEndpoints<any>(["/api/tts/speak", "/api/tts", "/tts"], {
         method: "POST",
         body: JSON.stringify({ action: "speak", text, voice }),
       });
@@ -806,43 +817,52 @@ export const avatarApi = {
 };
 
 // ============================================================================
-// DIALER API (canonical: /api/dialer with {action:...})
+// DIALER API (canonical local routes: /api/comm/voip/*)
 // ============================================================================
 
 export const dialerApi = {
   async checkAvailability(): Promise<DialerResponse> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/check", "/dialer"], {
-        method: "POST",
-        body: JSON.stringify({ action: "check_availability" }),
-      });
-      return { success: isTruthySuccess(data), ...data };
-    } catch {
-      return invokeEdgeFunction<DialerResponse>("dialer", { action: "check_availability" });
+      const data: any = await directCall("/api/comm/voip/capabilities", { method: "GET" });
+      return {
+        success: data?.ok !== false,
+        available: Boolean(data?.available || data?.enabled || data?.capabilities?.available),
+        message: data?.message || data?.status || data?.reason || "VoIP control surface checked.",
+        ...data,
+      };
+    } catch (error) {
+      console.error("[API] VoIP capability check failed:", error);
+      return { available: false, success: false, message: "Local VoIP backend unavailable" };
     }
   },
 
   async initiateCall(target: { number?: string; ip_address?: string; room_id?: string }): Promise<DialerResponse> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/initiate", "/dialer"], {
+      const data: any = await directCall("/api/comm/voip/call/start", {
         method: "POST",
-        body: JSON.stringify({ action: "initiate", ...target }),
+        body: JSON.stringify({
+          ...target,
+          target: target.number || target.ip_address || target.room_id || "",
+          source: "webui_dialer",
+        }),
       });
-      return { success: isTruthySuccess(data), ...data };
-    } catch {
-      return invokeEdgeFunction<DialerResponse>("dialer", { action: "initiate", ...target });
+      return { success: data?.ok !== false, ...data };
+    } catch (error) {
+      console.error("[API] Start call failed:", error);
+      return { success: false, available: false, message: "Local VoIP start route unavailable" };
     }
   },
 
-  async endCall(): Promise<DialerResponse> {
+  async endCall(callId?: string): Promise<DialerResponse> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/dialer", "/api/dialer/end", "/dialer"], {
+      const data: any = await directCall("/api/comm/voip/call/update", {
         method: "POST",
-        body: JSON.stringify({ action: "end" }),
+        body: JSON.stringify({ call_id: callId || "active", status: "ended", source: "webui_dialer" }),
       });
-      return { success: isTruthySuccess(data), ...data };
-    } catch {
-      return invokeEdgeFunction<DialerResponse>("dialer", { action: "end" });
+      return { success: data?.ok !== false, ...data };
+    } catch (error) {
+      console.error("[API] End call failed:", error);
+      return { success: false, message: "Local VoIP update route unavailable" };
     }
   },
 };
@@ -887,49 +907,45 @@ export const rankingApi = {
 // ============================================================================
 
 export const mediaApi = {
-  async generateImage(prompt: string, options?: { count?: number; style?: string }): Promise<MediaResponse> {
-    return invokeEdgeFunction<MediaResponse>("sarah-api", {
-      endpoint: "/api/media/generate/image",
+  async capabilities(): Promise<any> {
+    return directCall<any>("/api/media/capabilities", { method: "GET" });
+  },
+
+  async render(kind: "image" | "music" | "video" | "audio", payload: Record<string, unknown>): Promise<MediaResponse> {
+    const data: any = await directCall("/api/media/job/render", {
       method: "POST",
-      payload: { prompt, count: options?.count || 4, style: options?.style },
+      body: JSON.stringify({ kind, ...payload }),
     });
+    return data as MediaResponse;
+  },
+
+  async generateImage(prompt: string, options?: { count?: number; style?: string }): Promise<MediaResponse> {
+    return this.render("image", { prompt, style: options?.style });
   },
 
   async generateMusic(prompt: string, options?: { duration?: number; genre?: string }): Promise<MediaResponse> {
-    return invokeEdgeFunction<MediaResponse>("sarah-api", {
-      endpoint: "/api/media/generate/music",
-      method: "POST",
-      payload: { prompt, duration: options?.duration || 30, genre: options?.genre },
-    });
+    return this.render("music", { prompt, duration: options?.duration || 30, style: options?.genre });
   },
 
   async generateVideo(prompt: string, options?: { duration?: number; style?: string }): Promise<MediaResponse> {
-    return invokeEdgeFunction<MediaResponse>("sarah-api", {
-      endpoint: "/api/media/generate/video",
-      method: "POST",
-      payload: { prompt, duration: options?.duration || 5, style: options?.style },
-    });
+    return this.render("video", { prompt, duration: options?.duration || 5, style: options?.style });
   },
 
   async getJobStatus(jobId: string): Promise<MediaResponse> {
-    return invokeEdgeFunction<MediaResponse>("sarah-api", { endpoint: `/api/media/status/${jobId}`, method: "GET" });
+    return directCall<MediaResponse>(`/api/media/job/status?job_id=${encodeURIComponent(jobId)}`, { method: "GET" });
   },
 
-  async download(mediaId: string): Promise<{ url: string }> {
-    return invokeEdgeFunction("sarah-api", { endpoint: `/api/media/download/${mediaId}`, method: "GET" });
+  async download(jobId: string, filename = ""): Promise<{ url: string }> {
+    const suffix = filename ? `&filename=${encodeURIComponent(filename)}` : "";
+    return { url: `/api/media/job/download?job_id=${encodeURIComponent(jobId)}${suffix}` };
   },
 
-  async saveToDataset(mediaId: string, dataset?: string): Promise<{ success: boolean }> {
-    return invokeEdgeFunction("sarah-api", {
-      endpoint: "/api/media/save",
-      method: "POST",
-      payload: { media_id: mediaId, dataset },
-    });
+  async saveToDataset(_mediaId: string, _dataset?: string): Promise<{ success: boolean }> {
+    return { success: false };
   },
 
-  async listRecent(type?: "image" | "music" | "video"): Promise<MediaResponse> {
-    const params = type ? `?type=${type}` : "";
-    return invokeEdgeFunction("sarah-api", { endpoint: `/api/media/recent${params}`, method: "GET" });
+  async listRecent(_type?: "image" | "music" | "video"): Promise<MediaResponse> {
+    return { success: false, status: "unavailable" } as any;
   },
 };
 
@@ -989,17 +1005,16 @@ export const qaApi = {
 export const remindersApi = {
   async list(): Promise<{ reminders: Reminder[] }> {
     try {
-      const result = await directCall<{ reminders: Array<{ id: number; title: string; time: string; note?: string }> }>(
-        "/get_reminders",
-      );
-      const reminders = (result.reminders || []).map((r) => ({
-        id: String(r.id),
-        title: r.title,
-        description: r.note || "",
-        time: r.time,
-        due_date: r.time,
-        completed: false,
-        priority: "medium",
+      const result: any = await directCall("/api/comm/reminders/list", { method: "GET" });
+      const reminders = (result.reminders || result.data?.reminders || []).map((r: any) => ({
+        id: String(r.id || r.reminder_id || r.uuid || Date.now()),
+        title: r.title || r.text || "",
+        description: r.description || r.body || "",
+        time: r.time || r.due_date || (r.due_ts ? new Date(Number(r.due_ts) * 1000).toISOString() : undefined),
+        due_date: r.due_date || (r.due_ts ? new Date(Number(r.due_ts) * 1000).toISOString() : undefined),
+        dueDate: new Date(r.due_date || (r.due_ts ? Number(r.due_ts) * 1000 : Date.now())),
+        completed: Boolean(r.completed || r.is_completed || r.status === "completed" || r.status === "done"),
+        priority: r.priority || "medium",
       }));
       return { reminders };
     } catch (error) {
@@ -1009,53 +1024,68 @@ export const remindersApi = {
   },
 
   async create(reminder: Omit<Reminder, "id">): Promise<{ reminder: Reminder }> {
-    const result = await directCall<{ status: string; id?: number }>("/save_reminder", {
-      method: "POST",
-      body: JSON.stringify({
-        title: reminder.title,
-        time: reminder.time || reminder.due_date,
-        note: reminder.description || reminder.note || "",
-      }),
-    });
-
-    return { reminder: { ...reminder, id: String(result.id || Date.now()), completed: false } };
+    const payload: any = {
+      title: reminder.title,
+      body: reminder.description || (reminder as any).note || "",
+      due_date: (reminder as any).time || (reminder as any).due_date || reminder.dueDate,
+      priority: reminder.priority || "medium",
+      source: "webui_reminders",
+    };
+    const result: any = await directCall("/api/comm/reminders/save", { method: "POST", body: JSON.stringify(payload) });
+    const r = result.reminder || result.data?.reminder || payload;
+    return { reminder: { ...reminder, id: String(r.id || r.reminder_id || Date.now()), completed: false } as Reminder };
   },
 
-  async update(_id: string, updates: Partial<Reminder>): Promise<{ reminder: Reminder }> {
-    return this.create(updates as Omit<Reminder, "id">);
+  async update(id: string, updates: Partial<Reminder>): Promise<{ reminder: Reminder }> {
+    const payload: any = { reminder_id: id, ...updates, source: "webui_reminders" };
+    const result: any = await directCall("/api/comm/reminders/save", { method: "POST", body: JSON.stringify(payload) });
+    const r = result.reminder || result.data?.reminder || payload;
+    return { reminder: { id, title: r.title || updates.title || "", description: r.body || updates.description || "", dueDate: new Date(r.due_date || r.due_ts || Date.now()), completed: Boolean(r.completed || updates.completed), priority: r.priority || updates.priority || "medium" } };
   },
 
   async delete(id: string): Promise<{ success: boolean }> {
     try {
-      await directCall("/delete_reminder", { method: "POST", body: JSON.stringify({ id: Number(id) }) });
-      return { success: true };
+      const result: any = await directCall("/api/comm/reminders/delete", { method: "POST", body: JSON.stringify({ reminder_id: id }) });
+      return { success: result?.ok !== false };
     } catch (error) {
       console.error("[API] Delete reminder failed:", error);
       return { success: false };
     }
   },
 
-  async complete(_id: string): Promise<{ success: boolean }> {
-    return { success: true };
+  async complete(id: string): Promise<{ success: boolean }> {
+    try {
+      await this.update(id, { completed: true } as any);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
   },
 
-  async snooze(_id: string, _minutes?: number): Promise<{ success: boolean }> {
-    return { success: true };
+  async snooze(id: string, minutes = 60): Promise<{ success: boolean }> {
+    try {
+      const dueDate = new Date(Date.now() + minutes * 60000);
+      await this.update(id, { dueDate } as any);
+      return { success: true };
+    } catch {
+      return { success: false };
+    }
   },
 };
 
 export const contactsApi = {
   async list(): Promise<{ contacts: Contact[] }> {
     try {
-      const result = await directCall<{ contacts: Array<{ id: number; name: string; number?: string }> }>(
-        "/get_all_contacts",
-      );
-      const contacts = (result.contacts || []).map((c) => ({
-        id: String(c.id),
-        name: c.name,
-        phone: c.number,
-        number: c.number,
-        status: "offline",
+      const result: any = await directCall("/api/comm/contacts/list", { method: "GET" });
+      const contacts = (result.contacts || result.data?.contacts || []).map((c: any) => ({
+        id: String(c.id || c.contact_id || c.uuid || Date.now()),
+        name: c.name || "",
+        phone: c.phone || c.number || "",
+        number: c.phone || c.number || "",
+        email: c.email || "",
+        address: c.address || "",
+        notes: c.notes || "",
+        status: c.status || "offline",
       }));
       return { contacts };
     } catch (error) {
@@ -1065,21 +1095,30 @@ export const contactsApi = {
   },
 
   async create(contact: Omit<Contact, "id">): Promise<{ contact: Contact }> {
-    await directCall("/add_contact", {
+    const result: any = await directCall("/api/comm/contacts/save", {
       method: "POST",
-      body: JSON.stringify({ name: contact.name, number: contact.phone || contact.number || contact.email || "" }),
+      body: JSON.stringify({ ...contact, source: "webui_contacts" }),
     });
-    return { contact: { ...contact, id: String(Date.now()) } };
+    const c = result.contact || result.data?.contact || contact;
+    return { contact: { ...contact, id: String(c.id || c.contact_id || Date.now()) } as Contact };
   },
 
   async update(id: string, updates: Partial<Contact>): Promise<{ contact: Contact }> {
-    return { contact: { id, name: updates.name || "", ...updates } };
+    const result: any = await directCall("/api/comm/contacts/save", {
+      method: "POST",
+      body: JSON.stringify({ contact_id: id, ...updates, source: "webui_contacts" }),
+    });
+    const c = result.contact || result.data?.contact || updates;
+    return { contact: { id, name: c.name || updates.name || "", ...c } as Contact };
   },
 
   async delete(id: string): Promise<{ success: boolean }> {
     try {
-      await directCall("/delete_contact", { method: "POST", body: JSON.stringify({ id: Number(id) }) });
-      return { success: true };
+      const result: any = await directCall("/api/comm/contacts/delete", {
+        method: "POST",
+        body: JSON.stringify({ contact_id: id }),
+      });
+      return { success: result?.ok !== false };
     } catch (error) {
       console.error("[API] Delete contact failed:", error);
       return { success: false };
@@ -1537,9 +1576,28 @@ export const proxyApi = {
     endpoint: string,
     options?: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: Record<string, unknown> },
   ): Promise<unknown> {
+    const looksLikeRequestOptions = Boolean(options && ("method" in options || "body" in options));
+    const method = looksLikeRequestOptions ? (options?.method || "GET") : (options ? "POST" : "GET");
+    const payload = looksLikeRequestOptions ? (options?.body || {}) : (options || {});
+    const requestOptions: RequestInit = {
+      method,
+      body: method === "GET" ? undefined : JSON.stringify(payload),
+    };
+
+    // Local-first path.  The UI must never require Supabase/cloud just to talk to
+    // the locally running SarahMemory backend.
+    try {
+      return await directCall(endpoint, requestOptions);
+    } catch (localErr) {
+      if (isLocalOnlyRuntime() || config.isLocalMode) {
+        console.warn("[proxyApi] Local backend call failed and cloud proxy is disabled:", localErr);
+        return { ok: false, fallback: true, error: "local_backend_unavailable", endpoint };
+      }
+    }
+
     try {
       const { data, error } = await supabase.functions.invoke("sarah-api", {
-        body: { endpoint, method: options?.method || "GET", payload: options?.body },
+        body: { endpoint, method, payload },
       });
       if (error) {
         console.error("[proxyApi] Error:", error);
@@ -1548,7 +1606,7 @@ export const proxyApi = {
       return data;
     } catch (err) {
       console.error("[proxyApi] Call failed:", err);
-      return { fallback: true };
+      return { ok: false, fallback: true, error: "proxy_unavailable", endpoint };
     }
   },
 

@@ -496,6 +496,13 @@ export const useSarahStore = create<SarahState>()(
         notifications: true,
         mode: "any",
         advancedStudioMode: false,
+        uiMode: "simple",
+        localOnlyMode: false,
+        wallpaperUrl: "",
+        wallpaperMode: "cover",
+        panelTransparency: "glass",
+        shellDensity: "comfortable",
+        activeWorkspace: "chat",
       }),
       updateSettings: (updates) =>
         set((state) => ({
