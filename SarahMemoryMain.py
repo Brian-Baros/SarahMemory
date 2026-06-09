@@ -748,6 +748,13 @@ try:
     import SarahMemoryIntegration as integration
     
     import SarahMemoryDiagnostics as diagnostics
+    try:
+        from SarahMemoryARILE import start_arile_runtime, arile_emit
+        arile_status = start_arile_runtime(reason="main.phase2_core_module_initialization")
+        logger.info(f"[v9.0][ARILE] Runtime status: {arile_status}")
+        arile_emit(source="SarahMemoryMain", kind="runtime_start", failure_type="arile_phase2_start", severity=0.25, confidence=0.95, summary="ARILE interlock started during Phase 2 core module initialization.")
+    except Exception as arile_err:
+        logger.warning(f"[v9.0][ARILE] Runtime start skipped: {arile_err}")
     # optional safe warmup (no network, no execution)
     try:
         cognitive.ensure_response_table()   # optional legacy table

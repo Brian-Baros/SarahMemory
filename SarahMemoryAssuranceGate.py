@@ -1022,13 +1022,15 @@ def evaluate_rem_candidate_assurance(candidate: Dict[str, Any], *, snapshot: Opt
     allow = True
     if not bool(governance.get("allow", False)): allow = False; reasons.append("CognitiveServices did not allow this REM candidate.")
     if not bool(sandbox.get("passed", False)): allow = False; missing.append("sandbox_pass")
-    if "SarahMemoryGlobals.py" in target_files:
-        allow = False; risk_factors.append("protected_globals_file_targeted"); reasons.append("SarahMemoryGlobals.py is immutable and cannot pass assurance for mutation.")
+    protected_assurance_files = {"SarahMemoryGlobals.py", "SarahMemoryARILE.py"}
+    protected_hit = sorted(set(target_files) & protected_assurance_files)
+    if protected_hit:
+        allow = False; risk_factors.append("protected_arile_file_targeted" if "SarahMemoryARILE.py" in protected_hit else "protected_globals_file_targeted"); reasons.append(", ".join(protected_hit) + " is immutable through autonomous assurance and cannot pass for direct mutation.")
     if proposed.get("type") not in ("metadata_only", "research_only", "analysis_only", None) and not sandbox.get("rollback_ready"):
         allow = False; missing.append("rollback_ready")
     assurance_score = 0.92 if allow else 0.35
     if allow: reasons.append("REM candidate passed assurance for bounded sandbox/promotion handling.")
-    return {"review_id":"rem-assure-" + uuid.uuid4().hex[:12],"ts":datetime.now().isoformat(),"decision":"ALLOW" if allow else "DENY","allow":bool(allow),"confidence":assurance_score,"assurance_score":assurance_score,"threshold":0.75,"verification_ready":bool(sandbox.get("passed", False)),"rollback_ready":bool(sandbox.get("rollback_ready", proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None))),"reasons":reasons,"risk_factors":risk_factors,"missing_requirements":missing,"protected_files":["SarahMemoryGlobals.py"]}
+    return {"review_id":"rem-assure-" + uuid.uuid4().hex[:12],"ts":datetime.now().isoformat(),"decision":"ALLOW" if allow else "DENY","allow":bool(allow),"confidence":assurance_score,"assurance_score":assurance_score,"threshold":0.75,"verification_ready":bool(sandbox.get("passed", False)),"rollback_ready":bool(sandbox.get("rollback_ready", proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None))),"reasons":reasons,"risk_factors":risk_factors,"missing_requirements":missing,"protected_files":["SarahMemoryGlobals.py","SarahMemoryARILE.py"]}
 
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
 def assure_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

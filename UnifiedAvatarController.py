@@ -471,7 +471,7 @@ class UnifiedAvatarController:
             "self_evolution_allowed": bool(getattr(globals_module, "NEOSKYMATRIX", False)),
             "observation_only": not bool(getattr(globals_module, "NEOSKYMATRIX", False)),
             "manual_force_allowed": True,
-            "protected_files": ["SarahMemoryGlobals.py"],
+            "protected_files": ["SarahMemoryGlobals.py", "SarahMemoryARILE.py"],
         }
 
         # Ensure avatar_state DB exists
@@ -849,7 +849,7 @@ class UnifiedAvatarController:
                 "REM_ENABLED": True,
                 "REM_OBSERVATION_ONLY": not self._neoskymatrix_enabled(),
                 "SELF_EVOLUTION_ALLOWED": self._neoskymatrix_enabled(),
-                "protected_files": ["SarahMemoryGlobals.py"],
+                "protected_files": ["SarahMemoryGlobals.py", "SarahMemoryARILE.py"],
                 "globals_file_immutable": True,
             },
             "hardware": {
@@ -1018,8 +1018,8 @@ class UnifiedAvatarController:
     def _evaluate_rem_dream(self, dream: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
         result: Dict[str, Any] = {"dream": dream, "decision": "UNREVIEWED"}
         target_files = [os.path.basename(str(x)) for x in (dream.get("target_files") or [])]
-        if "SarahMemoryGlobals.py" in target_files:
-            result.update({"decision": "DENY", "reason": "SarahMemoryGlobals.py is immutable and cannot be patched/staged."})
+        if set(target_files) & {"SarahMemoryGlobals.py", "SarahMemoryARILE.py"}:
+            result.update({"decision": "DENY", "reason": "SarahMemoryGlobals.py and SarahMemoryARILE.py are immutable through REM and cannot be patched/staged."})
             return result
         try:
             if cognitive_services_module and hasattr(cognitive_services_module, "govern_rem_candidate"):
@@ -1159,7 +1159,7 @@ class UnifiedAvatarController:
             "active_provider": active_provider,
             "active_model": active_model,
             "active_model_count": max(1, active_model_count),
-            "protected_files": ["SarahMemoryGlobals.py"],
+            "protected_files": ["SarahMemoryGlobals.py", "SarahMemoryARILE.py"],
             "core_files_changed": [],
         }
 
@@ -1179,7 +1179,7 @@ class UnifiedAvatarController:
         state["self_evolution_allowed"] = neosky_enabled
         state["observation_only"] = not neosky_enabled
         state["manual_force_allowed"] = bool(state.get("manual_force_allowed") or not state.get("thread_alive"))
-        state["protected_files"] = ["SarahMemoryGlobals.py"]
+        state["protected_files"] = ["SarahMemoryGlobals.py", "SarahMemoryARILE.py"]
         return state
 
     def get_rem_report(self, limit: int = 5) -> Dict[str, Any]:

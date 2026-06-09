@@ -109,6 +109,27 @@ DOCUMENTS_DIR = globals().get("DOCUMENTS_DIR", os.path.join(BASE_DIR, "documents
 DOWNLOADS_DIR = globals().get("DOWNLOADS_DIR", os.path.join(BASE_DIR, "downloads"))
 SANDBOX_DIR = globals().get("SANDBOX_DIR", os.path.join(BASE_DIR, "sandbox"))
 
+# ARILE filesystem interlock.  FileSystem remains the enforcement gate; ARILE
+# receives compact security/variance packets and protects core immune-system files.
+try:
+    from SarahMemoryARILE import arile_emit, arile_assert_not_protected_mutation, arile_is_protected_core_file, arile_protected_files
+except Exception:  # pragma: no cover - filesystem must survive without ARILE
+    arile_emit = None  # type: ignore
+    arile_assert_not_protected_mutation = None  # type: ignore
+    def arile_is_protected_core_file(path_value):
+        try:
+            return Path(path_value).name.lower() in {"sarahmemoryglobals.py", "sarahmemoryarile.py"}
+        except Exception:
+            return str(path_value or "").lower().endswith(("sarahmemoryglobals.py", "sarahmemoryarile.py"))
+    def arile_protected_files():
+        return ["SarahMemoryGlobals.py", "SarahMemoryARILE.py"]
+
+def _sm_arile_guard_file_mutation(path_value: str, operation: str) -> None:
+    if arile_is_protected_core_file(path_value):
+        if callable(arile_assert_not_protected_mutation):
+            arile_assert_not_protected_mutation(path_value, operation=operation, source="SarahMemoryFilesystem")
+        raise PermissionError(f"Protected core file mutation blocked: {path_value}")
+
 # Setup logging
 logger = logging.getLogger("SarahMemoryFilesystem")
 if not logger.hasHandlers():
@@ -816,6 +837,7 @@ class FileScanner:
             True if file was quarantined successfully
         """
         try:
+            _sm_arile_guard_file_mutation(file_path, "delete")
             if not os.path.exists(file_path):
                 return False
             
@@ -1412,6 +1434,7 @@ class FileOperations:
             True if deletion successful
         """
         try:
+            _sm_arile_guard_file_mutation(file_path, "delete")
             if not os.path.exists(file_path):
                 logger.error(f"File not found: {file_path}")
                 return False
@@ -1479,6 +1502,8 @@ class FileOperations:
             True if move successful
         """
         try:
+            _sm_arile_guard_file_mutation(source, "move_source")
+            _sm_arile_guard_file_mutation(destination, "move_destination")
             if not os.path.exists(source):
                 logger.error(f"Source file not found: {source}")
                 return False
@@ -1553,6 +1578,7 @@ class FileOperations:
             True if copy successful
         """
         try:
+            _sm_arile_guard_file_mutation(destination, "copy_destination")
             if not os.path.exists(source):
                 logger.error(f"Source file not found: {source}")
                 return False
@@ -1625,6 +1651,8 @@ class FileOperations:
             True if rename successful
         """
         try:
+            _sm_arile_guard_file_mutation(old_path, "rename_source")
+            _sm_arile_guard_file_mutation(new_path, "rename_destination")
             if not os.path.exists(old_path):
                 logger.error(f"File not found: {old_path}")
                 return False
@@ -2231,7 +2259,7 @@ if __name__ == "__main__":
 def _rem_is_protected_path(path: str) -> bool:
     try:
         name = os.path.basename(path or "").lower()
-        if name == "sarahmemoryglobals.py":
+        if name in {"sarahmemoryglobals.py", "sarahmemoryarile.py"}:
             return True
         parts = {p.lower() for p in Path(path).parts}
         blocked_dirs = {".git", "node_modules", "__pycache__", "venv", ".venv", "backup", "backups", "quarantine"}
@@ -2261,7 +2289,7 @@ def rem_filesystem_study_tick(root_paths: Optional[List[str]] = None, max_files:
         "writes": False,
         "uploads": False,
         "executions": False,
-        "protected_files": ["SarahMemoryGlobals.py"],
+        "protected_files": arile_protected_files(),
         "roots": roots,
         "counts": {"seen": 0, "text": 0, "documents": 0, "images": 0, "other": 0, "skipped": 0},
         "samples": [],

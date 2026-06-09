@@ -70,6 +70,16 @@ from datetime import datetime
 from SarahMemoryGlobals import run_async
 import SarahMemoryGlobals as SarahMemoryGlobals
 
+# ARILE runtime is SarahMemory's async cyber-reality watchdog.  Import is optional
+# so emergency/maintenance boot remains survivable if the file is missing.
+try:
+    from SarahMemoryARILE import start_arile_runtime, stop_arile_runtime, arile_emit, verify_arile_source_integrity
+except Exception:  # pragma: no cover - boot survival fallback
+    start_arile_runtime = None  # type: ignore
+    stop_arile_runtime = None  # type: ignore
+    arile_emit = None  # type: ignore
+    verify_arile_source_integrity = None  # type: ignore
+
 # =============================================================================
 # LOGGER SETUP - v8.0 Enhanced
 # =============================================================================
@@ -284,7 +294,28 @@ def run_initial_checks():
         bool: True if initialization successful, False otherwise
     """
     logger.info("[v8.0] Starting system initialization.")
-    
+
+    # Start ARILE after Globals/.env are loaded, before expensive boot phases.
+    try:
+        if callable(start_arile_runtime):
+            arile_status = start_arile_runtime(reason="initialization.run_initial_checks")
+            print_status_line("ARILE Reality Watchdog", "✓", "Adaptive Reality Intelligence Layer online")
+            logger.info(f"[v9.0][ARILE] ARILE runtime online: {arile_status}")
+        if callable(verify_arile_source_integrity):
+            integrity = verify_arile_source_integrity()
+            if callable(arile_emit):
+                arile_emit(
+                    source="SarahMemoryInitialization",
+                    kind="protected_core_integrity",
+                    failure_type="arile_integrity_snapshot",
+                    severity=0.30,
+                    confidence=0.90,
+                    summary="ARILE protected-core integrity snapshot captured during boot.",
+                    data=integrity,
+                )
+    except Exception as arile_err:
+        logger.warning(f"[v9.0][ARILE] Runtime start/integrity snapshot skipped: {arile_err}")
+
     try:
         # =====================================================================
         # NETWORK HUB STATUS CHECK
@@ -723,6 +754,14 @@ def safe_shutdown():
     shutdown_requested = True
     logger.info("[v8.0] Initiating safe shutdown procedures.")
     print("\n[v8.0] Shutting down SarahMemory AiOS...")
+
+    # Stop ARILE intake early so shutdown does not create packet/log churn.
+    try:
+        if callable(stop_arile_runtime):
+            stop_arile_runtime(reason="initialization.safe_shutdown")
+            logger.info("[v9.0][ARILE] ARILE shutdown completed.")
+    except Exception as arile_err:
+        logger.warning(f"[v9.0][ARILE] ARILE shutdown skipped: {arile_err}")
 
     # Stop TTS first. Voice engines commonly leave COM/audio worker threads alive on Windows.
     try:

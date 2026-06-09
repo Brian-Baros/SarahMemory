@@ -78,6 +78,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryAdvCU.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py") if hasattr(config, "HAS_AI_CORE") else os.path.join(config.BASE_DIR, "SarahMemoryAiFunctions.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryAPI.py"), #MultiRole Model/API intrupter 
+    os.path.join(config.BASE_DIR, "SarahMemoryARILE.py"), # Adaptive Reality Intelligence Layer Engine / cyber-reality watchdog
     os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py") if hasattr(config, "HAS_AVATAR") else os.path.join(config.BASE_DIR, "SarahMemoryAvatar.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryBrowser.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryCanvasStudio.py"),

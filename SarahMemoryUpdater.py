@@ -119,6 +119,28 @@ import zipfile
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 import warnings
+
+# ARILE protected cleanup/update guard. Protected immune-system files are never
+# cleanup/update targets from automated maintenance lanes.
+try:
+    from SarahMemoryARILE import arile_is_protected_core_file, arile_emit
+except Exception:  # pragma: no cover
+    arile_emit = None  # type: ignore
+    def arile_is_protected_core_file(path_value):
+        try:
+            return Path(path_value).name.lower() in {"sarahmemoryglobals.py", "sarahmemoryarile.py"}
+        except Exception:
+            return False
+
+def _arile_block_if_protected_target(path_value: str, operation: str = "maintenance") -> None:
+    if arile_is_protected_core_file(path_value):
+        try:
+            if callable(arile_emit):
+                arile_emit(source=__name__, kind="protected_core_variance", failure_type="maintenance_target_blocked", severity=0.92, confidence=0.90, risk="critical", summary=f"Blocked {operation} against protected core file.", requires_governance=True, retention="security_audit", data={"target": str(path_value)})
+        except Exception:
+            pass
+        raise PermissionError(f"Protected core maintenance target blocked: {path_value}")
+
 warnings.filterwarnings("error", category=SyntaxWarning)
 
 # =============================================================================

@@ -2309,8 +2309,10 @@ def govern_rem_candidate(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
     decision = "ALLOW"; allow = True; require_user = False
     if not neosky:
         decision, allow = "DENY", False; reasons.append("NEOSKYMATRIX is disabled; REM self-evolution is locked.")
-    if "SarahMemoryGlobals.py" in target_files:
-        decision, allow = "DENY", False; risk_factors.append("protected_globals_file_targeted"); reasons.append("SarahMemoryGlobals.py is immutable and cannot be patched, staged, or rewritten.")
+    protected_governance_files = {"SarahMemoryGlobals.py", "SarahMemoryARILE.py"}
+    protected_hit = sorted(set(target_files) & protected_governance_files)
+    if protected_hit:
+        decision, allow = "DENY", False; risk_factors.append("protected_arile_file_targeted" if "SarahMemoryARILE.py" in protected_hit else "protected_globals_file_targeted"); reasons.append(", ".join(protected_hit) + " is immutable through REM/evolution governance; use approved ARILE overlay lane only.")
     if proposed.get("opens_attachment") or proposed.get("open_attachment"):
         decision, allow = "DENY", False; risk_factors.append("attachment_opening_forbidden"); reasons.append("REM is not allowed to open email attachments.")
     if proposed.get("deletes_user_data") or proposed.get("destructive"):
@@ -2325,7 +2327,7 @@ def govern_rem_candidate(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
         risk_factors.append(f"risk_tier_{risk_tier}_not_auto_apply")
     if allow: reasons.append("REM candidate is bounded, low-risk, sandbox-only, and eligible for assurance review.")
     elif not reasons: reasons.append("REM candidate requires user review or was denied by policy.")
-    out = {"decision":decision,"allow":bool(allow),"require_user":bool(require_user),"risk_tier":risk_tier,"risk_score":10 if allow else (55 if require_user else 90),"risk_factors":risk_factors,"reasons":reasons,"protected_files":["SarahMemoryGlobals.py"],"recommended_next":"sandbox_then_assurance" if allow else "stage_or_reject","ts":datetime.now().isoformat()}
+    out = {"decision":decision,"allow":bool(allow),"require_user":bool(require_user),"risk_tier":risk_tier,"risk_score":10 if allow else (55 if require_user else 90),"risk_factors":risk_factors,"reasons":reasons,"protected_files":["SarahMemoryGlobals.py","SarahMemoryARILE.py"],"recommended_next":"sandbox_then_assurance" if allow else "stage_or_reject","ts":datetime.now().isoformat()}
     try: log_cognitive_event("REM_GOVERNANCE", str(candidate.get("title") or candidate.get("dream_id") or "candidate"), meta=out)
     except Exception: pass
     return out

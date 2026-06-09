@@ -83,6 +83,29 @@ import atexit
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+# ARILE organ sentinel helper. This file reports local variance to the central
+# SarahMemoryARILE.py engine without owning ARILE authority.
+try:
+    from SarahMemoryARILE import ARILESentinelBase, arile_emit, arile_should_run
+except Exception:  # pragma: no cover
+    ARILESentinelBase = object  # type: ignore
+    arile_emit = None  # type: ignore
+    def arile_should_run(lane: str, source: str = "unknown", default: bool = True) -> bool:
+        return bool(default)
+
+class LocalARILESentinel(ARILESentinelBase):
+    organ_name = __name__
+
+    def report(self, failure_type: str, summary: str, severity: float = 0.50, **data) -> None:
+        try:
+            if callable(arile_emit):
+                arile_emit(source=__name__, organ=self.organ_name, kind="organ_variance", failure_type=failure_type, severity=severity, confidence=0.82, risk="high" if severity >= 0.75 else "medium", summary=summary, requires_governance=severity >= 0.75, retention="security_audit" if severity >= 0.75 else "diagnostic", data=data)
+        except Exception:
+            pass
+
+_local_arile_sentinel = LocalARILESentinel()
+
+
 # -----------------------------------------------------------------------------
 # Safe imports (never hard-fail the platform)
 # -----------------------------------------------------------------------------

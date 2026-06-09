@@ -2527,13 +2527,16 @@ def rem_promote_or_stage(candidate: Dict[str, Any], *, snapshot: Optional[Dict[s
     candidate = candidate or {}; snapshot = snapshot or {}; sandbox = sandbox or {}; governance = governance or {}; assurance = assurance or {}
     proposed = candidate.get("proposed_action") if isinstance(candidate.get("proposed_action"), dict) else {}; target_files = [Path(str(x)).name for x in (candidate.get("target_files") or [])]
     decision = "REJECT"; reasons: List[str] = []
-    if "SarahMemoryGlobals.py" in target_files: reasons.append("SarahMemoryGlobals.py is sovereign/read-only and cannot be patched or staged."); decision = "REJECT_PROTECTED_FILE"
+    protected_targets = {"SarahMemoryGlobals.py", "SarahMemoryARILE.py"}
+    blocked_targets = sorted(set(target_files) & protected_targets)
+    if blocked_targets:
+        reasons.append(", ".join(blocked_targets) + " is protected; Evolution may only propose governed overlays, never direct source mutation."); decision = "REJECT_PROTECTED_FILE"
     elif not bool(governance.get("allow", False)): reasons.append("CognitiveServices did not allow promotion.")
     elif not bool(sandbox.get("passed", False)): reasons.append("Sandbox trial failed.")
     elif not bool(assurance.get("allow", False)): reasons.append("AssuranceGate did not allow promotion.")
     elif proposed.get("type") in ("metadata_only", "research_only", "analysis_only", None) and str(candidate.get("risk_tier", "low")).lower() == "low": decision = "AUTO_APPLIED_METADATA_ONLY"; reasons.append("Low-risk REM result accepted as metadata/report learning only; no core files changed.")
     else: decision = "STAGE_FOR_REVIEW"; reasons.append("Candidate passed but is not eligible for autonomous code promotion.")
-    _ensure_dirs(); report = {"decision":decision,"reasons":reasons,"candidate":candidate,"sandbox":sandbox,"governance":governance,"assurance":assurance,"ts":_now_iso(),"protected_files":["SarahMemoryGlobals.py"],"core_files_changed":[]}
+    _ensure_dirs(); report = {"decision":decision,"reasons":reasons,"candidate":candidate,"sandbox":sandbox,"governance":governance,"assurance":assurance,"ts":_now_iso(),"protected_files":["SarahMemoryGlobals.py","SarahMemoryARILE.py"],"core_files_changed":[]}
     try: _save_json_report("rem_promotion_" + hashlib.sha256(json.dumps(candidate, sort_keys=True, default=str).encode()).hexdigest()[:12], report)
     except Exception: pass
     return report

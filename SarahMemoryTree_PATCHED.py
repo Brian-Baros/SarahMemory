@@ -22,7 +22,7 @@ SarahMemoryTree.py (PythonAnywhere-safe)
 ./data/boot/drivers
 ./data/drivers
 - Excludes noisy/heavy trees such as venv, __pycache__, node_modules, models,
-backups, docs, data/ui, generated dist/build output, cache folders, and logs.
+backups, docs, ui, generated dist/build output, cache folders, and logs.
 - Writes timestamped tree reports without overwriting prior output.
 - Flushes output as it goes so partial output survives interrupts.
 
@@ -123,7 +123,7 @@ EXCLUDE_DIR_NAMES: Set[str] = {
 # Relative paths excluded from a full project tree.
 # Keep data/boot/drivers and data/drivers visible.
 EXCLUDE_REL_PATHS: Set[str] = {
-    "data/ui",
+    "ui",
     "data/models",
     "data/model",
     "data/backups",
@@ -194,9 +194,9 @@ def _normalize_rel(path: Path) -> str:
 
 def _is_relative_path_excluded(path: Path, include_ui: bool = False) -> bool:
     rel = _normalize_rel(path)
-    if include_ui and rel == "data/ui":
+    if include_ui and rel == "ui":
         return False
-    if include_ui and rel.startswith("data/ui/"):
+    if include_ui and rel.startswith("ui/"):
         return False
 
     for blocked in EXCLUDE_REL_PATHS:
@@ -340,7 +340,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--include-ui",
         action="store_true",
-        help="Include data/ui when using --mode project. Default excludes data/ui.",
+        help="Include ui when using --mode project. Default excludes ui.",
     )
     parser.add_argument(
         "--max-depth",
@@ -383,7 +383,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         out.write(f"Mode: {args.mode}\n")
         out.write(f"Include UI: {bool(args.include_ui)}\n")
         out.write(f"Max Depth: {args.max_depth if args.max_depth is not None else 'unlimited'}\n")
-        out.write("Excluded: venv, __pycache__, node_modules, models, backups, docs, logs, caches, data/ui by default\n")
+        out.write("Excluded: venv, __pycache__, node_modules, models, backups, docs, logs, caches, ui by default\n")
         out.write("=" * 72 + "\n\n")
         out.flush()
 

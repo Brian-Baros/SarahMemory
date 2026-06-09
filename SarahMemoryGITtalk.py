@@ -19,7 +19,7 @@ https://store.sarahmemory.com
 SarahMemoryGITtalk.py  (MASTER monkey patch - FRONTEND ONLY)
 
 TEMP placement (as you requested):
-/home/Softdev0/SarahMemory/data/mods/v800/SarahMemoryGITtalk.py
+/home/Softdev0/SarahMemory/data/mods/v900/SarahMemoryGITtalk.py
 
 What this file does (when present on PythonAnywhere):
 - Exposes secure API endpoints (Flask Blueprint) so you can:
@@ -31,7 +31,7 @@ What this file does (when present on PythonAnywhere):
 
 STRICT RULES:
 - ONLY operates on frontend checkout:
-/home/Softdev0/SarahMemory/data/ui/V8_ui_src
+/home/Softdev0/SarahMemory/ui/V9_ui_src
 - PUSHES ONLY to sarah-s-dashboard repo (origin url must contain "sarah-s-dashboard")
 - NEVER touches sarahmemory repo
 - NEVER touches sarahmemory-api repo
@@ -83,6 +83,28 @@ from pathlib import Path
 from datetime import datetime
 from typing import Any, Optional, Dict, Tuple
 
+# ARILE protected cleanup/update guard. Protected immune-system files are never
+# cleanup/update targets from automated maintenance lanes.
+try:
+    from SarahMemoryARILE import arile_is_protected_core_file, arile_emit
+except Exception:  # pragma: no cover
+    arile_emit = None  # type: ignore
+    def arile_is_protected_core_file(path_value):
+        try:
+            return Path(path_value).name.lower() in {"sarahmemoryglobals.py", "sarahmemoryarile.py"}
+        except Exception:
+            return False
+
+def _arile_block_if_protected_target(path_value: str, operation: str = "maintenance") -> None:
+    if arile_is_protected_core_file(path_value):
+        try:
+            if callable(arile_emit):
+                arile_emit(source=__name__, kind="protected_core_variance", failure_type="maintenance_target_blocked", severity=0.92, confidence=0.90, risk="critical", summary=f"Blocked {operation} against protected core file.", requires_governance=True, retention="security_audit", data={"target": str(path_value)})
+        except Exception:
+            pass
+        raise PermissionError(f"Protected core maintenance target blocked: {path_value}")
+
+
 # OpenAI import is optional at runtime (AI endpoints/mode only).
 try:
     from openai import OpenAI  # type: ignore
@@ -115,7 +137,7 @@ def _detect_core_dir() -> Path:
       - SARAHMEMORY_BASE_DIR
       - BASE_DIR
     """
-    for env_key in ("SARAH_BASE_DIR", "SARAHMEMORY_BASE_DIR", "BASE_DIR"):
+    for env_key in ("SARAHMEMORY_ROOT", "SARAH_BASE_DIR", "SARAHMEMORY_BASE_DIR", "BASE_DIR"):
         v = os.getenv(env_key)
         if v:
             try:
@@ -129,6 +151,10 @@ def _detect_core_dir() -> Path:
     for parent in [here.parent] + list(here.parents):
         # stop if too high
         try:
+            if parent.name.lower() == "core" and (parent / "SarahMemoryGlobals.py").exists():
+                return parent.parent
+            if (parent / "core" / "SarahMemoryGlobals.py").exists():
+                return parent
             if (parent / "app.py").exists() and (parent / "data").exists():
                 return parent
             if (parent / "SarahMemoryGlobals.py").exists() and (parent / "data").exists():
@@ -142,16 +168,16 @@ def _detect_core_dir() -> Path:
 CORE_DIR = _detect_core_dir()
 
 # Frontend checkout used by SarahMemoryUIupdater.py
-REPO_DIR = CORE_DIR / "data" / "ui" / "V8_ui_src"
+REPO_DIR = CORE_DIR / "ui" / "V9_ui_src"
 
 # After push, run updater to build/deploy
-UI_UPDATER = CORE_DIR / "SarahMemoryUIupdater.py"
+UI_UPDATER = CORE_DIR / "core" / "SarahMemoryUIupdater.py"
 
 # Patch inbox (NOT inside any repo)
-PATCH_DIR = CORE_DIR / "data" / "mods" / "v800" / "patches"
+PATCH_DIR = CORE_DIR / "data" / "mods" / "v900" / "patches"
 
 # State files for server-side persistence
-STATE_DIR = CORE_DIR / "data" / "mods" / "v800"
+STATE_DIR = CORE_DIR / "data" / "mods" / "v900"
 AI_STATE_FILE = STATE_DIR / "gittalk_state.json"
 RUN_STATE_FILE = STATE_DIR / "gittalk_run_state.json"
 PENDING_DIR = STATE_DIR / "gittalk_pending"  # stores patch_id -> patch text

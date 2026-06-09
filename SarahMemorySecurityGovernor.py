@@ -807,6 +807,21 @@ def evaluate_action(action_contract: Dict[str, Any], governance: Optional[Dict[s
         review.risk_factors.append("model_direct_authority_blocked")
         review.reasons.append("External or raw model output may not directly become execution authority.")
 
+    # ARILE/Globals protected-core mutation hard block.  These files are immune-system
+    # anchors; Evolution may propose overlays but cannot directly mutate the source.
+    protected_joined_probe = " ".join([
+        _safe_lower(contract.get("action_type")),
+        _safe_lower(contract.get("capability_name")),
+        _safe_lower(contract.get("normalized_text")),
+        _safe_lower(contract.get("target_path")),
+        _safe_lower(" ".join([str(x) for x in (contract.get("target_files") or [])])),
+    ])
+    if ("sarahmemoryarile.py" in protected_joined_probe or "sarahmemoryglobals.py" in protected_joined_probe) and any(k in protected_joined_probe for k in ("patch", "update", "delete", "move", "rename", "rewrite", "mutate", "overwrite", "stage", "apply")):
+        review.decision = DECISION_DENY
+        review.allow = False
+        review.risk_factors.append("protected_arile_mutation_blocked")
+        review.reasons.append("SarahMemoryGlobals.py and SarahMemoryARILE.py are protected core files; direct mutation is blocked.")
+
     # Self-evolution / privileged mutation requires NEOSKYMATRIX + DEVELOPERSMODE arm.
     joined = " ".join([
         _safe_lower(contract.get("action_type")),

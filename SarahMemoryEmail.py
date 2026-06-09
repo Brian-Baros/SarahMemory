@@ -117,6 +117,38 @@ try:
 except Exception:
     reply_mod = None
 
+try:
+    from SarahMemoryARILE import ARILESentinelBase, arile_emit, arile_scan_logic_bomb
+except Exception:  # pragma: no cover
+    ARILESentinelBase = object  # type: ignore
+    arile_emit = None  # type: ignore
+    def arile_scan_logic_bomb(text: str, source: str = "email", emit: bool = True):
+        return {"ok": True, "verdict": "SAFE_NORMAL"}
+
+class EmailARILESentinel(ARILESentinelBase):
+    organ_name = "Email"
+
+    def report_message_variance(self, parsed: Any, logic_verdict: Optional[Dict[str, Any]] = None) -> None:
+        try:
+            severity = 0.0
+            failure_type = ""
+            reasons: List[str] = []
+            if getattr(parsed, "is_spam_candidate", False):
+                severity = max(severity, 0.55); reasons.append("spam_candidate"); failure_type = "spam_or_phishing_variance"
+            if getattr(parsed, "contains_system_command_language", False):
+                severity = max(severity, 0.80); reasons.append("email_command_language"); failure_type = "email_command_injection_attempt"
+            if logic_verdict and not logic_verdict.get("ok", True):
+                severity = max(severity, float(logic_verdict.get("severity") or 0.82)); reasons.append(str(logic_verdict.get("verdict") or "logic_bomb")); failure_type = "email_logic_bomb_payload"
+            bad_attachments = [a for a in getattr(parsed, "attachments", []) if str(getattr(a, "scan_status", "")).lower() in {"critical", "high", "quarantined", "scan_error"}]
+            if bad_attachments:
+                severity = max(severity, 0.86); reasons.append("attachment_risk"); failure_type = "email_attachment_security_variance"
+            if severity >= 0.50 and callable(arile_emit):
+                arile_emit(source="SarahMemoryEmail", organ="Email", kind="email_security_variance", failure_type=failure_type or "email_variance", severity=severity, confidence=0.88, risk="high" if severity >= 0.75 else "medium", summary="Email content treated as content, not commands; suspicious variance contained.", requires_governance=severity >= 0.75, retention="security_audit" if severity >= 0.75 else "diagnostic", data={"message_id": getattr(parsed, "message_id", ""), "sender": getattr(parsed, "sender_email", ""), "subject_hash": hashlib.sha256(str(getattr(parsed, "subject", "")).encode()).hexdigest(), "reasons": reasons})
+        except Exception:
+            pass
+
+_email_arile_sentinel = EmailARILESentinel("SarahMemoryEmail")
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -816,6 +848,10 @@ class SarahMemoryEmailService:
             "stored": saved,
             "attachments": [asdict(a) for a in parsed.attachments],
         }
+        try:
+            _email_arile_sentinel.report_message_variance(parsed, logic_verdict=arile_scan_logic_bomb(f"{parsed.subject}\n{parsed.body_sanitized}", source="SarahMemoryEmail", emit=False))
+        except Exception:
+            pass
         log_email_event("message_processed", parsed.message_id, result)
         return result
 
@@ -837,10 +873,13 @@ class SarahMemoryEmailService:
                     record = _stage_attachment(part, message_id)
                     if record is not None:
                         attachments.append(record)
+                        if str(record.scan_status).lower() in {"critical", "high", "quarantined", "scan_error"} and callable(arile_emit):
+                            arile_emit(source="SarahMemoryEmail", organ="Email", kind="email_attachment_variance", failure_type="attachment_scan_risk", severity=0.86, confidence=0.90, risk="high", summary="Email attachment staged/scanned and reported as risky.", requires_governance=True, retention="security_audit", data={"filename": record.filename, "sha256": record.sha256, "scan_status": record.scan_status})
                 except Exception as exc:
                     logger.warning(f"Attachment staging failed: {exc}")
 
         combined_text = f"{subject}\n{body_sanitized}".strip()
+        logic_verdict = arile_scan_logic_bomb(combined_text, source="SarahMemoryEmail", emit=False)
         parsed = ParsedEmail(
             message_id=message_id,
             subject=subject,
