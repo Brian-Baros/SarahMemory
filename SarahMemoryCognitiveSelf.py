@@ -1,9 +1,8 @@
-"""--==The SarahMemory Project==--
+"""--== SarahMemory Project ==--
 File: SarahMemoryCognitiveSelf.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
-Date: 2026-06-06
-Time: 10:11:54
+Date: 2026-03-28
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -13,32 +12,32 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+PURPOSE:
 - Canonical self-identity and capability-awareness authority for SarahMemory AiOS.
 - Builds the living self-definition packet used by governance, cognition, routing,
-diagnostics, and presentation layers.
+  diagnostics, and presentation layers.
 - Tracks who SarahMemory is, why it exists, what core files are present, what
-capabilities are currently online, what restrictions are active, and what
-lifecycle state the runtime is in.
+  capabilities are currently online, what restrictions are active, and what
+  lifecycle state the runtime is in.
 - Records startup / shutdown / reboot / heartbeat events so the platform can
-understand continuity, recovery, and clean-vs-unclean transitions.
+  understand continuity, recovery, and clean-vs-unclean transitions.
 
 DESIGN RULES:
 - Self-awareness is engineered, governed, and auditable.
 - This module does NOT grant authority to mutate runtime or bypass governance.
 - Cognitive selfhood may inform explanation, reflection, and readiness, but it
-never overrides CognitiveServices, user consent, or safety flags.
+  never overrides CognitiveServices, user consent, or safety flags.
 - Local-first and fail-soft. No hard dependency may crash the platform.
 - Discovery is not activation. Presence of a file or module does not mean it is
-approved or currently executable.
+  approved or currently executable.
 
 ROLE IN THE AIOS:
 - SarahMemoryCognitiveServices.py decides what may proceed.
 - SarahMemoryCognitiveThinker.py explores meaning, compassion, and possibility.
 - SarahMemoryNeuron.py routes the request into one primary lane.
 - SarahMemoryCognitiveSelf.py tells the whole system what it is, what it is for,
-what it currently contains, and what it can or cannot do right now.
+  what it currently contains, and what it can or cannot do right now.
 """
 
 from __future__ import annotations
@@ -60,12 +59,6 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Canonical self-identity, lifecycle-awareness, body-map, and capability-awareness authority for SarahMemory AiOS. Supplies governed self-models to CognitiveServices, CognitiveThinker, Neuron, and diagnostics surfaces."
 # --- SARAHMETA END ---
 
@@ -164,6 +157,7 @@ _ROLE_HINTS = {
     "SarahMemoryGlobals.py": "runtime_governance",
     "SarahMemoryCognitiveServices.py": "governor",
     "SarahMemoryCognitiveThinker.py": "ethical_philosophical_governor",
+    "SarahMemoryRhythmCognition.py": "rhythm_cognition_organ",
     "SarahMemoryCognitiveSelf.py": "self_identity_authority",
     "SarahMemoryAdvCU.py": "semantic_compression",
     "SarahMemoryNeuron.py": "primary_router",
@@ -190,13 +184,14 @@ _ROLE_HINTS = {
 }
 
 _CAPABILITY_MODULES = {
-    "governance": ["SarahMemoryGlobals", "SarahMemoryCognitiveServices", "SarahMemoryCognitiveThinker", "SarahMemoryCognitiveSelf"],
+    "governance": ["SarahMemoryGlobals", "SarahMemoryCognitiveServices", "SarahMemoryCognitiveThinker", "SarahMemoryCognitiveSelf", "SarahMemoryRhythmCognition"],
     "answer_lane": ["SarahMemoryLogicCalc", "SarahMemoryWebSYM", "SarahMemoryResearch", "SarahMemoryAPI", "SarahMemoryCompare"],
     "action_lane": ["SarahMemoryNeuron", "SarahMemoryIntegration", "SarahMemoryAiFunctions", "SarahMemoryFilesystem"],
     "creative_lane": ["SarahMemoryCanvasStudio", "SarahMemoryVideoEditorCore", "SarahMemoryMusicGenerator", "SarahMemoryLyricsToSong"],
     "system_lane": ["SarahMemoryDiagnostics", "SarahMemoryGlobals", "SarahMemoryIntegration"],
     "network_lane": ["SarahMemoryNetwork", "SarahMemoryResearch", "SarahMemoryAPI"],
-    "presentation": ["SarahMemoryReply", "SarahMemoryVoice"],
+    "presentation": ["SarahMemoryReply", "SarahMemoryVoice", "SarahMemoryRhythmCognition"],
+    "cadence_lane": ["SarahMemoryRhythmCognition", "SarahMemoryAdaptive", "SarahMemoryPersonality", "SarahMemoryAiFunctions"],
 }
 
 
@@ -1241,6 +1236,10 @@ def main() -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
+# ====================================================================
+# END OF SarahMemoryCognitiveSelf.py v9.0.0
+# ====================================================================
+
 
 # -----------------------------------------------------------------------------
 # V10/V9F Supreme Appeals helper: thermal body authority
@@ -1696,7 +1695,6 @@ def get_sovereign_agent_runtime_self_model() -> Dict[str, Any]:
         ],
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
-
 # ====================================================================
 # END OF SarahMemoryCognitiveSelf.py v9.0.0
 # ====================================================================

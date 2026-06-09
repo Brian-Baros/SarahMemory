@@ -1,6 +1,6 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryPersonality.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
 Date: 2026-06-06
 Time: 10:11:54
@@ -13,7 +13,6 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 PERSONALITY ENGINE v9.0.0
@@ -25,38 +24,38 @@ SarahMemoryAvatar.py, etc.).
 KEY ENHANCEMENTS:
 -----------------
 1. ADVANCED EMOTIONAL INTELLIGENCE
-- Multi-layered emotion processing (Plutchik 8 emotions + complex states)
-- Emotional momentum tracking with decay curves
-- Context-sensitive emotional responses
-- Facial expression integration (when available)
-- Real-time emotional state persistence
+   - Multi-layered emotion processing (Plutchik 8 emotions + complex states)
+   - Emotional momentum tracking with decay curves
+   - Context-sensitive emotional responses
+   - Facial expression integration (when available)
+   - Real-time emotional state persistence
 
 2. SOPHISTICATED CONTEXT AWARENESS
-- Long-term conversation memory
-- Topic continuity tracking
-- User preference learning
-- Time-of-day personality adaptation
-- Interaction pattern recognition
+   - Long-term conversation memory
+   - Topic continuity tracking
+   - User preference learning
+   - Time-of-day personality adaptation
+   - Interaction pattern recognition
 
 3. DYNAMIC RESPONSE GENERATION
-- Multi-tier response selection (DB → Generated → Fallback)
-- Emotional tone injection with configurable strength
-- Anti-repetition and loop detection
-- Personality consistency scoring
-- Response quality metrics
+   - Multi-tier response selection (DB → Generated → Fallback)
+   - Emotional tone injection with configurable strength
+   - Anti-repetition and loop detection
+   - Personality consistency scoring
+   - Response quality metrics
 
 4. ENHANCED DATABASE INTEGRATION
-- Optimized query patterns with caching
-- Graceful degradation when DB unavailable
-- Schema auto-verification
-- Transaction safety
-- Performance monitoring
+   - Optimized query patterns with caching
+   - Graceful degradation when DB unavailable
+   - Schema auto-verification
+   - Transaction safety
+   - Performance monitoring
 
 5. ADAPTIVE LEARNING INTEGRATION
-- Reinforcement from user feedback
-- Response effectiveness tracking
-- Personality trait evolution
-- Behavioral pattern adaptation
+   - Reinforcement from user feedback
+   - Response effectiveness tracking
+   - Personality trait evolution
+   - Behavioral pattern adaptation
 
 BACKWARD COMPATIBILITY:
 -----------------------
@@ -83,7 +82,6 @@ INTEGRATION POINTS:
 """
 
 from __future__ import annotations
-
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "personality_engine"
@@ -101,15 +99,8 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Personality and emotional-intelligence engine for response tone, context continuity, adaptive behavior, and styled output integration."
 # --- SARAHMETA END ---
-
 import logging
 import sqlite3
 import datetime
@@ -1459,6 +1450,82 @@ except Exception:
 # DIAGNOSTICS AND TESTING
 # ============================================================================
 
+# ---------------------------------------------------------------------------
+# RHYTHM COGNITION BRIDGE - v9.0.0
+# ---------------------------------------------------------------------------
+def get_personality_rhythm_profile(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Export a compact personality pacing profile for SarahMemoryRhythmCognition.
+
+    This is a read-only presentation/cadence bridge. It never replaces truth,
+    never authorizes actions, and never bypasses SMGET. RhythmCognition uses this
+    profile to tune response cadence, living-loop rhythm, and avatar/body expression.
+    """
+    ctx = dict(context or {})
+    try:
+        time_profile = get_time_based_personality()
+    except Exception:
+        time_profile = {}
+    try:
+        model = update_personality_model()
+    except Exception:
+        model = {}
+
+    emotion_state = {k: v for k, v in EMOTIONAL_STATE.items() if isinstance(v, (int, float))}
+    dominant = "neutral"
+    try:
+        if emotion_state:
+            primary = {k: emotion_state.get(k, 0.0) for k in ("joy", "trust", "fear", "surprise", "sadness", "disgust", "anger", "anticipation")}
+            dominant = max(primary.items(), key=lambda item: item[1])[0]
+    except Exception:
+        dominant = "neutral"
+
+    energy = time_profile.get("energy", model.get("energy_level", 0.5))
+    formality = time_profile.get("formality", model.get("formality_level", 0.5))
+    verbosity = time_profile.get("verbosity", model.get("verbosity_preference", 0.5))
+
+    try:
+        energy = max(0.0, min(1.0, float(energy)))
+    except Exception:
+        energy = 0.5
+    try:
+        formality = max(0.0, min(1.0, float(formality)))
+    except Exception:
+        formality = 0.5
+    try:
+        verbosity = max(0.0, min(1.0, float(verbosity)))
+    except Exception:
+        verbosity = 0.5
+
+    # Context can raise urgency/intensity but cannot lower safety gates.
+    text = str(ctx.get("text") or ctx.get("user_text") or ctx.get("command_text") or "").lower()
+    urgency_hint = 0.0
+    try:
+        if any(term in text for term in ("hurry", "urgent", "asap", "emergency", "danger", "run", "faster", "help")):
+            urgency_hint = 0.70
+        if ctx.get("emergency") or ctx.get("human_risk"):
+            urgency_hint = 0.92
+    except Exception:
+        urgency_hint = 0.0
+
+    return {
+        "source": "SarahMemoryPersonality.get_personality_rhythm_profile",
+        "energy": round(energy, 4),
+        "formality": round(formality, 4),
+        "verbosity": round(verbosity, 4),
+        "mood": dominant,
+        "current_mood": model.get("current_mood", dominant) if isinstance(model, dict) else dominant,
+        "sarcasm_enabled": bool(ENABLE_SARCASM_LAYER),
+        "urgency_hint": round(urgency_hint, 4),
+        "emotion_state": emotion_state,
+        "execution_authority": False,
+        "notes": [
+            "Personality changes output/rhythm style only.",
+            "Truth, safety, and action authorization remain outside Personality.",
+        ],
+    }
+
+
 def get_personality_diagnostics() -> Dict[str, Any]:
     """
     Generate comprehensive diagnostics report for the personality system.
@@ -1472,6 +1539,7 @@ def get_personality_diagnostics() -> Dict[str, Any]:
             "system_version": "9.0.0",
             "timestamp": datetime.datetime.now().isoformat(),
             "personality_model": model,
+            "rhythm_profile": get_personality_rhythm_profile({"caller": "get_personality_diagnostics"}),
             "emotional_state": {k: round(v, 3) for k, v in EMOTIONAL_STATE.items() if isinstance(v, (int, float))},
             "cache_status": {
                 "size": len(RESPONSE_CACHE),
@@ -1544,6 +1612,10 @@ if __name__ == '__main__':
     logger.info("All tests completed successfully!")
     logger.info("=" * 70)
 
+# ====================================================================
+# END OF SarahMemoryPersonality.py v9.0.0
+# ====================================================================
+
 # --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
 # Override identity response to respect CognitiveSelf dynamic identity resolution.
 def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ignore[override]
@@ -1557,7 +1629,3 @@ def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ign
     except Exception:
         pass
     return "I'm Sarah — your SarahMemory AiOS companion."
-
-# ====================================================================
-# END OF SarahMemoryPersonality.py v9.0.0
-# ====================================================================

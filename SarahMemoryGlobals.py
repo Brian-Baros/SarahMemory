@@ -1714,8 +1714,33 @@ if not logger.hasHandlers():
     logger.addHandler(handler)
 
 # Base directory of the program
-BASE_DIR = os.getcwd() # AS for Now. This Program is designed to be strickly on C:\SarahMemory and cloned at https://www.sarahmemory.com/api
-# New Features 7.7.5 will include the program to run from any platform, Windows, Linux, Android, iOS, PythonAnywhere
+def _resolve_sarahmemory_base_dir() -> str:
+    """Resolve the SarahMemory project root for the v9 root/core layout.
+
+    In v9, this file lives in ./core while data/ui/resources/drivers live
+    beside ./core at the project root.  The root launcher exports
+    SARAHMEMORY_ROOT so the resolver can remain deterministic across
+    Windows, Linux, cloud, headless, and future portable modes.
+    """
+    for env_key in ("SARAHMEMORY_ROOT", "SARAH_BASE_DIR", "SARAHMEMORY_BASE_DIR", "BASE_DIR"):
+        value = os.getenv(env_key)
+        if value:
+            candidate = os.path.abspath(os.path.expanduser(value))
+            if os.path.isdir(candidate):
+                return candidate
+    try:
+        this_dir = os.path.dirname(os.path.abspath(__file__))
+        if os.path.basename(this_dir).lower() == "core":
+            return os.path.abspath(os.path.join(this_dir, ".."))
+        if os.path.isdir(os.path.join(this_dir, "core")):
+            return this_dir
+    except Exception:
+        pass
+    return os.path.abspath(os.getcwd())
+
+# Base directory of the program. v9 root/core layout aware.
+BASE_DIR = _resolve_sarahmemory_base_dir()
+# New Features 7.7.5+ include the program to run from any platform, Windows, Linux, Android, iOS, PythonAnywhere, headless, and future portable modes.
 logger.info(f"BASE_DIR set to: {BASE_DIR}")
 #
 # --- UI Configuration ---
@@ -1748,7 +1773,7 @@ USE_CUSTOM_WEBUI = (UI_MODE == "custom")
 # =============================================================================
 # --- Legacy WebUI (index.html + app.js + styles.css) paths ---
 # =============================================================================
-# These files LIVE in: ./data/ui
+# These files LIVE in: ./ui/web for the v9 root/core layout
 # They are the older static WebUI stack and are served directly by Flask
 # or opened via pywebview depending on runtime mode.
 #
@@ -1763,7 +1788,7 @@ USE_CUSTOM_WEBUI = (UI_MODE == "custom")
 # DO NOT point this to BASE_DIR root — that caused prior path confusion.
 # =============================================================================
 
-LEGACY_WEBUI_DIR = os.path.join(BASE_DIR, "data", "ui")
+LEGACY_WEBUI_DIR = os.path.join(BASE_DIR, "ui", "web")
 LEGACY_WEBUI_INDEX = os.path.join(LEGACY_WEBUI_DIR, "index.html")
 LEGACY_WEBUI_JS = os.path.join(LEGACY_WEBUI_DIR, "app.js")
 LEGACY_WEBUI_CSS = os.path.join(LEGACY_WEBUI_DIR, "styles.css")
@@ -1788,15 +1813,19 @@ if USE_LEGACY_WEBUI and not os.path.isdir(LEGACY_WEBUI_DIR):
 
 CUSTOM_UI_ROOT = os.getenv(
     "SARAH_CUSTOM_UI_ROOT",
-    os.path.join(BASE_DIR, "data", "ui", "V8_ui_src"),
+    os.path.join(BASE_DIR, "ui", "V9_ui_src"),
 )
 
 CUSTOM_UI_DIST_DIR = os.getenv(
     "SARAH_CUSTOM_UI_DIST_DIR",
-    os.path.join(BASE_DIR, "data", "ui", "V8"),
+    os.path.join(BASE_DIR, "ui", "v9"),
 )
 
 CUSTOM_UI_INDEX = os.path.join(CUSTOM_UI_DIST_DIR, "index.html")
+UI_DIR = CUSTOM_UI_DIST_DIR
+UI_INDEX_FILE = "index.html"
+V9_UI_SRC_DIR = CUSTOM_UI_ROOT
+V9_UI_DIST_DIR = CUSTOM_UI_DIST_DIR
 
 # If a dev server is running (npm run dev / npm run preview), we can point
 # pywebview or the browser directly at this URL instead of a local file path.
@@ -2703,7 +2732,7 @@ UI_UPDATER_ENABLED: bool = os.environ.get("SARAH_UI_UPDATER_ENABLED", "1") in ("
 UI_UPDATER_SCHEDULE: str = os.environ.get("SARAH_UI_UPDATER_SCHEDULE", "daily").strip().lower()
 UI_UPDATER_INTERVAL_MINUTES: int = int(os.environ.get("SARAH_UI_UPDATER_INTERVAL_MINUTES", "1440"))
 UI_UPDATER_STAMP_FILE: str = os.path.join(SETTINGS_DIR, "last_ui_update.txt")
-UI_UPDATER_SCRIPT: str = os.path.join(BASE_DIR, "SarahMemoryUIupdater.py")
+UI_UPDATER_SCRIPT: str = os.path.join(BASE_DIR, "core", "SarahMemoryUIupdater.py")
 
 
 def SHOULD_RUN_UI_UPDATER(now: datetime | None = None) -> bool:
@@ -5542,7 +5571,7 @@ try:
     WEBUI_HTML_PATH
 except NameError:
     import os as _os4
-    WEBUI_HTML_PATH = _os4.path.join(BASE_DIR, "data", "ui", "SarahMemory.html")
+    WEBUI_HTML_PATH = _os4.path.join(BASE_DIR, "ui", "web", "SarahMemory.html")
 
 # Bridge origin allowlist for JSâ†’Python
 try:
@@ -5587,7 +5616,7 @@ except Exception:
 if 'DATASETS_DIR' not in globals():
     DATASETS_DIR = os.path.join(DATA_DIR, 'memory', 'datasets')
 if 'STATIC_DIR' not in globals():
-    STATIC_DIR = os.path.join(BASE_DIR, 'server', 'static')
+    STATIC_DIR = os.path.join(BASE_DIR, 'api', 'server', 'static')
 
 # ============================================================================
 # Phase B: Context Engine, Agent Permissions, and Mesh Sync (v7.7.5)

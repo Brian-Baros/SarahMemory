@@ -28,18 +28,18 @@ ui/
 app.js
 index.html
 styles.css
-V8/          <-- built static UI (served to users)
-V8_ui_src/   <-- GitHub repo source (sarah-s-dashboard)
+v9/          <-- built static UI (served to users)
+V9_ui_src/   <-- GitHub repo source (sarah-s-dashboard)
 
 - Clones or updates the sarah-s-dashboard repo into:
-data/ui/V8_ui_src
+ui/V9_ui_src
 
-- Runs `npm install` (first time) and `npm run build` in V8_ui_src
+- Runs `npm install` (first time) and `npm run build` in V9_ui_src
 - Copies the built `dist/` (or `build/`) contents into:
-data/ui/V8
+ui/v9
 
 - Creates missing folders:
-data/ui, data/ui/V8, data/ui/V8_ui_src
+data/ui, ui/v9, ui/V9_ui_src
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ from __future__ import annotations
 # VALIDATION_TIME = "10:11:54"
 # PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
 # STRUCTURAL_MARKER = "from __future__ import annotations"
-# NOTES = "Web UI repo sync/build/deploy updater for V8_ui_src to V8. Handles clone/pull, npm install, npm build, backup, and static deployment."
+# NOTES = "Web UI repo sync/build/deploy updater for V9_ui_src to v9. Handles clone/pull, npm install, npm build, backup, and static deployment."
 # --- SARAHMETA END ---
 
 import os
@@ -91,11 +91,11 @@ warnings.filterwarnings("error", category=SyntaxWarning)
 # CONFIG / DEFAULTS
 # ---------------------------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(os.getenv("SARAHMEMORY_ROOT") or (Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name.lower() == "core" else Path(__file__).resolve().parent)).resolve()
 
-DATA_UI_DIR = BASE_DIR / "data" / "ui"
-SRC_DIR = DATA_UI_DIR / "V8_ui_src"   # where the repo lives & builds
-TARGET_DIR = DATA_UI_DIR / "V8"       # where the built UI is deployed
+DATA_UI_DIR = BASE_DIR / "ui"
+SRC_DIR = DATA_UI_DIR / "V9_ui_src"   # where the repo lives & builds
+TARGET_DIR = DATA_UI_DIR / "v9"       # where the built UI is deployed
 
 # Load GitHub token from .env (preferred)
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
@@ -192,7 +192,7 @@ def run_cmd(cmd: str, cwd: Path | None = None, check: bool = True) -> int:
 
 def ensure_base_dirs() -> None:
     """
-    Ensure data/ui, V8, and V8_ui_src directories exist.
+    Ensure data/ui, V8, and V9_ui_src directories exist.
     """
     print(f"[INFO] Ensuring base directories under: {DATA_UI_DIR}")
     DATA_UI_DIR.mkdir(parents=True, exist_ok=True)
@@ -422,7 +422,7 @@ def deploy_build(build_dir: Path) -> None:
 
 def clear_src_dir() -> None:
     """
-    Optional option to delete all files and directories in SRC_DIR (V8_ui_src) to save space,
+    Optional option to delete all files and directories in SRC_DIR (V9_ui_src) to save space,
     but keep the SRC_DIR folder itself so future runs can re-clone as needed.
     This is especially helpful on constrained environments like PythonAnywhere.
     Notice This OPTION is CURRENTLY DISABLED AND ENABLED USED a '#" on LINE 475
@@ -446,7 +446,7 @@ def clear_src_dir() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="SarahMemory Web UI Updater (using .env, V8/V8_ui_src layout)"
+        description="SarahMemory Web UI Updater (using .env, V8/V9_ui_src layout)"
     )
     parser.add_argument(
         "--skip-install",
@@ -461,7 +461,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-backup",
         action="store_true",
-        help="Skip backup of existing UI (data/ui/V8)."
+        help="Skip backup of existing UI (ui/v9)."
     )
     parser.add_argument(
         "--build-script",
@@ -499,7 +499,7 @@ def main() -> int:
         deploy_build(build_dir)
 
         # After a successful deployment, reclaim space by wiping the
-        # source checkout (V8_ui_src). On the next run the repo will
+        # source checkout (V9_ui_src). On the next run the repo will
         # simply should be cloned again if needed but doesn't.
         # 'OPTIONAL' just remove the '#' on Line 475 but if you do you have to manually download the SRC each time
         # you update as of 12/24/2025

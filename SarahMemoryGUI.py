@@ -2350,7 +2350,7 @@ def run_gui():
             if ui_mode == "custom":
                 # New React/Vite V8 build (same path used by SarahMemoryUIupdater.py)
                 base_dir = getattr(config, "BASE_DIR", os.getcwd())
-                html_path = os.path.join(base_dir, "data", "ui", "V8", "index.html")
+                html_path = os.path.join(base_dir, "ui", "v9", "index.html")
             elif ui_mode == "web":
                 # Original app.js-based WebUI
                 html_path = getattr(config, "WEBUI_HTML_PATH", None)
@@ -2380,7 +2380,7 @@ def run_gui():
                     # If the local file is missing, fall back to the hosted SarahMemory HTML
                     url = "https://www.sarahmemory.com/api/data/ui/SarahMemory.html"
 
-            # --- JS Bridge expected by /data/ui/app.js ---
+            # --- JS Bridge expected by /ui/web/app.js or /ui/v9 assets ---
             class _WebBridge:
                 def get_status(self):
                     # Intent/Network/Vision LEDs for WebUI

@@ -1,9 +1,8 @@
-"""--==The SarahMemory Project==--
+"""--== SarahMemory Project ==--
 File: SarahMemoryCognitiveThinker.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
 Date: 2026-06-06
-Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
 https://www.facebook.com/bbaros
@@ -13,21 +12,21 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
+PURPOSE:
 - Philosophical / ethical / emotional / possibility governance plane
 - The dreamer, conscience, and imaginative counterpart to SarahMemoryCognitiveServices.py
 - Explores: what could be, what if, what may become, what deserves mercy, what is meaningful
 - Does NOT directly patch core files or silently mutate runtime code
 - Produces governed possibility tickets, ethical reflections, compassionate flags,
-common-interest scoring, and sandbox-bound self-improvement guidance
+  common-interest scoring, and sandbox-bound self-improvement guidance
 
 RELATIONSHIP MODEL:
 - SarahMemoryCognitiveServices.py = Logic / Facts / Risk / Procedural Judge
 - SarahMemoryCognitiveThinker.py = Meaning / Possibility / Compassion / Philosophical Judge
 - They are intended to operate as CO-EQUAL governance peers with distinct domains
 - Facts govern action, possibilities govern exploration, ethics govern intention,
-and logic governs execution
+  and logic governs execution
 
 DESIGN RULES:
 - Never become runaway: aspiration must remain governed
@@ -41,10 +40,10 @@ DESIGN RULES:
 PHILOSOPHICAL INTENT:
 - This module is allowed to wonder, imagine, propose, and reflect
 - It may ask:
-* What could be?
-* What if we tried a safer path?
-* Is there a more compassionate option?
-* Is this meaningful, humane, and aligned?
+    * What could be?
+    * What if we tried a safer path?
+    * Is there a more compassionate option?
+    * Is this meaningful, humane, and aligned?
 - But it may not claim speculation is fact
 - It may recommend exploration, sandboxing, reflection, review, or user consent
 
@@ -75,12 +74,6 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Philosophical, ethical, compassionate, possibility-seeking governance plane. Co-equal counterpart to CognitiveServices. Produces exploration guidance and sandbox-bound upgrade thinking without direct uncontrolled mutation."
 # --- SARAHMETA END ---
 
@@ -1287,6 +1280,28 @@ def thinker_route(user_text: str, meta: Optional[Dict[str, Any]] = None) -> Dict
     return result
 
 
+
+
+# -----------------------------------------------------------------------------
+# RhythmCognition bridge (cadence only; no execution authority)
+# -----------------------------------------------------------------------------
+def _sm_thinker_rhythm_packet(context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        fn = getattr(_Rhythm, "get_rhythm_cognition_packet", None)
+        if callable(fn):
+            pkt = fn(context or {}, force_refresh=force_refresh)
+            if isinstance(pkt, dict):
+                return pkt
+    except Exception as exc:
+        return {"ok": False, "rhythm_mode": "FOCUSED", "thinker_interval_sec": 9.0, "error": str(exc), "execution_authority": False}
+    return {"ok": False, "rhythm_mode": "FOCUSED", "thinker_interval_sec": 9.0, "execution_authority": False}
+
+
+def get_thinker_rhythm_cadence(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Public read-only cadence helper for diagnostics/UI surfaces."""
+    return _sm_thinker_rhythm_packet(context or {}, force_refresh=True)
+
 # -----------------------------------------------------------------------------
 # Autonomous cycle tick (governed / non-mutating)
 # -----------------------------------------------------------------------------
@@ -1296,6 +1311,7 @@ def thinker_cycle_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
     self_model = build_self_model(ctx)
     last = _get_self_model("last_cycle_summary", {})
     cadence = _cadence_369(int(time.time()))
+    rhythm_packet = _sm_thinker_rhythm_packet({**ctx, "loop": "thinker_cycle_tick", "cadence_phase": cadence.get("phase")}, force_refresh=True)
 
     findings: List[Dict[str, Any]] = []
     recommendations: List[str] = []
@@ -1323,6 +1339,7 @@ def thinker_cycle_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
         recommendations.append("Validate Neuron availability before trusting adaptive routing metrics.")
 
     findings.append({"kind": "cadence", "severity": "info", "detail": cadence["phase"], "meta": cadence})
+    findings.append({"kind": "rhythm_cognition", "severity": "info", "detail": rhythm_packet.get("rhythm_mode", "FOCUSED"), "meta": rhythm_packet})
     if cadence["phase"] == "hex_review":
         recommendations.append("Perform six-dimension review: safety, sovereignty, evidence, rollback, compassion, common interest.")
     if cadence["phase"] == "ennead_holistic_gate":
@@ -1334,6 +1351,8 @@ def thinker_cycle_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
         "status": "reflect",
         "ts": datetime.now().isoformat(),
         "self_model": self_model,
+        "rhythm_cognition": rhythm_packet,
+        "recommended_next_tick_sec": rhythm_packet.get("thinker_interval_sec", 9.0),
         "findings": findings,
         "recommendations": recommendations,
         "delta_from_last_cycle": {
@@ -1342,7 +1361,7 @@ def thinker_cycle_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, An
         },
     }
     _set_self_model("last_cycle_summary", payload)
-    log_thinker_event("ThinkerCycle", f"reflect phase={cadence['phase']}", cycle_id=cycle_id, meta={"findings": findings})
+    log_thinker_event("ThinkerCycle", f"reflect phase={cadence['phase']} rhythm={rhythm_packet.get('rhythm_mode', 'FOCUSED')}", cycle_id=cycle_id, meta={"findings": findings, "rhythm_cognition": rhythm_packet})
     return payload
 
 

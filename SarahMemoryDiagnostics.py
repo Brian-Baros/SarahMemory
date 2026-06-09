@@ -1,6 +1,6 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryDiagnostics.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
 Date: 2026-06-06
 Time: 10:11:54
@@ -13,12 +13,9 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 """
-
 from __future__ import annotations
-
 # --- SARAHMETA START ---
 # GRADE = "A"
 # ROLE = "diagnostics_engine"
@@ -36,15 +33,8 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "System diagnostics and health-check engine for required files, governed core status, response-memory schema, network/API reachability, WebUI bridge checks, and module self-tests."
 # --- SARAHMETA END ---
-
 import os
 import logging
 import platform
@@ -125,6 +115,7 @@ REQUIRED_FILES = [
     os.path.join(config.BASE_DIR, "SarahMemoryReminder.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryReply.py"),
     os.path.join(config.BASE_DIR, "SarahMemoryResearch.py"),
+    os.path.join(config.BASE_DIR, "SarahMemoryRhythmCognition.py"), # Core cadence/rhythm/anti-thrash organ
     os.path.join(config.BASE_DIR, "SarahMemorySelfAware.py"), #System selfawareness automation file
     os.path.join(config.BASE_DIR, "SarahMemorySOBJE.py"),
     os.path.join(config.BASE_DIR, "SarahMemorySi.py"),
@@ -315,6 +306,45 @@ def _get_response_layer_schema_report() -> dict:
         report['details']['error'] = str(e)
     return report
 
+
+
+# ---------------------------------------------------------------------------
+# RHYTHM COGNITION DIAGNOSTICS - v9.0.0
+# ---------------------------------------------------------------------------
+def get_rhythm_cognition_health() -> dict:
+    """Best-effort health packet for the RhythmCognition core organ."""
+    report = {
+        "available": False,
+        "module": "SarahMemoryRhythmCognition",
+        "status": "missing_or_unavailable",
+        "packet": {},
+        "doctrine": {
+            "cadence_only": True,
+            "no_execution_authority": True,
+            "smget_required_for_actions": True,
+        },
+    }
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        fn = getattr(_Rhythm, "get_rhythm_diagnostics", None)
+        if callable(fn):
+            data = fn({"caller": "SarahMemoryDiagnostics.get_rhythm_cognition_health"})
+            if isinstance(data, dict):
+                report.update(data)
+                report["available"] = True
+                report["status"] = "ok" if data.get("ok", True) else "degraded"
+                return report
+        fn2 = getattr(_Rhythm, "get_rhythm_cognition_packet", None)
+        if callable(fn2):
+            pkt = fn2({"caller": "SarahMemoryDiagnostics.get_rhythm_cognition_health"}, force_refresh=True)
+            report["available"] = True
+            report["status"] = "ok"
+            report["packet"] = pkt if isinstance(pkt, dict) else {"value": repr(pkt)}
+            return report
+    except Exception as exc:
+        report["status"] = "error"
+        report["error"] = str(exc)
+    return report
 # ============================
 # PHASE A: Identity & Device Awareness (v7.7.5–8)
 # ============================
@@ -3740,7 +3770,6 @@ def collect_thermal_hard_evidence(requested_component="body_thermal", claim="", 
         'read_only':True,
         'action_taken':False,
     }
-
 # ====================================================================
 # END OF SarahMemoryDiagnostics.py v9.0.0
 # ====================================================================

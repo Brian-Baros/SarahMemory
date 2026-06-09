@@ -1,6 +1,6 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAdaptive.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
 Date: 2026-06-06
 Time: 10:11:54
@@ -13,12 +13,12 @@ https://www.sarahmemory.com
 https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
-
 ===============================================================================
 
 ADAPTIVE BEHAVIOR ENGINE
 ======================================================
 
+PURPOSE:
 --------
 This module serves as the "personality auto-tuning layer" that learns and adapts
 to user preferences, patterns, timing, and operational habits. It sits beneath
@@ -27,26 +27,26 @@ SarahMemoryPersonality.py and provides the dynamic behavioral foundation.
 KEY CAPABILITIES:
 -----------------
 1. EMOTIONAL INTELLIGENCE
-- Real-time sentiment analysis from user input
-- Plutchik's 8 primary emotions model (joy, trust, fear, surprise, sadness, disgust, anger, anticipation)
-- Emotional momentum and decay over time
-- Emotional memory persistence to database
+   - Real-time sentiment analysis from user input
+   - Plutchik's 8 primary emotions model (joy, trust, fear, surprise, sadness, disgust, anger, anticipation)
+   - Emotional momentum and decay over time
+   - Emotional memory persistence to database
 
 2. ADAPTIVE LEARNING
-- User preference pattern recognition
-- Response style adaptation (verbosity, formality, humor)
-- Time-of-day behavioral adjustments
-- Session-based and long-term learning
+   - User preference pattern recognition
+   - Response style adaptation (verbosity, formality, humor)
+   - Time-of-day behavioral adjustments
+   - Session-based and long-term learning
 
 3. SYSTEM AWARENESS
-- CPU/Memory-aware mode switching (lightweight/balanced/enhanced)
-- Resource-conscious emotional processing
-- Graceful degradation under load
+   - CPU/Memory-aware mode switching (lightweight/balanced/enhanced)
+   - Resource-conscious emotional processing
+   - Graceful degradation under load
 
 4. REINFORCEMENT LEARNING
-- Positive/negative feedback integration
-- Interaction quality scoring
-- Behavioral adjustment based on outcomes
+   - Positive/negative feedback integration
+   - Interaction quality scoring
+   - Behavioral adjustment based on outcomes
 
 INTEGRATION POINTS:
 -------------------
@@ -66,7 +66,6 @@ DATABASE TABLES:
 """
 
 from __future__ import annotations
-
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "adaptive_engine"
@@ -84,15 +83,8 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Adaptive behavior and emotional tuning engine. Learns preferences, tracks emotional state, adjusts response style, and degrades gracefully by resource mode."
 # --- SARAHMETA END ---
-
 import logging
 import sqlite3
 import datetime
@@ -1494,6 +1486,87 @@ def get_emotional_metrics() -> Dict[str, float]:
     }
 
 
+# ---------------------------------------------------------------------------
+# RHYTHM COGNITION BRIDGE - v9.0.0
+# ---------------------------------------------------------------------------
+def get_adaptive_rhythm_basis(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Export a compact emotional/resource basis for SarahMemoryRhythmCognition.
+
+    This is a read-only bridge. It does not authorize actions, does not change
+    emotional state, and does not directly control hardware. RhythmCognition uses
+    this packet to determine cadence, anti-thrash budgets, and urgency pacing.
+    """
+    ctx = dict(context or {})
+    try:
+        metrics = get_emotional_metrics()
+    except Exception:
+        metrics = {}
+    try:
+        state = get_current_emotional_state()
+    except Exception:
+        state = {}
+
+    dominant = str(metrics.get("dominant_emotion") or metrics.get("label") or "neutral")
+    intensity = 0.0
+    try:
+        intensity = float(metrics.get("intensity", 0.0) or 0.0)
+    except Exception:
+        intensity = 0.0
+
+    urgency = 0.0
+    try:
+        text = str(ctx.get("text") or ctx.get("user_text") or ctx.get("command_text") or "").lower()
+        urgent_terms = ("hurry", "urgent", "asap", "immediately", "emergency", "danger", "fire", "medical", "collision", "run", "faster", "help")
+        if any(term in text for term in urgent_terms):
+            urgency = max(urgency, 0.68)
+        if ctx.get("emergency") or ctx.get("human_risk") or ctx.get("person_at_risk"):
+            urgency = max(urgency, 0.92)
+        if dominant.lower() in ("fear", "anger", "surprise", "anticipation") and intensity >= 0.55:
+            urgency = max(urgency, min(1.0, 0.45 + intensity * 0.45))
+    except Exception:
+        urgency = 0.0
+
+    resource = {
+        "cpu": 0.0,
+        "memory": 0.0,
+        "pressure_tier": "unknown",
+    }
+    try:
+        if _HAS_PSUTIL and psutil is not None:
+            resource["cpu"] = round(float(psutil.cpu_percent(interval=None)), 2)
+            resource["memory"] = round(float(psutil.virtual_memory().percent), 2)
+            pressure = max(float(resource["cpu"]), float(resource["memory"]))
+            if pressure >= 88:
+                resource["pressure_tier"] = "critical"
+            elif pressure >= 75:
+                resource["pressure_tier"] = "high"
+            elif pressure >= 55:
+                resource["pressure_tier"] = "moderate"
+            else:
+                resource["pressure_tier"] = "normal"
+    except Exception:
+        pass
+
+    return {
+        "source": "SarahMemoryAdaptive.get_adaptive_rhythm_basis",
+        "dominant_emotion": dominant,
+        "label": metrics.get("label") or dominant,
+        "emotional_balance": metrics.get("emotional_balance", state.get("emotional_balance", 0.0)),
+        "openness": metrics.get("openness", state.get("openness", 0.6)),
+        "engagement": metrics.get("engagement", state.get("engagement", 0.4)),
+        "intensity": max(0.0, min(1.0, intensity)),
+        "adaptive_mode": metrics.get("mode", state.get("mode", "balanced")),
+        "urgency_score": round(max(0.0, min(1.0, urgency)), 4),
+        "resource": resource,
+        "execution_authority": False,
+        "notes": [
+            "Adaptive emotion informs cadence only.",
+            "SMGET/SafetyPolicies/OperatorCore remain required for action authority.",
+        ],
+    }
+
+
 def reset_emotional_state() -> Dict[str, Any]:
     """
     Reset emotional state to defaults.
@@ -1828,7 +1901,6 @@ def build_emotion_affect_packet(user_input: str, context_packet: Optional[Dict[s
             "execution_authority": False,
             "error": str(e),
         }
-
 # ====================================================================
 # END OF SarahMemoryAdaptive.py v9.0.0
 # ====================================================================

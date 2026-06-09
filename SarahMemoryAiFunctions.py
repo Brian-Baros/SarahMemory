@@ -1,6 +1,6 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryAiFunctions.py
-Part of the SarahMemory AiOS Governed Cognitive Runtime
+Part of the SarahMemory Companion AI-bot Platform
 Version: v9.0.0
 Date: 2026-06-06
 Time: 10:11:54
@@ -14,15 +14,14 @@ https://api.sarahmemory.com
 https://ai.sarahmemory.com
 https://store.sarahmemory.com
 
+
 ========================
 ✓ ALL legacy functions from v7.7.5 RESTORED
 ✓ ALL v8.0 advanced features INCLUDED
 ✓ 100% backward compatible
 ===============================================================================
 """
-
 from __future__ import annotations
-
 # --- SARAHMETA START ---
 # GRADE = "B"
 # ROLE = "agent_orchestrator"
@@ -40,15 +39,8 @@ from __future__ import annotations
 # FRONTEND_CANDIDATE = False
 # ADDON_CANDIDATE = False
 # DRIVER_CANDIDATE = False
-# RELEASE_PHASE = "ALPHA"
-# RELEASE_TRACK = "developer"
-# VALIDATION_DATE = "2026-06-06"
-# VALIDATION_TIME = "10:11:54"
-# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
-# STRUCTURAL_MARKER = "from __future__ import annotations"
 # NOTES = "Advanced agent runtime/orchestration layer with task planning, tool orchestration, knowledge graph, predictive modeling, and governed execution helpers."
 # --- SARAHMETA END ---
-
 from SarahMemoryAdvCU import classify_intent
 import re
 import logging
@@ -236,6 +228,63 @@ if not logger.hasHandlers():
     _h.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logger.addHandler(_h)
 logger.propagate = False
+
+
+# ---------------------------------------------------------------------------
+# RHYTHM COGNITION BRIDGE - v9.0.0
+# ---------------------------------------------------------------------------
+def _sm_rhythm_packet(context: Optional[Dict[str, Any]] = None, *, force_refresh: bool = False) -> Dict[str, Any]:
+    """Best-effort cadence packet. Rhythm is pacing only, never action authority."""
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        fn = getattr(_Rhythm, "get_rhythm_cognition_packet", None)
+        if callable(fn):
+            pkt = fn(context or {}, force_refresh=force_refresh)
+            if isinstance(pkt, dict):
+                return pkt
+    except Exception as exc:
+        return {"ok": False, "rhythm_mode": "FOCUSED", "agent_step_interval_sec": 1.2, "error": str(exc), "execution_authority": False}
+    return {"ok": False, "rhythm_mode": "FOCUSED", "agent_step_interval_sec": 1.2, "execution_authority": False}
+
+
+def _sm_rhythm_interval(kind: str, default: float, context: Optional[Dict[str, Any]] = None) -> float:
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        if kind == "meta_cognitive":
+            return max(1.0, float(getattr(_Rhythm, "get_thinker_interval")(context or {}, default=default)))
+        if kind == "learning":
+            pkt = _sm_rhythm_packet(context or {})
+            return max(5.0, float(pkt.get("living_loop_interval_sec", default)) * 6.0)
+        if kind == "diagnostic":
+            pkt = _sm_rhythm_packet(context or {})
+            return max(3.0, float(pkt.get("heartbeat_interval_sec", default)) * 6.0)
+        if kind == "predictive":
+            pkt = _sm_rhythm_packet(context or {})
+            return max(2.0, float(pkt.get("agent_step_interval_sec", default)) * 12.0)
+        if kind == "agent_watch":
+            fn = getattr(_Rhythm, "get_agent_watch_interval", None)
+            if callable(fn):
+                return max(0.08, min(0.50, float(fn(context or {}, default=default))))
+        if kind == "agent_step":
+            fn = getattr(_Rhythm, "get_agent_step_interval", None)
+            if callable(fn):
+                return max(0.12, float(fn(context or {}, default=default)))
+    except Exception:
+        pass
+    return float(default)
+
+
+def _sm_rhythm_throttle(key: str, *, context: Optional[Dict[str, Any]] = None, min_interval_sec: Optional[float] = None) -> Dict[str, Any]:
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        fn = getattr(_Rhythm, "throttle_key", None)
+        if callable(fn):
+            out = fn(key, context=context or {}, min_interval_sec=min_interval_sec)
+            if isinstance(out, dict):
+                return out
+    except Exception as exc:
+        return {"ok": False, "allow": True, "decision": "ALLOW", "error": str(exc), "execution_authority": False}
+    return {"ok": True, "allow": True, "decision": "ALLOW", "execution_authority": False}
 
 
 def _sm_module_approved(module_name: str) -> bool:
@@ -577,7 +626,7 @@ class AdvancedAgentState:
         """Continuous meta-cognitive reasoning and self-reflection"""
         while not self.shutdown_flag.is_set():
             try:
-                time.sleep(30)  # Reflect every 30 seconds
+                time.sleep(_sm_rhythm_interval("meta_cognitive", 30.0, {"loop": "meta_cognitive"}))  # RhythmCognition paced reflection
                 with self.lock:
                     self._perform_self_reflection()
             except Exception as e:
@@ -587,7 +636,7 @@ class AdvancedAgentState:
         """Continuous learning from interactions"""
         while not self.shutdown_flag.is_set():
             try:
-                time.sleep(60)  # Learn every minute
+                time.sleep(_sm_rhythm_interval("learning", 60.0, {"loop": "learning"}))  # RhythmCognition anti-thrash learning cadence
                 with self.lock:
                     self._process_learning_buffer()
             except Exception as e:
@@ -597,7 +646,7 @@ class AdvancedAgentState:
         """Monitor and diagnose performance issues"""
         while not self.shutdown_flag.is_set():
             try:
-                time.sleep(45)  # Diagnose every 45 seconds
+                time.sleep(_sm_rhythm_interval("diagnostic", 45.0, {"loop": "diagnostic"}))  # RhythmCognition paced diagnostics
                 with self.lock:
                     self._run_diagnostics()
             except Exception as e:
@@ -607,7 +656,7 @@ class AdvancedAgentState:
         """Predict future user needs"""
         while not self.shutdown_flag.is_set():
             try:
-                time.sleep(20)  # Predict every 20 seconds
+                time.sleep(_sm_rhythm_interval("predictive", 20.0, {"loop": "predictive"}))  # RhythmCognition paced prediction
                 with self.lock:
                     self._generate_predictions()
             except Exception as e:
@@ -1814,9 +1863,9 @@ def _start_input_watchers():
                         # If user is interacting, halt the agent
                         _agent_state["mode"] = "HALTED"
                         _agent_state["resume_eta_ms"] = _now_ms() + AI_AGENT_RESUME_DELAY
-                time.sleep(0.1)
+                time.sleep(_sm_rhythm_interval("agent_watch", 0.1, {"loop": "agent_watch"}))
             except Exception:
-                time.sleep(0.2)
+                time.sleep(_sm_rhythm_interval("agent_watch", 0.2, {"loop": "agent_watch", "exception": True}))
     import threading
     _watch_thread = threading.Thread(target=_loop, name="SM-AgentWatch", daemon=True)
     _watch_thread.start()
@@ -3214,6 +3263,10 @@ class SarahMemoryAgentRuntime:
 
     def submit_task(self, user_goal: str, *, context: Optional[Dict[str, Any]] = None, proposed_action: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         tid = uuid.uuid4().hex
+        rhythm_context = dict(context or {})
+        rhythm_context.update({"goal": str(user_goal or ""), "proposed_action": dict(proposed_action or {}), "loop": "sovereign_agent_submit"})
+        rhythm_packet = _sm_rhythm_packet(rhythm_context, force_refresh=True)
+        rhythm_guard = _sm_rhythm_throttle("sovereign_agent_submit", context=rhythm_context, min_interval_sec=float(rhythm_packet.get("agent_step_interval_sec", 0.75) or 0.75))
         task = {
             "task_id": tid,
             "created_ts": datetime.utcnow().isoformat() + "Z" if 'datetime' in globals() else str(time.time()),
@@ -3221,10 +3274,17 @@ class SarahMemoryAgentRuntime:
             "status": "PROPOSED",
             "context": dict(context or {}),
             "proposed_action": dict(proposed_action or {}),
+            "rhythm_cognition": rhythm_packet,
+            "rhythm_guard": rhythm_guard,
             "one_way_broker": True,
             "direct_execution": False,
         }
         governance = {"ok": False, "decision": "DEFER", "allow": False}
+        if not bool(rhythm_guard.get("allow", True)):
+            task["status"] = "WAITING_CADENCE"
+            task["governance"] = {"ok": True, "decision": "DEFER", "allow": False, "reason": "RhythmCognition anti-thrash cadence guard deferred this task."}
+            self.tasks[tid] = task
+            return {"ok": True, "task": task, "execution_started": False}
         try:
             import SarahMemoryCognitiveServices as _CogSvc  # type: ignore
             fn = getattr(_CogSvc, "govern_interop_broker_request", None)
@@ -3248,7 +3308,7 @@ class SarahMemoryAgentRuntime:
     def status(self, task_id: str = "") -> Dict[str, Any]:
         if task_id:
             return {"ok": bool(task_id in self.tasks), "task": self.tasks.get(task_id)}
-        return {"ok": True, "count": len(self.tasks), "tasks": list(self.tasks.values())}
+        return {"ok": True, "count": len(self.tasks), "rhythm_cognition": _sm_rhythm_packet({"caller": "agent_runtime_status"}), "tasks": list(self.tasks.values())}
 
 
 _AGENT_RUNTIME = SarahMemoryAgentRuntime()
@@ -3260,8 +3320,18 @@ def submit_sovereign_agent_task(user_goal: str, *, context: Optional[Dict[str, A
 
 def get_sovereign_agent_runtime_status(task_id: str = "") -> Dict[str, Any]:
     return _AGENT_RUNTIME.status(task_id)
-# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 
+
+try:
+    __all__.extend([
+        '_sm_rhythm_packet',
+        '_sm_rhythm_interval',
+        '_sm_rhythm_throttle',
+    ])
+except Exception:
+    pass
+
+# --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 # ====================================================================
 # END OF SarahMemoryAiFunctions.py v9.0.0
 # ====================================================================

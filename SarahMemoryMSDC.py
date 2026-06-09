@@ -159,6 +159,7 @@ READ_ONLY_ACTIONS = {
     "describe_capabilities", "probe_backends", "court_witness", "body_map",
     "operator_hud_status", "build_operator_hud_request", "operator_hud_surface",
     "build_hud_surface_request", "native_hmd_status", "native_headset_profile",
+    "rhythm_motion_witness", "rhythm_motion_intent", "motion_intent_witness",
 }
 
 PRIVACY_SENSITIVE_ACTIONS = {
@@ -1305,6 +1306,123 @@ def msdc_evaluate_physical_action_envelope(action_request: Optional[Dict[str, An
     }
 
 
+# ---------------------------------------------------------------------------
+# RHYTHM COGNITION / EMBODIED MOTION WITNESS - v9.0.0
+# ---------------------------------------------------------------------------
+def msdc_rhythm_motion_witness(
+    command_text: str = "",
+    *,
+    context: Optional[Dict[str, Any]] = None,
+    body_packet: Optional[Dict[str, Any]] = None,
+    hazard_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a read-only MSDC witness packet for rhythm-informed motion.
+
+    This function does NOT move hardware. It translates RhythmCognition's
+    MotionIntentPacket into MSDC feasibility/envelope checks so OperatorCore,
+    SMGET, SafetyPolicies, and AssuranceGate can decide whether anything may
+    proceed. Music/emotion/urgency may affect cadence suggestions only; MSDC
+    does not self-authorize motor movement.
+    """
+    ctx = dict(context or {})
+    body = dict(body_packet or {}) if isinstance(body_packet, dict) else {}
+    hazard = dict(hazard_packet or {}) if isinstance(hazard_packet, dict) else {}
+    motion_packet: Dict[str, Any] = {
+        "ok": False,
+        "error": "SarahMemoryRhythmCognition unavailable",
+        "execution_authority": False,
+    }
+
+    try:
+        import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+        fn = getattr(_Rhythm, "build_embodied_motion_packet", None)
+        if callable(fn):
+            motion_packet = fn(command_text, context=ctx, body_packet=body, hazard_packet=hazard)
+    except Exception as exc:
+        motion_packet = {"ok": False, "error": str(exc), "execution_authority": False}
+
+    profile = str(motion_packet.get("motion_profile") or "").lower()
+    rhythm_mode = str(motion_packet.get("rhythm_mode") or "FOCUSED")
+    suggested_actions: List[Dict[str, Any]] = []
+
+    def _add(body_part: str, action: str, reason: str) -> None:
+        suggested_actions.append({
+            "body_part": body_part,
+            "action": action,
+            "reason": reason,
+            "motion_profile": profile,
+            "rhythm_mode": rhythm_mode,
+        })
+
+    if profile in {"safe_stop", "still"}:
+        for part in ("head", "neck", "torso", "left_arm", "right_arm", "left_leg", "right_leg", "feet"):
+            _add(part, "safe_stop", "RhythmCognition requested still/safe-stop profile.")
+    elif profile in {"idle_sway", "slow_dance", "dance", "head_bob", "hand_tap"}:
+        _add("face_expression", "smile" if profile in {"slow_dance", "dance"} else "neutral", "Facial expression may match rhythm if approved.")
+        _add("head", "look_at" if profile == "head_bob" else "center_head", "Head/attention expression may follow rhythm if approved.")
+        if profile in {"slow_dance", "dance", "hand_tap"}:
+            _add("left_arm", "raise", "Upper-body rhythm expression suggestion only.")
+            _add("right_arm", "raise", "Upper-body rhythm expression suggestion only.")
+        if profile in {"slow_dance", "dance"}:
+            _add("torso", "stand_posture", "Posture/sway suggestion only; no locomotion authority.")
+    elif profile == "walk_pace_sync":
+        _add("hips", "balance_hold", "Locomotion balance witness required.")
+        _add("left_leg", "step", "RhythmCognition requested pace-sync movement; envelope must validate.")
+        _add("right_leg", "step", "RhythmCognition requested pace-sync movement; envelope must validate.")
+        _add("feet", "contact_status", "Ground-contact witness required before movement.")
+    else:
+        _add("face_expression", "neutral", "Default avatar/body expression fallback.")
+
+    envelopes: List[Dict[str, Any]] = []
+    for action in suggested_actions:
+        env_ctx = dict(ctx)
+        env_ctx.update({
+            "current_perception_fresh": bool(ctx.get("current_perception_fresh") or body.get("current_perception_fresh") or body.get("perception_fresh")),
+            "rhythm_motion_witness": True,
+        })
+        try:
+            envelopes.append(msdc_evaluate_physical_action_envelope(action, env_ctx))
+        except Exception as exc:
+            envelopes.append({
+                "ok": False,
+                "decision": "ENVELOPE_INVALID",
+                "body_part": action.get("body_part"),
+                "action_id": action.get("action"),
+                "reasons": [str(exc)],
+                "execution_authority": False,
+            })
+
+    envelope_ok = all(bool(e.get("ok")) for e in envelopes) if envelopes else False
+    return {
+        "ok": True,
+        "schema": "SarahMemoryMSDC.rhythm_motion_witness.v1",
+        "module": MODULE_NAME,
+        "version": MODULE_VERSION,
+        "mode": "READ_ONLY_WITNESS",
+        "execution_authority": False,
+        "rhythm_cognition_available": not bool(motion_packet.get("error")),
+        "motion_packet": motion_packet,
+        "suggested_actions": suggested_actions,
+        "envelopes": envelopes,
+        "envelope_ok": bool(envelope_ok),
+        "requires_smget": True,
+        "requires_operatorcore": True,
+        "requires_assurance": True,
+        "requires_current_sensor_evidence": True,
+        "requires_safe_stop": True,
+        "doctrine": {
+            "rhythm_is_not_motor_authority": True,
+            "music_may_not_directly_control_motors": True,
+            "emotion_may_not_override_safety": True,
+            "msdc_never_self_authorizes": True,
+        },
+    }
+
+
+def get_rhythm_motion_witness(command_text: str = "", context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return msdc_rhythm_motion_witness(command_text, context=context)
+
+
 def msdc_status() -> Dict[str, Any]:
     return {
         "ok": True,
@@ -1318,6 +1436,7 @@ def msdc_status() -> Dict[str, Any]:
         "vision_policy_path": str(_vision_policy_path()),
         "body_map": msdc_map_body(persist=False),
         "robotic_body_status": msdc_robotic_body_status(),
+        "rhythm_motion_witness_available": True,
     }
 
 
@@ -1336,6 +1455,10 @@ def get_court_witness(body_part: str = "eyes") -> Dict[str, Any]:
 
 def get_robotic_body_status() -> Dict[str, Any]:
     return msdc_robotic_body_status()
+
+
+def get_msdc_rhythm_motion_witness(command_text: str = "", context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return msdc_rhythm_motion_witness(command_text, context=context)
 
 
 def evaluate_physical_action_envelope(action_request: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

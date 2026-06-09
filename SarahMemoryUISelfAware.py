@@ -21,8 +21,8 @@ Sandboxed UI self-observation and frontend solution generator.
 This file is a SIDE TOOL meant to run in its own console while SarahMemory is
 already running locally. It does NOT modify the live frontend source tree.
 It studies the current frontend, API bridge files, and backend core modules,
-then writes proposed frontend solution files into ./data/ui/temp/solution and
-presence/integration audit reports into ./data/ui/temp/audits.
+then writes proposed frontend solution files into ./ui/temp/solution and
+presence/integration audit reports into ./ui/temp/audits.
 
 DESIGN INTENT:
 --------------
@@ -484,8 +484,8 @@ def _parse_sarahmeta_block(text: str) -> Dict[str, Any]:
 class SarahMemoryUISelfAware:
     def __init__(self, base_dir: Optional[Path] = None) -> None:
         self.base_dir = _find_project_root(base_dir or Path.cwd())
-        self.data_ui_dir = self.base_dir / "data" / "ui"
-        self.frontend_src_dir = self.data_ui_dir / "V8_ui_src" / "src"
+        self.data_ui_dir = self.base_dir / "ui"
+        self.frontend_src_dir = self.data_ui_dir / "V9_ui_src" / "src"
         self.api_server_dir = self.base_dir / "api" / "server"
         self.temp_root = self.data_ui_dir / "temp"
 

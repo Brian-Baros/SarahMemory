@@ -578,7 +578,7 @@ def launch_webui(gui=None, html_path: Optional[str] = None, title: str = "SarahM
         raise RuntimeError("pywebview is not installed. Run: pip install pywebview") from e
 
     base_dir = getattr(config, "BASE_DIR", os.getcwd())
-    hpath = html_path or getattr(config, "WEBUI_HTML_PATH", None) or os.path.join(base_dir, "data", "ui", "SarahMemory.html")
+    hpath = html_path or getattr(config, "WEBUI_HTML_PATH", None) or os.path.join(base_dir, "ui", "web", "SarahMemory.html")
     if not os.path.isabs(hpath):
         hpath = os.path.join(base_dir, hpath)
     if not os.path.exists(hpath):
@@ -592,7 +592,7 @@ def launch_webui(gui=None, html_path: Optional[str] = None, title: str = "SarahM
 def _resolve_ui_url() -> str:
     """Return a file:// URL to the local UI if it exists, else fall back to remote."""
     try:
-        ui_dir = Path(getattr(config, "UI_DIR", r"C:\SarahMemory\data\ui"))
+        ui_dir = Path(getattr(config, "UI_DIR", r"C:\SarahMemory\ui\web"))
         index = getattr(config, "UI_INDEX_FILE", "SarahMemory.html")
         local_index = ui_dir / index
         if local_index.exists():

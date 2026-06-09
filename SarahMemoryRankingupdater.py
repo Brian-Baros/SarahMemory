@@ -90,7 +90,7 @@ except Exception as e:
 # CONFIG / DEFAULTS
 # ---------------------------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent
+BASE_DIR = Path(os.getenv("SARAHMEMORY_ROOT") or (Path(__file__).resolve().parent.parent if Path(__file__).resolve().parent.name.lower() == "core" else Path(__file__).resolve().parent)).resolve()
 
 
 def resolve_static_target_dir() -> Path:
