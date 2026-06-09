@@ -110,13 +110,13 @@ SANDBOX_DOMAINS = {"apps", "addons", "websites", "panels", "scada", "iot", "robo
 EXPLICIT_CREATE_ZONES = (
     "data/devbridge/sandbox/",
     "data/addons/",
-    "data/drivers/",
+    "drivers/",
     "data/exports/",
 )
 CORE_EXISTING_ONLY_PREFIXES = (
     "api/",
     "app/",
-    "data/ui/",
+    "ui/",
 )
 CORE_EXISTING_ONLY_FILES = (
     "app.py",
@@ -642,6 +642,10 @@ def _path_policy_for_candidate(rel: str, *, allow_create: bool = False, expected
         checks.append("sandbox_zone")
     if info["zone"] in {"driver", "addon"}:
         warnings.append("runtime_extension_zone_requires_manifest_validation_before_activation")
+    if arile_is_protected_core_file(rel):
+        errors.append("direct_patch_blocked_by_arile_policy")
+        warnings.append("SarahMemoryARILE.py/SarahMemoryGlobals.py require protected-core manual promotion or ARILE overlay lane; DevBridge direct apply is blocked.")
+        _arile_emit_devbridge("protected_core_stage_attempt", f"DevBridge staging blocked for protected core file: {rel}", target_path=rel)
 
     return {
         **info,
@@ -1422,6 +1426,9 @@ def devbridge_apply_approved():
                 content = ""
             allow_create = _boolish(item.get("allow_create") or item.get("new_file_approved"), False)
             policy = _path_policy_for_candidate(rel, allow_create=allow_create, expected_existing=_boolish(item.get("expected_existing"), False))
+            if arile_is_protected_core_file(rel):
+                _arile_emit_devbridge("protected_core_apply_attempt", f"DevBridge apply blocked for protected core file: {rel}", target_path=rel, stage_id=stage_id)
+                raise PermissionError("direct_patch_blocked_by_arile_policy")
             if not policy.get("ok"):
                 raise ValueError("path_policy_failed:" + ",".join(policy.get("errors", [])))
             existed_before = os.path.exists(target_path)

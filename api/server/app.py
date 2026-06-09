@@ -104,12 +104,15 @@ logger = app_logger  # consistent alias
 
 def _find_project_root(start_dir: str, max_up: int = 6) -> str:
     """
-    Walk upward from start_dir to locate SarahMemoryGlobals.py (project root marker).
-    This fixes cases where app.py runs from /api/server and only adds /api to sys.path.
+    Walk upward from start_dir to locate the SarahMemory project root.
+    In v9, SarahMemoryGlobals.py lives under ./core while app.py lives under ./api/server.
     """
     cur = os.path.abspath(start_dir)
     for _ in range(max_up):
         marker = os.path.join(cur, "SarahMemoryGlobals.py")
+        core_marker = os.path.join(cur, "core", "SarahMemoryGlobals.py")
+        if os.path.exists(core_marker):
+            return cur
         if os.path.exists(marker):
             return cur
         parent = os.path.abspath(os.path.join(cur, ".."))
@@ -129,9 +132,15 @@ ROOT_PARENT = os.path.abspath(os.path.join(_THIS_DIR, ".."))
 ROOT_GRANDPARENT = os.path.abspath(os.path.join(_THIS_DIR, "..", ".."))
 ROOT_DISCOVERED = _find_project_root(_THIS_DIR)
 
-# Insert best root first
-for p in (ROOT_DISCOVERED, ROOT_GRANDPARENT, ROOT_PARENT):
-    if p and p not in sys.path:
+# Insert best root/core paths first
+for p in (
+    os.path.join(ROOT_DISCOVERED, "core"),
+    ROOT_DISCOVERED,
+    os.path.join(ROOT_GRANDPARENT, "core"),
+    ROOT_GRANDPARENT,
+    ROOT_PARENT,
+):
+    if p and os.path.isdir(p) and p not in sys.path:
         sys.path.insert(0, p)
 
 
@@ -146,10 +155,10 @@ try:
     PROJECT_VERSION = getattr(config, "PROJECT_VERSION", "9.0.0") # Ensure v9.0.0 as per spec
 except Exception as e:
     app_logger.warning(f"SarahMemoryGlobals (config) import failed or missing attributes. Falling back to local defaults: {e}")
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # /api/server
-    PUBLIC_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))  # /api
-    WEB_DIR = PUBLIC_DIR  # serve index.html from /api
-    DATA_DIR = os.path.join(BASE_DIR, "data")  # /api/server/data
+    BASE_DIR = ROOT_DISCOVERED if ROOT_DISCOVERED else ROOT_GRANDPARENT
+    PUBLIC_DIR = os.path.abspath(os.path.join(BASE_DIR, "api"))
+    WEB_DIR = os.path.abspath(os.path.join(BASE_DIR, "ui"))
+    DATA_DIR = os.path.join(BASE_DIR, "data")
     PROJECT_VERSION = "9.0.0" # Ensure v9.0.0 as per spec
 
 
@@ -664,8 +673,8 @@ STATIC_DIR = os.path.join(SERVER_DIR, "static")
 TEMPLATE_DIR = SERVER_DIR if os.path.exists(os.path.join(STATIC_DIR, "index.html")) else WEB_DIR
 
 # Web UI dist root (Lovable/Vite build output)
-# Expected: <PROJECT_ROOT>/data/ui/v8/
-UI_DIST_DIR = os.path.abspath(os.path.join(SERVER_DIR, "..", "..", "data", "ui", "v8"))
+# Expected: <PROJECT_ROOT>/ui/v9/
+UI_DIST_DIR = os.path.abspath(os.path.join(SERVER_DIR, "..", "..", "ui", "v9"))
 WALLETS_DIR = os.path.join(DATA_DIR, "wallets")
 META_DB = os.path.join(DATA_DIR, "meta.db") # merged meta DB
 LOGS_DIR = os.path.join(DATA_DIR, "logs") # Default to DATA_DIR/logs
@@ -1514,6 +1523,42 @@ app = Flask(
     static_url_path="/api/static",
     template_folder=TEMPLATE_DIR
 )
+
+# ARILE API boundary guard. The API server is a boundary sensor, not the ARILE engine.
+try:
+    from SarahMemoryARILE import arile_endpoint_guard, arile_emit, get_arile_runtime_status
+except Exception:  # pragma: no cover
+    arile_endpoint_guard = None  # type: ignore
+    arile_emit = None  # type: ignore
+    get_arile_runtime_status = None  # type: ignore
+
+@app.before_request
+def _arile_api_boundary_preflight():
+    try:
+        if callable(arile_endpoint_guard):
+            decision = arile_endpoint_guard(
+                endpoint_name=str(getattr(request, "path", "")),
+                request_meta={
+                    "method": getattr(request, "method", ""),
+                    "content_length": getattr(request, "content_length", 0) or 0,
+                    "remote_addr": getattr(request, "remote_addr", ""),
+                },
+                risk="medium" if str(getattr(request, "path", "")).startswith("/api/devbridge") else "low",
+            )
+            if decision == "block":
+                return jsonify({"ok": False, "error": "request_blocked_by_arile"}), 429
+    except Exception:
+        return None
+    return None
+
+@app.get("/api/arile/status")
+def arile_status_api():
+    try:
+        if callable(get_arile_runtime_status):
+            return jsonify(get_arile_runtime_status())
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": False, "error": "SarahMemoryARILE unavailable"}), 503
 
 # Ensure Flask has a secret key for session cookies (used by /api/ui/bootstrap)
 SECRET_KEY_FILE = os.path.join(DATA_DIR, ".secret_key")

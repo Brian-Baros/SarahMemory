@@ -86,6 +86,30 @@ import bleach
 
 from flask import Blueprint, jsonify, request, send_file
 
+# ARILE boundary helper. API files emit compact variance signals only; the central
+# backend engine remains SarahMemoryARILE.py.
+try:
+    from SarahMemoryARILE import arile_emit, arile_endpoint_guard
+except Exception:  # pragma: no cover
+    arile_emit = None  # type: ignore
+    arile_endpoint_guard = None  # type: ignore
+
+def _arile_api_emit(failure_type: str, summary: str, severity: float = 0.55, **data):
+    try:
+        if callable(arile_emit):
+            arile_emit(source=f"api.server.{__name__}", kind="api_boundary_variance", failure_type=failure_type, severity=severity, confidence=0.85, risk="high" if severity >= 0.75 else "medium", summary=summary, requires_governance=severity >= 0.75, retention="security_audit" if severity >= 0.75 else "diagnostic", data=data)
+    except Exception:
+        pass
+
+def _arile_check_request(endpoint_name: str, risk: str = "low") -> str:
+    try:
+        if callable(arile_endpoint_guard):
+            return arile_endpoint_guard(endpoint_name, {"method": getattr(request, "method", ""), "content_length": getattr(request, "content_length", 0) or 0, "remote_addr": getattr(request, "remote_addr", "")}, risk=risk)
+    except Exception:
+        pass
+    return "allow"
+
+
 bp = Blueprint("appsys_v800", __name__)
 logger = logging.getLogger(__name__)
 
