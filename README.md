@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | June 08, 2026 |
+| **Last Update** | June 09, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -2977,8 +2977,9 @@ It gives the organism rhythm.
 
 It allows SarahMemory to slow down when caution is required, speed up when urgency is real, stabilize itself under load, reduce runtime thrashing, and prepare for emotionally aware robotic motion while remaining governed, auditable, modular, and user-controlled.
 
-```
+
 # **📅 June 9th, 2026 —  ## v9.0.0 Update — SarahMemoryARILE.py Core Organ - Solved the Moravec's Paradox
+
 ## Section I — ARILE: Adaptive Reality Intelligence Layer Engine
 
 SarahMemory AiOS v9.0.0 introduces **ARILE**, the **Adaptive Reality Intelligence Layer Engine**.
@@ -2987,7 +2988,6 @@ ARILE is a governed runtime organ designed to detect, structure, and route real-
 
 ARILE does **not** replace SarahMemory’s existing governance, security, robotics, or safety systems. It interlocks them.
 
----
 
 ### Core Purpose
 
