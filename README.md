@@ -3176,7 +3176,8 @@ ARILE provides a runtime organ between perception, cybersecurity, diagnostics, r
 ARILE is SarahMemory’s adaptive reality watchdog.
 
 It converts real-world variance into structured operational evidence, preserves governance, prevents uncontrolled mutation, reduces runtime overload, strengthens cyber-physical safety, and verifies reality before action.
-
+---
+![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
 ---
 # **📜 License**
 
