@@ -3185,7 +3185,7 @@ It converts real-world variance into structured operational evidence, preserves 
 
 -keep pushing forward in development and do longer delays - and slower releases. 
 
--keep files more privatized until everyone else starts catching up, now deleting highly valuable aspects files from public view to prevent copycats.
+-Continue on v9.0-> v10.0 Planned Roadmap
 
 ![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
 
