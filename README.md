@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | June 10, 2026 |
+| **Last Update** | June 12, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -3177,10 +3177,10 @@ ARILE is SarahMemory’s adaptive reality watchdog.
 
 It converts real-world variance into structured operational evidence, preserves governance, prevents uncontrolled mutation, reduces runtime overload, strengthens cyber-physical safety, and verifies reality before action.
 ---
-# **📅 June 10th, 2026 —  ## v9.0.0 Roadmap - AI Paradigm shift Occurance. 
+# **📅 June 10th,-12th 2026 —  ## v9.0.0 Roadmap - AI Paradigm shift Occurance. 
 -define Organic AI [release new whitepaper]
 -update and warn the AI community via social media(LinkedIN, Facebook, reddit).
--keep pushing forward in development and do longer delays - and slower releases. -keep files more privatized until everyone else starts catching up.
+-keep pushing forward in development and do longer delays - and slower releases. -keep files more privatized until everyone else starts catching up, now deleting highly valuable aspects files from public view to prevent copycats.
 ![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
 
 ---
