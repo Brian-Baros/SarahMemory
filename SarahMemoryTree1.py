@@ -1,5 +1,5 @@
 """--==The SarahMemory Project==--
-File: SarahMemoryTree_PATCHED.py
+File: SarahMemoryTree.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.0.0
 Date: 2026-06-06
@@ -428,5 +428,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 # ====================================================================
-# END OF SarahMemoryTree_PATCHED.py v9.0.0
+# END OF SarahMemoryTree.py v9.0.0
 # ====================================================================
