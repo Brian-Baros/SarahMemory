@@ -3196,7 +3196,14 @@ are happening,
 -Continue on v9.0-> v10.0 Planned Roadmap
 
 ![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
+---
+## License
 
+SarahMemory AIOS v9.0.0 and later are licensed under the SarahMemory Community License (SMCL) v2.0.
+
+This is a source-available, non-commercial, AI/ML-restricted, cloud/datacenter-restricted, community and academic-collaboration license. It is not an MIT, Apache, BSD, GPL, or OSI-approved open-source license.
+
+See [LICENSE](./LICENSE).
 ---
 # **📜 License**
 
