@@ -3177,13 +3177,16 @@ ARILE is SarahMemory’s adaptive reality watchdog.
 
 It converts real-world variance into structured operational evidence, preserves governance, prevents uncontrolled mutation, reduces runtime overload, strengthens cyber-physical safety, and verifies reality before action.
 ---
-# **📅 June 10th,-12th 2026 —  ## v9.0.0 Roadmap - AI Paradigm shift Occurance. 
+# **📅 June 10th,-12th 2026 —  ## alpha v9.0.0 to v10=[beta v0.0.1] (Roadmap - AI Paradigm shift Occurance. 
 
--define Organic AI [release new whitepaper]
+-define Organic AI [release new whitepaper] and articles 
 
--update and warn the AI community via social media(LinkedIN, Facebook, reddit).
+-update the AI community via social media(LinkedIN, Facebook, reddit) with articles about the system.
 
 -keep pushing forward in development and do longer delays - and slower releases. 
+
+-During this Now version 9.0 development to hit version 10 vast changes including remapping directory structure and more 
+are happening, File deletion and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
 
 -Continue on v9.0-> v10.0 Planned Roadmap
 
