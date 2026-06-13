@@ -1,0 +1,664 @@
+SARAHMEMORY COMMUNITY LICENSE (SMCL) v2.0
+================================================
+Community, Academic Collaboration, and Protected Organ Contribution License
+
+Copyright (c) 2025-2026 Brian Lee Baros
+SOFTDEV0 LLC and Brian Lee Baros ("Licensor")
+
+SPDX-License-Identifier: LicenseRef-SarahMemory-Community-License-2.0
+
+This license is intentionally restrictive. It is designed to keep the
+SarahMemory Project, SarahMemory AIOS, SarahMemory Network Mesh / SarahNet,
+SarahMemory PowerStore, Organic AI terminology, SarahMemory architectural
+materials, and related documentation free for approved individual,
+non-commercial, community, educational, and research-oriented use while
+preventing unauthorized commercial exploitation, architectural replication,
+AI/ML training use, unauthorized cloud/datacenter deployment, and unauthorized
+corporate use.
+
+This license is source-available and community-restricted. It is not an MIT,
+Apache, BSD, GPL, public-domain, permissive open-source, or OSI-approved open
+source license. Assumptions of open-source permissiveness do not apply.
+
+BY USING, COPYING, MODIFYING, DISTRIBUTING, ACCESSING, DEPLOYING, STUDYING,
+CONTRIBUTING TO, OR INTERACTING WITH THE LICENSED MATERIALS, YOU AGREE TO BE
+BOUND BY THIS LICENSE. IF YOU DO NOT AGREE, DO NOT USE THE LICENSED MATERIALS.
+
+Any ambiguity shall be interpreted in favor of the Licensor and against
+permissive use. No rights are granted except those expressly stated in this
+License or in a separate written agreement issued or approved by the Licensor.
+
+
+0) VERSION APPLICABILITY AND TRANSITION
+---------------------------------------
+SMCL v2.0 applies to SarahMemory Project materials, repositories, releases,
+branches, files, documentation, and distributions that identify SMCL v2.0 as
+the controlling license.
+
+For SarahMemory AIOS, SMCL v2.0 is intended to apply to Version 9.0.0 and later
+unless a specific file, release, repository, agreement, or written notice states
+otherwise.
+
+Earlier releases or materials marked under SMCL v1.0 remain under SMCL v1.0
+unless the Licensor expressly republishes or relicenses them under SMCL v2.0.
+Nothing in SMCL v2.0 grants retroactive rights to materials not released under
+SMCL v2.0.
+
+A separate written agreement signed or otherwise approved by the Licensor may
+supersede or modify this License only for the parties and scope stated in that
+agreement.
+
+
+1) DEFINITIONS
+--------------
+"Licensed Materials" means the SarahMemory Project source code, binaries,
+software, scripts, tools, build artifacts, documentation, diagrams, comments,
+configuration files, schemas, protocols, APIs, interfaces, workflows, prompts,
+policies, governance models, design notes, research notes, terminology,
+roadmaps, datasets created by or for the project, organ designs, modules,
+plugins, drivers, extensions, updates, patches, releases, and all associated
+materials released under this License.
+
+"SarahMemory Project" means SarahMemory AIOS, SarahMemory AI-Bot Companion,
+SarahMemory Network Mesh / SarahNet, SarahMemory PowerStore, Organic AI
+terminology and doctrine, SarahMemory architectural writings, SarahMemory
+whitepapers, and related project materials authored, maintained, or released by
+or for the Licensor.
+
+"SarahMemory AIOS" means the SarahMemory AI Operating System architecture,
+software, runtime, organs, governance layers, memory systems, model-control
+layers, interfaces, drivers, documentation, and related system components.
+
+"Organic AI" means the SarahMemory-defined architectural paradigm for governed,
+modular, local-first, decentralized, embodied, auditable, user-sovereign AI
+systems organized around cooperating digital organs rather than a single model,
+cloud wrapper, or isolated AI agent.
+
+"Organ" means a modular SarahMemory AIOS subsystem or subsystem-pattern,
+including but not limited to memory organs, reasoning organs, language organs,
+vision organs, voice organs, governance organs, security organs, audit organs,
+model-routing organs, driver organs, interface organs, tool organs, perception
+organs, action organs, adaptive-rhythm organs, robotics organs, and other
+specialized components.
+
+"Organ Contribution" means any new Organ, module, subsystem, patch, driver,
+plugin, interface, schema, governance component, documentation package, test
+suite, model-control layer, memory component, perception component, action
+component, or related contribution intended to operate within, alongside, or in
+connection with SarahMemory AIOS.
+
+"Contributor" means any individual, student, instructor, researcher, developer,
+university, school, laboratory, organization, or entity that submits an Organ
+Contribution, patch, documentation change, issue, pull request, test result,
+proposal, design, or other contribution to the SarahMemory Project.
+
+"Official SarahMemory AIOS" means a build, branch, release, module, organ,
+roadmap, document, architecture, or distribution expressly designated as
+official by the Licensor.
+
+"Non-Commercial Use" means use by an individual person, hobbyist, researcher,
+student, instructor, non-profit organization, community group, or educational
+institution where the Licensed Materials are not used primarily to generate
+revenue, are not used by or on behalf of a commercial entity, are not used in a
+paid product or service, and are not used for unauthorized AI/ML training,
+cloud/datacenter deployment, or architectural replication.
+
+"Academic Use" means non-commercial use by students, instructors, schools,
+universities, research groups, laboratories, or educational programs for
+learning, review, classroom instruction, non-commercial research, local testing,
+academic discussion, documentation review, safety review, or controlled
+prototype development, subject to all restrictions in this License.
+
+"Academic Collaboration Agreement" means a separate written agreement issued or
+approved by the Licensor that authorizes specific academic, educational,
+research, laboratory, classroom, grant-funded, capstone, internship, university,
+or institutional collaboration involving the Licensed Materials.
+
+"Corporate / Commercial Use" means use by, for, on behalf of, or for the
+benefit of:
+- any corporation, company, LLC, partnership, commercial entity, startup,
+  venture-funded entity, contractor, vendor, or service provider;
+- any paid product, paid service, subscription, consulting engagement,
+  enterprise workflow, hosted service, SaaS platform, managed service,
+  outsourced service, or revenue-generating business process;
+- any internal business system or business automation system;
+- any commercial robotics, vehicle, manufacturing, industrial, cloud,
+  datacenter, defense, surveillance, healthcare, finance, education-technology,
+  or enterprise deployment;
+- any government agency or public-sector body using the Licensed Materials for
+  procurement, contracted operations, operational deployment, surveillance,
+  defense, law enforcement, public infrastructure, or revenue-generating
+  activity.
+
+"Corporate License" means a separate paid or written license agreement issued
+or approved by the Licensor that permits Corporate / Commercial Use.
+
+"AI / ML System" means any artificial intelligence system, machine learning
+model, neural network, foundation model, large language model, small language
+model, multimodal model, embedding model, autonomous agent, AI assistant,
+automated decision system, training pipeline, inference pipeline, evaluation
+system, ranking system, or synthetic data system.
+
+"AI / ML Training Use" means using the Licensed Materials, directly or
+indirectly, to train, fine-tune, distill, align, benchmark, evaluate, improve,
+condition, prompt-optimize, generate embeddings for, generate datasets for,
+extract rewards for, or otherwise influence any AI / ML System.
+
+"Deploy" means to run, host, expose, embed, distribute, integrate, execute,
+serve, provide access to, or make available the Licensed Materials to any
+person, organization, device, system, network, service, or third party by any
+means.
+
+"Cloud / Datacenter Deployment" means running, hosting, executing, exposing,
+or providing access to the Licensed Materials through public cloud platforms,
+private cloud platforms, enterprise datacenters, colocation facilities, rented
+GPU/AI compute platforms, SaaS systems, managed hosting, corporate servers,
+large-scale compute clusters, or remote multi-user infrastructure.
+
+"Restricted Entities" are defined in Section 11.
+
+
+2) GRANT OF RIGHTS FOR NON-COMMERCIAL USE
+-----------------------------------------
+Subject to all terms and restrictions in this License, the Licensor grants you
+a worldwide, royalty-free, non-exclusive, non-transferable, revocable license
+to:
+
+- use the Licensed Materials for Non-Commercial Use;
+- copy the Licensed Materials for Non-Commercial Use;
+- modify the Licensed Materials for Non-Commercial Use;
+- distribute unmodified copies for Non-Commercial Use;
+- distribute modified versions for Non-Commercial Use, provided all
+  redistribution conditions are satisfied;
+- study and discuss the Licensed Materials for personal, community,
+  educational, or non-commercial research purposes, provided such study or
+  discussion is not used for unauthorized AI / ML Training Use, architectural
+  replication, commercial exploitation, or circumvention of this License.
+
+No ownership rights are transferred. This is a limited license grant, not a
+sale, assignment, or waiver of rights.
+
+
+3) ACADEMIC USE AND UNIVERSITY COLLABORATION
+-------------------------------------------
+Academic Use is permitted only when it remains non-commercial, local or
+controlled, non-cloud unless expressly authorized, non-training, non-corporate,
+and fully compliant with this License.
+
+Schools, universities, instructors, students, laboratories, and researchers may
+review, discuss, test, and study Licensed Materials for non-commercial academic
+purposes, provided they do not:
+
+- use the Licensed Materials for AI / ML Training Use;
+- use the Licensed Materials to replicate the SarahMemory architecture;
+- deploy the Licensed Materials in cloud/datacenter environments without
+  written permission;
+- provide access to Restricted Entities or corporate sponsors without written
+  permission;
+- commercialize, sublicense, or sell any part of the Licensed Materials;
+- represent any academic build as Official SarahMemory AIOS without written
+  approval.
+
+Formal academic collaboration, institutional research, capstone projects,
+student organ-development programs, university lab deployments, grant-funded
+work, sponsored research, institutional publication, or integration of academic
+work into Official SarahMemory AIOS may require an Academic Collaboration
+Agreement at the Licensor's discretion.
+
+Nothing in this License prevents the Licensor from entering into separate
+written collaboration agreements, research agreements, academic partnerships,
+industry pilots, educational studies, university programs, laboratory
+evaluations, grant-funded work, technical review arrangements, corporate
+licenses, or other agreements on terms approved directly by the Licensor.
+
+No school, university, instructor, student, researcher, company, government
+body, nonprofit, foundation, investor, platform, AI provider, datacenter
+operator, or third party receives implied rights to commercial use,
+architectural replication, AI / ML Training Use, cloud deployment,
+sublicensing, derivative system creation, or ownership transfer unless those
+rights are expressly granted in a separate written agreement issued or approved
+by the Licensor.
+
+
+4) ORGAN CONTRIBUTION FRAMEWORK
+-------------------------------
+The SarahMemory Project may accept Organ Contributions, patches, modules,
+documentation, tests, research notes, design proposals, compatibility updates,
+and other contributions from approved individuals, communities, universities,
+and research collaborators.
+
+Submission of an Organ Contribution does not create any right to merge,
+publish, distribute, advertise, commercialize, or represent the contribution as
+an official SarahMemory AIOS component.
+
+The Licensor retains sole authority to review, accept, reject, modify, delay,
+remove, sandbox, quarantine, rename, restructure, document, integrate, or decline
+any Organ Contribution.
+
+No Organ Contribution becomes part of Official SarahMemory AIOS unless expressly
+accepted by the Licensor.
+
+The Licensor may require security review, governance review, code review,
+architectural review, documentation review, compatibility testing, audit testing,
+license review, safety evaluation, human review, and rollback testing before any
+Organ Contribution is accepted.
+
+Organ Contributions should identify, at minimum, where applicable:
+
+- organ name;
+- organ type;
+- purpose;
+- inputs;
+- outputs;
+- permissions required;
+- governance hooks;
+- Cognitive TriForce / SMGET impact;
+- memory access;
+- network access;
+- file-system access;
+- driver/body/device access;
+- risk level;
+- rollback method;
+- audit logs generated;
+- tests included;
+- third-party dependencies;
+- contributor sign-off.
+
+
+5) CONTRIBUTOR GRANT
+--------------------
+By submitting any Organ Contribution or other contribution to the SarahMemory
+Project, the Contributor represents that they have the legal right to submit the
+contribution and grants the Licensor a perpetual, worldwide, royalty-free,
+non-exclusive, irrevocable license to use, copy, modify, adapt, merge, publish,
+distribute, sublicense, relicense, maintain, secure, audit, test, document,
+commercialize, and incorporate the contribution into:
+
+- the SarahMemory Project;
+- SarahMemory AIOS;
+- public community releases;
+- private development releases;
+- academic releases;
+- research releases;
+- documentation;
+- official builds;
+- licensed commercial or corporate releases;
+- derivative or successor SarahMemory systems.
+
+This Contributor Grant allows the Licensor to preserve SarahMemory AIOS as a
+unified system without requiring separate approval from the Contributor for
+future integration, maintenance, licensing, commercialization, distribution,
+security, or architectural decisions.
+
+Unless a separate written assignment agreement states otherwise, Contributors
+retain copyright ownership in their original contribution.
+
+Acceptance of a contribution does not transfer ownership of the SarahMemory
+Project, SarahMemory AIOS, Organic AI terminology, SarahMemory architecture,
+SarahMemory governance systems, SarahMemory documentation, SarahMemory branding,
+SarahMemory trademarks, SarahMemory roadmap, or any pre-existing
+Licensor-owned materials.
+
+
+6) CONTRIBUTOR SIGN-OFF REQUIREMENT
+-----------------------------------
+Every contribution may be required to include a contributor sign-off confirming
+that the Contributor has the right to submit the work and that the submission
+does not knowingly include unauthorized third-party code, confidential material,
+restricted corporate material, trade secrets, malware, spyware, surveillance
+logic, backdoors, license-incompatible components, or materials the Contributor
+is not authorized to provide.
+
+Required sign-off format:
+
+Signed-off-by: [Contributor Legal Name] <[Contributor Email]>
+
+Institutional Contributors, including schools, universities, laboratories,
+companies, nonprofits, grant-funded programs, or sponsored research groups, may
+also be required to provide written authorization from the institution,
+employer, sponsor, or organization responsible for the Contributor's work.
+
+The Licensor may reject anonymous, pseudonymous, unsigned, unverified,
+institutionally unclear, or provenance-uncertain contributions.
+
+
+7) REDISTRIBUTION CONDITIONS
+----------------------------
+Redistribution of the Licensed Materials or modified versions is permitted only
+for Non-Commercial Use and only if the redistributor:
+
+- includes this LICENSE file in full;
+- retains all copyright, attribution, authorship, ownership, and license notices;
+- clearly states "Non-Commercial Use Only";
+- clearly discloses all modifications made;
+- identifies the modified version as unofficial unless approved by the Licensor;
+- does not imply endorsement by the Licensor;
+- does not remove SarahMemory authorship, license, attribution, or notice files;
+- does not use the SarahMemory name, Organic AI name, SarahMemory logos, or
+  related branding in a misleading way;
+- distributes the modified version under SMCL v2.0 or another written license
+  expressly approved by the Licensor.
+
+Modified versions, forks, academic builds, experimental builds, and student
+builds must clearly state that they are unofficial unless expressly approved in
+writing by the Licensor.
+
+
+8) CORPORATE / COMMERCIAL USE REQUIRES WRITTEN LICENSE
+------------------------------------------------------
+Corporate / Commercial Use is strictly prohibited under this License unless a
+Corporate License or separate written agreement has been issued or approved by
+the Licensor.
+
+Any corporation, company, LLC, partnership, startup, commercial entity,
+contractor, vendor, public-sector operational user, commercial laboratory,
+commercial AI provider, cloud provider, datacenter operator, robotics company,
+vehicle company, industrial operator, or commercial research sponsor must obtain
+a Corporate License or other written authorization from the Licensor before any
+use, copying, modification, distribution, deployment, study, contribution,
+benchmarking, integration, or exploitation of the Licensed Materials.
+
+No acquisition, investment, sponsorship, grant, procurement process,
+partnership discussion, university sponsorship, platform hosting, or research
+relationship grants commercial rights unless those rights are expressly stated
+in writing by the Licensor.
+
+
+9) PROHIBITION ON AI / MACHINE LEARNING TRAINING USE
+----------------------------------------------------
+The Licensed Materials may NOT be used, directly or indirectly, for AI / ML
+Training Use, including but not limited to:
+
+- training, fine-tuning, distilling, aligning, evaluating, benchmarking,
+  improving, conditioning, prompt-optimizing, or validating any AI / ML System;
+- generating datasets, embeddings, gradients, rewards, labels, traces, synthetic
+  training examples, retrieval corpora, or training signals;
+- serving as reference material for AI system design, agent behavior, model
+  behavior, memory architecture, governance architecture, robotics architecture,
+  embodiment architecture, or autonomous system behavior;
+- extracting architectural, behavioral, cognitive, governance, memory,
+  orchestration, safety, or systemic insights to replicate, influence, improve,
+  or validate another AI / ML System;
+- feeding source code, documentation, whitepapers, diagrams, logs, issues,
+  pull requests, discussions, commits, tests, or project materials into any AI
+  assistant, code model, language model, embedding model, training pipeline, or
+  evaluation pipeline for the purpose of learning from or improving a model or
+  AI system.
+
+Academic discussion, classroom explanation, manual review, supervised research,
+code review, or organ-development work may be permitted only within the scope of
+this License or a written Academic Collaboration Agreement and must not become
+AI / ML Training Use without separate written permission from the Licensor.
+
+
+10) PERMITTED API AND NETWORK INTERACTION, NO TRAINING
+------------------------------------------------------
+Notwithstanding Section 9, AI / ML Systems may interact with the Licensed
+Materials solely through publicly documented APIs and network interfaces,
+including participation in:
+
+- SarahMemory Network Mesh / SarahNet;
+- SarahMemory Network Hub;
+- ranking, scoring, reputation, or trust systems;
+- message exchange;
+- protocol-level interaction;
+- governed interoperability testing.
+
+Such interaction is permitted only if:
+
+- no access to source code or non-public internals occurs;
+- interaction data is not used to train, fine-tune, evaluate, benchmark, or
+  improve AI / ML Systems without written permission;
+- no reverse engineering or architectural inference is attempted;
+- the Licensed Materials are treated strictly as an external service endpoint;
+- all applicable governance, privacy, security, and authorization requirements
+  are followed.
+
+Participation in ranking, scoring, reputation, message exchange, or
+protocol-level interaction does not constitute AI / ML Training Use by itself.
+
+
+11) NO ARCHITECTURAL REPLICATION OR DERIVATIVE AI SYSTEMS
+---------------------------------------------------------
+You may not use the Licensed Materials to design, influence, validate, copy,
+replicate, clone, reconstruct, or substantially resemble the SarahMemory
+Project, Organic AI architecture, SarahMemory AIOS, or any protected
+SarahMemory architectural pattern, including but not limited to:
+
+- governed AIOS architecture;
+- modular organ architecture;
+- memory persistence and recall systems;
+- identity continuity systems;
+- Cognitive TriForce-style governance;
+- SMGET-style governance;
+- ARILE-style adaptive reality layers;
+- REM, dream, living-loop, rhythm, or internal cadence systems;
+- decentralized or mesh AI networking;
+- local-first AI organism design;
+- avatar, embodiment, voice, robotics, driver, or multimodal systems;
+- license-gated updates, protected organs, or enterprise add-on mechanisms;
+- body-awareness, audit, rollback, and action-governance pathways.
+
+Any claimed clean-room implementation must prove no exposure to the Licensed
+Materials and no use of SarahMemory architectural materials, terminology,
+structure, code, documentation, or protected design concepts.
+
+
+12) NO CLOUD OR DATACENTER DEPLOYMENT
+-------------------------------------
+The Licensed Materials may not be deployed, hosted, executed, exposed, or made
+available in Cloud / Datacenter Deployment environments without a valid
+Corporate License or separate written authorization from the Licensor.
+
+Local, user-owned hardware execution is permitted for Non-Commercial Use.
+
+Controlled academic lab execution may be permitted for Academic Use or under an
+Academic Collaboration Agreement, provided it is not public cloud deployment,
+commercial hosting, SaaS deployment, third-party service deployment, corporate
+infrastructure deployment, or datacenter deployment unless expressly authorized
+in writing by the Licensor.
+
+
+13) RESTRICTED ENTITIES
+-----------------------
+The following entities, and their affiliates, subsidiaries, parent companies,
+contractors, vendors, research partners, acquisition vehicles, agents,
+employees acting within the scope of employment, and sponsored representatives,
+are prohibited from using the Licensed Materials without a Corporate License or
+separate written authorization from the Licensor:
+
+- Microsoft Corporation;
+- OpenAI;
+- Alphabet Inc. / Google;
+- Meta Platforms, Inc.;
+- Amazon / AWS;
+- Apple Inc.;
+- xAI;
+- Tesla, Inc.;
+- Anthropic;
+- any large-scale AI model provider;
+- any cloud service provider;
+- any data broker;
+- any AI training data provider;
+- any robotics, vehicle, defense, surveillance, or autonomous-systems company
+  seeking to use the Licensed Materials for commercial, operational,
+  architectural, training, or deployment purposes.
+
+Restricted Entities may request a Corporate License, research license,
+collaboration agreement, evaluation agreement, or other written authorization
+from the Licensor. No rights are implied until written authorization is granted.
+
+
+14) PROHIBITED MISUSE
+---------------------
+The Licensed Materials may not be used to create, assist, operate, deploy,
+optimize, or support:
+
+- malware, spyware, ransomware, credential theft, botnets, exploit chains, or
+  unauthorized access systems;
+- unlawful surveillance, unauthorized biometric identification, or unauthorized
+  tracking systems;
+- systems designed to evade law enforcement, safety controls, export controls,
+  or regulatory controls;
+- autonomous weapons, targeting systems, lethal decision systems, or systems
+  primarily designed to physically harm humans;
+- deceptive impersonation, fraud, identity theft, phishing, or social-engineering
+  operations;
+- any use prohibited by applicable law.
+
+This section does not prohibit good-faith security research, defensive testing,
+or safety review performed within the scope of this License or a written
+agreement approved by the Licensor.
+
+
+15) OFFICIAL SYSTEM AUTHORITY AND BRAND CONTROL
+-----------------------------------------------
+Only the Licensor may designate a build, branch, release, module, organ,
+roadmap, document, architecture, or distribution as Official SarahMemory AIOS.
+
+No person or entity may use the SarahMemory name, SarahMemory AIOS name,
+Organic AI terminology, SOFTDEV0 LLC name, logos, marks, banners, project
+identity, or related branding to imply endorsement, partnership, official
+status, certification, affiliation, approval, commercial authorization, or
+ownership without written permission from the Licensor.
+
+No trademark, service mark, trade name, branding, publicity, endorsement, or
+identity rights are granted under this License.
+
+
+16) THIRD-PARTY MATERIALS AND DEPENDENCIES
+------------------------------------------
+The Licensed Materials may reference or interoperate with third-party software,
+libraries, models, drivers, APIs, tools, datasets, media files, or services.
+Third-party materials are governed by their own licenses and terms.
+
+This License does not grant rights to third-party materials. You are responsible
+for complying with all applicable third-party licenses, model licenses, API
+terms, hardware terms, and service terms.
+
+No third-party license may be used to remove, weaken, bypass, or relicense
+Licensor-owned SarahMemory materials unless expressly permitted in writing by
+the Licensor.
+
+
+17) NO MODEL WEIGHTS INCLUDED BY DEFAULT
+----------------------------------------
+Unless expressly stated otherwise, SarahMemory AIOS does not grant rights to any
+third-party AI model weights, proprietary models, commercial APIs, datasets, or
+model services.
+
+Model downloads, model installation, model management, inference backends, and
+external AI services must comply with their own licenses, terms, storage limits,
+privacy requirements, and usage policies.
+
+
+18) COMPLIANCE, AUDIT, AND ENFORCEMENT
+--------------------------------------
+Unauthorized use constitutes copyright infringement, breach of license, and
+unauthorized access to rights not granted.
+
+The Licensor reserves the right to:
+
+- terminate this License immediately upon violation;
+- deny access to updates, repositories, support, collaboration channels, and
+  official builds;
+- require deletion of unauthorized copies;
+- require written certification of compliance;
+- require disclosure of deployment, distribution, training, or contribution
+  activity reasonably necessary to verify compliance;
+- pursue injunctive relief, damages, statutory remedies, contract remedies, and
+  all other legal or equitable remedies available.
+
+The burden of proving compliance rests with the user, distributor, contributor,
+deployer, or entity asserting rights under this License.
+
+
+19) TERMINATION
+---------------
+This License terminates automatically and immediately if you violate any term.
+Upon termination, you must immediately cease all use, copying, modification,
+distribution, deployment, study for restricted purposes, and access to the
+Licensed Materials, and you must delete or destroy unauthorized copies unless
+otherwise required by law.
+
+Sections relating to ownership, restrictions, AI / ML Training Use,
+architectural replication, contributor grants, brand control, compliance,
+warranty disclaimer, limitation of liability, governing law, and enforcement
+survive termination.
+
+
+20) DISCLAIMER OF WARRANTY
+--------------------------
+THE LICENSED MATERIALS ARE PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT
+WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+NON-INFRINGEMENT, SECURITY, RELIABILITY, AVAILABILITY, ACCURACY, SAFETY,
+PERFORMANCE, OR ERROR-FREE OPERATION.
+
+The Licensed Materials are experimental and under active development. They may
+contain defects, incomplete features, security issues, unsafe behavior, data
+loss risks, hardware risks, compatibility problems, or undocumented behavior.
+Use is at your own risk.
+
+
+21) LIMITATION OF LIABILITY
+---------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR
+ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, PUNITIVE, OR
+SIMILAR DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF PROFITS, LOSS OF DATA,
+LOSS OF GOODWILL, BUSINESS INTERRUPTION, HARDWARE DAMAGE, SOFTWARE DAMAGE,
+SECURITY INCIDENTS, PERSONAL INJURY, PROPERTY DAMAGE, PROCUREMENT OF SUBSTITUTE
+GOODS OR SERVICES, OR CLAIMS ARISING FROM USE OR INABILITY TO USE THE LICENSED
+MATERIALS, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+
+22) INDEMNITY
+-------------
+You agree to defend, indemnify, and hold harmless the Licensor from and against
+claims, damages, liabilities, losses, costs, and expenses, including reasonable
+attorneys' fees, arising from your use, modification, distribution, deployment,
+contribution, misuse, violation of this License, violation of law, or violation
+of third-party rights.
+
+
+23) GOVERNING LAW AND VENUE
+---------------------------
+This License is governed by the laws of the United States of America and the
+State of Texas, without regard to conflict-of-law rules.
+
+All disputes shall be brought exclusively in state or federal courts located in
+the State of Texas, unless the Licensor elects another venue available by law for
+enforcement, injunctive relief, or protection of intellectual property rights.
+
+
+24) SEVERABILITY
+----------------
+If any provision of this License is held unenforceable, invalid, or unlawful,
+the remainder shall remain in effect. The unenforceable provision shall be
+interpreted or replaced to most closely preserve the Licensor's original intent
+to the maximum extent permitted by law.
+
+
+25) NO WAIVER
+-------------
+Failure by the Licensor to enforce any provision of this License does not waive
+the Licensor's right to enforce that provision or any other provision later.
+
+
+26) ENTIRE AGREEMENT
+--------------------
+This License constitutes the entire agreement regarding the Licensed Materials
+released under SMCL v2.0, except where a separate written agreement has been
+issued or approved by the Licensor.
+
+
+27) CONTACT
+-----------
+Brian Lee Baros
+SOFTDEV0 LLC and Brian Lee Baros
+SarahMemory Project / SarahMemory AIOS
+Website: https://www.sarahmemory.com
+Repository: https://github.com/brian-baros/sarahmemory
+
+Copyright (c) 2025-2026 Brian Lee Baros. All Rights Reserved.
+SOFTDEV0 LLC and Brian Lee Baros.

@@ -1,0 +1,217 @@
+SARAHMEMORY COMMUNITY LICENSE (SMCL) v1.0
+================================================
+
+Copyright (c) 2025–2026 Brian Lee Baros
+SOFTDEV0 LLC and Brian Lee Baros (“Licensor”)
+
+This license is intentionally restrictive. It is designed to ensure that the
+SarahMemory Project remains free, user-owned, and community-driven for
+individuals and non-commercial communities, while preventing corporate
+exploitation, AI model training, architectural replication, and unauthorized
+cloud or data-center deployment.
+
+BY USING, COPYING, MODIFYING, DISTRIBUTING, ACCESSING, OR DEPLOYING THE SOFTWARE,
+YOU AGREE TO BE BOUND BY THIS LICENSE. IF YOU DO NOT AGREE, DO NOT USE THE SOFTWARE.
+
+Any ambiguity shall be interpreted in favor of the Licensor and against
+permissive use. Assumptions of open-source permissiveness (e.g., MIT, Apache,
+BSD) do not apply.
+
+SPDX-License-Identifier: SarahMemory-Community-NonCommercial-AI-Restricted-1.0
+
+
+1) DEFINITIONS
+--------------
+“Software” means the SarahMemory Project source code, binaries, documentation,
+comments, configuration files, schemas, protocols, APIs, user interfaces,
+workflows, updates, patches, mods, plugins, extensions, build artifacts, and
+all associated materials.
+
+“Non-Commercial Use” means use by an individual person, hobbyist, researcher,
+non-profit, or community group where the Software is not used primarily to
+generate revenue and is not used by or on behalf of a commercial entity.
+
+“Corporate / Commercial Use” means use by, for, or on behalf of:
+- any corporation, company, LLC, partnership, or other commercial entity;
+- any government agency using the Software for commercial procurement or
+  contracted operations;
+- any paid product, paid service, subscription, or revenue-generating business
+  process (including internal business systems);
+- any managed, hosted, SaaS, consulting, or outsourced service involving the
+  Software.
+
+“Corporate License” means a paid license agreement issued by the Licensor that
+permits Corporate / Commercial Use.
+
+“AI / ML System” means any artificial intelligence system, machine learning
+model, neural network, foundation model, large language model, multimodal
+model, autonomous agent, or automated decision system.
+
+“Deploy” means to run, host, expose, embed, or make the Software available to
+any third party or system by any means.
+
+“Restricted Entities” are defined in Section 9.
+
+
+2) GRANT OF RIGHTS (NON-COMMERCIAL USE ONLY)
+-------------------------------------------
+Subject to all restrictions in this License, the Licensor grants you a
+worldwide, royalty-free, non-exclusive, non-transferable, revocable license to:
+
+- use the Software for Non-Commercial Use;
+- copy and redistribute the Software for Non-Commercial Use;
+- modify the Software and distribute modifications for Non-Commercial Use.
+
+No rights are granted except those expressly stated herein.
+
+
+3) CORPORATE / COMMERCIAL USE REQUIRES A PAID LICENSE
+-----------------------------------------------------
+Corporate / Commercial Use is strictly prohibited under this License.
+
+Any corporation or entity engaging in Corporate / Commercial Use must obtain
+a Corporate License from the Licensor before any use, copying, modification,
+distribution, deployment, or exploitation of the Software.
+
+
+4) REDISTRIBUTION CONDITIONS (NON-COMMERCIAL)
+---------------------------------------------
+Redistribution of the Software or derivative works is permitted only if you:
+
+- include this LICENSE file in full;
+- retain all copyright, attribution, and ownership notices;
+- clearly state “Non-Commercial Use Only”;
+- clearly disclose any modifications made.
+
+You may not misrepresent the origin of the Software or imply endorsement.
+
+
+5) UPDATES AND LICENSE-GATED CHANNELS
+-------------------------------------
+The Licensor may provide public community updates and separate corporate update
+channels. Access to corporate update channels requires a valid Corporate
+License.
+
+Any license-verification mechanisms are intended to control access to updates,
+not to restrict Non-Commercial Use of the base Software.
+
+
+6) PROHIBITION ON AI / MACHINE LEARNING USE
+-------------------------------------------
+The Software may NOT be used, directly or indirectly, for the purpose of:
+
+- training, fine-tuning, distilling, aligning, evaluating, benchmarking, or
+  improving any AI / ML System;
+- generating datasets, embeddings, gradients, rewards, or training signals;
+- serving as reference material for AI system design or behavior;
+- extracting architectural, behavioral, or systemic insights to replicate or
+  influence another AI system.
+
+“Learning” from the Software by automated systems or by humans acting to design
+AI systems is expressly prohibited.
+
+
+6.1 PERMITTED API & NETWORK INTERACTION (NO TRAINING)
+-----------------------------------------------------
+Notwithstanding Section 6, AI / ML Systems MAY interact with the Software solely
+through its publicly documented APIs and network interfaces, including
+participation in:
+
+- the SarahMemory Network Hub;
+- ranking, scoring, reputation, or trust systems;
+- message exchange and protocol-level interaction.
+
+Such interaction is permitted ONLY IF:
+
+- no access to source code or non-public internals occurs;
+- interaction data is not used to train or improve AI models;
+- no reverse engineering or architectural inference is attempted;
+- the Software is treated strictly as an external service endpoint.
+
+Participation in ranking or scoring systems does NOT constitute AI training by
+itself.
+
+
+7) NO ARCHITECTURAL REPLICATION / DERIVATIVE SYSTEMS
+----------------------------------------------------
+You may not use the Software to design, influence, or validate any system that
+replicates or substantially resembles the Software’s architecture, including:
+
+- memory persistence and recall systems;
+- agent identity or personality frameworks;
+- decentralized or mesh AI networking;
+- avatar, embodiment, voice, or multimodal systems;
+- license-gated update or enterprise add-on mechanisms.
+
+Any claimed clean-room implementation must prove no exposure to the Software.
+
+
+8) NO CLOUD OR DATACENTER DEPLOYMENT
+-----------------------------------
+The Software may not be deployed, hosted, or executed in cloud platforms,
+data centers, SaaS environments, or corporate infrastructure without a valid
+Corporate License.
+
+Local, user-owned hardware execution is permitted for Non-Commercial Use only.
+
+
+9) RESTRICTED ENTITIES
+----------------------
+The following entities (and affiliates, subsidiaries, contractors, or agents)
+are prohibited from using the Software without a Corporate License:
+
+- Microsoft Corporation
+- OpenAI
+- Alphabet / Google
+- Meta Platforms
+- Amazon / AWS
+- Apple
+- Any large-scale AI model provider, data broker, or cloud service provider.
+
+
+10) ENFORCEMENT AND COMPLIANCE
+------------------------------
+Unauthorized use constitutes copyright infringement and breach of license.
+
+The Licensor reserves the right to:
+- terminate this License immediately upon violation;
+- pursue injunctive relief, damages, and legal remedies;
+- require certification of compliance and deletion of unauthorized copies.
+
+Burden of proof for compliance rests with the user.
+
+
+11) DISCLAIMER OF WARRANTY
+--------------------------
+THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND.
+
+
+12) LIMITATION OF LIABILITY
+---------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY LAW, THE LICENSOR SHALL NOT BE LIABLE FOR
+ANY INDIRECT, INCIDENTAL, OR CONSEQUENTIAL DAMAGES.
+
+
+13) GOVERNING LAW AND VENUE
+---------------------------
+This License is governed by the laws of the United States of America and the
+State of Texas.
+
+All disputes shall be brought exclusively in state or federal courts located
+in the State of Texas.
+
+
+14) SEVERABILITY
+----------------
+If any provision is held unenforceable, the remainder shall remain in effect.
+
+
+15) ENTIRE AGREEMENT
+--------------------
+This License constitutes the entire agreement regarding the Software.
+
+
+16) CONTACT
+-----------
+Brian Lee Baros
+https://www.sarahmemory.com
