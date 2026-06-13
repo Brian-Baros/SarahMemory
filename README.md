@@ -3186,7 +3186,12 @@ It converts real-world variance into structured operational evidence, preserves 
 -keep pushing forward in development and do longer delays - and slower releases. 
 
 -During this Now version 9.0 development to hit version 10 vast changes including remapping directory structure and more 
-are happening, File deletion and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
+are happening, 
+
+-File deletion and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
+
+-
+### DO NOT FORK OR DOWNLOAD THE REPO AT THIS MOMENT, Because I am deleting ,reorganizing and Developing version 9.0->10 
 
 -Continue on v9.0-> v10.0 Planned Roadmap
 
