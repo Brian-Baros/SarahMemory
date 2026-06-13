@@ -1,9 +1,0 @@
-{
-  "enabled": true,
-  "autoload": true,
-  "allow_mount_ops": false,
-  "require_mount_confirmation": true,
-  "allow_smartctl": true,
-  "allow_nvme_cli": true,
-  "history_limit": 300
-}

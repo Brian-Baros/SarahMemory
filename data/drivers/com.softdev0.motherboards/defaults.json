@@ -1,9 +1,0 @@
-{
-  "enabled": true,
-  "autoload": false,
-  "allow_privileged_queries": false,
-  "allow_uefi_write": false,
-  "confirm_uefi_write": false,
-  "acpi_poll_interval": 2.0,
-  "history_limit": 300
-}

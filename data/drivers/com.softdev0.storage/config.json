@@ -1,9 +1,0 @@
-{
-  "enabled": true,
-  "autoload": false,
-  "allow_smart_probe": false,
-  "allow_nvme_probe": false,
-  "allow_mount_management": false,
-  "vault_auto_mount": false,
-  "history_limit": 300
-}

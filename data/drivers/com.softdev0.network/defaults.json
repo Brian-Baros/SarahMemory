@@ -1,9 +1,0 @@
-{
-  "enabled": true,
-  "autoload": false,
-  "preferred_interface": "",
-  "allow_interface_switch": false,
-  "scan_modems": true,
-  "scan_bluetooth": true,
-  "history_limit": 300
-}
