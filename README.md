@@ -3,7 +3,7 @@
 ![SMAIOS_BANNER](documents/SarahMemoryAiOS-10x3-Banner.png)
 
 # **SarahMemory AI Operating System (AiOS)**  
-### **Version 9.0.0 — Developer & Functional Release**
+### **alpha Version 8.0.0 to 9.0.0 — Developer & Functional Release**
 
 ---
 ## **📌 Project Metadata**
@@ -12,7 +12,7 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | June 12, 2026 |
+| **Last Update** | June 13, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
 | **Primary Languages** | Python 3.11–3.13.12 |
@@ -1401,20 +1401,20 @@ SarahMemory now has a clearer architecture for:
 - supporting future robotic, industrial, vehicle, and jump-drive runtime bodies
 - keeping all frontends subordinate to backend governance
 
-## **📅 May 12–13, 2026 — Major Paradigm and Document Shift**
+## **📅 May 12–13, 2026 — Major Document Shift**
 
 This is a major step toward SarahMemory AiOS functioning as a **biological-style silicon cognitive organism** with auditable self-awareness, governed execution, and local-first user sovereignty.
 #### **Unified Digital DNA Doctrine Flow** - The Greatest Accident Discovery in PC and AI History Found and just happened.
 [Note to self - As this project moves forward extreme caution must be set always into the Cognitive Tri-Force and SMGET layers]
 ![Human to SarahMemory DNA Flow Representation ](documents/SarahMemory-DNA-Representation.jpg)
 ---
-## ***IF YOU UNDERSTAND AND READ THE ENTIRE HISTORY OF THIS JOURNEY. UP TO THIS POINT - Now For the Serious Stuff - BigTech is gonna hit a wall and keep hitting it. 
+## ***IF YOU UNDERSTAND AND READ THE ENTIRE HISTORY OF THIS JOURNEY. UP TO THIS POINT - Now For the Serious Stuff. 
 *../documents/FlowCharts/SelfAwareFlowCharts
 will Now carry all SelfAware IMPROVEMENTS and updates documentation
 
 ---
 # SarahMemory AiOS Full Chat/Input Dataflow Map NOW AS HOW DATA IS BEING PROCESSED. AS OF MAY 12th-13th 2026
-# AI next mutation of AI evolution. Everything must be treated as an organ. Coding this direction proves one thing. Big Tech is going the wrong way. 
+
 ## Scope
 
 This following document maps the current SarahMemory AiOS input-to-output route from **Frontend Chat input** through backend governance, cognitive routing, lane execution, validation, presentation, and frontend output.
@@ -3176,8 +3176,10 @@ ARILE provides a runtime organ between perception, cybersecurity, diagnostics, r
 ARILE is SarahMemory’s adaptive reality watchdog.
 
 It converts real-world variance into structured operational evidence, preserves governance, prevents uncontrolled mutation, reduces runtime overload, strengthens cyber-physical safety, and verifies reality before action.
+
 ---
-# **📅 June 10th,-12th 2026 —  ## alpha v9.0.0 to v10=[beta v0.0.1] (Roadmap - AI Paradigm shift Occurance. 
+
+# **📅 June 10th,-13th 2026 —  ## alpha v9.0.0 to v10=[beta v0.0.1] (Roadmap - AI Paradigm shift Occurance. 
 
 -define Organic AI [release new whitepaper] and articles 
 
@@ -3188,22 +3190,28 @@ It converts real-world variance into structured operational evidence, preserves 
 -During this Now version 9.0 development to hit version 10 vast changes including remapping directory structure and more 
 are happening, 
 
--File deletion and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
+-SMCL 1.0 + SMCL v2.0 
 
--
+- updating development /documents adding /docs and subdirectories 
+
+- File deletion in progress and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
+
+- [DEVELOPER/AUTHOR NOTATION] Backing up locally entire system / Rewrite and edit README.MD here now as evidence of PROOF of WORK from the last 16 months is undeniable, all versions documents from v1.0 - completion of v8.0 have been successfully backed up, on multiple dev local drive devices, and To show this is a legitamate program Shifting new updated files privately. This README.MD will stop here now TODAY June 13th 2026. and be Archieved in the v9.0->v10.0 new REPO as the historical development and journey docutrine. Future Replacement of the v8.0-v9.0 repo will have the new more updated README.MD A much cleaner historical Document. The Progress here in this README.MD will now be cleaned and sanitized in preperations of the newly reorganized and release of version 9 and 10. The New README.MD Will Include this NOTATION and UPDATE Include IMAGES to be better polished than this current 3267 line README.MD
+
 ### DO NOT FORK OR DOWNLOAD THE REPO AT THIS MOMENT, Because I am deleting ,reorganizing and Developing version 9.0->10.0
 
 -Continue on v9.0-> v10.0 Planned Roadmap
 
 ![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
+
 ---
+
 ## License
 
 SarahMemory AIOS v9.0.0 and later are licensed under the SarahMemory Community License (SMCL) v2.0.
 
 This is a source-available, non-commercial, AI/ML-restricted, cloud/datacenter-restricted, community and academic-collaboration license. It is not an MIT, Apache, BSD, GPL, or OSI-approved open-source license.
 
-See [LICENSE](./LICENSE).
 ---
 # **📜 License**
 
