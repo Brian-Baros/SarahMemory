@@ -3191,7 +3191,7 @@ are happening,
 -File deletion and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
 
 -
-### DO NOT FORK OR DOWNLOAD THE REPO AT THIS MOMENT, Because I am deleting ,reorganizing and Developing version 9.0->10 
+### DO NOT FORK OR DOWNLOAD THE REPO AT THIS MOMENT, Because I am deleting ,reorganizing and Developing version 9.0->10.0
 
 -Continue on v9.0-> v10.0 Planned Roadmap
 
