@@ -1,0 +1,19 @@
+project_id = "mflfjcipyzcdvsuprclt"
+
+[functions.sarah-api]
+verify_jwt = false
+
+[functions.chat]
+verify_jwt = false
+
+[functions.voice]
+verify_jwt = false
+
+[functions.avatar]
+verify_jwt = false
+
+[functions.dialer]
+verify_jwt = false
+
+[functions.ranking]
+verify_jwt = false
