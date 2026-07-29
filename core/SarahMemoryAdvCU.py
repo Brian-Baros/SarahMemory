@@ -1,0 +1,3599 @@
+"""--==The SarahMemory Project==--
+File: SarahMemoryAdvCU.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-07-11
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+===============================================================================
+
+ADVANCED CONTEXT UNIT (AdvCU)
+===========================================================
+
+--------
+The Advanced Context Unit is one of the most powerful core modules in SarahMemory.
+It serves as the central intelligence for understanding user intent and enabling
+system automation capabilities.
+
+KEY CAPABILITIES:
+-----------------
+1. INTENT CLASSIFICATION
+- Rule-based fast classification (offline-first)
+- Neural embedding-based classification (when models available)
+- Hybrid scoring with confidence levels
+- 19+ distinct intent categories
+
+2. COMMAND PARSING
+- Action + Subject extraction
+- Math expression detection
+- URL/Domain recognition
+- App/Site identification
+- Structured ParsedCommand output
+
+3. TEXT EMBEDDINGS
+- Sentence Transformer support (local models)
+- Fallback hash-based embeddings (always works offline)
+- Cosine similarity scoring
+
+4. CODE INTROSPECTION
+- AST-based Python source analysis
+- URL/Domain/Email extraction from codebase
+- Prompt template detection
+- Delta-aware database storage
+
+5. AUTOMATION SUPPORT
+- Desktop app launching vocabulary
+- System control commands
+- Window management
+- Agent control phrases
+
+INTEGRATION POINTS:
+-------------------
+- SarahMemoryPersonality.py: Uses classify_intent
+- SarahMemoryReply.py: Uses classify_intent
+- SarahMemoryAPI.py: Uses classify_intent
+- SarahMemoryAiFunctions.py: Uses classify_intent, embed_text
+- SarahMemoryCompare.py: Uses evaluate_similarity, get_vector_score, embed_text
+- SarahMemoryResearch.py: Uses classify_intent
+- SarahMemorySOBJE.py: Uses sm_color_name_from_rgb
+- SarahMemorySystemLearn.py: Uses classify_intent
+- SarahMemoryGUI.py: Uses classify_intent
+- SarahMemory-local_api_server.py: Uses classify_intent, parse_command
+- UnifiedAvatarController.py: Uses module functions
+
+DATABASE TABLES (functions.db):
+-------------------------------
+- code_corpus: Mined code snippets
+- code_corpus_seen: Delta tracking for snippets
+- advcu_log: Event logging
+
+===============================================================================
+"""
+
+from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "semantic_core"
+# CATEGORY = "intent_and_context"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "advanced_context_unit"
+# FAMILY = "core_cognition"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Advanced Context Unit for intent classification, command parsing, embeddings, semantic compression, and code introspection. Foundational cognitive core module."
+# --- SARAHMETA END ---
+
+import re
+import os
+import json
+import math
+import time
+import logging
+import sqlite3
+import ast
+import io
+import sys
+import glob
+import hashlib
+import threading
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Any, Set, Union, Callable
+from enum import Enum
+from collections import defaultdict
+
+# ============================================================================
+# SAFE IMPORTS
+# ============================================================================
+
+# NumPy (optional but preferred)
+try:
+    import numpy as np
+    _HAS_NUMPY = True
+except ImportError:
+    np = None
+    _HAS_NUMPY = False
+
+# OpenCV (optional for color detection)
+try:
+    import cv2 as _cv2
+    _HAS_CV2 = True
+except ImportError:
+    _cv2 = None
+    _HAS_CV2 = False
+
+# Sentence Transformers (optional for neural embeddings)
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_ST = True
+except ImportError:
+    SentenceTransformer = None
+    _HAS_ST = False
+
+# Import globals safely
+try:
+    import SarahMemoryGlobals as config
+    from SarahMemoryGlobals import DATASETS_DIR, MODEL_CONFIG
+except ImportError:
+    # Fallback for standalone testing
+    class config:
+        DATASETS_DIR = os.path.join(os.getcwd(), "data", "memory", "datasets")
+        BASE_DIR = os.getcwd()
+        DEBUG_MODE = True
+        LOCAL_ONLY_MODE = False
+        SAFE_MODE = False
+    DATASETS_DIR = config.DATASETS_DIR
+    MODEL_CONFIG = {}
+
+
+# ============================================================================
+# LOGGING SETUP
+# ============================================================================
+
+logger = logging.getLogger("SarahMemoryAdvCU")
+if not logger.handlers:
+    logger.setLevel(logging.DEBUG if getattr(config, 'DEBUG_MODE', False) else logging.INFO)
+    _handler = logging.StreamHandler(sys.stdout)
+    _handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(levelname)s - [%(name)s] %(message)s"
+    ))
+    logger.addHandler(_handler)
+logger.propagate = False
+
+
+# ============================================================================
+# CONSTANTS AND CONFIGURATION
+# ============================================================================
+
+# Database and cache paths
+SYSTEM_DB_PATH = os.path.join(DATASETS_DIR, "functions.db")
+INTENT_CACHE_PATH = os.path.join(DATASETS_DIR, "intent_override_cache.json")
+CODE_CORPUS_JSON = os.path.join(DATASETS_DIR, "code_corpus_cache.json")
+
+# Ensure directories exist
+os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
+
+# Offline mode detection
+_OFFLINE_MODE = bool(
+    getattr(config, "LOCAL_ONLY_MODE", False) or
+    getattr(config, "SAFE_MODE", False) or
+    os.getenv("HF_HUB_OFFLINE") == "1" or
+    os.getenv("TRANSFORMERS_OFFLINE") == "1"
+)
+
+# Thread lock for model loading
+_model_lock = threading.RLock()
+
+
+# ============================================================================
+# INTENT LABELS AND DESCRIPTIONS
+# ============================================================================
+
+class IntentType(Enum):
+    """Enumeration of all supported intent types."""
+    GREETING = "greeting"
+    FAREWELL = "farewell"
+    IDENTITY_QUERY = "identity_query"
+    SMALLTALK = "smalltalk"
+    MATH = "math"
+    TIME_RELATED = "time_related"
+    SYSTEM_CONTROL = "system_control"
+    OPEN_APP = "open_app"
+    OPEN_URL = "open_url"
+    SEARCH_WEB = "search_web"
+    PLAY_MEDIA = "play_media"
+    WINDOW_MGMT = "window_mgmt"
+    CLOSE_QUIT = "close_quit"
+    AGENT_CONTROL = "agent_control"
+    LOGIN = "login"
+    SIGNUP = "signup"
+    DEVICE_QUERY = "device_query"
+    DIAGNOSTICS = "diagnostics"
+    CREATIVE = "creative"
+    BUILD_REQUEST = "build_request"
+    NETWORK_REQUEST = "network_request"
+    STATEMENT = "statement"
+    COMMAND = "command"
+    QUESTION = "question"
+    TIME_QUERY = "TIME_QUERY"
+    LOCATION_QUERY = "LOCATION_QUERY"
+    CONTACT_LOOKUP = "CONTACT_LOOKUP"
+    SEND_MESSAGE = "SEND_MESSAGE"
+
+
+# Intent descriptions for documentation and UI
+INTENT_DESCRIPTIONS: Dict[str, str] = {
+    "greeting": "User greets or starts a conversation.",
+    "farewell": "User ends or pauses conversation.",
+    "identity_query": "User is asking who SarahMemory is or its role.",
+    "smalltalk": "Friendly chatter, mood, casual questions.",
+    "math": "User is performing or asking about a math calculation.",
+    "time_related": "User asks about time, scheduling, or reminders.",
+    "system_control": "User wants to control volume, brightness, etc.",
+    "open_app": "Open a local application (browser, editor, etc.).",
+    "open_url": "Navigate to a website or URL.",
+    "search_web": "Search the internet for information.",
+    "play_media": "Play or manage audio/video content.",
+    "window_mgmt": "Manage windows (minimize, maximize, bring to front).",
+    "close_quit": "Close apps or quit operations.",
+    "agent_control": "Start/pause/stop behaviors of SarahMemory itself.",
+    "login": "User wants to login or authenticate.",
+    "signup": "User wants to sign up or create an account.",
+    "device_query": "User asks about current device, hardware or environment.",
+    "diagnostics": "User asks to run diagnostics or health checks on the system.",
+    "creative": "User wants SarahMemory to generate or create an artifact such as an image, song, video, avatar, or webpage.",
+    "build_request": "User wants SarahMemory to build or generate a website, page, application, dashboard, or project artifact.",
+    "network_request": "User wants SarahMemory to use SarahNet, sync, broker, remote node, or mesh/network functionality.",
+    "statement": "General statement that is not clearly an action command.",
+    "command": "Explicit high-confidence executable command.",
+    "question": "User is asking a question requiring information.",
+    "TIME_QUERY": "User asks for current time.",
+    "LOCATION_QUERY": "User asks about location.",
+    "CONTACT_LOOKUP": "User wants to find a contact.",
+    "SEND_MESSAGE": "User wants to send a message.",
+}
+
+# Intent priority order (more specific before broad)
+INTENT_PRIORITY_ORDER: List[str] = [
+    "login", "signup", "device_query", "diagnostics", "creative", "build_request",
+    "time_related", "math", "system_control", "open_app", "open_url", "search_web",
+    "play_media", "window_mgmt", "close_quit", "agent_control", "network_request",
+    "identity_query", "greeting", "farewell", "smalltalk",
+    "question", "command", "statement",
+]
+
+
+# ============================================================================
+# LEXICONS AND PATTERNS
+# ============================================================================
+
+# Action synonyms for command detection
+ACTION_SYNONYMS: Dict[str, List[str]] = {
+    "open_app": [
+        "open", "launch", "start", "run", "fire up", "boot",
+        "spin up", "bring up", "execute", "load"
+    ],
+    "open_url": [
+        "go to", "navigate to", "take me to", "visit",
+        "open website", "open page", "browse to", "load page"
+    ],
+    "search_web": [
+        "search", "look up", "google", "find", "web search",
+        "lookup", "search for", "find me", "research"
+    ],
+    "play_media": [
+        "play", "resume", "start playing", "stream",
+        "listen to", "watch", "queue"
+    ],
+    "close_quit": [
+        "close", "quit", "exit", "terminate", "end",
+        "kill", "stop", "shut down"
+    ],
+    "window_mgmt": [
+        "maximize", "minimize", "focus", "switch to",
+        "bring to front", "restore", "resize", "tile"
+    ],
+    "system_control": [
+        "turn on", "turn off", "enable", "disable",
+        "increase", "decrease", "raise", "lower",
+        "mute", "unmute", "volume up", "volume down",
+        "brightness", "wifi", "bluetooth"
+    ],
+    "agent_control": [
+        "sarah stop now", "emergency stop", "abort mission",
+        "halt", "pause", "resume", "continue", "go on",
+        "stop what you're doing", "cancel that"
+    ]
+}
+
+# Subject lexicon (apps and sites)
+SUBJECT_LEXICON: Dict[str, Dict[str, Any]] = {
+    # Browsers
+    "chrome": {"kind": "app", "aka": ["google chrome", "chrome browser"], "exec": "chrome"},
+    "edge": {"kind": "app", "aka": ["microsoft edge", "edge browser"], "exec": "msedge"},
+    "firefox": {"kind": "app", "aka": ["mozilla firefox", "ff"], "exec": "firefox"},
+    "safari": {"kind": "app", "aka": ["apple safari"], "exec": "safari"},
+    "brave": {"kind": "app", "aka": ["brave browser"], "exec": "brave"},
+    "opera": {"kind": "app", "aka": ["opera browser"], "exec": "opera"},
+
+    # Editors and IDEs
+    "notepad": {"kind": "app", "aka": ["note pad", "text editor"], "exec": "notepad"},
+    "notepad++": {"kind": "app", "aka": ["notepad plus plus", "npp"], "exec": "notepad++"},
+    "vscode": {"kind": "app", "aka": ["visual studio code", "vs code", "code"], "exec": "code"},
+    "sublime": {"kind": "app", "aka": ["sublime text"], "exec": "sublime_text"},
+    "atom": {"kind": "app", "aka": ["atom editor"], "exec": "atom"},
+    "vim": {"kind": "app", "aka": ["vi", "neovim"], "exec": "vim"},
+
+    # System utilities
+    "calculator": {"kind": "app", "aka": ["calc", "windows calculator"], "exec": "calc"},
+    "settings": {"kind": "app", "aka": ["control panel", "preferences", "system settings"], "exec": "ms-settings:"},
+    "task manager": {"kind": "app", "aka": ["taskmgr", "process manager"], "exec": "taskmgr"},
+    "file explorer": {"kind": "app", "aka": ["explorer", "files", "my computer"], "exec": "explorer"},
+    "terminal": {"kind": "app", "aka": ["cmd", "command prompt", "powershell", "console"], "exec": "cmd"},
+
+    # Media applications
+    "spotify": {"kind": "app", "aka": ["spotify music"], "exec": "spotify"},
+    "vlc": {"kind": "app", "aka": ["vlc player", "video lan", "vlc media player"], "exec": "vlc"},
+    "media player": {"kind": "app", "aka": ["windows media player", "wmp"], "exec": "wmplayer"},
+    "itunes": {"kind": "app", "aka": ["apple music"], "exec": "itunes"},
+
+    # Communication
+    "discord": {"kind": "app", "aka": ["discord chat"], "exec": "discord"},
+    "slack": {"kind": "app", "aka": ["slack app"], "exec": "slack"},
+    "teams": {"kind": "app", "aka": ["microsoft teams", "ms teams"], "exec": "teams"},
+    "zoom": {"kind": "app", "aka": ["zoom meeting", "zoom app"], "exec": "zoom"},
+    "skype": {"kind": "app", "aka": ["skype call"], "exec": "skype"},
+
+    # Productivity
+    "word": {"kind": "app", "aka": ["microsoft word", "ms word"], "exec": "winword"},
+    "excel": {"kind": "app", "aka": ["microsoft excel", "ms excel"], "exec": "excel"},
+    "powerpoint": {"kind": "app", "aka": ["microsoft powerpoint", "ms powerpoint", "ppt"], "exec": "powerpnt"},
+    "outlook": {"kind": "app", "aka": ["microsoft outlook", "ms outlook"], "exec": "outlook"},
+
+    # Games/Entertainment
+    "steam": {"kind": "app", "aka": ["steam client"], "exec": "steam"},
+    "epic": {"kind": "app", "aka": ["epic games", "epic launcher"], "exec": "EpicGamesLauncher"},
+
+    # Websites/Services
+    "google": {"kind": "site", "aka": ["google.com", "google search"], "url": "https://www.google.com"},
+    "youtube": {"kind": "site", "aka": ["yt", "youtube.com"], "url": "https://www.youtube.com"},
+    "gmail": {"kind": "site", "aka": ["mail.google.com", "g mail", "google mail"], "url": "https://mail.google.com"},
+    "docs": {"kind": "site", "aka": ["google docs", "docs.google.com"], "url": "https://docs.google.com"},
+    "drive": {"kind": "site", "aka": ["google drive", "drive.google.com"], "url": "https://drive.google.com"},
+    "bing": {"kind": "site", "aka": ["bing.com", "bing search"], "url": "https://www.bing.com"},
+    "duckduckgo": {"kind": "site", "aka": ["ddg", "duck duck go", "duckduckgo.com"], "url": "https://duckduckgo.com"},
+    "twitter": {"kind": "site", "aka": ["x.com", "x", "twitter.com"], "url": "https://twitter.com"},
+    "facebook": {"kind": "site", "aka": ["fb", "facebook.com"], "url": "https://www.facebook.com"},
+    "instagram": {"kind": "site", "aka": ["ig", "instagram.com", "insta"], "url": "https://www.instagram.com"},
+    "linkedin": {"kind": "site", "aka": ["linkedin.com"], "url": "https://www.linkedin.com"},
+    "reddit": {"kind": "site", "aka": ["reddit.com"], "url": "https://www.reddit.com"},
+    "github": {"kind": "site", "aka": ["github.com", "gh"], "url": "https://github.com"},
+    "stackoverflow": {"kind": "site", "aka": ["stack overflow", "stackoverflow.com"], "url": "https://stackoverflow.com"},
+    "amazon": {"kind": "site", "aka": ["amazon.com"], "url": "https://www.amazon.com"},
+    "netflix": {"kind": "site", "aka": ["netflix.com"], "url": "https://www.netflix.com"},
+    "wikipedia": {"kind": "site", "aka": ["wiki", "wikipedia.org"], "url": "https://www.wikipedia.org"},
+}
+
+# Greeting patterns
+GREET_WORDS = re.compile(
+    r"\b(hello|hi|hey|howdy|greetings|yo|good\s*morning|good\s*afternoon|"
+    r"good\s*evening|hiya|what'?s\s*up|sup|hey\s*there|hola|bonjour)\b",
+    re.IGNORECASE
+)
+
+# Farewell patterns
+FAREWELL_WORDS = re.compile(
+    r"\b(bye|goodbye|see\s*you|farewell|later|cya|exit|quit|"
+    r"catch\s*you\s*later|talk\s*to\s*you\s*later|take\s*care|"
+    r"good\s*night|gn|ttyl|peace\s*out)\b",
+    re.IGNORECASE
+)
+
+# Identity phrases
+IDENTITY_PHRASES: List[str] = [
+    "your name", "who are you", "what's your name", "tell me your name",
+    "identify yourself", "are you sarah", "which ai are you",
+    "who am i talking to", "what are you", "what is your name",
+    "who made you", "who created you", "who programmed you", "who developed you",
+    "what do you do", "what are you capable of", "what are your capabilities",
+    "what can you do", "what can you do right now", "what are you able to do",
+    "who is brian baros", "who is brian lee baros"
+]
+
+# Question starters
+QUESTION_STARTERS = re.compile(
+    r"\b(what|how|why|where|when|who|which|can\s*you|could\s*you|"
+    r"do\s*you|will\s*you|is\s*it|does\s*it|should\s*i|am\s*i|"
+    r"are\s*you|may\s*i|shall\s*i|have\s*you|is\s*there|"
+    r"how\s*much|how\s*many|which\s*one|would\s*you)\b",
+    re.IGNORECASE
+)
+
+# Math patterns
+MATH_SYMBOLS: Set[str] = set("+-*/^=%()[]")
+MATH_REGEX = re.compile(r"[\d\s+\-*/^%().\[\]]+")
+MATH_EXPR_REGEX = re.compile(r"\b(\d+[\s]*[\+\-\*/\^%][\s]*[\d\s\+\-\*/\^%()]+)\b")
+
+# Time-related words
+TIME_WORDS = re.compile(
+    r"\b(now|today|tonight|tomorrow|yesterday|soon|later|next|this|"
+    r"in|on|at|before|after|minutes?|hours?|seconds?|days?|weeks?|"
+    r"months?|years?|morning|afternoon|evening|night|midnight|noon)\b",
+    re.IGNORECASE
+)
+
+# URL and domain patterns
+URL_REGEX = re.compile(r'\bhttps?://[^\s\'"<>]+', re.IGNORECASE)
+DOMAIN_REGEX = re.compile(
+    r'\b([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}\b',
+    re.IGNORECASE
+)
+EMAIL_REGEX = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+
+# Semantic compression keyword groups
+_CREATIVE_VERBS = {
+    "create", "make", "generate", "draw", "design", "compose",
+    "produce", "build", "craft", "render", "write"
+}
+_CREATIVE_OUTPUT_KEYWORDS = {
+    "image": ("image", "picture", "photo", "art", "drawing", "poster", "graphic", "wallpaper"),
+    "video": ("video", "movie", "clip", "animation", "reel", "short"),
+    "music": ("music", "song", "beat", "melody", "instrumental", "lyrics", "track"),
+    "avatar": ("avatar", "character", "persona", "model"),
+    "website": ("website", "webpage", "site", "landing page", "dashboard", "page"),
+    "application": ("app", "application", "tool", "program", "script", "workflow"),
+}
+_NETWORK_HINTS = (
+    "sarahnet", "network", "mesh", "broker", "sync", "remote node",
+    "cloud", "peer", "server", "api hub"
+)
+_FILE_ACTION_HINTS = (
+    "open", "save", "move", "copy", "delete", "rename", "preview",
+    "launch", "browse", "display", "download", "export"
+)
+
+# Vision / perception semantic pools
+_VISUAL_QUERY_TYPES: Tuple[str, ...] = (
+    "identify_color",
+    "read_text",
+    "detect_objects",
+    "detect_faces",
+    "track_motion",
+    "estimate_distance",
+    "inspect_safety_zone",
+    "compare_before_after",
+    "assess_style_or_fit",
+    "scene_summary",
+)
+_VISUAL_COLOR_HINTS = (
+    "color", "colour", "shade", "dominant color", "what color", "what colour"
+)
+_VISUAL_TEXT_HINTS = (
+    "read", "say", "text", "label", "sign", "license plate", "plate", "ocr",
+    "serial", "screen", "display text", "what does"
+)
+_VISUAL_OBJECT_HINTS = (
+    "object", "objects", "item", "items", "thing", "things", "see", "seeing",
+    "in frame", "in the image", "in the picture", "in the scene", "around me",
+    "what is there", "what's there", "what do you see"
+)
+_VISUAL_FACE_HINTS = (
+    "face", "faces", "eye", "eyes", "eyecolor", "eye color", "facial",
+    "person", "people", "employee", "worker", "recognize", "who is", "smiling"
+)
+_VISUAL_MOTION_HINTS = (
+    "moving", "movement", "motion", "track", "tracking", "follow", "walking",
+    "running", "approaching", "leaving", "entering", "exiting"
+)
+_VISUAL_DISTANCE_HINTS = (
+    "distance", "far", "close", "near", "too close", "how far", "how close",
+    "range", "proximity"
+)
+_VISUAL_SAFETY_HINTS = (
+    "danger zone", "safe zone", "safety zone", "hazard zone", "restricted zone",
+    "unsafe", "collision", "stop the machine", "stop machine", "emergency stop",
+    "interlock", "too close to", "in the zone", "crossing the line"
+)
+_VISUAL_COMPARE_HINTS = (
+    "before and after", "before/after", "compare", "difference", "changed",
+    "has it changed", "what changed"
+)
+_VISUAL_STYLE_HINTS = (
+    "look fat", "look good", "look bad", "fit", "style", "match", "flattering",
+    "outfit", "dress this", "does this shirt", "does this dress", "does this outfit"
+)
+_VISUAL_SCENE_HINTS = (
+    "summarize the scene", "scene summary", "describe the scene", "describe what you see",
+    "what do you see", "what's happening", "what is happening", "summarize this image"
+)
+_VISUAL_DEVICE_HINTS = (
+    "camera", "webcam", "vision", "image", "picture", "photo", "frame", "video",
+    "screen", "monitor", "thermal", "infrared", "ir", "night vision", "autofocus",
+    "zoom", "magnify", "sensor"
+)
+_VISUAL_SUBJECT_SYNONYMS: Dict[str, str] = {
+    "tee": "shirt",
+    "tshirt": "shirt",
+    "t-shirt": "shirt",
+    "top": "shirt",
+    "hooded sweatshirt": "hoodie",
+    "trousers": "pants",
+    "slacks": "pants",
+    "blue jeans": "jeans",
+    "specs": "glasses",
+    "spectacles": "glasses",
+    "hard hat": "helmet",
+    "hi vis": "safety vest",
+    "high vis": "safety vest",
+    "infra red": "infrared",
+}
+_VISUAL_SUBJECT_CANDIDATES: Tuple[str, ...] = (
+    "shirt", "pants", "jeans", "shorts", "skirt", "dress", "jacket", "hoodie", "sweater",
+    "coat", "hat", "cap", "helmet", "glasses", "shoes", "boots", "eyes", "eye", "face",
+    "hair", "worker", "employee", "person", "people", "machine", "robot", "vehicle", "car",
+    "road", "lane", "controller", "tool", "sign", "label", "screen", "display", "animal",
+    "deer", "hog", "target", "zone", "door", "package", "box", "desk", "couch", "sofa"
+)
+_VISUAL_ACTION_HINTS = (
+    "stop", "halt", "shutdown", "lockout", "disable", "track", "monitor", "follow",
+    "alert", "warn", "notify", "report", "log"
+)
+_SEMANTIC_STOPWORDS: Set[str] = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "to", "for", "of", "and", "or", "if", "then", "with", "into", "in",
+    "on", "at", "from", "by", "about", "as", "that", "this", "these",
+    "those", "it", "its", "me", "my", "your", "you", "we", "our", "us",
+    "please", "can", "could", "would", "should", "what", "how", "why",
+    "where", "when", "who", "which", "do", "does", "did", "have", "has",
+    "had", "want", "need", "like", "show", "tell", "give", "there", "here",
+    "new", "professional", "proper", "final", "full", "about"
+}
+
+
+# ============================================================================
+# DATA CLASSES
+# ============================================================================
+
+@dataclass
+class ParsedCommand:
+    """
+    Structured representation of a parsed user command.
+    Contains extracted intent, targets, and compact semantic-routing context.
+    """
+    intent: str
+    raw_text: str
+    confidence: float = 0.7
+    math_expr: Optional[str] = None
+    url: Optional[str] = None
+    app: Optional[str] = None
+    site: Optional[str] = None
+    subject: Optional[str] = None
+    action: Optional[str] = None
+    intent_family: Optional[str] = None
+    likely_lane: Optional[str] = None
+    output_type: Optional[str] = None
+    query_type: Optional[str] = None
+    action_expectation: Optional[str] = None
+    semantic_summary: Optional[str] = None
+    attributes: List[str] = field(default_factory=list)
+    keywords: List[str] = field(default_factory=list)
+    module_hints: List[str] = field(default_factory=list)
+    helper_payload: Dict[str, Any] = field(default_factory=dict)
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        d = asdict(self)
+        d["extra"] = d.get("extra") or {}
+        d["helper_payload"] = d.get("helper_payload") or {}
+        d["attributes"] = list(d.get("attributes") or [])
+        d["keywords"] = list(d.get("keywords") or [])
+        d["module_hints"] = list(d.get("module_hints") or [])
+        return d
+
+    def to_semantic_packet(self) -> Dict[str, Any]:
+        """Return the compact semantic packet used by Neuron/helper lanes."""
+        return {
+            "intent": self.intent,
+            "intent_confidence": self.confidence,
+            "intent_family": self.intent_family,
+            "likely_lane": self.likely_lane,
+            "query_type": self.query_type,
+            "action_expectation": self.action_expectation,
+            "subject": self.subject,
+            "attributes": list(self.attributes or []),
+            "keywords": list(self.keywords or []),
+            "output_type": self.output_type,
+            "math_expr": self.math_expr,
+            "action": self.action,
+            "target": self.get_target(),
+            "semantic_summary": self.semantic_summary,
+            "module_hints": list(self.module_hints or []),
+            "helper_payload": dict(self.helper_payload or {}),
+        }
+
+    def is_actionable(self) -> bool:
+        """Check if this command can be executed."""
+        return self.intent in (
+            "open_app", "open_url", "search_web", "play_media",
+            "close_quit", "window_mgmt", "system_control", "agent_control",
+            "math", "command", "creative", "build_request", "network_request"
+        ) or (self.likely_lane in ("action", "creative", "network"))
+
+    def get_target(self) -> Optional[str]:
+        """Get the primary target of this command."""
+        return self.app or self.site or self.url or self.subject or self.output_type
+
+
+@dataclass
+class IntentResult:
+    """
+    Result of intent classification with metadata.
+    """
+    label: str
+    confidence: float
+    method: str  # "rule", "neural", "hybrid", "cache"
+    alternatives: List[Tuple[str, float]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "label": self.label,
+            "confidence": self.confidence,
+            "method": self.method,
+            "alternatives": self.alternatives
+        }
+
+
+# ============================================================================
+# TEXT UTILITIES
+# ============================================================================
+
+def _normalize_text(text: Any) -> str:
+    """
+    Normalize input text to a clean string.
+    Handles None, dict with 'text' key, and other types.
+    """
+    if text is None:
+        return ""
+    if isinstance(text, str):
+        return text.strip()
+    if isinstance(text, dict) and "text" in text:
+        return str(text["text"]).strip()
+    return str(text).strip()
+
+
+def tokenize(text: str) -> List[str]:
+    """
+    Simple tokenization into lowercase alphanumeric words.
+
+    Args:
+        text: Input text
+
+    Returns:
+        List of lowercase tokens
+    """
+    if not text:
+        return []
+    return re.findall(r"[A-Za-z0-9']+", text.lower())
+
+
+def _contains_any(text: str, terms: List[str]) -> bool:
+    """Check if text contains any of the given terms."""
+    if not text or not terms:
+        return False
+    t = text.lower()
+    return any(term.lower() in t for term in terms)
+
+
+def _contains_phrase(text: str, phrase: str) -> bool:
+    """Check for a whole-word/phrase match, avoiding accidental substring hits."""
+    t = (text or "").lower().strip()
+    p = (phrase or "").lower().strip()
+    if not t or not p:
+        return False
+    pattern = r"(?<![A-Za-z0-9])" + re.escape(p) + r"(?![A-Za-z0-9])"
+    return re.search(pattern, t) is not None
+
+
+def _get_timestamp() -> str:
+    """Get current ISO timestamp."""
+    return datetime.now().isoformat()
+
+
+# ============================================================================
+# EMBEDDING SYSTEM
+# ============================================================================
+
+# Lazy-loaded sentence transformer model
+_ST_EMBEDDER: Optional[Any] = None
+_ST_EMBEDDER_LOADED: bool = False
+
+
+def _hash_embed(text: str, dim: int = 64) -> List[float]:
+    """
+    Generate a deterministic embedding vector using hash functions.
+    Works completely offline without any external dependencies.
+
+    Args:
+        text: Input text to embed
+        dim: Dimension of output vector
+
+    Returns:
+        List of float values (embedding vector)
+    """
+    if not text:
+        return [0.0] * dim
+
+    # Use SHA-256 hash
+    h = hashlib.sha256(text.encode("utf-8", errors="ignore")).digest()
+
+    # Generate dim floats from hash bytes
+    vals = []
+    for i in range(dim):
+        b = h[i % len(h)]
+        # Transform byte to float using sin for variation
+        vals.append(math.sin((b + i) * 0.0174533))
+
+    # Normalize vector
+    norm = math.sqrt(sum(v * v for v in vals)) or 1.0
+    return [v / norm for v in vals]
+
+
+def _get_local_st() -> Optional[Any]:
+    """
+    Get the local SentenceTransformer model.
+    Lazy-loaded and cached for efficiency.
+
+    Returns:
+        SentenceTransformer model or None if unavailable
+    """
+    global _ST_EMBEDDER, _ST_EMBEDDER_LOADED
+
+    if _ST_EMBEDDER_LOADED:
+        return _ST_EMBEDDER
+
+    with _model_lock:
+        if _ST_EMBEDDER_LOADED:
+            return _ST_EMBEDDER
+
+        try:
+            if not _HAS_ST:
+                logger.debug("[AdvCU] sentence-transformers not installed")
+                _ST_EMBEDDER_LOADED = True
+                return None
+
+            # Try to load local model only (no network)
+            # Select embedding model via Globals resolver (exactly one per category + fallbacks)
+            try:
+                res = {}
+                try:
+                    res = config.resolve_model("embeddings", text="", meta=None, models_dir=getattr(config, "MODELS_DIR", None)) or {}
+                except Exception:
+                    res = {}
+                selected = res.get("selected")
+                fallbacks = res.get("fallbacks") or []
+                candidates = [c for c in ([selected] + list(fallbacks)) if c]
+            except Exception:
+                candidates = []
+
+            if not candidates:
+                # POOR tier with no user overrides => core-only embeddings
+                _ST_EMBEDDER = None
+                logger.info("[AdvCU] Embeddings: core-only (no 3rd-party model selected)")
+                _ST_EMBEDDER_LOADED = True
+                return None
+
+            # Try candidates in order; prefer local folder under MODELS_DIR
+            models_dir = getattr(config, "MODELS_DIR", None) or os.path.join(os.getcwd(), "data", "models")
+            for repo in candidates:
+                try:
+                    local_dir1 = os.path.join(models_dir, repo.replace("/", "_"))
+                    local_dir2 = os.path.join(models_dir, repo)
+                    if os.path.isdir(local_dir1):
+                        _ST_EMBEDDER = SentenceTransformer(local_dir1, local_files_only=True)
+                    elif os.path.isdir(local_dir2):
+                        _ST_EMBEDDER = SentenceTransformer(local_dir2, local_files_only=True)
+                    else:
+                        _ST_EMBEDDER = SentenceTransformer(repo, local_files_only=True)
+                    logger.info(f"[AdvCU] Loaded SentenceTransformer model: {repo}")
+                    break
+                except Exception as e:
+                    logger.debug(f"[AdvCU] ST load failed for {repo}: {e}")
+                    _ST_EMBEDDER = None
+            logger.info("[AdvCU] Loaded SentenceTransformer model")
+
+        except Exception as e:
+            logger.debug(f"[AdvCU] Could not load ST model: {e}")
+            _ST_EMBEDDER = None
+
+        _ST_EMBEDDER_LOADED = True
+        return _ST_EMBEDDER
+
+
+def embed_text(texts: Union[str, List[str]]) -> List[List[float]]:
+    """
+    Generate embeddings for input texts.
+    Uses SentenceTransformer if available, falls back to hash-based embeddings.
+
+    Args:
+        texts: Single string or list of strings to embed
+
+    Returns:
+        List of embedding vectors (one per input text)
+    """
+    if isinstance(texts, str):
+        texts = [texts]
+
+    if not texts:
+        return []
+
+    # Try SentenceTransformer first
+    st = _get_local_st()
+    if st is not None:
+        try:
+            vecs = st.encode(
+                texts,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+            # Convert to Python lists for JSON compatibility
+            return [
+                v.tolist() if hasattr(v, "tolist") else list(v)
+                for v in vecs
+            ]
+        except Exception as e:
+            logger.warning(f"[AdvCU] ST encode failed, using fallback: {e}")
+
+    # Fallback to hash-based embeddings
+    return [_hash_embed(t) for t in texts]
+
+
+# ============================================================================
+# SIMILARITY FUNCTIONS
+# ============================================================================
+
+def evaluate_similarity(text1: str, text2: str) -> float:
+    """
+    Calculate Jaccard similarity between two texts.
+    Based on token set overlap.
+
+    Args:
+        text1: First text
+        text2: Second text
+
+    Returns:
+        Similarity score between 0.0 and 1.0
+    """
+    try:
+        t1 = set(tokenize(text1))
+        t2 = set(tokenize(text2))
+
+        if not t1 and not t2:
+            return 1.0
+        if not t1 or not t2:
+            return 0.0
+
+        intersection = len(t1 & t2)
+        union = len(t1 | t2)
+
+        return intersection / union if union > 0 else 0.0
+
+    except Exception as e:
+        logger.error(f"[SIM] Jaccard similarity error: {e}")
+        return 0.0
+
+
+def get_vector_score(text1: str, text2: str) -> float:
+    """
+    Calculate cosine similarity between character-code vectors.
+    Simple offline heuristic without neural models.
+
+    Args:
+        text1: First text
+        text2: Second text
+
+    Returns:
+        Similarity score between 0.0 and 1.0
+    """
+    try:
+        # Convert to character code vectors
+        a = [ord(c) for c in text1 if c.isalnum()]
+        b = [ord(c) for c in text2 if c.isalnum()]
+
+        if not a or not b:
+            return 0.0
+
+        # Pad shorter vector
+        min_len = min(len(a), len(b))
+        a = a[:min_len]
+        b = b[:min_len]
+
+        # Calculate cosine similarity
+        dot_product = sum(x * y for x, y in zip(a, b))
+        norm_a = math.sqrt(sum(x * x for x in a))
+        norm_b = math.sqrt(sum(x * x for x in b))
+
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+
+        return dot_product / (norm_a * norm_b)
+
+    except Exception as e:
+        logger.error(f"[VEC] Vector score error: {e}")
+        return 0.0
+
+
+def cosine_similarity(vec1: List[float], vec2: List[float]) -> float:
+    """
+    Calculate cosine similarity between two vectors.
+
+    Args:
+        vec1: First vector
+        vec2: Second vector
+
+    Returns:
+        Cosine similarity (-1.0 to 1.0)
+    """
+    if not vec1 or not vec2:
+        return 0.0
+
+    try:
+        n = min(len(vec1), len(vec2))
+        dot = sum(vec1[i] * vec2[i] for i in range(n))
+        norm1 = math.sqrt(sum(vec1[i] ** 2 for i in range(n))) or 1.0
+        norm2 = math.sqrt(sum(vec2[i] ** 2 for i in range(n))) or 1.0
+
+        return dot / (norm1 * norm2)
+
+    except Exception as e:
+        logger.error(f"[COS] Cosine similarity error: {e}")
+        return 0.0
+
+
+# ============================================================================
+# DETECTION HELPERS
+# ============================================================================
+
+def _likely_math(text: str) -> bool:
+    """Check if text likely contains a math expression."""
+    t = text.replace(" ", "")
+    if not t:
+        return False
+
+    # Must contain at least one math symbol and one digit
+    has_symbol = any(c in MATH_SYMBOLS for c in t)
+    has_digit = any(c.isdigit() for c in t)
+
+    if not (has_symbol and has_digit):
+        return False
+
+    # Avoid pure phone numbers or IDs
+    if re.fullmatch(r"\d{7,}", t):
+        return False
+
+    # Check for basic arithmetic pattern
+    if re.search(r"\d+\s*[\+\-\*/\^%]\s*\d+", text):
+        return True
+
+    return True
+
+
+def _looks_like_url(text: str) -> bool:
+    """Check if text contains a URL or domain."""
+    if "http://" in text or "https://" in text:
+        return True
+    if DOMAIN_REGEX.search(text):
+        return True
+    return False
+
+
+def _looks_like_login(text: str) -> bool:
+    """Check if text indicates a login request."""
+    t = text.lower()
+    keywords = [
+        "login", "log in", "sign in", "sign-in",
+        "authenticate", "enter password", "enter pin"
+    ]
+    return any(k in t for k in keywords)
+
+
+def _looks_like_signup(text: str) -> bool:
+    """Check if text indicates a signup request."""
+    t = text.lower()
+    keywords = [
+        "sign up", "signup", "create account",
+        "register", "registration", "new account"
+    ]
+    return any(k in t for k in keywords)
+
+
+def _looks_like_device_query(text: str) -> bool:
+    """Check if text asks about the device/system."""
+    t = text.lower()
+    keywords = [
+        "hardware",
+        "device",
+        "system info",
+        "system status",
+        "system stats",
+        "gpu",
+        "vram",
+        "cuda",
+        "nvidia-smi",
+        "disk space",
+        "free space",
+        "drive space",
+        "storage",
+        "cpu usage",
+        "cpu temp",
+        "cpu temperature",
+        "processor temp",
+        "gpu temp",
+        "gpu temperature",
+        "thermal",
+        "temperature",
+        "temp",
+        "cpu",
+        "ram",
+        "memory usage",
+        "memory",
+    ]
+    return any(k in t for k in keywords)
+
+def _looks_like_diagnostics(text: str) -> bool:
+    t = text.lower()
+    keywords = [
+        "diagnostic",
+        "diagnostics",
+        "health check",
+        "self test",
+        "self-test",
+        "system check",
+        "run diagnostics",
+    ]
+    return any(k in t for k in keywords)
+
+
+def _looks_like_time_query(text: str) -> bool:
+    """Check if text asks about time or scheduling."""
+    t = text.lower()
+
+    # Direct time questions
+    if any(phrase in t for phrase in [
+        "what time", "current time", "time now", "today's date",
+        "what's today", "what day is", "schedule", "remind me",
+        "set alarm", "calendar", "appointment"
+    ]):
+        return True
+
+    # Time-related words with question context
+    if TIME_WORDS.search(t) and QUESTION_STARTERS.search(t):
+        return True
+
+    return False
+
+
+def _looks_like_greeting(text: str) -> bool:
+    """Check if text is a greeting."""
+    return bool(GREET_WORDS.search(text))
+
+
+def _looks_like_farewell(text: str) -> bool:
+    """Check if text is a farewell."""
+    return bool(FAREWELL_WORDS.search(text))
+
+
+def _looks_like_identity(text: str) -> bool:
+    """Check if text asks about identity."""
+    t = text.lower()
+    return any(phrase in t for phrase in IDENTITY_PHRASES)
+
+
+def _looks_like_system_control(text: str) -> bool:
+    """Check if text is a system control command."""
+    t = text.lower()
+    keywords = [
+        "volume", "brightness", "system", "mute", "unmute",
+        "increase", "decrease", "turn on", "turn off",
+        "shut down", "restart", "reboot", "sleep", "hibernate",
+        "wifi", "bluetooth", "airplane mode"
+    ]
+    return any(kw in t for kw in keywords)
+
+
+def _detect_action_subject(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Detect action and subject from text.
+
+    Returns:
+        (action_category, subject_key) tuple
+    """
+    t = text.lower()
+    tokens = tokenize(text)
+    joined = " ".join(tokens)
+
+    # Detect action
+    action_label = None
+    for action_key, synonyms in ACTION_SYNONYMS.items():
+        for syn in synonyms:
+            if _contains_phrase(joined, syn) or _contains_phrase(t, syn):
+                action_label = action_key
+                break
+        if action_label:
+            break
+
+    # Detect subject
+    subject_key = None
+    for subj_key, meta in SUBJECT_LEXICON.items():
+        if _contains_phrase(joined, subj_key) or _contains_phrase(t, subj_key):
+            subject_key = subj_key
+            break
+        for alias in meta.get("aka", []):
+            if _contains_phrase(joined, alias) or _contains_phrase(t, alias):
+                subject_key = subj_key
+                break
+        if subject_key:
+            break
+
+    return action_label, subject_key
+
+
+
+
+_SURFACE_DRAW_SHAPES = ("circle", "square", "triangle", "rectangle", "oval", "line", "star")
+_SURFACE_APP_ALIASES = {
+    "word": "winword", "microsoft word": "winword", "ms word": "winword", "winword": "winword",
+    "excel": "excel", "microsoft excel": "excel", "ms excel": "excel",
+    "powerpoint": "powerpnt", "microsoft powerpoint": "powerpnt", "ms powerpoint": "powerpnt", "powerpnt": "powerpnt",
+    "paint": "mspaint", "microsoft paint": "mspaint", "mspaint": "mspaint",
+    "notepad": "notepad", "vscode": "code", "visual studio code": "code", "vs code": "code", "code": "code",
+    "dreamweaver": "dreamweaver",
+}
+
+
+def _canonical_surface_exec(app_name: Optional[str]) -> str:
+    app = str(app_name or '').strip().lower()
+    if not app:
+        return ''
+    app = app.replace('.exe', '').strip()
+    return _SURFACE_APP_ALIASES.get(app, app)
+
+
+def extract_surface_task(text: str, preferred_app: Optional[str] = None) -> Dict[str, Any]:
+    t = _normalize_text(text)
+    low = t.lower()
+    result: Dict[str, Any] = {}
+    requested_app = ''
+    for alias in sorted(_SURFACE_APP_ALIASES.keys(), key=len, reverse=True):
+        if re.search(r'(?<![a-z0-9])' + re.escape(alias) + r'(?![a-z0-9])', low):
+            requested_app = alias
+            break
+    if preferred_app and not requested_app:
+        requested_app = str(preferred_app)
+    canonical = _canonical_surface_exec(requested_app)
+    if canonical:
+        result['requested_app'] = requested_app or canonical
+        result['requested_app_exec'] = canonical
+
+    open_named = re.search(r'\bopen\b.*?\b(?:document|file|spreadsheet|workbook|project|page|website)\b\s*(?:named|called)\s+(.+?)(?:\s+(?:and\s+(?:write|create|make)|about|with)\b|$)', t, re.I)
+    if open_named:
+        result['task_kind'] = 'open_named_document'
+        result['document_name'] = open_named.group(1).strip('" .')
+        return result
+
+    title_m = re.search(r'\btitled\s+(.+?)(?:\s+and\s+(?:write|create|make)|\s+about|\s+with|$)', t, re.I)
+    if title_m:
+        result['title'] = title_m.group(1).strip('" .')
+    about_matches = re.findall(r'\b(?:about|on|regarding)\s+([^?.!,;]+)', t, re.I)
+    if about_matches:
+        result['topic'] = str(about_matches[-1]).strip(' ?.,')
+
+    if 'website' in low or 'webpage' in low or 'homepage' in low or 'about page' in low:
+        result['task_kind'] = 'website_scaffold'
+        pages = []
+        if 'homepage' in low or 'home page' in low:
+            pages.append('index')
+        if 'about page' in low:
+            pages.append('about')
+        result['pages'] = pages or ['index', 'about']
+        if not result.get('topic'):
+            using_app = re.search(r'\busing\s+([A-Za-z0-9+ ._-]+?)(?:\s+with\b|\s+and\b|\s+about\b|$)', t, re.I)
+            if using_app:
+                maybe = using_app.group(1).strip(' .')
+                if maybe and 'website' not in maybe.lower():
+                    result['authoring_app_hint'] = maybe
+        return result
+
+    if 'checkbook' in low or 'track my spending' in low or 'spreadsheet' in low or 'workbook' in low or ('excel' in low and any(k in low for k in ('create', 'make', 'build'))):
+        result['task_kind'] = 'spreadsheet_template'
+        result['template_kind'] = 'checkbook' if ('checkbook' in low or 'spending' in low) else 'table'
+        return result
+
+    if 'draw' in low:
+        result['task_kind'] = 'paint_draw'
+        shape_m = re.search(r'\b(' + '|'.join(_SURFACE_DRAW_SHAPES) + r')\b', low)
+        result['draw_subject'] = shape_m.group(1) if shape_m else 'drawing'
+        return result
+
+    if any(x in low for x in ('document', 'report', 'essay', 'letter', 'page', 'write me a', 'write a', 'create me a document', 'create a document')):
+        result['task_kind'] = 'write_document'
+        result['document_text'] = t
+        return result
+
+    return result
+
+def _extract_keywords(text: str, limit: int = 8) -> List[str]:
+    """Extract compact routing keywords from text."""
+    out: List[str] = []
+    seen: Set[str] = set()
+    for tok in tokenize(text):
+        t = tok.lower().strip()
+        if not t or t in _SEMANTIC_STOPWORDS:
+            continue
+        if len(t) == 1 and not t.isdigit():
+            continue
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _flatten_subject_tokens(subject: Optional[str]) -> Set[str]:
+    if not subject:
+        return set()
+    return set(tokenize(subject.lower()))
+
+
+def _extract_attributes(
+    text: str,
+    subject: Optional[str] = None,
+    action: Optional[str] = None,
+    output_type: Optional[str] = None,
+    limit: int = 8
+) -> List[str]:
+    """Extract descriptive attributes that are not the primary subject/action."""
+    subject_tokens = _flatten_subject_tokens(subject)
+    action_tokens = _flatten_subject_tokens(action)
+    output_tokens = _flatten_subject_tokens(output_type)
+    ignored = subject_tokens | action_tokens | output_tokens | _SEMANTIC_STOPWORDS | _CREATIVE_VERBS
+
+    attrs: List[str] = []
+    seen: Set[str] = set()
+    for tok in tokenize(text):
+        t = tok.lower().strip()
+        if not t or t in ignored:
+            continue
+        if len(t) == 1 and not t.isdigit():
+            continue
+        if t not in seen:
+            seen.add(t)
+            attrs.append(t)
+        if len(attrs) >= limit:
+            break
+    return attrs
+
+def _infer_subject_from_text(
+    text: str,
+    output_type: Optional[str],
+    action: Optional[str],
+    existing_subject: Optional[str] = None
+) -> Optional[str]:
+    """Infer the semantic topic/subject when no explicit app/site subject exists."""
+    if existing_subject:
+        return existing_subject
+    keywords = _extract_keywords(text, limit=10)
+    ignored: Set[str] = set()
+    if output_type:
+        ignored |= _flatten_subject_tokens(output_type)
+    if action:
+        ignored |= _flatten_subject_tokens(action)
+    ignored |= _CREATIVE_VERBS
+    for kw in keywords:
+        if kw in ignored:
+            continue
+        return kw
+    return None
+
+
+
+
+def _normalize_visual_subject(subject: Optional[str]) -> Optional[str]:
+    """Normalize a likely vision subject into a stable canonical phrase."""
+    s = _normalize_text(subject).lower().strip(" ?!,.:-")
+    if not s:
+        return None
+    s = re.sub(r"(my|the|this|that|these|those|a|an)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return None
+    if s in _VISUAL_SUBJECT_SYNONYMS:
+        s = _VISUAL_SUBJECT_SYNONYMS[s]
+    for k, v in _VISUAL_SUBJECT_SYNONYMS.items():
+        if s == k or s.endswith(" " + k):
+            return v
+    return s
+
+
+def _contains_any_phrase(text: str, phrases: Tuple[str, ...]) -> bool:
+    lt = (text or "").lower()
+    return any(p in lt for p in phrases)
+
+
+# --- SARAHMEMORY REALITY PATCH 2026-07-23: model/knowledge routing guards ---
+_MODEL_ARCHITECTURE_HINTS: Tuple[str, ...] = (
+    "local model", "sovereign model", "llm", "large language model", "tokenizer", "tokenize",
+    "adapter", "lora", "qlora", "fine tune", "finetune", "train", "training", "qist", "sel",
+    "semantic tokenization", "contextual drift", "hallucination", "activation", "ablation", "model forensics",
+)
+_GENERAL_KNOWLEDGE_STARTERS: Tuple[str, ...] = (
+    "what is ", "what are ", "who is ", "who are ", "why ", "how does ", "how do ",
+    "explain ", "define ", "describe ", "tell me about ",
+)
+
+def _looks_like_model_architecture_request(text: str) -> bool:
+    lt = _normalize_text(text).lower()
+    return any(h in lt for h in _MODEL_ARCHITECTURE_HINTS)
+
+
+def _looks_like_general_knowledge_question(text: str) -> bool:
+    lt = _normalize_text(text).lower()
+    if not lt:
+        return False
+    if _looks_like_model_architecture_request(lt):
+        return False
+    visual_guard_phrases = ("what do you see", "look at", "in this image", "in the picture", "in the photo")
+    if any(p in lt for p in visual_guard_phrases):
+        return False
+    visual_guard_words = ("image", "picture", "photo", "camera", "webcam", "screenshot", "frame", "video", "screen")
+    if any(re.search(rf"(?<![a-z0-9_]){re.escape(w)}(?![a-z0-9_])", lt) for w in visual_guard_words):
+        return False
+    return any(lt.startswith(prefix) for prefix in _GENERAL_KNOWLEDGE_STARTERS)
+
+# --- END SARAHMEMORY REALITY PATCH 2026-07-23 ---
+
+
+def _detect_visual_query_type(
+    text: str,
+    subject: Optional[str] = None,
+    output_type: Optional[str] = None,
+    intent_label: Optional[str] = None,
+) -> Optional[str]:
+    """Detect whether the user request is a vision/perception request and return a normalized vision query type."""
+    lt = _normalize_text(text).lower()
+    if not lt:
+        return None
+    # SARAHMEMORY REALITY PATCH 2026-07-23:
+    # General knowledge questions and local-model/tokenizer/SEL/QIST architecture work
+    # must not be routed as image/scene requests merely because broad words like
+    # "model" or "text" appear in the prompt.
+    if _looks_like_general_knowledge_question(lt) or _looks_like_model_architecture_request(lt):
+        return None
+
+    has_subject = bool(_normalize_visual_subject(subject))
+    has_visual_cues = (
+        _contains_any_phrase(lt, _VISUAL_DEVICE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_FACE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_COLOR_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_TEXT_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_MOTION_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_STYLE_HINTS)
+        or _contains_any_phrase(lt, _VISUAL_SCENE_HINTS)
+    )
+    visual_context = bool(has_visual_cues and (has_subject or True))
+    if not visual_context:
+        return None
+
+    if _contains_any_phrase(lt, _VISUAL_SAFETY_HINTS):
+        return "inspect_safety_zone"
+    if _contains_any_phrase(lt, _VISUAL_COMPARE_HINTS):
+        return "compare_before_after"
+    if _contains_any_phrase(lt, _VISUAL_STYLE_HINTS):
+        return "assess_style_or_fit"
+    if _contains_any_phrase(lt, _VISUAL_TEXT_HINTS):
+        return "read_text"
+    if _contains_any_phrase(lt, _VISUAL_COLOR_HINTS):
+        return "identify_color"
+    if _contains_any_phrase(lt, _VISUAL_MOTION_HINTS):
+        return "track_motion"
+    if _contains_any_phrase(lt, _VISUAL_DISTANCE_HINTS):
+        return "estimate_distance"
+    if _contains_any_phrase(lt, _VISUAL_FACE_HINTS):
+        return "detect_faces"
+    if _contains_any_phrase(lt, _VISUAL_SCENE_HINTS):
+        return "scene_summary"
+    if _contains_any_phrase(lt, _VISUAL_OBJECT_HINTS):
+        return "detect_objects"
+
+    if output_type == "image":
+        return "scene_summary"
+    if intent_label in ("question", "device_query", "statement") and visual_context:
+        return "scene_summary"
+    return None
+
+
+def _extract_visual_subject_from_text(text: str, query_type: Optional[str], fallback_subject: Optional[str] = None) -> Optional[str]:
+    """Best-effort extraction of the subject being visually queried."""
+    lt = _normalize_text(text).lower()
+    patterns = [
+        r"(?:color|colour)\s+(?:of|for)\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"what\s+(?:color|colour)\s+(?:is|are)\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"what\s+does\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})\s+say",
+        r"read\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"does\s+(?:my|the|this|that)?\s*([a-z0-9 _-]{1,48})\s+make\s+me\s+look",
+        r"is\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})\s+too\s+close",
+        r"is\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})\s+in\s+(?:the\s+)?(?:danger|safe|safety|hazard)\s+zone",
+        r"track\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+        r"compare\s+(?:the|my|this|that)?\s*([a-z0-9 _-]{1,48})",
+    ]
+    for pat in patterns:
+        m = re.search(pat, lt)
+        if m:
+            subj = _normalize_visual_subject(m.group(1))
+            if subj:
+                return subj
+
+    cleaned = re.sub(r"[^a-z0-9\s_-]", " ", lt)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    for cand in sorted(_VISUAL_SUBJECT_CANDIDATES, key=len, reverse=True):
+        if re.search(rf"\b{re.escape(cand)}\b", cleaned):
+            return _normalize_visual_subject(cand)
+
+    return _normalize_visual_subject(fallback_subject)
+
+
+def _visual_attributes_for_query_type(query_type: Optional[str]) -> List[str]:
+    mapping = {
+        "identify_color": ["color"],
+        "read_text": ["text"],
+        "detect_objects": ["objects"],
+        "detect_faces": ["faces"],
+        "track_motion": ["motion"],
+        "estimate_distance": ["distance"],
+        "inspect_safety_zone": ["distance", "safety_zone"],
+        "compare_before_after": ["comparison", "change"],
+        "assess_style_or_fit": ["style", "fit"],
+        "scene_summary": ["scene"],
+    }
+    return list(mapping.get(query_type or "", []))
+
+
+def _infer_action_expectation(
+    text: str,
+    query_type: Optional[str],
+    intent_family: Optional[str],
+    lane: Optional[str],
+) -> Optional[str]:
+    """Infer whether the request is answer-only, advisory, monitoring, or a governed action candidate."""
+    lt = _normalize_text(text).lower()
+    if not query_type:
+        if lane == "action" or intent_family == "ACTION":
+            return "governed_action_candidate"
+        return None
+
+    if query_type == "inspect_safety_zone":
+        if any(tok in lt for tok in _VISUAL_ACTION_HINTS):
+            return "governed_action_candidate"
+        return "answer_with_monitoring_guidance"
+
+    if query_type in ("track_motion", "estimate_distance"):
+        if any(tok in lt for tok in ("track", "monitor", "follow", "alert", "notify", "report", "warn")):
+            return "answer_with_monitoring_guidance"
+        return "answer_only"
+
+    if lane == "action" or intent_family == "ACTION":
+        return "governed_action_candidate"
+
+    return "answer_only"
+
+
+def _merge_priority_attributes(priority: List[str], existing: List[str], limit: int = 8) -> List[str]:
+    out: List[str] = []
+    seen: Set[str] = set()
+    for seq in (priority or [], existing or []):
+        for item in seq:
+            t = _normalize_text(item).lower().strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def _detect_output_type(text: str, intent_label: str, action: Optional[str] = None) -> Optional[str]:
+    """Infer the primary requested output/artifact type."""
+    t = (text or "").lower()
+    # SARAHMEMORY REALITY PATCH 2026-07-23:
+    # Model/tokenizer/SEL/QIST architecture requests are not avatar/image creative work.
+    if _looks_like_model_architecture_request(t):
+        return "model_architecture"
+    if _looks_like_general_knowledge_question(t):
+        return "text_answer"
+    for kind, hints in _CREATIVE_OUTPUT_KEYWORDS.items():
+        for hint in hints:
+            if hint in t:
+                return kind
+    if intent_label == "math":
+        return "answer"
+    if action in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control"):
+        return "action"
+    if intent_label in ("diagnostics", "device_query"):
+        return "system_status"
+    return None
+
+
+def _detect_intent_family_and_lane(
+    text: str,
+    intent_label: str,
+    action: Optional[str],
+    output_type: Optional[str],
+    math_expr: Optional[str]
+) -> Tuple[str, str]:
+    """Map parsed meaning to an intent family + primary lane."""
+    t = (text or "").lower()
+
+    if intent_label == "diagnostics":
+        return "SYSTEM", "system"
+
+    # SARAHMEMORY REALITY PATCH 2026-07-23:
+    # Route local-model/tokenizer/SEL/QIST work into model governance, not creative/avatar lanes.
+    if output_type == "model_architecture" or _looks_like_model_architecture_request(t):
+        return "MODEL_GOVERNANCE", "model"
+
+    if any(h in t for h in _NETWORK_HINTS) or intent_label == "network_request":
+        return "NETWORK", "network"
+
+    if output_type in ("image", "video", "music", "avatar", "website"):
+        return "CREATIVE", "creative"
+
+    if action in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control", "agent_control"):
+        return "ACTION", "action"
+
+    if math_expr or intent_label in (
+        "math", "question", "identity_query", "smalltalk", "greeting",
+        "farewell", "statement", "time_related", "device_query"
+    ):
+        return "ANSWER", "answer"
+
+    if any(v in t for v in _CREATIVE_VERBS) and any(
+        hint in t for hints in _CREATIVE_OUTPUT_KEYWORDS.values() for hint in hints
+    ):
+        return "CREATIVE", "creative"
+
+    if any(v in t for v in _FILE_ACTION_HINTS):
+        return "ACTION", "action"
+
+    return "ANSWER", "answer"
+
+
+def _module_hints_for_packet(lane: str, output_type: Optional[str], intent_label: str) -> List[str]:
+    """Suggest likely owner/helper modules for downstream routing."""
+    if lane == "system":
+        return ["SarahMemoryDiagnostics"]
+    if lane == "network":
+        return ["SarahMemoryNetwork", "appnet"]
+    if lane == "creative":
+        if output_type == "video":
+            return ["SarahMemoryVideoEditorCore", "SarahMemoryCanvasStudio"]
+        if output_type == "music":
+            return ["SarahMemoryMusicGenerator", "SarahMemoryLyricsToSong"]
+        if output_type == "avatar":
+            return ["SarahMemoryCanvasStudio"]
+        if output_type == "website":
+            return ["SarahMemoryCanvasStudio", "SarahMemoryAiFunctions"]
+        return ["SarahMemoryCanvasStudio"]
+    if lane == "action":
+        return ["SarahMemoryAiFunctions"]
+    if lane == "model":
+        return ["SarahMemoryLLM", "SarahMemoryPreTokenAnalyzer", "SarahMemoryQuantumSafe", "SarahMemorySynapes"]
+    if intent_label == "math":
+        return ["SarahMemoryLogicCalc"]
+    return ["SarahMemoryWebSYM", "SarahMemoryResearch"]
+
+
+def _infer_query_type(
+    text: str,
+    intent_label: str,
+    output_type: Optional[str],
+    math_expr: Optional[str],
+    visual_query_type: Optional[str] = None,
+) -> str:
+    """Produce a normalized query_type field for compact semantic packets."""
+    t = (text or "").lower()
+    if math_expr or intent_label == "math":
+        return "deterministic_math"
+    if visual_query_type:
+        return visual_query_type
+    if intent_label == "diagnostics":
+        return "diagnostics"
+    if output_type == "model_architecture" or intent_label == "model_governance":
+        return "model_architecture_request"
+    if output_type in ("image", "video", "music", "avatar"):
+        return "creative_request"
+    if output_type == "website":
+        return "build_request"
+    if any(k in t for k in _NETWORK_HINTS):
+        return "network_request"
+    if intent_label in ("open_app", "open_url", "search_web", "play_media", "window_mgmt", "close_quit", "system_control", "agent_control", "command"):
+        return "action_request"
+    if intent_label in ("question", "identity_query", "device_query", "time_related"):
+        return "identity_or_definition" if "what is" in t or "who is" in t else "question"
+    return "statement"
+
+
+def _build_semantic_summary(
+    intent_label: str,
+    subject: Optional[str],
+    attributes: List[str],
+    output_type: Optional[str],
+    query_type: Optional[str],
+    math_expr: Optional[str]
+) -> str:
+    """Generate a concise semantic summary for routing and logging."""
+    if math_expr:
+        return f"user is asking to solve math expression {math_expr}"
+    bits: List[str] = []
+    if query_type:
+        bits.append(query_type.replace("_", " "))
+    if output_type and output_type != "answer":
+        bits.append(f"output={output_type}")
+    if subject:
+        bits.append(f"subject={subject}")
+    if attributes:
+        bits.append("attributes=" + ", ".join(attributes[:4]))
+    if not bits:
+        bits.append(f"intent={intent_label}")
+    return "user request: " + " | ".join(bits)
+
+
+def _build_helper_payload_from_command(cmd: ParsedCommand) -> Dict[str, Any]:
+    """Build the compressed semantic helper payload for helper-only LLM use."""
+    payload: Dict[str, Any] = {
+        "intent": cmd.intent,
+        "intent_family": cmd.intent_family,
+        "task": None,
+        "topic": cmd.subject,
+        "attribute": (cmd.attributes[0] if cmd.attributes else None),
+        "attributes": list(cmd.attributes[:4]),
+        "keywords": list(cmd.keywords[:6]),
+        "query_type": cmd.query_type,
+        "action_expectation": cmd.action_expectation,
+        "output_type": cmd.output_type,
+        "math_expr": cmd.math_expr,
+        "semantic_summary": cmd.semantic_summary,
+    }
+    surface_task = (cmd.extra or {}).get("surface_task") if isinstance(cmd.extra, dict) else None
+    if isinstance(surface_task, dict) and surface_task:
+        payload["surface_task"] = dict(surface_task)
+
+    if cmd.math_expr:
+        payload["task"] = "solve exact expression"
+    elif cmd.output_type in ("image", "video", "music", "avatar", "website"):
+        payload["task"] = f"fill missing creative/build details for {cmd.output_type}"
+    elif cmd.intent_family == "ANSWER":
+        payload["task"] = "infer concise likely concept"
+    elif cmd.intent_family == "ACTION":
+        payload["task"] = "fill missing action target details only"
+    elif cmd.intent_family == "NETWORK":
+        payload["task"] = "fill missing network intent details only"
+    else:
+        payload["task"] = "fill missing semantic gap only"
+
+    if cmd.query_type in _VISUAL_QUERY_TYPES:
+        payload["vision"] = {
+            "query_type": cmd.query_type,
+            "requested_subject": cmd.subject,
+            "requested_attributes": list((cmd.attributes or [])[:4]),
+            "action_expectation": cmd.action_expectation or "answer_only",
+            "needs_optical_input": True,
+            "module_hints": [m for m in (cmd.module_hints or []) if m in ("SarahMemorySOBJE", "SarahMemoryFacialRecognition")],
+        }
+
+    return {k: v for k, v in payload.items() if v not in (None, "", [], {})}
+
+
+
+# ============================================================================
+# INTENT CLASSIFICATION
+# ============================================================================
+
+def _rule_based_intent(text: Any) -> str:
+    """
+    Fast rule-based intent classification.
+    Prioritizes specific intents over broad ones.
+
+    Args:
+        text: Input text
+
+    Returns:
+        Intent label string
+    """
+    t = _normalize_text(text)
+    if not t:
+        return "statement"
+
+    lt = t.lower()
+
+    # Priority 1: Authentication flows
+    if _looks_like_login(lt):
+        return "login"
+    if _looks_like_signup(lt):
+        return "signup"
+
+    # Priority 2: Device queries
+    if _looks_like_device_query(lt):
+        return "device_query"
+
+    # Priority 2.5: Diagnostics / health checks
+    if _looks_like_diagnostics(lt):
+        return "diagnostics"
+
+    # Priority 2.75: Creative / build / network requests
+    if any(v in lt for v in _CREATIVE_VERBS) and any(
+        hint in lt for hints in _CREATIVE_OUTPUT_KEYWORDS.values() for hint in hints
+    ):
+        if any(h in lt for h in _NETWORK_HINTS):
+            return "network_request"
+        if any(h in lt for h in _CREATIVE_OUTPUT_KEYWORDS.get("website", ()) + _CREATIVE_OUTPUT_KEYWORDS.get("application", ())):
+            return "build_request"
+        return "creative"
+    if any(h in lt for h in _NETWORK_HINTS):
+        return "network_request"
+
+    # Priority 3: Conversational intents
+    if _looks_like_greeting(lt):
+        return "greeting"
+    if _looks_like_farewell(lt):
+        return "farewell"
+    if _looks_like_identity(lt):
+        return "identity_query"
+
+    # Priority 4: Math and time
+    if _likely_math(t) or MATH_EXPR_REGEX.search(t):
+        return "math"
+    if _looks_like_time_query(lt):
+        return "time_related"
+
+    # Priority 5: System control
+    if _looks_like_system_control(lt):
+        return "system_control"
+
+    # Priority 6: Action + subject combinations
+    action, subject = _detect_action_subject(t)
+    if action and subject:
+        return action
+    elif action:
+        # Have action but no recognized subject
+        return action
+
+    # Priority 7: URL handling
+    if _looks_like_url(t):
+        if _contains_any(lt, ["search", "look up", "find", "google"]):
+            return "search_web"
+        return "open_url"
+
+    # Priority 8: Command patterns
+    cmd_starts = [
+        "open", "go to", "launch", "start", "run", "play",
+        "search", "close", "quit", "exit", "shut down", "restart"
+    ]
+    if any(lt.startswith(cmd) for cmd in cmd_starts):
+        return "command"
+
+    # Priority 9: Questions vs statements
+    if QUESTION_STARTERS.search(lt):
+        # Check for smalltalk questions
+        smalltalk_phrases = [
+            "how are you", "how's it going", "how do you feel",
+            "are you okay", "what's up", "what are you doing"
+        ]
+        if any(phrase in lt for phrase in smalltalk_phrases):
+            return "smalltalk"
+        return "question"
+
+    # Priority 10: Short informal greetings
+    if lt in ("hi", "hey", "hello", "yo", "sup"):
+        return "greeting"
+
+    # Default: statement
+    return "statement"
+
+
+def _load_intent_override_cache() -> Dict[str, str]:
+    """Load user-defined intent overrides from cache file."""
+    try:
+        if os.path.exists(INTENT_CACHE_PATH):
+            with open(INTENT_CACHE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception as e:
+        logger.warning(f"[Cache] Failed to read intent overrides: {e}")
+    return {}
+
+
+def classify_intent_with_confidence(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> Tuple[str, float]:
+    """
+    Classify intent with confidence score.
+    Combines rule-based and optional neural classification.
+
+    Args:
+        text: Input text to classify
+        user_context: Optional user context (reserved for future use)
+        device_context: Optional device context (reserved for future use)
+
+    Returns:
+        Tuple of (intent_label, confidence_score)
+    """
+    t = _normalize_text(text)
+    if not t:
+        return "statement", 0.0
+
+    # Check override cache first
+    cache = _load_intent_override_cache()
+    if t in cache:
+        label = cache[t]
+        log_advcu_event("Intent Override Hit", json.dumps({"text": t, "label": label}))
+        return label, 1.0
+
+    # Rule-based classification
+    rule_label = _rule_based_intent(t)
+    rule_conf = 0.7  # Base confidence for rule-based
+
+    # Boost confidence for high-priority intents
+    high_conf_intents = {
+        "login", "signup", "device_query", "greeting",
+        "farewell", "identity_query", "math"
+    }
+    if rule_label in high_conf_intents:
+        rule_conf = 0.85
+
+    # Log the classification
+    log_advcu_event(
+        "Classify Intent",
+        json.dumps({
+            "text": t[:100],
+            "label": rule_label,
+            "confidence": round(rule_conf, 3)
+        })
+    )
+
+    return rule_label, float(rule_conf)
+
+
+def classify_intent(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> str:
+    """
+    Primary intent classifier used across SarahMemory.
+
+    This is the main entry point for intent classification, providing
+    backward compatibility with existing code that expects just the label.
+
+    Args:
+        text: Input text to classify
+        user_context: Optional user context (reserved)
+        device_context: Optional device context (reserved)
+
+    Returns:
+        Intent label string
+    """
+    label, _ = classify_intent_with_confidence(
+        text,
+        user_context=user_context,
+        device_context=device_context
+    )
+    return label
+
+
+# ============================================================================
+# COMMAND PARSING
+# ============================================================================
+
+def extract_math_expression(text: Any) -> Optional[str]:
+    """
+    Extract a math expression from text.
+
+    Args:
+        text: Input text
+
+    Returns:
+        Extracted math expression or None
+    """
+    t = _normalize_text(text)
+    if not t:
+        return None
+
+    # Try regex pattern first
+    m = MATH_EXPR_REGEX.search(t)
+    if m:
+        return m.group(1).strip()
+
+    # Check if entire text looks like an expression
+    cleaned = t.replace(" ", "")
+    if all(ch.isdigit() or ch in MATH_SYMBOLS or ch == "." for ch in cleaned):
+        return t.strip()
+
+    return None
+
+
+def is_math_query(text: Any) -> bool:
+    """Check if text is primarily a math calculation."""
+    return extract_math_expression(text) is not None
+
+
+def is_time_query(text: Any) -> bool:
+    """Check if text is a time/scheduling query."""
+    t = _normalize_text(text)
+    if not t:
+        return False
+    return _looks_like_time_query(t)
+
+
+def parse_command(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> ParsedCommand:
+    """
+    Parse user input into a structured command.
+
+    Extracts:
+    - Intent classification
+    - Math expressions
+    - URLs and domains
+    - App/site targets
+    - Action and subject
+    - Compact semantic packet data for governed routing
+
+    Args:
+        text: Input text to parse
+        user_context: Optional user context
+        device_context: Optional device context
+
+    Returns:
+        ParsedCommand dataclass with extracted information
+    """
+    t = _normalize_text(text)
+    label, confidence = classify_intent_with_confidence(t)
+
+    # Initialize extraction results
+    math_expr = None
+    url = None
+    app = None
+    site = None
+    subject = None
+    action = None
+    extra: Dict[str, Any] = {}
+
+    # Extract math expression
+    if label == "math" or _likely_math(t):
+        math_expr = extract_math_expression(t)
+
+    # Extract URLs
+    if _looks_like_url(t):
+        url_match = URL_REGEX.findall(t)
+        if url_match:
+            url = url_match[0]
+        else:
+            domain_match = DOMAIN_REGEX.search(t)
+            if domain_match:
+                site = domain_match.group(0)
+
+    # Extract action and subject
+    action, subj = _detect_action_subject(t)
+    if subj:
+        info = SUBJECT_LEXICON.get(subj, {})
+        if info.get("kind") == "app":
+            app = subj
+        elif info.get("kind") == "site":
+            site = subj
+            if not url and info.get("url"):
+                url = info["url"]
+        subject = subj
+
+    output_type = _detect_output_type(t, label, action=action)
+    # SARAHMEMORY REALITY PATCH 2026-07-23:
+    # Correct the old creative/avatar misroute for local-model/tokenizer/SEL/QIST work.
+    if output_type == "model_architecture":
+        label = "model_governance"
+        confidence = max(float(confidence or 0.0), 0.82)
+        action = None
+    surface_task = extract_surface_task(t, preferred_app=app or subject)
+    if surface_task.get("requested_app") and not app:
+        app = str(surface_task.get("requested_app"))
+        if not subject:
+            subject = app
+
+    # Semantic subject fallback from natural language/topic extraction
+    if not math_expr:
+        subject = _infer_subject_from_text(
+            t,
+            output_type=output_type,
+            action=action,
+            existing_subject=subject
+        )
+
+    visual_query_type = _detect_visual_query_type(
+        t,
+        subject=subject,
+        output_type=output_type,
+        intent_label=label,
+    )
+    if visual_query_type:
+        is_question_form = bool(re.match(r"^\s*(is|are|does|do|what|which|who|can|could|should|would|how)\b", t.lower()))
+        if is_question_form and label in ("close_quit", "command", "system_control"):
+            label = "question"
+            confidence = max(float(confidence or 0.0), 0.72)
+        if is_question_form and action in ("close_quit", "system_control"):
+            action = None
+        if output_type in ("music", "video", "avatar", "website", "application", "action") and not any(v in t.lower() for v in _CREATIVE_VERBS):
+            output_type = None
+        visual_subject = _extract_visual_subject_from_text(t, visual_query_type, fallback_subject=subject)
+        if visual_subject:
+            subject = visual_subject
+
+    intent_family, likely_lane = _detect_intent_family_and_lane(
+        t,
+        label,
+        action=action,
+        output_type=output_type,
+        math_expr=math_expr
+    )
+    query_type = _infer_query_type(t, label, output_type, math_expr, visual_query_type=visual_query_type)
+    if surface_task:
+        task_kind = str(surface_task.get("task_kind") or "").strip().lower()
+        intent_family = "ACTION"
+        likely_lane = "action"
+        if task_kind == "website_scaffold":
+            output_type = "website"
+            query_type = "website_scaffold"
+        elif task_kind == "spreadsheet_template":
+            output_type = "spreadsheet"
+            query_type = "spreadsheet_template"
+        elif task_kind == "paint_draw":
+            output_type = "image"
+            query_type = "paint_draw"
+        elif task_kind == "open_named_document":
+            output_type = output_type or "document"
+            query_type = "open_named_document"
+        else:
+            output_type = output_type or "document"
+            query_type = "document_write"
+    keywords = _extract_keywords(t)
+    attributes = _extract_attributes(t, subject=subject, action=action, output_type=output_type)
+    if visual_query_type:
+        attributes = _merge_priority_attributes(_visual_attributes_for_query_type(visual_query_type), attributes)
+    # SARAHMEMORY REALITY PATCH 2026-07-23:
+    # Model governance requests may be advisory or build candidates, but they are never avatar output.
+    if output_type == "model_architecture":
+        attributes = _merge_priority_attributes(["local_model", "tokenizer", "governance"], attributes)
+    action_expectation = _infer_action_expectation(t, query_type, intent_family, likely_lane)
+    semantic_summary = _build_semantic_summary(
+        label,
+        subject=subject,
+        attributes=attributes,
+        output_type=output_type,
+        query_type=query_type,
+        math_expr=math_expr
+    )
+    module_hints = _module_hints_for_packet(likely_lane, output_type, label)
+    if visual_query_type:
+        vision_helpers = ["SarahMemorySOBJE", "SarahMemoryFacialRecognition"]
+        module_hints = vision_helpers + [m for m in module_hints if m not in vision_helpers]
+
+    # Store context in extra
+    extra["user_context"] = user_context
+    extra["device_context"] = device_context
+    extra["tokens"] = tokenize(t)
+    extra["query_type"] = query_type
+    extra["intent_family"] = intent_family
+    extra["likely_lane"] = likely_lane
+    extra["output_type"] = output_type
+    extra["action_expectation"] = action_expectation
+    extra["module_hints"] = module_hints
+    if surface_task:
+        extra["surface_task"] = dict(surface_task)
+    if visual_query_type:
+        extra["vision"] = {
+            "query_type": visual_query_type,
+            "requested_subject": subject,
+            "requested_attributes": list(_visual_attributes_for_query_type(visual_query_type)),
+            "action_expectation": action_expectation,
+        }
+
+    parsed = ParsedCommand(
+        intent=label,
+        raw_text=t,
+        confidence=confidence,
+        math_expr=math_expr,
+        url=url,
+        app=app,
+        site=site,
+        subject=subject,
+        action=action,
+        intent_family=intent_family,
+        likely_lane=likely_lane,
+        output_type=output_type,
+        query_type=query_type,
+        action_expectation=action_expectation,
+        semantic_summary=semantic_summary,
+        attributes=attributes,
+        keywords=keywords,
+        module_hints=module_hints,
+        extra=extra
+    )
+    parsed.helper_payload = _build_helper_payload_from_command(parsed)
+    extra["helper_payload"] = dict(parsed.helper_payload)
+    extra["semantic_packet"] = parsed.to_semantic_packet()
+    return parsed
+
+
+def build_semantic_packet(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> Dict[str, Any]:
+    """
+    Build the canonical compact semantic packet used by Neuron and helper lanes.
+
+    This is the governed semantic compression output described by SM_FULL_IO.TXT.
+    """
+    parsed = parse_command(text, user_context=user_context, device_context=device_context)
+    packet = parsed.to_semantic_packet()
+    packet["raw_text"] = parsed.raw_text
+    packet["target"] = parsed.get_target()
+    return packet
+
+
+def build_helper_payload(
+    text: Any,
+    user_context: Any = None,
+    device_context: Any = None
+) -> Dict[str, Any]:
+    """
+    Build the compressed helper-only LLM payload.
+
+    Third-party/helper models should receive this compact payload instead of the
+    raw prompt whenever local structure is already understood.
+    """
+    parsed = parse_command(text, user_context=user_context, device_context=device_context)
+    return dict(parsed.helper_payload or _build_helper_payload_from_command(parsed))
+
+
+
+
+# ============================================================================
+# DATABASE OPERATIONS
+# ============================================================================
+
+# SQL schema for code corpus
+_SCHEMA_SQL_CODE_CORPUS = """
+CREATE TABLE IF NOT EXISTS code_corpus (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT,
+    key TEXT,
+    snippet TEXT,
+    file TEXT,
+    line INTEGER,
+    ts TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_code_corpus_kind ON code_corpus(kind);
+CREATE INDEX IF NOT EXISTS idx_code_corpus_snip ON code_corpus(snippet);
+
+CREATE TABLE IF NOT EXISTS code_corpus_seen (
+    snip_hash TEXT PRIMARY KEY,
+    file TEXT,
+    line INTEGER,
+    first_ts TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_code_seen_file_line ON code_corpus_seen(file, line);
+
+CREATE TABLE IF NOT EXISTS advcu_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT,
+    event TEXT,
+    details TEXT
+);
+"""
+
+
+def _ensure_db() -> None:
+    """Ensure all AdvCU database tables exist."""
+    try:
+        os.makedirs(os.path.dirname(SYSTEM_DB_PATH), exist_ok=True)
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
+            conn.executescript(_SCHEMA_SQL_CODE_CORPUS)
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"[AdvCU] Database ensure failed: {e}")
+
+
+def _ensure_code_corpus_db() -> None:
+    """Alias for _ensure_db for backward compatibility."""
+    _ensure_db()
+
+
+def log_advcu_event(event: str, details: str) -> None:
+    """
+    Log an AdvCU event to the database.
+
+    Args:
+        event: Event type/name
+        details: Event details (typically JSON)
+    """
+    try:
+        _ensure_db()
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
+            conn.execute(
+                "INSERT INTO advcu_log(ts, event, details) VALUES (?, ?, ?)",
+                (_get_timestamp(), event, details)
+            )
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"[DB] log_advcu_event failed: {e}")
+
+
+# ============================================================================
+# CODE INTROSPECTION (AST Mining)
+# ============================================================================
+
+# Patterns for code mining
+_RX_URL = re.compile(r'\bhttps?://[^\s\'"]+', re.IGNORECASE)
+_RX_DOMAIN = re.compile(r'\b([a-z0-9-]+\.)+[a-z]{2,}\b', re.IGNORECASE)
+_RX_EMAIL = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
+_RX_PROMPTV = re.compile(
+    r'(?i)(^|_)(prompt|system_prompt|sys_prompt|instruction|messages|template)$'
+)
+_RX_ROLEKEY = re.compile(r'(?i)"role"\s*:\s*"(system|user|assistant)"')
+_RX_MSGSKEY = re.compile(r'(?i)"messages"\s*:\s*\[')
+
+
+def _normalize_snippet(s: str) -> str:
+    """Normalize a code snippet for storage."""
+    s = s.replace("\r\n", "\n").strip()
+    return s if len(s) <= 4000 else (s[:4000] + " …[truncated]")
+
+
+class _NodeMiner(ast.NodeVisitor):
+    """AST visitor to extract values from Python source."""
+
+    def __init__(self, filename: str):
+        self.filename = filename
+        self.rows: List[Tuple[str, str, str, int]] = []  # (kind, key, snippet, line)
+
+    def visit_Assign(self, node: ast.Assign):
+        """Visit assignment nodes."""
+        keynames = []
+        for t in node.targets:
+            if isinstance(t, ast.Name):
+                keynames.append(t.id)
+            elif isinstance(t, ast.Attribute):
+                keynames.append(t.attr)
+
+        is_prompty = any(
+            _RX_PROMPTV.search(k) for k in keynames
+            if isinstance(k, str)
+        )
+
+        self._capture_value(
+            node.value,
+            keyhint=";".join(keynames) if keynames else None,
+            is_prompt=is_prompty,
+            lineno=node.lineno
+        )
+        self.generic_visit(node)
+
+    def visit_Dict(self, node: ast.Dict):
+        """Visit dict literals."""
+        for k, v in zip(node.keys, node.values):
+            kstr = self._const_to_str(k)
+            self._capture_value(
+                v,
+                keyhint=kstr,
+                is_prompt=False,
+                lineno=getattr(v, "lineno", getattr(node, "lineno", 0))
+            )
+        self.generic_visit(node)
+
+    def visit_List(self, node: ast.List):
+        """Visit list literals."""
+        for v in node.elts:
+            self._capture_value(
+                v,
+                keyhint=None,
+                is_prompt=False,
+                lineno=getattr(v, "lineno", getattr(node, "lineno", 0))
+            )
+        self.generic_visit(node)
+
+    def visit_Constant(self, node: ast.Constant):
+        """Visit constant values."""
+        if isinstance(node.value, str):
+            s = node.value.strip()
+            if s:
+                self._add_row('str', None, _normalize_snippet(s), getattr(node, 'lineno', 0))
+                self._scan_regexes(s, getattr(node, 'lineno', 0))
+        self.generic_visit(node)
+
+    def _capture_value(
+        self,
+        value: ast.AST,
+        keyhint: Optional[str],
+        is_prompt: bool,
+        lineno: int
+    ):
+        """Capture a value node recursively."""
+        if isinstance(value, ast.Dict):
+            for k, v in zip(value.keys, value.values):
+                kstr = self._const_to_str(k)
+                if isinstance(v, (ast.Dict, ast.List, ast.Tuple)):
+                    self._capture_value(
+                        v,
+                        keyhint=kstr or keyhint,
+                        is_prompt=is_prompt,
+                        lineno=getattr(v, "lineno", lineno)
+                    )
+                else:
+                    vs = self._const_to_str(v)
+                    if vs:
+                        kind = 'prompt' if (is_prompt or (kstr and _RX_PROMPTV.search(kstr))) else 'dict'
+                        self._add_row(kind, kstr, _normalize_snippet(vs), lineno)
+                        self._scan_regexes(vs, lineno)
+
+        elif isinstance(value, (ast.List, ast.Tuple)):
+            for v in value.elts:
+                if isinstance(v, (ast.Dict, ast.List, ast.Tuple)):
+                    self._capture_value(
+                        v,
+                        keyhint=keyhint,
+                        is_prompt=is_prompt,
+                        lineno=getattr(v, "lineno", lineno)
+                    )
+                else:
+                    vs = self._const_to_str(v)
+                    if vs:
+                        kind = 'prompt' if is_prompt else 'list'
+                        self._add_row(kind, keyhint, _normalize_snippet(vs), lineno)
+                        self._scan_regexes(vs, lineno)
+
+        else:
+            vs = self._const_to_str(value)
+            if vs:
+                kind = 'prompt' if is_prompt else 'str'
+                self._add_row(kind, keyhint, _normalize_snippet(vs), lineno)
+                self._scan_regexes(vs, lineno)
+
+    def _const_to_str(self, node: ast.AST) -> Optional[str]:
+        """Extract string from constant node."""
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        return None
+
+    def _add_row(self, kind: str, key: Optional[str], snippet: str, line: int):
+        """Add a row to results."""
+        self.rows.append((kind, key or "", snippet, int(line)))
+
+    def _scan_regexes(self, text: str, line: int):
+        """Scan text for URLs, emails, domains."""
+        for url in _RX_URL.findall(text):
+            self._add_row('url', '', url.strip(), line)
+        for em in _RX_EMAIL.findall(text):
+            self._add_row('email', '', em.strip(), line)
+        for dm in _RX_DOMAIN.findall(text):
+            if "http" not in dm and "@" not in dm:
+                self._add_row('domain', '', dm.strip(), line)
+
+
+def _iter_core_files() -> List[str]:
+    """Get list of core SarahMemory Python files."""
+    base = getattr(config, "BASE_DIR", os.getcwd())
+    return sorted(glob.glob(os.path.join(base, "SarahMemory*.py")))
+
+
+def _scan_file(path: str) -> List[Tuple[str, str, str, int]]:
+    """
+    Scan a Python file and extract values.
+
+    Args:
+        path: Path to Python file
+
+    Returns:
+        List of (kind, key, snippet, line) tuples
+    """
+    try:
+        with io.open(path, "r", encoding="utf-8", errors="ignore") as f:
+            src = f.read()
+
+        tree = ast.parse(src)
+        miner = _NodeMiner(os.path.basename(path))
+        miner.visit(tree)
+
+        # Check for JSON-like prompt payloads
+        if '"messages"' in src and _RX_MSGSKEY.search(src):
+            miner.rows.append(('prompt', 'messages', '[messages payload detected]', 0))
+
+        return miner.rows
+
+    except SyntaxError as se:
+        logger.warning(f"[AdvCU] AST parse failed for {os.path.basename(path)}: {se}")
+        return []
+    except Exception as e:
+        logger.warning(f"[AdvCU] scan_file error {os.path.basename(path)}: {e}")
+        return []
+
+
+def warm_code_corpus(force: bool = False) -> Dict[str, Any]:
+    """
+    Scan all SarahMemory*.py files and store in database.
+    Uses delta-tracking to avoid duplicate inserts.
+
+    Args:
+        force: Force rescan even if cache exists
+
+    Returns:
+        Dictionary with scan statistics
+    """
+    _ensure_db()
+    ts = datetime.utcnow().isoformat()
+    files = _iter_core_files()
+
+    # Check for recent cache
+    if os.path.exists(CODE_CORPUS_JSON) and not force:
+        try:
+            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
+                cache = json.load(f)
+            if isinstance(cache, dict) and cache.get("_ok"):
+                return cache
+        except Exception:
+            pass
+
+    # Scan files
+    rows = []
+    scanned = 0
+    for fp in files:
+        mined = _scan_file(fp)
+        for kind, key, snippet, line in mined:
+            scanned += 1
+            sh = hashlib.sha256((snippet or "").encode("utf-8")).hexdigest()
+            rows.append((kind, key, snippet, os.path.basename(fp), int(line), ts, sh))
+
+    # Insert new rows
+    new_inserts = 0
+    try:
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
+            cur = conn.cursor()
+
+            for kind, key, snip, file, line, tstamp, sh in rows:
+                # Check if already seen
+                cur.execute("SELECT 1 FROM code_corpus_seen WHERE snip_hash=?", (sh,))
+                if cur.fetchone():
+                    continue
+
+                # Insert new
+                cur.execute(
+                    "INSERT OR REPLACE INTO code_corpus_seen(snip_hash, file, line, first_ts) VALUES (?, ?, ?, ?)",
+                    (sh, file, line, tstamp)
+                )
+                cur.execute(
+                    "INSERT INTO code_corpus(kind, key, snippet, file, line, ts) VALUES (?, ?, ?, ?, ?, ?)",
+                    (kind, key, snip, file, line, tstamp)
+                )
+                new_inserts += 1
+
+            conn.commit()
+
+    except Exception as e:
+        logger.warning(f"[AdvCU] DB delta write failed: {e}")
+
+    # Save cache
+    data = {
+        "_ok": True,
+        "generated": ts,
+        "counts": {
+            "files": len(files),
+            "scanned": scanned,
+            "new": new_inserts
+        }
+    }
+
+    try:
+        with open(CODE_CORPUS_JSON, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.warning(f"[AdvCU] Cache write failed: {e}")
+
+    logger.info(f"[AdvCU] Code corpus: {len(files)} files, {scanned} scanned, {new_inserts} new")
+    return data
+
+
+def get_corpus_stats() -> Dict[str, Any]:
+    """Get statistics from the code corpus cache."""
+    try:
+        if os.path.exists(CODE_CORPUS_JSON):
+            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {"_ok": False}
+
+
+def mine_hardcoded_knowledge(limit: Optional[int] = None) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Retrieve mined code knowledge from database.
+
+    Args:
+        limit: Maximum rows to retrieve
+
+    Returns:
+        Dictionary grouped by kind (url, domain, email, prompt, etc.)
+    """
+    _ensure_db()
+    out: Dict[str, List[Dict[str, Any]]] = {}
+
+    try:
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
+            cur = conn.cursor()
+
+            if limit:
+                cur.execute(
+                    "SELECT kind, key, snippet, file, line FROM code_corpus LIMIT ?",
+                    (int(limit),)
+                )
+            else:
+                cur.execute("SELECT kind, key, snippet, file, line FROM code_corpus")
+
+            for kind, key, snip, file, line in cur.fetchall():
+                out.setdefault(kind, []).append({
+                    "key": key,
+                    "snippet": snip,
+                    "file": file,
+                    "line": line
+                })
+
+    except Exception as e:
+        logger.warning(f"[AdvCU] read corpus failed: {e}")
+
+    return out
+
+
+def contextualize_with_code(query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+    """
+    Find code snippets relevant to a query.
+
+    Args:
+        query: Search query
+        top_k: Number of results to return
+
+    Returns:
+        List of relevant snippets with scores
+    """
+    _ensure_db()
+
+    # Embed query
+    qv = embed_text(query)[0]
+
+    # Retrieve all snippets
+    rows: List[Tuple[str, str, str, str, int]] = []
+    try:
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=10.0) as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT kind, key, snippet, file, line FROM code_corpus")
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.warning(f"[AdvCU] retrieval failed: {e}")
+        return []
+
+    # Score snippets
+    scored = []
+    # Sample for performance if too many rows
+    sample = rows if len(rows) <= 20000 else rows[::max(1, len(rows) // 20000)]
+
+    for kind, key, snip, file, line in sample:
+        v = embed_text(snip)[0]
+        score = cosine_similarity(qv, v)
+        scored.append((score, kind, key, snip, file, line))
+
+    # Sort by score
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    # Return top_k
+    out = []
+    for score, kind, key, snip, file, line in scored[:max(1, top_k)]:
+        out.append({
+            "score": round(score, 4),
+            "kind": kind,
+            "key": key,
+            "snippet": snip,
+            "file": file,
+            "line": line
+        })
+
+    return out
+
+
+def verify_corpus_status() -> Dict[str, Any]:
+    """
+    Get current corpus status from database.
+
+    Returns:
+        Dictionary with db_rows, seen_hashes, and cache info
+    """
+    out = {"db_rows": 0, "seen_hashes": 0, "cache": {}}
+
+    try:
+        _ensure_db()
+        with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*) FROM code_corpus")
+            out["db_rows"] = int(cur.fetchone()[0])
+
+            cur.execute("SELECT COUNT(*) FROM code_corpus_seen")
+            out["seen_hashes"] = int(cur.fetchone()[0])
+
+    except Exception as e:
+        logger.debug(f"[verify] database query failed: {e}")
+
+    try:
+        if os.path.exists(CODE_CORPUS_JSON):
+            with open(CODE_CORPUS_JSON, "r", encoding="utf-8") as f:
+                out["cache"] = json.load(f)
+    except Exception:
+        pass
+
+    return out
+
+
+def ensure_corpus_ready() -> None:
+    """
+    Ensure code corpus is ready.
+    Safe to call multiple times.
+    """
+    try:
+        stats = get_corpus_stats()
+        if not stats.get("_ok"):
+            warm_code_corpus(force=False)
+    except Exception:
+        warm_code_corpus(force=False)
+
+
+# ============================================================================
+# COLOR DETECTION
+# ============================================================================
+
+def sm_color_name_from_rgb(r: int, g: int, b: int) -> str:
+    """
+    Convert RGB values to a color name.
+
+    Args:
+        r: Red component (0-255)
+        g: Green component (0-255)
+        b: Blue component (0-255)
+
+    Returns:
+        Color name string
+    """
+    return sm_color_name_from_rgb_fine(r, g, b)
+
+
+def sm_color_name_from_rgb_fine(r: int, g: int, b: int) -> str:
+    """
+    Fine-grained RGB to color name mapping.
+    Uses HSV color space for accurate naming.
+
+    Args:
+        r: Red component (0-255)
+        g: Green component (0-255)
+        b: Blue component (0-255)
+
+    Returns:
+        Color name string
+    """
+    # Normalize to 0-1 range
+    rp, gp, bp = r / 255.0, g / 255.0, b / 255.0
+    mx, mn = max(rp, gp, bp), min(rp, gp, bp)
+    v = mx
+    d = mx - mn
+
+    # Grayscale detection
+    if d < 0.05:
+        if v < 0.06:
+            return "black"
+        if v < 0.18:
+            return "charcoal"
+        if v < 0.30:
+            return "dark gray"
+        if v < 0.43:
+            return "gray"
+        if v < 0.70:
+            return "silver"
+        if v < 0.88:
+            return "off-white"
+        return "white"
+
+    # Calculate saturation
+    s = d / (mx or 1.0)
+
+    # Calculate hue
+    if mx == rp:
+        h = ((gp - bp) / (d or 1e-9)) % 6
+    elif mx == gp:
+        h = ((bp - rp) / (d or 1e-9)) + 2
+    else:
+        h = ((rp - gp) / (d or 1e-9)) + 4
+    h *= 60.0
+
+    # Determine tone
+    tone = "dark" if v < 0.15 else ("light" if v > 0.85 else "mid")
+
+    # Map hue to color name
+    if 0 <= h < 15 or h >= 345:
+        return "red" if tone != "dark" else "dark red"
+    elif 15 <= h < 45:
+        return "orange" if tone != "dark" else "brown"
+    elif 45 <= h < 60:
+        return "gold" if tone != "dark" else "olive"
+    elif 60 <= h < 80:
+        return "chartreuse" if tone != "dark" else "olive"
+    elif 80 <= h < 100:
+        return "lime" if tone != "dark" else "olive green"
+    elif 100 <= h < 130:
+        return "spring green" if s > 0.5 else "pale green"
+    elif 130 <= h < 170:
+        return "teal" if tone == "dark" else "cyan"
+    elif 170 <= h < 210:
+        return "azure" if tone != "dark" else "steel blue"
+    elif 210 <= h < 250:
+        return "blue" if tone != "light" else "sky blue"
+    elif 250 <= h < 280:
+        return "indigo" if tone == "dark" else "violet"
+    elif 280 <= h < 320:
+        return "magenta" if tone != "dark" else "plum"
+    elif 320 <= h < 345:
+        return "rose" if tone != "dark" else "maroon"
+
+    return "unknown"
+
+
+def _dominant_color_and_name(bgr_roi) -> Dict[str, Any]:
+    """
+    Extract dominant color from an image region.
+
+    Args:
+        bgr_roi: BGR image region (numpy array)
+
+    Returns:
+        Dictionary with hex, rgb, hsl, name, confidence
+    """
+    if not _HAS_CV2 or not _HAS_NUMPY:
+        return {
+            "hex": "#000000",
+            "rgb": [0, 0, 0],
+            "hsl": [0, 0, 0],
+            "name": "unknown",
+            "confidence": 0.0
+        }
+
+    if bgr_roi is None or bgr_roi.size == 0:
+        return {
+            "hex": "#000000",
+            "rgb": [0, 0, 0],
+            "hsl": [0, 0, 0],
+            "name": "unknown",
+            "confidence": 0.0
+        }
+
+    try:
+        # Convert to HSV for filtering
+        hsv = _cv2.cvtColor(bgr_roi, _cv2.COLOR_BGR2HSV)
+        h, s, v = _cv2.split(hsv)
+
+        # Filter out very dark/desaturated pixels
+        mask = (s > 18) & (v > 25)
+        pix = bgr_roi[mask] if mask.any() else bgr_roi.reshape(-1, 3)
+
+        # K-means clustering
+        Z = np.float32(pix)
+        K = 3
+        criteria = (_cv2.TERM_CRITERIA_EPS + _cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
+
+        _, labels, centers = _cv2.kmeans(Z, K, None, criteria, 3, _cv2.KMEANS_PP_CENTERS)
+        counts = np.bincount(labels.flatten(), minlength=K)
+        idx = int(counts.argmax())
+        b, g, r = centers[idx].astype(int).tolist()
+
+        name = sm_color_name_from_rgb(r, g, b)
+        conf = float(counts[idx] / max(1, counts.sum()))
+
+    except Exception:
+        # Fallback to mean
+        b, g, r = pix.mean(axis=0).astype(int).tolist()
+        name = sm_color_name_from_rgb(r, g, b)
+        conf = 0.5
+
+    # Calculate HSL
+    rp, gp, bp = r / 255.0, g / 255.0, b / 255.0
+    mx, mn = max(rp, gp, bp), min(rp, gp, bp)
+    l = (mx + mn) / 2.0
+
+    if mx == mn:
+        h = 0.0
+        s = 0.0
+    else:
+        d = mx - mn
+        s = d / (2.0 - mx - mn) if l > 0.5 else d / (mx + mn + 1e-9)
+
+        if mx == rp:
+            h = ((gp - bp) / d + (6 if gp < bp else 0))
+        elif mx == gp:
+            h = ((bp - rp) / d + 2)
+        else:
+            h = ((rp - gp) / d + 4)
+
+        h *= 60.0
+        h %= 360.0
+
+    hex_val = f"#{r:02x}{g:02x}{b:02x}"
+
+    return {
+        "hex": hex_val,
+        "rgb": [int(r), int(g), int(b)],
+        "hsl": [float(h), float(s), float(l)],
+        "name": name,
+        "confidence": conf
+    }
+
+
+# ============================================================================
+# MODULE INITIALIZATION
+# ============================================================================
+
+def _log_corpus_boot_message() -> None:
+    """Log a summary message about corpus state on module load."""
+    try:
+        stats = get_corpus_stats()
+        counts = stats.get("counts") or {}
+        files = counts.get("files", 0)
+        scanned = counts.get("scanned", 0) or counts.get("rows", 0)
+        new_lines = counts.get("new", 0)
+
+        if files == 0 or scanned == 0:
+            # Fallback to DB + filesystem
+            try:
+                with sqlite3.connect(SYSTEM_DB_PATH, timeout=5.0) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT COUNT(*) FROM code_corpus")
+                    scanned = int(cur.fetchone()[0])
+            except Exception:
+                scanned = 0
+
+            try:
+                files = len(_iter_core_files())
+            except Exception:
+                files = 0
+
+        logger.info(f"[AdvCU] Code corpus: {files} files, {scanned} scanned, {new_lines} new")
+
+    except Exception as e:
+        logger.debug(f"[AdvCU] boot message skipped: {e}")
+
+
+def _advcu_warm_code_corpus_on_import() -> bool:
+    try:
+        env = os.getenv("SARAH_ADVCU_WARM_CODE_CORPUS_ON_IMPORT", "0").strip().lower()
+        if env in ("1", "true", "yes", "on"):
+            return True
+        return bool(getattr(config, "ADVCU_WARM_CODE_CORPUS_ON_IMPORT", False))
+    except Exception:
+        return False
+
+
+# Import must be light.  The code corpus can still be warmed manually, but normal
+# boot/runtime imports should not scan/write thousands of rows just because a
+# helper module was imported by MSDC, SystemLearn, Neuron, or Chat.
+try:
+    if _advcu_warm_code_corpus_on_import():
+        _ensure_db()
+        ensure_corpus_ready()
+except Exception as e:
+    logger.debug(f"[AdvCU] initialization skipped: {e}")
+
+_log_corpus_boot_message()
+
+
+# ============================================================================
+# DEMO AND TESTING
+# ============================================================================
+
+def _demo() -> None:
+    """Run demonstration of AdvCU capabilities."""
+    print("=" * 70)
+    print("SarahMemory Advanced Context Unit (AdvCU) - Demo")
+    print("=" * 70)
+
+    tests = [
+        "Hey Sarah, how are you?",
+        "Open Chrome",
+        "Go to google.com and then search for cute cats",
+        "Search YouTube for lo-fi chill beats",
+        "Launch Notepad quickly",
+        "Please close the current window",
+        "What is 5 + 5?",
+        "When is my meeting tomorrow?",
+        "Who are you?",
+        "Bye for now",
+        "Take me to https://github.com",
+        "Find drivers for NVIDIA RTX 3080",
+        "Turn the volume down",
+        "Resume",
+        "What time is it?",
+        "Login to my account",
+        "Create a new account",
+    ]
+
+    print("\n[Intent Classification Tests]\n")
+
+    for phrase in tests:
+        label, conf = classify_intent_with_confidence(phrase)
+        parsed = parse_command(phrase)
+
+        print(f"Input: \"{phrase}\"")
+        print(f"  Intent: {label} (confidence: {conf:.2f})")
+        print(f"  Actionable: {parsed.is_actionable()}")
+        if parsed.get_target():
+            print(f"  Target: {parsed.get_target()}")
+        print()
+
+    # Test embeddings
+    print("\n[Embedding Tests]\n")
+
+    test_texts = ["hello world", "goodbye world"]
+    embeddings = embed_text(test_texts)
+    print(f"Embedded {len(test_texts)} texts")
+    print(f"Vector dimension: {len(embeddings[0])}")
+    print(f"Similarity: {cosine_similarity(embeddings[0], embeddings[1]):.4f}")
+
+    # Test corpus stats
+    print("\n[Corpus Status]\n")
+
+    status = verify_corpus_status()
+    print(f"Database rows: {status['db_rows']}")
+    print(f"Seen hashes: {status['seen_hashes']}")
+
+    print("\n" + "=" * 70)
+    print("Demo Complete")
+    print("=" * 70)
+
+
+if __name__ == "__main__":
+    try:
+        _demo()
+    except Exception as e:
+        print(f"Demo failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+# ============================================================================
+# EXPORTS
+# ============================================================================
+
+__all__ = [
+    # Intent Classification
+    "classify_intent",
+    "classify_intent_with_confidence",
+    "parse_command",
+    "build_semantic_packet",
+    "build_helper_payload",
+    "ParsedCommand",
+    "IntentResult",
+    "INTENT_DESCRIPTIONS",
+    "INTENT_PRIORITY_ORDER",
+
+    # Embeddings
+    "embed_text",
+
+    # Similarity
+    "evaluate_similarity",
+    "get_vector_score",
+    "cosine_similarity",
+
+    # Detection Helpers
+    "is_math_query",
+    "is_time_query",
+    "extract_math_expression",
+    "tokenize",
+
+    # Code Introspection
+    "warm_code_corpus",
+    "mine_hardcoded_knowledge",
+    "contextualize_with_code",
+    "get_corpus_stats",
+    "verify_corpus_status",
+    "ensure_corpus_ready",
+
+    # Color Detection
+    "sm_color_name_from_rgb",
+    "sm_color_name_from_rgb_fine",
+    "_dominant_color_and_name",
+
+    # Database
+    "log_advcu_event",
+
+    # Lexicons
+    "ACTION_SYNONYMS",
+    "SUBJECT_LEXICON",
+]
+
+
+
+# -----------------------------------------------------------------------------
+# V10/V9G Canonical SelfAware Query Packet bridge
+# -----------------------------------------------------------------------------
+def _sm_word_or_phrase_match(norm: str, term: str, language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    """Safe token/phrase matcher: fan != fantasy, ram != programming."""
+    t = str(term or "").strip().lower()
+    if not t:
+        return False
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        verdict = _CIL.candidate_blocked_by_language_packet(t, language_packet or {})
+        if isinstance(verdict, dict) and verdict.get("blocked"):
+            return False
+    except Exception:
+        pass
+    return re.search(r"(?<![a-z0-9])" + re.escape(t) + r"(?![a-z0-9])", str(norm or "").lower()) is not None
+
+
+def _sm_any_word_or_phrase(norm: str, terms: Tuple[str, ...], language_packet: Optional[Dict[str, Any]] = None) -> bool:
+    return any(_sm_word_or_phrase_match(norm, term, language_packet) for term in (terms or ()))
+
+
+def build_selfaware_canonical_query_packet(text: str, context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """AdvCU bridge to the deterministic PreToken SelfAware case frame.
+
+    Falls back to a phrase-safe local classifier when PreToken is unavailable.
+    """
+    try:
+        import SarahMemoryPreTokenAnalyzer as _PTA  # type: ignore
+        fn = getattr(_PTA, 'build_selfaware_canonical_query_packet', None)
+        if callable(fn):
+            pkt = fn(text, context_packet=context_packet)
+            if isinstance(pkt, dict):
+                return pkt
+    except Exception:
+        pass
+
+    raw = str(text or '')
+    norm = re.sub(r'\s+', ' ', raw.strip().lower().replace('temperture', 'temperature'))
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        lang = _CIL.build_language_context_packet(raw, context_packet=context_packet)
+    except Exception:
+        lang = {}
+
+    component = (
+        'cpu' if _sm_any_word_or_phrase(norm, ('cpu','processor'), lang) else
+        'gpu' if _sm_any_word_or_phrase(norm, ('gpu','graphics','video card'), lang) else
+        'motherboard' if _sm_any_word_or_phrase(norm, ('motherboard','mainboard','baseboard','system board'), lang) else
+        ''
+    )
+    if _sm_any_word_or_phrase(norm, ('temperature','temp','thermal','heat'), lang):
+        metric = 'temperature'
+    elif _sm_any_word_or_phrase(norm, ('fan','rpm'), lang):
+        metric = 'fan_speed'
+    else:
+        metric = 'identity'
+
+    kind = (
+        'temperature' if metric == 'temperature' else
+        'fan_speed' if metric == 'fan_speed' else
+        component if component in ('cpu','gpu','motherboard') else
+        'network' if _sm_any_word_or_phrase(norm, ('network','ethernet','wi-fi','wifi'), lang) else
+        'general_system_fact'
+    )
+    return {
+        'packet_type':'CanonicalQueryPacket',
+        'version':'V10_V9G_CANONICAL_QUERY_PACKET',
+        'raw_text':raw,
+        'normalized_text':norm,
+        'domain':'selfaware_body' if kind!='general_system_fact' else 'chat',
+        'intent':'body_fact_query' if kind!='general_system_fact' else 'general_chat',
+        'requested_component':component,
+        'requested_metric':metric,
+        'fact_kind':kind,
+        'target':component if metric=='temperature' else '',
+        'read_only':True,
+        'action_taken':False,
+        'language_context_packet': lang,
+    }
+
+# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
+# Packet-aware context bridge. Existing classify_intent/parse_command remain intact.
+def build_contextual_intent_packet(
+    text: Any,
+    language_context_packet: Optional[Dict[str, Any]] = None,
+    context_packet: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return AdvCU intent data with Layer-2 language/phrase-lock protection."""
+    raw = str(text or "")
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        lang = language_context_packet if isinstance(language_context_packet, dict) else _CIL.build_language_context_packet(raw, context_packet=context_packet)
+    except Exception:
+        lang = language_context_packet if isinstance(language_context_packet, dict) else {"raw_text": raw, "phrase_locks": [], "blocked_substring_matches": []}
+    label, confidence = classify_intent_with_confidence(raw)
+    parsed = parse_command(raw)
+    route_guard = {
+        "checked": True,
+        "no_substring_routing_inside_locked_phrases": True,
+        "blocked": [],
+    }
+    try:
+        import SarahMemoryCognitiveIdentityLayer as _CIL  # type: ignore
+        for candidate in ("fan", "ram", "ai", "ui", "os", "cpu", "gpu"):
+            verdict = _CIL.candidate_blocked_by_language_packet(candidate, lang)
+            if verdict.get("blocked"):
+                route_guard["blocked"].append(verdict)
+        # Specific protection: game-lore proper noun questions must not become hardware/system control.
+        if lang.get("context_domain") == "gaming_lore" and str(label).lower() in {"system_control", "device_query", "diagnostics"}:
+            route_guard["corrected_intent_from"] = label
+            label = "question"
+            confidence = max(float(confidence or 0.0), 0.76)
+    except Exception:
+        pass
+    out = parsed.to_dict() if hasattr(parsed, "to_dict") else dict(getattr(parsed, "__dict__", {}))
+    out.update({
+        "packet_type": "ContextualIntentPacket",
+        "schema": "SarahMemory.advcu.contextual_intent.v1",
+        "intent": label,
+        "confidence": float(confidence or 0.0),
+        "language_context_packet": lang,
+        "route_guard": route_guard,
+        "execution_authority": False,
+    })
+    return out
+
+
+def classify_intent_contextual(
+    text: Any,
+    language_context_packet: Optional[Dict[str, Any]] = None,
+    context_packet: Optional[Dict[str, Any]] = None,
+) -> Tuple[str, float, Dict[str, Any]]:
+    pkt = build_contextual_intent_packet(text, language_context_packet=language_context_packet, context_packet=context_packet)
+    return str(pkt.get("intent") or "statement"), float(pkt.get("confidence") or 0.0), pkt
+
+
+
+# ---------------------------------------------------------------------------
+# SARAHMEMORY v9 LOCAL FAST-ANSWER RESOLVER
+# ---------------------------------------------------------------------------
+# AdvCU owns semantic understanding and pool selection. app.py should call this
+# resolver instead of carrying large answer dictionaries. The resolver stays
+# local-first: SQLite pools only, local LLM only if a caller separately enables
+# that lane, no web/API/shell/device authority.
+
+_SM_ADVCU_FAST_ANSWER_SCHEMA = "SarahMemory.AdvCU.local_fast_answer.v1"
+
+
+_SM_ADVCU_CORE_CONCEPTS = {
+    "api": "An API, or application programming interface, is a defined way for software systems to communicate. It exposes rules, requests, responses, and data formats so one program can safely ask another program or service to do something or provide information.",
+    "application programming interface": "An application programming interface, or API, is a defined contract that lets software systems communicate through agreed requests, responses, and data formats.",
+    "python": "Python is a high-level programming language known for readable syntax, broad libraries, and common use in automation, web development, data work, scripting, and AI tooling.",
+    "photosynthesis": "Photosynthesis is the process plants, algae, and some bacteria use to convert light energy, carbon dioxide, and water into sugars, releasing oxygen as a byproduct.",
+    "ram": "RAM, or Random Access Memory, is a computer's short-term working memory. It temporarily holds active data and instructions so the CPU can access them quickly while software is running.",
+    "cpu": "A CPU, or central processing unit, is the main processor that executes instructions and coordinates much of a computer's work.",
+    "gpu": "A GPU, or graphics processing unit, is a processor optimized for parallel workloads such as graphics, video, and many AI computations.",
+    "database": "A database is an organized store of data that software can query, update, and manage. In SarahMemory, SQLite databases act as bounded local memory pools.",
+    "sqlite": "SQLite is a lightweight file-based relational database engine. It stores tables, indexes, and records inside local database files without requiring a separate database server.",
+    "sql": "SQL, or Structured Query Language, is a language used to query and manage relational databases.",
+    "tokenizer": "A tokenizer converts text into smaller units called tokens so a model or language system can process meaning, patterns, and context more consistently.",
+    "model": "In AI, a model is a learned or configured system that maps inputs to outputs. In SarahMemory, model authority is governed separately from the architecture that routes and validates it.",
+    "sel": "SEL is SarahMemory's semantic expression layer. It frames a request into governed meaning fields such as goal, intent, target, authority, safety, verification, rollback, and memory.",
+    "qist": "QIST is SarahMemory's quantum-inspired semantic ranking layer. It classically ranks possible meaning and route candidates without using quantum hardware or granting execution authority.",
+}
+
+
+def _advcu_extract_definition_subject(text: str) -> str:
+    lt = _normalize_text(text).lower().strip()
+    patterns = (
+        r"^what\s+is\s+an?\s+(.+?)\??$",
+        r"^what\s+is\s+(.+?)\??$",
+        r"^what\s+are\s+(.+?)\??$",
+        r"^define\s+(.+?)\??$",
+        r"^explain\s+(.+?)\??$",
+        r"^describe\s+(.+?)\??$",
+        r"^tell\s+me\s+about\s+(.+?)\??$",
+    )
+    for pat in patterns:
+        m = re.match(pat, lt)
+        if m:
+            subj = (m.group(1) or "").strip(" ?.!")
+            subj = re.sub(r"\b(the|a|an)\b", " ", subj)
+            subj = re.sub(r"\s+", " ", subj).strip()
+            return subj[:96]
+    return ""
+
+
+def _advcu_candidate_from_core_concepts(query: str) -> Optional[Dict[str, Any]]:
+    subject = _advcu_extract_definition_subject(query)
+    keys = []
+    if subject:
+        keys.append(subject)
+    norm = _normalize_text(query).lower().strip(" ?.!")
+    keys.append(norm)
+    # Common article/acronym variants.
+    keys.extend([
+        norm.replace("what is an ", "", 1),
+        norm.replace("what is a ", "", 1),
+        norm.replace("what is ", "", 1),
+        norm.replace("define ", "", 1),
+        norm.replace("explain ", "", 1),
+    ])
+    for key in keys:
+        k = re.sub(r"\s+", " ", str(key or "").lower().strip(" ?.!")).strip()
+        if not k:
+            continue
+        ans = _SM_ADVCU_CORE_CONCEPTS.get(k)
+        if ans and _advcu_answer_quality_ok(ans):
+            return {
+                "answer": ans,
+                "source": "local_advcu_core_concept",
+                "db": None,
+                "table": None,
+                "confidence": 0.91,
+                "method": "AdvCU.bounded_core_concepts",
+            }
+    return None
+
+
+def _advcu_answer_quality_ok(answer: Any) -> bool:
+    text = _normalize_text(answer)
+    raw = str(answer or "").strip()
+    if not text or len(text) < 3:
+        return False
+    # Hot-path fast answers must be concise answer material, not whole papers,
+    # logs, abstracts, or copied documentation pages from local databases.
+    if len(raw) > 1100:
+        return False
+    low = text.lower()
+    bad = (
+        "i'm not sure how to respond",
+        "i am not sure how to respond",
+        "not sure how to respond",
+        "could you rephrase",
+        "please rephrase",
+        "try rephrasing",
+        "provide more details",
+        "couldn't solve",
+        "could not solve",
+        "unable to answer",
+        "answer unavailable",
+        "no answer found",
+        "no local match",
+        "request denied by policy",
+        "user confirmation required",
+        "traceback",
+        "error:",
+        "exception",
+    )
+    if any(b in low for b in bad):
+        return False
+    paper_markers = (
+        "abstract", "1 introduction", "references", "bibliography", "@", "doi", "arxiv",
+        "we present", "we propose", "this paper", "compiler from llvm",
+    )
+    if sum(1 for b in paper_markers if b in low) >= 2:
+        return False
+    return True
+
+def _advcu_infer_fast_query_type(text: str, parsed: Optional[ParsedCommand] = None) -> str:
+    lt = _normalize_text(text).lower()
+    parsed = parsed if isinstance(parsed, ParsedCommand) else None
+    query_type = str(getattr(parsed, "query_type", "") or "").strip().lower()
+    if _looks_like_model_architecture_request(lt):
+        return "model_governance"
+    if any(k in lt for k in ("sarahmemoryapi.py", "app.py", "function", "class", "route", "where is", "defined", "code corpus")):
+        return "project_code_question"
+    if _looks_like_general_knowledge_question(lt):
+        return "definition"
+    if query_type:
+        return query_type
+    return "general_chat"
+
+
+def _advcu_safe_answer_only(text: str, parsed: Optional[ParsedCommand] = None) -> bool:
+    """True only for presentation-only questions. Actions still go through governance."""
+    lt = _normalize_text(text).lower()
+    if not lt:
+        return False
+    risky = (
+        "patch", "modify", "delete", "rename", "move", "copy", "write file", "save file",
+        "download", "install", "train", "fine tune", "finetune", "execute", "run command",
+        "powershell", "cmd", "terminal", "shell", "scrape", "web", "search the web",
+        "api key", "password", "credential", "token", "secret", "control hardware",
+    )
+    if any(r in lt for r in risky):
+        return False
+    try:
+        if parsed is not None and parsed.is_actionable():
+            # Math is answer-only even though it is actionable in older AdvCU compatibility.
+            if str(parsed.intent) == "math":
+                return True
+            return False
+    except Exception:
+        pass
+    return bool(_looks_like_general_knowledge_question(lt) or QUESTION_STARTERS.search(lt))
+
+
+def _advcu_candidate_from_search_answers(query: str) -> Optional[Dict[str, Any]]:
+    try:
+        import SarahMemoryDatabase as _SMDB  # type: ignore
+        answers = _SMDB.search_answers(query)
+        if isinstance(answers, list):
+            for ans in answers[:5]:
+                if _advcu_answer_quality_ok(ans):
+                    return {
+                        "answer": _normalize_text(ans),
+                        "source": "local_qa_cache",
+                        "db": "ai_learning.db",
+                        "table": "qa_cache",
+                        "confidence": 0.88,
+                        "method": "SarahMemoryDatabase.search_answers",
+                    }
+    except Exception:
+        return None
+    return None
+
+
+def _advcu_candidate_from_semantic_pools(query: str, intent: str, query_type: str) -> Optional[Dict[str, Any]]:
+    try:
+        import SarahMemoryDatabase as _SMDB  # type: ignore
+        fn = getattr(_SMDB, "search_semantic_memory_pools", None)
+        if callable(fn):
+            result = fn(query, intent=intent, query_type=query_type, max_hits=8, time_budget_sec=1.25)
+            if isinstance(result, dict):
+                for hit in result.get("hits") or []:
+                    ans = hit.get("answer") or hit.get("snippet")
+                    if _advcu_answer_quality_ok(ans):
+                        return {
+                            "answer": _normalize_text(ans),
+                            "source": hit.get("source") or "local_semantic_db",
+                            "db": hit.get("db"),
+                            "table": hit.get("table"),
+                            "purpose": hit.get("purpose"),
+                            "confidence": float(hit.get("score") or 0.70),
+                            "method": result.get("method") or "meta_routed_sqlite_semantic_pool_search",
+                            "db_hits": result.get("hits") or [],
+                            "routes_checked": result.get("routes_checked"),
+                            "latency_ms": result.get("latency_ms"),
+                        }
+    except Exception:
+        return None
+    return None
+
+
+def _advcu_candidate_from_dataset_pool(query: str) -> Optional[Dict[str, Any]]:
+    try:
+        import SarahMemoryDatabase as _SMDB  # type: ignore
+        result = _SMDB.search_local_dataset_pool(query, max_hits=5, time_budget_sec=1.0, max_db_files=8)
+        if isinstance(result, dict):
+            for hit in result.get("hits") or []:
+                ans = hit.get("snippet")
+                if _advcu_answer_quality_ok(ans):
+                    return {
+                        "answer": _normalize_text(ans),
+                        "source": "local_dataset_pool",
+                        "db": hit.get("db"),
+                        "table": hit.get("table"),
+                        "confidence": float(hit.get("score") or 0.62),
+                        "method": result.get("method") or "direct_sqlite_dataset_pool_search",
+                        "db_hits": result.get("hits") or [],
+                        "latency_ms": result.get("latency_ms"),
+                    }
+    except Exception:
+        return None
+    return None
+
+
+def _advcu_record_semantic_sample_if_allowed(
+    *,
+    text: str,
+    answer: str,
+    candidate: Dict[str, Any],
+    semantic_packet: Dict[str, Any],
+    sel_packet: Optional[Dict[str, Any]],
+    qist_result: Optional[Dict[str, Any]],
+    approved_for_learning: bool = False,
+) -> Dict[str, Any]:
+    """Best-effort Synapes ledger hook. Never required for answer release."""
+    try:
+        import SarahMemorySynapes as _SMSyn  # type: ignore
+        fn = getattr(_SMSyn, "record_semantic_answer_sample", None)
+        if callable(fn):
+            return fn(
+                raw_text=text,
+                answer=answer,
+                semantic_packet=semantic_packet,
+                sel_packet=sel_packet if isinstance(sel_packet, dict) else {},
+                qist_result=qist_result if isinstance(qist_result, dict) else {},
+                source={
+                    "source": candidate.get("source"),
+                    "db": candidate.get("db"),
+                    "table": candidate.get("table"),
+                    "method": candidate.get("method"),
+                },
+                confidence=float(candidate.get("confidence") or 0.0),
+                approved_for_learning=bool(approved_for_learning),
+            )
+    except Exception as exc:
+        return {"ok": False, "recorded": False, "error": str(exc)}
+    return {"ok": False, "recorded": False, "reason": "synapes_recorder_unavailable"}
+
+
+def resolve_local_fast_answer(
+    text: Any,
+    context_packet: Optional[Dict[str, Any]] = None,
+    sel_packet: Optional[Dict[str, Any]] = None,
+    qist_result: Optional[Dict[str, Any]] = None,
+    allow_learning_record: bool = False,
+    approved_for_learning: bool = False,
+) -> Dict[str, Any]:
+    """Resolve an answer-only request from governed local memory pools.
+
+    This is the intended replacement for app.py answer-pool bloat. It combines:
+      - AdvCU semantic packet + intent/query type
+      - meta.db routed SQLite pools through SarahMemoryDatabase
+      - optional Synapes semantic/tokenization ledger record
+
+    It never grants execution authority and never uses network/web/API.
+    """
+    raw = _normalize_text(text)
+    started = time.time()
+    out: Dict[str, Any] = {
+        "ok": False,
+        "schema": _SM_ADVCU_FAST_ANSWER_SCHEMA,
+        "answer": "",
+        "source": "unavailable",
+        "confidence": 0.0,
+        "execution_authority": False,
+        "network_used": False,
+        "web_access": False,
+        "api_access": False,
+        "filesystem_write": False,
+        "local_only": True,
+        "errors": [],
+    }
+    if not raw:
+        out["errors"].append("empty_query")
+        return out
+
+    try:
+        parsed = parse_command(raw)
+    except Exception as exc:
+        parsed = None
+        out["errors"].append(f"parse_command:{exc}")
+
+    intent = str(getattr(parsed, "intent", "question") or "question")
+    query_type = _advcu_infer_fast_query_type(raw, parsed)
+    try:
+        semantic_packet = build_semantic_packet(raw)
+    except Exception:
+        semantic_packet = parsed.to_semantic_packet() if isinstance(parsed, ParsedCommand) else {"raw_text": raw, "intent": intent, "query_type": query_type}
+    semantic_packet["query_type"] = query_type
+    semantic_packet["execution_authority"] = False
+
+    out.update({
+        "intent": intent,
+        "query_type": query_type,
+        "semantic_packet": semantic_packet,
+        "sel_packet": sel_packet if isinstance(sel_packet, dict) else {},
+        "qist_result": qist_result if isinstance(qist_result, dict) else {},
+    })
+
+    if not _advcu_safe_answer_only(raw, parsed):
+        out["blocked_reason"] = "not_answer_only_or_risk_terms_present"
+        return out
+
+    candidates: List[Dict[str, Any]] = []
+    _terms_for_hotpath = []
+    try:
+        import SarahMemoryDatabase as _SMDB_terms  # type: ignore
+        _terms_for_hotpath = list(getattr(_SMDB_terms, "_sm_dataset_query_terms", lambda _q: [])(raw) or [])
+    except Exception:
+        _terms_for_hotpath = []
+    _short_or_noisy_hotpath = bool(_terms_for_hotpath) and all((" " not in str(t) and len(str(t)) <= 3) for t in _terms_for_hotpath)
+
+    getters = [
+        lambda: _advcu_candidate_from_core_concepts(raw),
+        lambda: _advcu_candidate_from_search_answers(raw),
+        lambda: _advcu_candidate_from_semantic_pools(raw, intent, query_type),
+    ]
+    if not _short_or_noisy_hotpath:
+        getters.append(lambda: _advcu_candidate_from_dataset_pool(raw))
+
+    for getter in getters:
+        candidate = getter()
+        if isinstance(candidate, dict) and _advcu_answer_quality_ok(candidate.get("answer")):
+            candidates.append(candidate)
+            break
+
+    if not candidates:
+        out["blocked_reason"] = "no_local_semantic_answer"
+        out["latency_ms"] = int((time.time() - started) * 1000)
+        return out
+
+    best = candidates[0]
+    answer = _normalize_text(best.get("answer"))
+    out.update({
+        "ok": True,
+        "answer": answer,
+        "source": best.get("source") or "local_semantic_db",
+        "confidence": float(best.get("confidence") or 0.70),
+        "db": best.get("db"),
+        "table": best.get("table"),
+        "purpose": best.get("purpose"),
+        "method": best.get("method"),
+        "db_hits": best.get("db_hits") or [],
+        "routes_checked": best.get("routes_checked"),
+        "presentation_only": True,
+        "execution_authority": False,
+        "network_used": False,
+        "latency_ms": int((time.time() - started) * 1000),
+    })
+
+    if allow_learning_record:
+        out["synapes_record"] = _advcu_record_semantic_sample_if_allowed(
+            text=raw,
+            answer=answer,
+            candidate=best,
+            semantic_packet=semantic_packet,
+            sel_packet=sel_packet if isinstance(sel_packet, dict) else {},
+            qist_result=qist_result if isinstance(qist_result, dict) else {},
+            approved_for_learning=bool(approved_for_learning),
+        )
+    return out
+
+
+# Backward-friendly alias for callers that think in terms of lookup rather than resolution.
+lookup_local_knowledge_answer = resolve_local_fast_answer
+
+# ====================================================================
+# END OF SarahMemoryAdvCU.py v9.0.0
+# ====================================================================

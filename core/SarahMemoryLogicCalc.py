@@ -1,0 +1,3743 @@
+"""--==The SarahMemory Project==--
+File: SarahMemoryLogicCalc.py
+Part of the SarahMemory AiOS Governed Cognitive Runtime
+Version: v9.0.0
+Date: 2026-07-11
+Time: 10:11:54
+Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
+===============================================================================
+
+Rational Core Engine for SarahMemory AiOS:
+- Deterministic scientific calculator + engineering solver
+- Dimensional analysis + unit normalization
+- Logic inference + formula selection
+- Semantic Interlingua (formal meaning representation)
+- Natural Language Generation (explanations)
+- Translation via interlingua (“math/logic as Rosetta Stone”)
+
+DESIGN GOALS:
+- Local-first, deterministic, auditable
+- Hard-coded formulas + rules, expandable without refactors
+- Output is structured + human-readable
+"""
+
+from __future__ import annotations
+
+# --- SARAHMETA START ---
+# GRADE = "A"
+# ROLE = "reasoning_core"
+# CATEGORY = "deterministic_reasoning"
+# USER_FACING = False
+# UI_EXPOSURE = "internal_only"
+# DEPLOYMENT_TARGET = "core"
+# API_DOMAIN = ""
+# HARDWARE_DOMAIN = ""
+# INTERNAL_ONLY = True
+# CAPABILITY_NAME = "logiccalc"
+# FAMILY = "core_reasoning"
+# GOVERNANCE_LEVEL = "critical"
+# AUTONOMOUS_SAFE = False
+# FRONTEND_CANDIDATE = False
+# ADDON_CANDIDATE = False
+# DRIVER_CANDIDATE = False
+# RELEASE_PHASE = "ALPHA"
+# RELEASE_TRACK = "developer"
+# VALIDATION_DATE = "2026-07-11"
+# VALIDATION_TIME = "10:11:54"
+# PROJECT_SECTION = "SarahMemory AiOS Governed Cognitive Runtime"
+# STRUCTURAL_MARKER = "from __future__ import annotations"
+# NOTES = "Deterministic scientific calculator, engineering solver, dimensional-analysis engine, semantic interlingua, and auditable rational core."
+# --- SARAHMETA END ---
+
+import math
+import re
+import time
+import random
+import hashlib
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple, Callable, Union
+
+Number = Union[int, float]
+
+
+# =============================================================================
+# UTILITIES
+# =============================================================================
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+def _safe_float(x: Any) -> Optional[float]:
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+def _clip(s: str, n: int = 500) -> str:
+    s = s or ""
+    return s if len(s) <= n else s[:n] + "..."
+
+def _norm_space(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+def _lower(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+# =============================================================================
+# SEMANTIC INTERLINGUA (MEANING LAYER)
+# =============================================================================
+
+@dataclass
+class Term:
+    """Atomic term used in propositions: variable, constant, entity, unit."""
+    name: str
+    kind: str = "symbol"  # symbol|number|entity|unit|concept
+    value: Optional[Any] = None
+
+@dataclass
+class Proposition:
+    """
+    Typed proposition:
+    - predicate: e.g., "equals", "causes", "has", "increases", "converts_to"
+    - args: terms
+    - meta: confidence, units, domain, derivation
+    """
+    predicate: str
+    args: List[Term] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class MeaningGraph:
+    """Bundle of propositions representing meaning for reasoning and NLG."""
+    props: List[Proposition] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
+
+    def add(self, predicate: str, args: List[Term], **meta: Any) -> None:
+        self.props.append(Proposition(predicate=predicate, args=args, meta=meta))
+
+    def summarize(self) -> Dict[str, Any]:
+        return {
+            "props": [
+                {
+                    "predicate": p.predicate,
+                    "args": [{"name": t.name, "kind": t.kind, "value": t.value} for t in p.args],
+                    "meta": p.meta
+                }
+                for p in self.props
+            ],
+            "meta": self.meta
+        }
+
+
+# =============================================================================
+# UNIT SYSTEM + DIMENSIONAL ANALYSIS (ENTERPRISE-GRADE SAFETY)
+# =============================================================================
+
+@dataclass(frozen=True)
+class Dimension:
+    """
+    Simple dimensional vector:
+    L (length), M (mass), T (time), I (current), Th (temperature), N (amount), J (luminous)
+    """
+    L: int = 0
+    M: int = 0
+    T: int = 0
+    I: int = 0
+    Th: int = 0
+    N: int = 0
+    J: int = 0
+
+    def __mul__(self, other: "Dimension") -> "Dimension":
+        return Dimension(
+            L=self.L + other.L, M=self.M + other.M, T=self.T + other.T,
+            I=self.I + other.I, Th=self.Th + other.Th, N=self.N + other.N, J=self.J + other.J
+        )
+
+    def __truediv__(self, other: "Dimension") -> "Dimension":
+        return Dimension(
+            L=self.L - other.L, M=self.M - other.M, T=self.T - other.T,
+            I=self.I - other.I, Th=self.Th - other.Th, N=self.N - other.N, J=self.J - other.J
+        )
+
+    def __pow__(self, p: int) -> "Dimension":
+        return Dimension(
+            L=self.L * p, M=self.M * p, T=self.T * p,
+            I=self.I * p, Th=self.Th * p, N=self.N * p, J=self.J * p
+        )
+
+    def as_tuple(self) -> Tuple[int, int, int, int, int, int, int]:
+        return (self.L, self.M, self.T, self.I, self.Th, self.N, self.J)
+
+
+@dataclass(frozen=True)
+class Unit:
+    name: str
+    symbol: str
+    factor_to_si: float  # multiply to SI base
+    dim: Dimension
+
+class UnitRegistry:
+    """
+    Minimal SI-focused registry. Extend aggressively over time.
+    This is the control plane for dimensional correctness.
+    """
+    def __init__(self) -> None:
+        self._by_name: Dict[str, Unit] = {}
+        self._by_symbol: Dict[str, Unit] = {}
+
+        # Base dims
+        L = Dimension(L=1)
+        M = Dimension(M=1)
+        T = Dimension(T=1)
+        I = Dimension(I=1)
+        Th = Dimension(Th=1)
+        N = Dimension(N=1)
+
+        # Base units
+        self.add(Unit("meter", "m", 1.0, L))
+        self.add(Unit("kilometer", "km", 1000.0, L))
+        self.add(Unit("centimeter", "cm", 0.01, L))
+        self.add(Unit("millimeter", "mm", 0.001, L))
+        self.add(Unit("inch", "in", 0.0254, L))
+        self.add(Unit("foot", "ft", 0.3048, L))
+        self.add(Unit("mile", "mi", 1609.344, L))
+
+        self.add(Unit("kilogram", "kg", 1.0, M))
+        self.add(Unit("gram", "g", 0.001, M))
+        self.add(Unit("pound", "lb", 0.45359237, M))
+
+        self.add(Unit("second", "s", 1.0, T))
+        self.add(Unit("minute", "min", 60.0, T))
+        self.add(Unit("hour", "h", 3600.0, T))
+
+        self.add(Unit("ampere", "A", 1.0, I))
+
+        # Derived dims
+        # Newton: kg*m/s^2
+        self.add(Unit("newton", "N", 1.0, M * L / (T ** 2)))
+        # Joule: N*m
+        self.add(Unit("joule", "J", 1.0, (M * L / (T ** 2)) * L))
+        # Watt: J/s
+        self.add(Unit("watt", "W", 1.0, ((M * L / (T ** 2)) * L) / T))
+        # Pascal: N/m^2
+        self.add(Unit("pascal", "Pa", 1.0, (M * L / (T ** 2)) / (L ** 2)))
+        self.add(Unit("kilopascal", "kPa", 1000.0, (M * L / (T ** 2)) / (L ** 2)))
+        self.add(Unit("bar", "bar", 100000.0, (M * L / (T ** 2)) / (L ** 2)))
+        self.add(Unit("psi", "psi", 6894.757293168, (M * L / (T ** 2)) / (L ** 2)))
+
+        self.add(Unit("volt", "V", 1.0, (M * (L ** 2)) / (T ** 3) / I))
+        self.add(Unit("ohm", "Ω", 1.0, (M * (L ** 2)) / (T ** 3) / (I ** 2)))
+
+        # Temperature handled
+        # Robotics / kinematics convenience units (SI-compatible)
+        self.add(Unit("radian", "rad", 1.0, Dimension()))  # dimensionless
+        self.add(Unit("degree", "deg", math.pi / 180.0, Dimension()))  # dimensionless
+
+        # Common composite kinematic units (treated as named units to keep conversion deterministic)
+        self.add(Unit("meters_per_second", "m/s", 1.0, L / T))
+        self.add(Unit("meters_per_second2", "m/s^2", 1.0, L / (T ** 2)))
+        self.add(Unit("newton_meter", "N*m", 1.0, (M * L / (T ** 2)) * L))
+        self.add(Unit("newton_meter_alt", "Nm", 1.0, (M * L / (T ** 2)) * L))
+        # Temperature handled as special (affine), but keep symbol for recognition
+        self.add(Unit("kelvin", "K", 1.0, Th))
+        self.add(Unit("celsius", "C", 1.0, Th))
+        self.add(Unit("fahrenheit", "F", 1.0, Th))
+        # Amount of substance
+        self.add(Unit("mole", "mol", 1.0, N))
+
+
+    def add(self, unit: Unit) -> None:
+        self._by_name[unit.name.lower()] = unit
+        if unit.symbol:
+            self._by_symbol[unit.symbol] = unit
+
+    def get(self, key: str) -> Optional[Unit]:
+        if not key:
+            return None
+        k = key.strip()
+        u = self._by_name.get(k.lower())
+        if u:
+            return u
+        return self._by_symbol.get(k)
+
+    def convert(self, value: float, from_u: str, to_u: str) -> Tuple[float, str]:
+        fu = self.get(from_u)
+        tu = self.get(to_u)
+        if not fu or not tu:
+            raise ValueError("Unknown unit.")
+        # Special temperature conversions (affine)
+        if fu.name in ("celsius", "fahrenheit", "kelvin") or tu.name in ("celsius", "fahrenheit", "kelvin"):
+            return self._convert_temperature(value, fu.name, tu.name), tu.symbol or tu.name
+        if fu.dim.as_tuple() != tu.dim.as_tuple():
+            raise ValueError("Incompatible dimensions for conversion.")
+        si = value * fu.factor_to_si
+        out = si / tu.factor_to_si
+        return out, tu.symbol or tu.name
+
+    def _convert_temperature(self, v: float, f: str, t: str) -> float:
+        f = f.lower(); t = t.lower()
+        # to Kelvin
+        if f == "kelvin":
+            k = v
+        elif f == "celsius":
+            k = v + 273.15
+        elif f == "fahrenheit":
+            k = (v - 32.0) * (5.0/9.0) + 273.15
+        else:
+            raise ValueError("Unknown temperature unit.")
+        # from Kelvin
+        if t == "kelvin":
+            return k
+        if t == "celsius":
+            return k - 273.15
+        if t == "fahrenheit":
+            return (k - 273.15) * (9.0/5.0) + 32.0
+        raise ValueError("Unknown temperature unit.")
+
+
+
+
+# =============================================================================
+# VECTOR + TENSOR ALGEBRA WITH DIMENSIONAL AWARENESS (ROBOTICS-GRADE)
+# =============================================================================
+
+@dataclass(frozen=True)
+class Vec3:
+    """
+    3D vector with dimensional awareness.
+    - values are in SI units for the associated dimension.
+    - dim describes the physical dimension of each component (same for x,y,z).
+    """
+    x: float
+    y: float
+    z: float
+    dim: Dimension = Dimension()
+
+    def as_tuple(self) -> Tuple[float, float, float]:
+        return (self.x, self.y, self.z)
+
+    def __add__(self, other: "Vec3") -> "Vec3":
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 add: incompatible dimensions.")
+        return Vec3(self.x + other.x, self.y + other.y, self.z + other.z, self.dim)
+
+    def __sub__(self, other: "Vec3") -> "Vec3":
+        if self.dim.as_tuple() != other.dim.as_tuple():
+            raise ValueError("Vec3 sub: incompatible dimensions.")
+        return Vec3(self.x - other.x, self.y - other.y, self.z - other.z, self.dim)
+
+    def __mul__(self, k: float) -> "Vec3":
+        return Vec3(self.x * k, self.y * k, self.z * k, self.dim)
+
+    def __truediv__(self, k: float) -> "Vec3":
+        if k == 0:
+            raise ValueError("Vec3 div: scalar cannot be zero.")
+        return Vec3(self.x / k, self.y / k, self.z / k, self.dim)
+
+    def magnitude(self) -> float:
+        return math.sqrt(self.x*self.x + self.y*self.y + self.z*self.z)
+
+    def direction(self) -> "Vec3":
+        mag = self.magnitude()
+        if mag == 0:
+            raise ValueError("Vec3 normalize: magnitude is zero.")
+        # direction is dimensionless
+        return Vec3(self.x/mag, self.y/mag, self.z/mag, Dimension())
+    def dot(self, other: "Vec3") -> Tuple[float, Dimension]:
+        # Allow different dimensions: result dimension is product of component dimensions.
+        return (self.x*other.x + self.y*other.y + self.z*other.z, self.dim * other.dim)
+    def cross(self, other: "Vec3") -> "Vec3":
+        # Allow different dimensions: result dimension is product (e.g., torque: r[m] × F[N] -> N·m).
+        return Vec3(
+            self.y*other.z - self.z*other.y,
+            self.z*other.x - self.x*other.z,
+            self.x*other.y - self.y*other.x,
+            self.dim * other.dim
+        )
+
+    def project_onto(self, axis: "Vec3") -> "Vec3":
+        # Projection of self onto axis: (self·axis_hat) * axis_hat
+        ah = axis.direction()
+        scalar, _ = Vec3(self.x, self.y, self.z, self.dim).dot(Vec3(ah.x, ah.y, ah.z, Dimension()))
+        return Vec3(ah.x, ah.y, ah.z, Dimension()) * scalar  # returns same dim as self
+
+    def format(self, unit_hint: str = "") -> str:
+        u = f" {unit_hint}".rstrip()
+        return f"({self.x}, {self.y}, {self.z}){u}"
+
+
+@dataclass(frozen=True)
+class Tensor33:
+    """
+    3x3 tensor with dimensional awareness (all components share same dim).
+    Storage is row-major.
+    """
+    m00: float; m01: float; m02: float
+    m10: float; m11: float; m12: float
+    m20: float; m21: float; m22: float
+    dim: Dimension = Dimension()
+
+    def rows(self) -> Tuple[Tuple[float,float,float], Tuple[float,float,float], Tuple[float,float,float]]:
+        return (
+            (self.m00, self.m01, self.m02),
+            (self.m10, self.m11, self.m12),
+            (self.m20, self.m21, self.m22),
+        )
+
+    def trace(self) -> float:
+        return self.m00 + self.m11 + self.m22
+
+    def transpose(self) -> "Tensor33":
+        return Tensor33(
+            self.m00, self.m10, self.m20,
+            self.m01, self.m11, self.m21,
+            self.m02, self.m12, self.m22,
+            self.dim
+        )
+
+    def __mul__(self, k: float) -> "Tensor33":
+        # Scalar scaling (dimension unchanged; use _tensor_scale_dim when scalar has dimension)
+        return Tensor33(
+            self.m00*k, self.m01*k, self.m02*k,
+            self.m10*k, self.m11*k, self.m12*k,
+            self.m20*k, self.m21*k, self.m22*k,
+            self.dim
+        )
+
+    def __truediv__(self, k: float) -> "Tensor33":
+        if k == 0:
+            raise ValueError("Tensor33 div: scalar cannot be zero.")
+        return Tensor33(
+            self.m00/k, self.m01/k, self.m02/k,
+            self.m10/k, self.m11/k, self.m12/k,
+            self.m20/k, self.m21/k, self.m22/k,
+            self.dim
+        )
+
+    def det(self) -> float:
+        # Laplace expansion
+        a,b,c = self.m00, self.m01, self.m02
+        d,e,f = self.m10, self.m11, self.m12
+        g,h,i = self.m20, self.m21, self.m22
+        return (
+            a*(e*i - f*h)
+            - b*(d*i - f*g)
+            + c*(d*h - e*g)
+        )
+
+    def mul_vec(self, v: Vec3) -> Vec3:
+        # Tensor-vector multiplication: dims multiply
+        return Vec3(
+            self.m00*v.x + self.m01*v.y + self.m02*v.z,
+            self.m10*v.x + self.m11*v.y + self.m12*v.z,
+            self.m20*v.x + self.m21*v.y + self.m22*v.z,
+            self.dim * v.dim
+        )
+
+    def format(self, unit_hint: str = "") -> str:
+        u = f" {unit_hint}".rstrip()
+        r = self.rows()
+        return f"[[{r[0][0]}, {r[0][1]}, {r[0][2]}], [{r[1][0]}, {r[1][1]}, {r[1][2]}], [{r[2][0]}, {r[2][1]}, {r[2][2]}]]{u}"
+
+
+def _dim_to_unit_hint(dim: Dimension) -> str:
+    # Not a full unit synthesis engine; provides human hints for the common robotics stack.
+    d = dim.as_tuple()
+    # dimensionless
+    if d == Dimension().as_tuple():
+        return ""
+    # length
+    if d == Dimension(L=1).as_tuple():
+        return "m"
+    # velocity
+    if d == (Dimension(L=1) / Dimension(T=1)).as_tuple():
+        return "m/s"
+    # acceleration
+    if d == (Dimension(L=1) / (Dimension(T=1) ** 2)).as_tuple():
+        return "m/s^2"
+    # force
+    if d == (Dimension(M=1) * Dimension(L=1) / (Dimension(T=1) ** 2)).as_tuple():
+        return "N"
+    # torque / energy
+    if d == (Dimension(M=1) * (Dimension(L=1) ** 2) / (Dimension(T=1) ** 2)).as_tuple():
+        return "N*m"
+    return ""
+
+
+
+# =============================================================================
+# SCALAR / VECTOR / TENSOR OVERLOAD UTILITIES (ENTERPRISE-GRADE)
+# =============================================================================
+
+Scalar = Union[int, float]
+Value = Union[Scalar, Vec3, Tensor33]
+
+def _is_scalar(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+def _is_vec3(v: Any) -> bool:
+    return isinstance(v, Vec3)
+
+def _is_tensor33(v: Any) -> bool:
+    return isinstance(v, Tensor33)
+
+def _require_scalar(name: str, v: Any) -> float:
+    if not _is_scalar(v):
+        raise ValueError(f"{name} must be a scalar number.")
+    return float(v)
+
+def _vec3_scale_dim(v: Vec3, k: float, k_dim: Dimension) -> Vec3:
+    # Multiply a vector by a (possibly dimensional) scalar, updating the vector dimension.
+    return Vec3(v.x * k, v.y * k, v.z * k, v.dim * k_dim)
+
+def _vec3_div_dim(v: Vec3, k: float, k_dim: Dimension) -> Vec3:
+    if k == 0:
+        raise ValueError("scalar cannot be zero.")
+    return Vec3(v.x / k, v.y / k, v.z / k, v.dim / k_dim)
+
+def _tensor_scale_dim(t: Tensor33, k: float, k_dim: Dimension) -> Tensor33:
+    return Tensor33(
+        t.m00*k, t.m01*k, t.m02*k,
+        t.m10*k, t.m11*k, t.m12*k,
+        t.m20*k, t.m21*k, t.m22*k,
+        t.dim * k_dim
+    )
+
+def _tensor_div_dim(t: Tensor33, k: float, k_dim: Dimension) -> Tensor33:
+    if k == 0:
+        raise ValueError("scalar cannot be zero.")
+    return Tensor33(
+        t.m00/k, t.m01/k, t.m02/k,
+        t.m10/k, t.m11/k, t.m12/k,
+        t.m20/k, t.m21/k, t.m22/k,
+        t.dim / k_dim
+    )
+
+def _colinear_vecs(a: Vec3, b: Vec3, eps: float = 1e-9) -> bool:
+    # Colinearity check via |a x b| == 0 (numerical)
+    c = a.cross(b)
+    return c.magnitude() <= eps * max(1.0, a.magnitude(), b.magnitude())
+
+def _parse_vec3_literal(s: str) -> Optional[Tuple[float,float,float]]:
+    """
+    Parse (x,y,z) or [x,y,z] or <x,y,z>
+    """
+    if not s:
+        return None
+    m = re.search(r"[\(\[\<]\s*([\-0-9\.eE\+]+)\s*[, ]\s*([\-0-9\.eE\+]+)\s*[, ]\s*([\-0-9\.eE\+]+)\s*[\)\]\>]", s)
+    if not m:
+        return None
+    try:
+        return (float(m.group(1)), float(m.group(2)), float(m.group(3)))
+    except Exception:
+        return None
+
+
+def _parse_tensor33_literal(s: str) -> Optional[Tuple[float, ...]]:
+    """
+    Parse a 3x3 tensor in either:
+      - [[a,b,c],[d,e,f],[g,h,i]]
+      - [a b c; d e f; g h i]
+    Returns 9 floats row-major.
+    """
+    if not s:
+        return None
+
+    # Bracket form
+    m = re.search(
+        r"\[\s*\[\s*([^\]]+?)\s*\]\s*,\s*\[\s*([^\]]+?)\s*\]\s*,\s*\[\s*([^\]]+?)\s*\]\s*\]",
+        s
+    )
+    if m:
+        rows = []
+        for grp in (m.group(1), m.group(2), m.group(3)):
+            parts = [p.strip() for p in re.split(r"[, ]+", grp.strip()) if p.strip()]
+            if len(parts) != 3:
+                return None
+            rows.append(parts)
+        flat = [rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0], rows[2][1], rows[2][2]]
+        try:
+            return tuple(float(x) for x in flat)
+        except Exception:
+            return None
+
+    # Semicolon form
+    m2 = re.search(r"\[\s*([^\]]+?)\s*\]", s)
+    if m2 and ";" in m2.group(1):
+        raw = m2.group(1)
+        row_strs = [r.strip() for r in raw.split(";") if r.strip()]
+        if len(row_strs) != 3:
+            return None
+        rows = []
+        for rs in row_strs:
+            parts = [p.strip() for p in rs.replace(",", " ").split() if p.strip()]
+            if len(parts) != 3:
+                return None
+            rows.append(parts)
+        flat = [rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0], rows[2][1], rows[2][2]]
+        try:
+            return tuple(float(x) for x in flat)
+        except Exception:
+            return None
+
+    return None
+
+
+# =============================================================================
+# PHYSICAL CONSTANTS + PERIODIC TABLE (HARD-CODED KNOWLEDGE)
+# =============================================================================
+
+PHYS_CONSTANTS: Dict[str, float] = {
+    # Physics / thermo
+    "c": 299_792_458.0,                 # speed of light (m/s)
+    "h": 6.62607015e-34,                # Planck constant (J*s)
+    "hbar": 1.054571817e-34,            # reduced Planck constant (J*s)
+    "G": 6.67430e-11,                   # gravitational constant (N*m^2/kg^2)
+    "kB": 1.380649e-23,                 # Boltzmann constant (J/K)
+    "R": 8.31446261815324,              # ideal gas constant (J/mol/K)
+    "NA": 6.02214076e23,                # Avogadro constant (1/mol)
+    "e_charge": 1.602176634e-19,        # elementary charge (C)
+    "me": 9.1093837015e-31,             # electron mass (kg)
+    "mp": 1.67262192369e-27,            # proton mass (kg)
+    "mn": 1.67492749804e-27,            # neutron mass (kg)
+    "amu": 1.66053906660e-27,           # atomic mass unit (kg)
+    "atm": 101_325.0,                   # standard atmosphere (Pa)
+}
+
+# Periodic table: atomic_number -> (symbol, name, atomic_weight)
+# Source: standard atomic weights (representative values). This is a static, hard-coded table for deterministic use.
+PERIODIC_TABLE: Dict[str, Dict[str, Any]] = {
+    "H":  {"Z": 1,  "name": "Hydrogen",      "aw": 1.008},
+    "He": {"Z": 2,  "name": "Helium",        "aw": 4.002602},
+    "Li": {"Z": 3,  "name": "Lithium",       "aw": 6.94},
+    "Be": {"Z": 4,  "name": "Beryllium",     "aw": 9.0121831},
+    "B":  {"Z": 5,  "name": "Boron",         "aw": 10.81},
+    "C":  {"Z": 6,  "name": "Carbon",        "aw": 12.011},
+    "N":  {"Z": 7,  "name": "Nitrogen",      "aw": 14.007},
+    "O":  {"Z": 8,  "name": "Oxygen",        "aw": 15.999},
+    "F":  {"Z": 9,  "name": "Fluorine",      "aw": 18.998403163},
+    "Ne": {"Z": 10, "name": "Neon",          "aw": 20.1797},
+    "Na": {"Z": 11, "name": "Sodium",        "aw": 22.98976928},
+    "Mg": {"Z": 12, "name": "Magnesium",     "aw": 24.305},
+    "Al": {"Z": 13, "name": "Aluminium",     "aw": 26.9815385},
+    "Si": {"Z": 14, "name": "Silicon",       "aw": 28.085},
+    "P":  {"Z": 15, "name": "Phosphorus",    "aw": 30.973761998},
+    "S":  {"Z": 16, "name": "Sulfur",        "aw": 32.06},
+    "Cl": {"Z": 17, "name": "Chlorine",      "aw": 35.45},
+    "Ar": {"Z": 18, "name": "Argon",         "aw": 39.948},
+    "K":  {"Z": 19, "name": "Potassium",     "aw": 39.0983},
+    "Ca": {"Z": 20, "name": "Calcium",       "aw": 40.078},
+    "Sc": {"Z": 21, "name": "Scandium",      "aw": 44.955908},
+    "Ti": {"Z": 22, "name": "Titanium",      "aw": 47.867},
+    "V":  {"Z": 23, "name": "Vanadium",      "aw": 50.9415},
+    "Cr": {"Z": 24, "name": "Chromium",      "aw": 51.9961},
+    "Mn": {"Z": 25, "name": "Manganese",     "aw": 54.938044},
+    "Fe": {"Z": 26, "name": "Iron",          "aw": 55.845},
+    "Co": {"Z": 27, "name": "Cobalt",        "aw": 58.933194},
+    "Ni": {"Z": 28, "name": "Nickel",        "aw": 58.6934},
+    "Cu": {"Z": 29, "name": "Copper",        "aw": 63.546},
+    "Zn": {"Z": 30, "name": "Zinc",          "aw": 65.38},
+    "Ga": {"Z": 31, "name": "Gallium",       "aw": 69.723},
+    "Ge": {"Z": 32, "name": "Germanium",     "aw": 72.630},
+    "As": {"Z": 33, "name": "Arsenic",       "aw": 74.921595},
+    "Se": {"Z": 34, "name": "Selenium",      "aw": 78.971},
+    "Br": {"Z": 35, "name": "Bromine",       "aw": 79.904},
+    "Kr": {"Z": 36, "name": "Krypton",       "aw": 83.798},
+    "Rb": {"Z": 37, "name": "Rubidium",      "aw": 85.4678},
+    "Sr": {"Z": 38, "name": "Strontium",     "aw": 87.62},
+    "Y":  {"Z": 39, "name": "Yttrium",       "aw": 88.90584},
+    "Zr": {"Z": 40, "name": "Zirconium",     "aw": 91.224},
+    "Nb": {"Z": 41, "name": "Niobium",       "aw": 92.90637},
+    "Mo": {"Z": 42, "name": "Molybdenum",    "aw": 95.95},
+    "Tc": {"Z": 43, "name": "Technetium",    "aw": 98.0},
+    "Ru": {"Z": 44, "name": "Ruthenium",     "aw": 101.07},
+    "Rh": {"Z": 45, "name": "Rhodium",       "aw": 102.90550},
+    "Pd": {"Z": 46, "name": "Palladium",     "aw": 106.42},
+    "Ag": {"Z": 47, "name": "Silver",        "aw": 107.8682},
+    "Cd": {"Z": 48, "name": "Cadmium",       "aw": 112.414},
+    "In": {"Z": 49, "name": "Indium",        "aw": 114.818},
+    "Sn": {"Z": 50, "name": "Tin",           "aw": 118.710},
+    "Sb": {"Z": 51, "name": "Antimony",      "aw": 121.760},
+    "Te": {"Z": 52, "name": "Tellurium",     "aw": 127.60},
+    "I":  {"Z": 53, "name": "Iodine",        "aw": 126.90447},
+    "Xe": {"Z": 54, "name": "Xenon",         "aw": 131.293},
+    "Cs": {"Z": 55, "name": "Cesium",        "aw": 132.90545196},
+    "Ba": {"Z": 56, "name": "Barium",        "aw": 137.327},
+    "La": {"Z": 57, "name": "Lanthanum",     "aw": 138.90547},
+    "Ce": {"Z": 58, "name": "Cerium",        "aw": 140.116},
+    "Pr": {"Z": 59, "name": "Praseodymium",  "aw": 140.90766},
+    "Nd": {"Z": 60, "name": "Neodymium",     "aw": 144.242},
+    "Pm": {"Z": 61, "name": "Promethium",    "aw": 145.0},
+    "Sm": {"Z": 62, "name": "Samarium",      "aw": 150.36},
+    "Eu": {"Z": 63, "name": "Europium",      "aw": 151.964},
+    "Gd": {"Z": 64, "name": "Gadolinium",    "aw": 157.25},
+    "Tb": {"Z": 65, "name": "Terbium",       "aw": 158.92535},
+    "Dy": {"Z": 66, "name": "Dysprosium",    "aw": 162.500},
+    "Ho": {"Z": 67, "name": "Holmium",       "aw": 164.93033},
+    "Er": {"Z": 68, "name": "Erbium",        "aw": 167.259},
+    "Tm": {"Z": 69, "name": "Thulium",       "aw": 168.93422},
+    "Yb": {"Z": 70, "name": "Ytterbium",     "aw": 173.045},
+    "Lu": {"Z": 71, "name": "Lutetium",      "aw": 174.9668},
+    "Hf": {"Z": 72, "name": "Hafnium",       "aw": 178.49},
+    "Ta": {"Z": 73, "name": "Tantalum",      "aw": 180.94788},
+    "W":  {"Z": 74, "name": "Tungsten",      "aw": 183.84},
+    "Re": {"Z": 75, "name": "Rhenium",       "aw": 186.207},
+    "Os": {"Z": 76, "name": "Osmium",        "aw": 190.23},
+    "Ir": {"Z": 77, "name": "Iridium",       "aw": 192.217},
+    "Pt": {"Z": 78, "name": "Platinum",      "aw": 195.084},
+    "Au": {"Z": 79, "name": "Gold",          "aw": 196.966569},
+    "Hg": {"Z": 80, "name": "Mercury",       "aw": 200.592},
+    "Tl": {"Z": 81, "name": "Thallium",      "aw": 204.38},
+    "Pb": {"Z": 82, "name": "Lead",          "aw": 207.2},
+    "Bi": {"Z": 83, "name": "Bismuth",       "aw": 208.98040},
+    "Po": {"Z": 84, "name": "Polonium",      "aw": 209.0},
+    "At": {"Z": 85, "name": "Astatine",      "aw": 210.0},
+    "Rn": {"Z": 86, "name": "Radon",         "aw": 222.0},
+    "Fr": {"Z": 87, "name": "Francium",      "aw": 223.0},
+    "Ra": {"Z": 88, "name": "Radium",        "aw": 226.0},
+    "Ac": {"Z": 89, "name": "Actinium",      "aw": 227.0},
+    "Th": {"Z": 90, "name": "Thorium",       "aw": 232.0377},
+    "Pa": {"Z": 91, "name": "Protactinium",  "aw": 231.03588},
+    "U":  {"Z": 92, "name": "Uranium",       "aw": 238.02891},
+    "Np": {"Z": 93, "name": "Neptunium",     "aw": 237.0},
+    "Pu": {"Z": 94, "name": "Plutonium",     "aw": 244.0},
+    "Am": {"Z": 95, "name": "Americium",     "aw": 243.0},
+    "Cm": {"Z": 96, "name": "Curium",        "aw": 247.0},
+    "Bk": {"Z": 97, "name": "Berkelium",     "aw": 247.0},
+    "Cf": {"Z": 98, "name": "Californium",   "aw": 251.0},
+    "Es": {"Z": 99, "name": "Einsteinium",   "aw": 252.0},
+    "Fm": {"Z": 100,"name": "Fermium",       "aw": 257.0},
+    "Md": {"Z": 101,"name": "Mendelevium",   "aw": 258.0},
+    "No": {"Z": 102,"name": "Nobelium",      "aw": 259.0},
+    "Lr": {"Z": 103,"name": "Lawrencium",    "aw": 266.0},
+    "Rf": {"Z": 104,"name": "Rutherfordium", "aw": 267.0},
+    "Db": {"Z": 105,"name": "Dubnium",       "aw": 268.0},
+    "Sg": {"Z": 106,"name": "Seaborgium",    "aw": 269.0},
+    "Bh": {"Z": 107,"name": "Bohrium",       "aw": 270.0},
+    "Hs": {"Z": 108,"name": "Hassium",       "aw": 269.0},
+    "Mt": {"Z": 109,"name": "Meitnerium",    "aw": 278.0},
+    "Ds": {"Z": 110,"name": "Darmstadtium",  "aw": 281.0},
+    "Rg": {"Z": 111,"name": "Roentgenium",   "aw": 282.0},
+    "Cn": {"Z": 112,"name": "Copernicium",   "aw": 285.0},
+    "Nh": {"Z": 113,"name": "Nihonium",      "aw": 286.0},
+    "Fl": {"Z": 114,"name": "Flerovium",     "aw": 289.0},
+    "Mc": {"Z": 115,"name": "Moscovium",     "aw": 290.0},
+    "Lv": {"Z": 116,"name": "Livermorium",   "aw": 293.0},
+    "Ts": {"Z": 117,"name": "Tennessine",    "aw": 294.0},
+    "Og": {"Z": 118,"name": "Oganesson",     "aw": 294.0},
+}
+
+def get_element(symbol_or_name: str) -> Optional[Dict[str, Any]]:
+    if not symbol_or_name:
+        return None
+    s = symbol_or_name.strip()
+    # symbol
+    if s in PERIODIC_TABLE:
+        return PERIODIC_TABLE[s]
+    # name lookup
+    sl = s.lower()
+    for sym, rec in PERIODIC_TABLE.items():
+        if rec.get("name", "").lower() == sl:
+            return {**rec, "symbol": sym}
+    return None
+
+# =============================================================================
+# FORMULA LIBRARY (HARD-CODED SCIENCE / ENGINEERING KNOWLEDGE)
+# =============================================================================
+
+@dataclass
+class Formula:
+    name: str
+    domain: str
+    equation: str
+    variables: Dict[str, str]        # var -> description
+    units: Dict[str, str]            # var -> unit symbol/name
+    dims: Dict[str, Dimension]       # var -> dimensional vector
+    solve: Callable[[Dict[str, float]], Dict[str, float]]  # returns computed vars
+    notes: str = ""
+
+class FormulaLibrary:
+    """
+    Hard-coded formulas + deterministic solvers.
+    This is the “enterprise knowledge base” for math-driven reasoning.
+    """
+    def __init__(self, units: UnitRegistry) -> None:
+        self.units = units
+        self.formulas: Dict[str, Formula] = {}
+        self._init_core()
+
+    def register(self, f: Formula) -> None:
+        self.formulas[f.name.lower()] = f
+
+    def find(self, hint: str) -> List[Formula]:
+        h = _lower(hint)
+        out = []
+        for k, f in self.formulas.items():
+            if h in k or h in f.domain.lower() or h in f.equation.lower():
+                out.append(f)
+        return out
+
+    def _init_core(self) -> None:
+        # Base dims
+        L = Dimension(L=1)
+        M = Dimension(M=1)
+        T = Dimension(T=1)
+        I = Dimension(I=1)
+        Th = Dimension(Th=1)
+
+        # Derived dims
+        N_dim = M * L / (T ** 2)            # newton
+        J_dim = N_dim * L                   # joule
+        W_dim = J_dim / T                   # watt
+        Pa_dim = N_dim / (L ** 2)           # pascal
+        V_dim = (M * (L ** 2)) / (T ** 3) / I
+        Ohm_dim = V_dim / I
+
+        # Newton 2nd law: F = m a
+        def solve_n2(known: Dict[str, Any]) -> Dict[str, Any]:
+            """Newton's 2nd Law overload: supports scalar OR Vec3 for F and a.
+
+            Rules:
+              - m must be scalar (kg)
+              - a may be scalar (m/s^2) or Vec3 (m/s^2)
+              - F may be scalar (N) or Vec3 (N)
+
+            Inversion semantics:
+              - If solving for a with F Vec3 => a Vec3
+              - If solving for m with F Vec3 and a Vec3 => m scalar only if colinear (direction consistent)
+            """
+            out: Dict[str, Any] = {}
+
+            m_val = known.get("m", None)
+            a_val = known.get("a", None)
+            f_val = known.get("F", None)
+
+            # Guard: mass must be scalar
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be a scalar (kg), not a vector/tensor.")
+
+            # Compute F
+            if m_val is not None and a_val is not None and f_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(a_val):
+                    # Force vector: F = m * a
+                    a: Vec3 = a_val
+                    out["F"] = _vec3_scale_dim(a, m, M)  # dim: (L/T^2) * M = N
+                else:
+                    a = _require_scalar("a", a_val)
+                    out["F"] = m * a
+
+            # Compute a
+            if f_val is not None and m_val is not None and a_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
+                    raise ValueError("m cannot be zero.")
+                if _is_vec3(f_val):
+                    F: Vec3 = f_val
+                    out["a"] = _vec3_div_dim(F, m, M)  # dim: N / M = L/T^2
+                else:
+                    F = _require_scalar("F", f_val)
+                    out["a"] = F / m
+
+            # Compute m
+            if f_val is not None and a_val is not None and m_val is None:
+                if _is_vec3(f_val) and _is_vec3(a_val):
+                    F: Vec3 = f_val
+                    a: Vec3 = a_val
+                    if a.magnitude() == 0:
+                        raise ValueError("a cannot be zero.")
+                    # If vectors are not colinear, scalar mass is not well-defined
+                    if not _colinear_vecs(F, a):
+                        raise ValueError("Cannot solve scalar m from non-colinear F and a vectors.")
+                    out["m"] = F.magnitude() / a.magnitude()
+                elif (not _is_vec3(f_val)) and (not _is_vec3(a_val)):
+                    F = _require_scalar("F", f_val)
+                    a = _require_scalar("a", a_val)
+                    if a == 0:
+                        raise ValueError("a cannot be zero.")
+                    out["m"] = F / a
+                else:
+                    # Mixed scalar/vector: require scalar solve using magnitudes
+                    if _is_vec3(f_val):
+                        F: Vec3 = f_val
+                        a = _require_scalar("a", a_val)
+                        if a == 0:
+                            raise ValueError("a cannot be zero.")
+                        out["m"] = F.magnitude() / abs(a)
+                    else:
+                        F = _require_scalar("F", f_val)
+                        a: Vec3 = a_val
+                        if a.magnitude() == 0:
+                            raise ValueError("a cannot be zero.")
+                        out["m"] = abs(F) / a.magnitude()
+
+            return out
+
+        self.register(Formula(
+            name="Newtons Second Law",
+            domain="physics.mechanics",
+            equation="F = m * a",
+            variables={"F": "Force", "m": "Mass", "a": "Acceleration"},
+            units={"F": "N", "m": "kg", "a": "m/s^2"},
+            dims={"F": N_dim, "m": M, "a": L/(T**2)},
+            solve=solve_n2,
+            notes="Deterministic mechanics baseline."
+        ))
+
+        # Momentum: p = m * v  (vector-capable)
+        def solve_p_m_v(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m", None)
+            v_val = known.get("v", None)
+            p_val = known.get("p", None)
+
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be scalar (kg).")
+
+            # p = m v
+            if m_val is not None and v_val is not None and p_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    out["p"] = _vec3_scale_dim(v, m, M)  # dim: (L/T) * M
+                else:
+                    v = _require_scalar("v", v_val)
+                    out["p"] = m * v
+
+            # v = p / m
+            if p_val is not None and m_val is not None and v_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
+                    raise ValueError("m cannot be zero.")
+                if _is_vec3(p_val):
+                    p: Vec3 = p_val
+                    out["v"] = _vec3_div_dim(p, m, M)
+                else:
+                    p = _require_scalar("p", p_val)
+                    out["v"] = p / m
+
+            # m = |p| / |v| (only well-defined if both are vectors and colinear, or both scalars)
+            if p_val is not None and v_val is not None and m_val is None:
+                if _is_vec3(p_val) and _is_vec3(v_val):
+                    p: Vec3 = p_val
+                    v: Vec3 = v_val
+                    if v.magnitude() == 0:
+                        raise ValueError("v cannot be zero.")
+                    if not _colinear_vecs(p, v):
+                        raise ValueError("Cannot solve scalar m from non-colinear p and v vectors.")
+                    out["m"] = p.magnitude() / v.magnitude()
+                elif (not _is_vec3(p_val)) and (not _is_vec3(v_val)):
+                    p = _require_scalar("p", p_val)
+                    v = _require_scalar("v", v_val)
+                    if v == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = p / v
+                else:
+                    # Mixed scalar/vector => use magnitudes
+                    if _is_vec3(p_val):
+                        p: Vec3 = p_val
+                        v = _require_scalar("v", v_val)
+                        if v == 0:
+                            raise ValueError("v cannot be zero.")
+                        out["m"] = p.magnitude() / abs(v)
+                    else:
+                        p = _require_scalar("p", p_val)
+                        v: Vec3 = v_val
+                        if v.magnitude() == 0:
+                            raise ValueError("v cannot be zero.")
+                        out["m"] = abs(p) / v.magnitude()
+
+            return out
+
+        self.register(Formula(
+            name="Linear Momentum",
+            domain="physics.mechanics",
+            equation="p = m * v",
+            variables={"p": "Momentum", "m": "Mass", "v": "Velocity"},
+            units={"p": "kg*m/s", "m": "kg", "v": "m/s"},
+            dims={"p": M*L/T, "m": M, "v": L/T},
+            solve=solve_p_m_v,
+            notes="Vector-capable momentum solver for robotics dynamics."
+        ))
+
+        # Torque: τ = r × F  (forward solve; robotics-grade)
+        def solve_tau_r_cross_F(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            r_val = known.get("r", None)
+            f_val = known.get("F", None)
+            tau_val = known.get("tau", None)
+
+            if tau_val is None and r_val is not None and f_val is not None:
+                if not _is_vec3(r_val) or not _is_vec3(f_val):
+                    raise ValueError("Torque solve requires r and F as Vec3.")
+                r: Vec3 = r_val
+                Fv: Vec3 = f_val
+                out["tau"] = r.cross(Fv)  # dim: L * N
+            return out
+
+        tau_dim = N_dim * L
+        self.register(Formula(
+            name="Torque (Cross Product)",
+            domain="physics.mechanics",
+            equation="tau = r × F",
+            variables={"tau": "Torque vector", "r": "Position/lever arm", "F": "Force vector"},
+            units={"tau": "N*m", "r": "m", "F": "N"},
+            dims={"tau": tau_dim, "r": L, "F": N_dim},
+            solve=solve_tau_r_cross_F,
+            notes="Forward torque computation (vector cross). Inversion is intentionally conservative."
+        ))
+
+        # Kinetic energy: KE = 1/2 m v^2
+        def solve_ke(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m", None)
+            v_val = known.get("v", None)
+            ke_val = known.get("KE", None)
+
+            if _is_vec3(m_val) or _is_tensor33(m_val):
+                raise ValueError("m (mass) must be scalar (kg).")
+
+            # KE = 1/2 m |v|^2
+            if m_val is not None and v_val is not None and ke_val is None:
+                m = _require_scalar("m", m_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    out["KE"] = 0.5 * m * (v.magnitude() ** 2)
+                else:
+                    v = _require_scalar("v", v_val)
+                    out["KE"] = 0.5 * m * (v ** 2)
+
+            # |v| = sqrt(2 KE / m)
+            if ke_val is not None and m_val is not None and v_val is None:
+                m = _require_scalar("m", m_val)
+                if m == 0:
+                    raise ValueError("m cannot be zero.")
+                KE = _require_scalar("KE", ke_val)
+                out["v"] = math.sqrt((2 * KE) / m)
+
+            # m = 2 KE / |v|^2
+            if ke_val is not None and v_val is not None and m_val is None:
+                KE = _require_scalar("KE", ke_val)
+                if _is_vec3(v_val):
+                    v: Vec3 = v_val
+                    spd2 = v.magnitude() ** 2
+                    if spd2 == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = (2 * KE) / spd2
+                else:
+                    v = _require_scalar("v", v_val)
+                    if v == 0:
+                        raise ValueError("v cannot be zero.")
+                    out["m"] = (2 * KE) / (v ** 2)
+
+            return out
+
+        self.register(Formula(
+            name="Kinetic Energy",
+            domain="physics.energy",
+            equation="KE = 0.5 * m * v^2",
+            variables={"KE": "Kinetic Energy", "m": "Mass", "v": "Velocity"},
+            units={"KE": "J", "m": "kg", "v": "m/s"},
+            dims={"KE": J_dim, "m": M, "v": L/T},
+            solve=solve_ke
+        ))
+
+        # Gravity force: Fg = m * g
+        def solve_gravity_force(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m")
+            g_val = known.get("g", 9.80665)
+            fg_val = known.get("Fg")
+            if m_val is not None and g_val is not None and fg_val is None:
+                out["Fg"] = _require_scalar("m", m_val) * _require_scalar("g", g_val)
+            if fg_val is not None and g_val is not None and m_val is None:
+                g = _require_scalar("g", g_val)
+                if g == 0:
+                    raise ValueError("g cannot be zero.")
+                out["m"] = _require_scalar("Fg", fg_val) / g
+            if fg_val is not None and m_val is not None and "g" not in known:
+                m = _require_scalar("m", m_val)
+                if m == 0:
+                    raise ValueError("m cannot be zero.")
+                out["g"] = _require_scalar("Fg", fg_val) / m
+            return out
+
+        self.register(Formula(
+            name="Gravity Force",
+            domain="physics.mechanics.gravity",
+            equation="Fg = m * g",
+            variables={"Fg": "Gravity force", "m": "Mass", "g": "Gravitational acceleration"},
+            units={"Fg": "N", "m": "kg", "g": "m/s^2"},
+            dims={"Fg": N_dim, "m": M, "g": L/(T**2)},
+            solve=solve_gravity_force,
+            notes="Embodied gravity-force baseline for robotics, vehicles, drones, and lifting/lowering scenarios."
+        ))
+
+        # Gravitational potential energy: PE = m * g * h
+        def solve_potential_energy(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m")
+            g_val = known.get("g", 9.80665)
+            h_val = known.get("h")
+            pe_val = known.get("PE")
+            if m_val is not None and g_val is not None and h_val is not None and pe_val is None:
+                out["PE"] = _require_scalar("m", m_val) * _require_scalar("g", g_val) * _require_scalar("h", h_val)
+            if pe_val is not None and g_val is not None and h_val is not None and m_val is None:
+                denom = _require_scalar("g", g_val) * _require_scalar("h", h_val)
+                if denom == 0:
+                    raise ValueError("g*h cannot be zero.")
+                out["m"] = _require_scalar("PE", pe_val) / denom
+            if pe_val is not None and m_val is not None and g_val is not None and h_val is None:
+                denom = _require_scalar("m", m_val) * _require_scalar("g", g_val)
+                if denom == 0:
+                    raise ValueError("m*g cannot be zero.")
+                out["h"] = _require_scalar("PE", pe_val) / denom
+            return out
+
+        self.register(Formula(
+            name="Gravitational Potential Energy",
+            domain="physics.energy.gravity",
+            equation="PE = m * g * h",
+            variables={"PE": "Potential energy", "m": "Mass", "g": "Gravitational acceleration", "h": "Height change"},
+            units={"PE": "J", "m": "kg", "g": "m/s^2", "h": "m"},
+            dims={"PE": J_dim, "m": M, "g": L/(T**2), "h": L},
+            solve=solve_potential_energy,
+            notes="Lifting/lowering energy baseline; sign/direction should be handled by scenario context."
+        ))
+
+        # Mechanical work: W = F * d * cos(theta)
+        def solve_mechanical_work(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            F_val = known.get("F")
+            d_val = known.get("d")
+            theta = known.get("theta", known.get("theta_rad", None))
+            if theta is None and "theta_deg" in known:
+                theta = math.radians(_require_scalar("theta_deg", known["theta_deg"]))
+            if theta is None:
+                theta = 0.0
+            W_val = known.get("W")
+            c = math.cos(_require_scalar("theta", theta))
+            if F_val is not None and d_val is not None and W_val is None:
+                out["W"] = _require_scalar("F", F_val) * _require_scalar("d", d_val) * c
+            if W_val is not None and d_val is not None and F_val is None:
+                denom = _require_scalar("d", d_val) * c
+                if denom == 0:
+                    raise ValueError("d*cos(theta) cannot be zero.")
+                out["F"] = _require_scalar("W", W_val) / denom
+            if W_val is not None and F_val is not None and d_val is None:
+                denom = _require_scalar("F", F_val) * c
+                if denom == 0:
+                    raise ValueError("F*cos(theta) cannot be zero.")
+                out["d"] = _require_scalar("W", W_val) / denom
+            return out
+
+        self.register(Formula(
+            name="Mechanical Work",
+            domain="physics.energy.work",
+            equation="W = F * d * cos(theta)",
+            variables={"W": "Work", "F": "Force", "d": "Displacement", "theta": "Angle between force and displacement"},
+            units={"W": "J", "F": "N", "d": "m", "theta": "rad"},
+            dims={"W": J_dim, "F": N_dim, "d": L, "theta": Dimension()},
+            solve=solve_mechanical_work,
+            notes="Direction-aware work estimate for robotics, vehicles, drones, and controlled motion."
+        ))
+
+        # Mechanical power: P = W / t
+        def solve_mechanical_power(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            W_val = known.get("W")
+            t_val = known.get("t")
+            P_val = known.get("P")
+            if W_val is not None and t_val is not None and P_val is None:
+                t = _require_scalar("t", t_val)
+                if t == 0:
+                    raise ValueError("t cannot be zero.")
+                out["P"] = _require_scalar("W", W_val) / t
+            if P_val is not None and t_val is not None and W_val is None:
+                out["W"] = _require_scalar("P", P_val) * _require_scalar("t", t_val)
+            if W_val is not None and P_val is not None and t_val is None:
+                P = _require_scalar("P", P_val)
+                if P == 0:
+                    raise ValueError("P cannot be zero.")
+                out["t"] = _require_scalar("W", W_val) / P
+            return out
+
+        self.register(Formula(
+            name="Mechanical Power",
+            domain="physics.power.mechanical",
+            equation="P = W / t",
+            variables={"P": "Power", "W": "Work", "t": "Time"},
+            units={"P": "W", "W": "J", "t": "s"},
+            dims={"P": W_dim, "W": J_dim, "t": T},
+            solve=solve_mechanical_power,
+            notes="Time-normalized work rate for embodied power planning."
+        ))
+
+        # Friction force: Ff = mu * N
+        def solve_friction_force(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            mu_val = known.get("mu")
+            N_val = known.get("N")
+            Ff_val = known.get("Ff")
+            if mu_val is not None and N_val is not None and Ff_val is None:
+                out["Ff"] = _require_scalar("mu", mu_val) * _require_scalar("N", N_val)
+            if Ff_val is not None and N_val is not None and mu_val is None:
+                Nn = _require_scalar("N", N_val)
+                if Nn == 0:
+                    raise ValueError("N cannot be zero.")
+                out["mu"] = _require_scalar("Ff", Ff_val) / Nn
+            if Ff_val is not None and mu_val is not None and N_val is None:
+                mu = _require_scalar("mu", mu_val)
+                if mu == 0:
+                    raise ValueError("mu cannot be zero.")
+                out["N"] = _require_scalar("Ff", Ff_val) / mu
+            return out
+
+        self.register(Formula(
+            name="Friction Force",
+            domain="physics.mechanics.terrain",
+            equation="Ff = mu * N",
+            variables={"Ff": "Friction force", "mu": "Coefficient of friction", "N": "Normal force"},
+            units={"Ff": "N", "mu": "dimensionless", "N": "N"},
+            dims={"Ff": N_dim, "mu": Dimension(), "N": N_dim},
+            solve=solve_friction_force,
+            notes="Surface-resistance estimate for wheels, tracks, feet, and vehicles."
+        ))
+
+        # Incline force component: F_parallel = m * g * sin(theta)
+        def solve_incline_force(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            m_val = known.get("m")
+            g_val = known.get("g", 9.80665)
+            theta = known.get("theta", known.get("theta_rad", None))
+            if theta is None and "theta_deg" in known:
+                theta = math.radians(_require_scalar("theta_deg", known["theta_deg"]))
+            fp_val = known.get("F_parallel")
+            if m_val is not None and g_val is not None and theta is not None and fp_val is None:
+                out["F_parallel"] = _require_scalar("m", m_val) * _require_scalar("g", g_val) * math.sin(_require_scalar("theta", theta))
+            return out
+
+        self.register(Formula(
+            name="Incline Force Component",
+            domain="physics.mechanics.vehicle_dynamics",
+            equation="F_parallel = m * g * sin(theta)",
+            variables={"F_parallel": "Gravity force along slope", "m": "Mass", "g": "Gravitational acceleration", "theta": "Slope angle"},
+            units={"F_parallel": "N", "m": "kg", "g": "m/s^2", "theta": "rad"},
+            dims={"F_parallel": N_dim, "m": M, "g": L/(T**2), "theta": Dimension()},
+            solve=solve_incline_force,
+            notes="Slope load for vehicles, drones during terrain-relative operations, wheeled/tracked robots, and incline movement."
+        ))
+
+        # Drag force: Fd = 0.5 * rho * v^2 * Cd * A
+        def solve_drag_force(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            rho = known.get("rho")
+            v = known.get("v")
+            Cd = known.get("Cd")
+            A = known.get("A")
+            Fd = known.get("Fd")
+            if rho is not None and v is not None and Cd is not None and A is not None and Fd is None:
+                out["Fd"] = 0.5 * _require_scalar("rho", rho) * (_require_scalar("v", v) ** 2) * _require_scalar("Cd", Cd) * _require_scalar("A", A)
+            return out
+
+        self.register(Formula(
+            name="Drag Force",
+            domain="physics.aerodynamics.fluids",
+            equation="Fd = 0.5 * rho * v^2 * Cd * A",
+            variables={"Fd": "Drag force", "rho": "Fluid density", "v": "Velocity", "Cd": "Drag coefficient", "A": "Reference area"},
+            units={"Fd": "N", "rho": "kg/m^3", "v": "m/s", "Cd": "dimensionless", "A": "m^2"},
+            dims={"Fd": N_dim, "rho": M/(L**3), "v": L/T, "Cd": Dimension(), "A": L**2},
+            solve=solve_drag_force,
+            notes="Aerodynamic/fluid resistance estimate for drones, vehicles, and marine/aerial bodies."
+        ))
+
+        # Electrical energy: E = V * I * t
+        def solve_electrical_energy(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            Vv = known.get("V")
+            Ii = known.get("I")
+            t = known.get("t")
+            E = known.get("E")
+            if Vv is not None and Ii is not None and t is not None and E is None:
+                out["E"] = _require_scalar("V", Vv) * _require_scalar("I", Ii) * _require_scalar("t", t)
+            if E is not None and Vv is not None and Ii is not None and t is None:
+                denom = _require_scalar("V", Vv) * _require_scalar("I", Ii)
+                if denom == 0:
+                    raise ValueError("V*I cannot be zero.")
+                out["t"] = _require_scalar("E", E) / denom
+            return out
+
+        self.register(Formula(
+            name="Electrical Energy",
+            domain="ee.power.energy",
+            equation="E = V * I * t",
+            variables={"E": "Electrical energy", "V": "Voltage", "I": "Current", "t": "Time"},
+            units={"E": "J", "V": "V", "I": "A", "t": "s"},
+            dims={"E": J_dim, "V": V_dim, "I": I, "t": T},
+            solve=solve_electrical_energy,
+            notes="Battery/actuator/input energy estimate for Energetics."
+        ))
+
+        # Efficiency loss: waste = input - useful ; eta = useful / input
+        def solve_efficiency_loss(known: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            input_e = known.get("input") or known.get("Ein")
+            useful = known.get("useful") or known.get("Eout")
+            waste = known.get("waste")
+            eta = known.get("eta")
+            if input_e is not None and useful is not None:
+                inp = _require_scalar("input", input_e)
+                use = _require_scalar("useful", useful)
+                if waste is None:
+                    out["waste"] = inp - use
+                if eta is None:
+                    if inp == 0:
+                        raise ValueError("input cannot be zero.")
+                    out["eta"] = use / inp
+            return out
+
+        self.register(Formula(
+            name="Efficiency Loss",
+            domain="physics.energy.efficiency",
+            equation="waste = input - useful ; eta = useful / input",
+            variables={"waste": "Waste energy", "input": "Input energy", "useful": "Useful output energy", "eta": "Efficiency"},
+            units={"waste": "J", "input": "J", "useful": "J", "eta": "dimensionless"},
+            dims={"waste": J_dim, "input": J_dim, "useful": J_dim, "eta": Dimension()},
+            solve=solve_efficiency_loss,
+            notes="Heat/waste estimate support for Energetics; hardware recovery requires actual regenerative hardware."
+        ))
+
+        # Ohm's law: V = I R
+        def solve_ohm(known: Dict[str, float]) -> Dict[str, float]:
+            out = {}
+            if "I" in known and "R" in known and "V" not in known:
+                out["V"] = known["I"] * known["R"]
+            if "V" in known and "R" in known and "I" not in known:
+                if known["R"] == 0:
+                    raise ValueError("R cannot be zero.")
+                out["I"] = known["V"] / known["R"]
+            if "V" in known and "I" in known and "R" not in known:
+                if known["I"] == 0:
+                    raise ValueError("I cannot be zero.")
+                out["R"] = known["V"] / known["I"]
+            return out
+
+        self.register(Formula(
+            name="Ohms Law",
+            domain="ee.circuits",
+            equation="V = I * R",
+            variables={"V": "Voltage", "I": "Current", "R": "Resistance"},
+            units={"V": "V", "I": "A", "R": "ohm"},
+            dims={"V": V_dim, "I": I, "R": Ohm_dim},
+            solve=solve_ohm
+        ))
+
+        # Power electrical: P = V I
+        def solve_pvi(known: Dict[str, float]) -> Dict[str, float]:
+            out = {}
+            if "V" in known and "I" in known and "P" not in known:
+                out["P"] = known["V"] * known["I"]
+            if "P" in known and "V" in known and "I" not in known:
+                if known["V"] == 0:
+                    raise ValueError("V cannot be zero.")
+                out["I"] = known["P"] / known["V"]
+            if "P" in known and "I" in known and "V" not in known:
+                if known["I"] == 0:
+                    raise ValueError("I cannot be zero.")
+                out["V"] = known["P"] / known["I"]
+            return out
+
+        self.register(Formula(
+            name="Electrical Power",
+            domain="ee.power",
+            equation="P = V * I",
+            variables={"P": "Power", "V": "Voltage", "I": "Current"},
+            units={"P": "W", "V": "V", "I": "A"},
+            dims={"P": W_dim, "V": V_dim, "I": I},
+            solve=solve_pvi
+        ))
+
+        # Thermodynamics: Q = ΔU + W  -> ΔU = Q - W
+        def solve_firstlaw(known: Dict[str, float]) -> Dict[str, float]:
+            out = {}
+            if "Q" in known and "W" in known and "dU" not in known:
+                out["dU"] = known["Q"] - known["W"]
+            if "dU" in known and "W" in known and "Q" not in known:
+                out["Q"] = known["dU"] + known["W"]
+            if "Q" in known and "dU" in known and "W" not in known:
+                out["W"] = known["Q"] - known["dU"]
+            return out
+
+        self.register(Formula(
+            name="First Law Thermodynamics",
+            domain="mech.thermo",
+            equation="Q = dU + W",
+            variables={"Q": "Heat added", "dU": "Change in internal energy", "W": "Work done"},
+            units={"Q": "J", "dU": "J", "W": "J"},
+            dims={"Q": J_dim, "dU": J_dim, "W": J_dim},
+            solve=solve_firstlaw
+        ))
+
+        # Fluid: Reynolds number Re = rho v D / mu
+        def solve_re(known: Dict[str, float]) -> Dict[str, float]:
+            out = {}
+            if all(k in known for k in ("rho", "v", "D", "mu")) and "Re" not in known:
+                out["Re"] = (known["rho"] * known["v"] * known["D"]) / known["mu"]
+            return out
+
+        self.register(Formula(
+            name="Reynolds Number",
+            domain="mech.fluids",
+            equation="Re = rho * v * D / mu",
+            variables={"Re": "Reynolds number", "rho": "Density", "v": "Velocity", "D": "Diameter", "mu": "Dynamic viscosity"},
+            units={"Re": "dimensionless", "rho": "kg/m^3", "v": "m/s", "D": "m", "mu": "Pa*s"},
+            dims={"Re": Dimension(), "rho": M/(L**3), "v": L/T, "D": L, "mu": Pa_dim*T},
+            solve=solve_re
+        ))
+
+        # Ideal Gas Law: P V = n R T  (P in Pa, V in m^3, n in mol, T in K)
+        def solve_ideal_gas(known: Dict[str, float]) -> Dict[str, float]:
+            out: Dict[str, float] = {}
+            R = PHYS_CONSTANTS["R"]
+            P = known.get("P")
+            Vv = known.get("V")
+            n = known.get("n")
+            Tt = known.get("T")
+            # Solve for any missing single variable
+            if P is None and Vv is not None and n is not None and Tt is not None:
+                if Vv == 0:
+                    raise ValueError("V cannot be zero.")
+                out["P"] = (n * R * Tt) / Vv
+            elif Vv is None and P is not None and n is not None and Tt is not None:
+                if P == 0:
+                    raise ValueError("P cannot be zero.")
+                out["V"] = (n * R * Tt) / P
+            elif n is None and P is not None and Vv is not None and Tt is not None:
+                if (R * Tt) == 0:
+                    raise ValueError("R*T cannot be zero.")
+                out["n"] = (P * Vv) / (R * Tt)
+            elif Tt is None and P is not None and Vv is not None and n is not None:
+                if (n * R) == 0:
+                    raise ValueError("n*R cannot be zero.")
+                out["T"] = (P * Vv) / (n * R)
+            return out
+
+        self.register(Formula(
+            name="Ideal Gas Law",
+            domain="chem.thermo",
+            equation="P * V = n * R * T",
+            variables={"P": "Pressure", "V": "Volume", "n": "Moles", "T": "Temperature"},
+            units={"P": "Pa", "V": "m^3", "n": "mol", "T": "K"},
+            dims={"P": Pa_dim, "V": L**3, "n": Dimension(N=1), "T": Th},
+            solve=solve_ideal_gas,
+            notes="Assumes ideal gas behavior; R is universal gas constant."
+        ))
+
+        # pH definition: pH = -log10([H+]) where [H+] in mol/L
+        def solve_ph(known: Dict[str, float]) -> Dict[str, float]:
+            out: Dict[str, float] = {}
+            ph = known.get("pH")
+            H = known.get("H")  # hydrogen ion concentration
+            if ph is None and H is not None:
+                if H <= 0:
+                    raise ValueError("[H+] must be > 0.")
+                out["pH"] = -math.log10(H)
+            elif H is None and ph is not None:
+                out["H"] = 10 ** (-ph)
+            return out
+
+        self.register(Formula(
+            name="pH Definition",
+            domain="chem.acidbase",
+            equation="pH = -log10([H+])",
+            variables={"pH": "Acidity (pH)", "H": "Hydrogen ion concentration [H+]"},
+            units={"pH": "dimensionless", "H": "mol/L"},
+            dims={"pH": Dimension(), "H": Dimension(N=1) / (L**3)},
+            solve=solve_ph,
+            notes="Uses base-10 logarithm; assumes aqueous solution."
+        ))
+
+        # Mass–Energy equivalence: E = m c^2
+        def solve_emc2(known: Dict[str, float]) -> Dict[str, float]:
+            out: Dict[str, float] = {}
+            c = PHYS_CONSTANTS["c"]
+            E = known.get("E")
+            m = known.get("m")
+            if E is None and m is not None:
+                out["E"] = m * (c ** 2)
+            elif m is None and E is not None:
+                out["m"] = E / (c ** 2)
+            return out
+
+        self.register(Formula(
+            name="Mass-Energy Equivalence",
+            domain="physics.relativity",
+            equation="E = m * c^2",
+            variables={"E": "Energy", "m": "Mass"},
+            units={"E": "J", "m": "kg"},
+            dims={"E": J_dim, "m": M},
+            solve=solve_emc2,
+            notes="Relativistic rest energy."
+        ))
+
+        # Radioactive decay: N = N0 * exp(-lambda * t)
+        def solve_decay(known: Dict[str, float]) -> Dict[str, float]:
+            out: Dict[str, float] = {}
+            N = known.get("N")
+            N0 = known.get("N0")
+            lam = known.get("lambda")
+            t = known.get("t")
+            # compute N
+            if N is None and N0 is not None and lam is not None and t is not None:
+                out["N"] = N0 * math.exp(-lam * t)
+            # compute lambda
+            if lam is None and N is not None and N0 is not None and t is not None:
+                if N <= 0 or N0 <= 0 or t == 0:
+                    raise ValueError("Require N>0, N0>0, t!=0.")
+                out["lambda"] = -math.log(N / N0) / t
+            # compute t
+            if t is None and N is not None and N0 is not None and lam is not None:
+                if N <= 0 or N0 <= 0 or lam == 0:
+                    raise ValueError("Require N>0, N0>0, lambda!=0.")
+                out["t"] = -math.log(N / N0) / lam
+            return out
+
+        self.register(Formula(
+            name="Radioactive Decay",
+            domain="physics.nuclear",
+            equation="N = N0 * exp(-lambda * t)",
+            variables={"N": "Remaining quantity", "N0": "Initial quantity", "lambda": "Decay constant", "t": "Time"},
+            units={"N": "count", "N0": "count", "lambda": "1/s", "t": "s"},
+            dims={"N": Dimension(), "N0": Dimension(), "lambda": Dimension() / T, "t": T},
+            solve=solve_decay,
+            notes="Exponential decay law. Half-life t1/2 = ln(2)/lambda."
+        ))
+
+
+
+# =============================================================================
+# LOGIC + REASONING ENGINE (SELECT FORMULA, SOLVE, EXPLAIN)
+# =============================================================================
+
+@dataclass
+class SolveResult:
+    ok: bool
+    kind: str  # calc|convert|solve|explain|translate
+    value: Any = None
+    text: str = ""
+    meta: Dict[str, Any] = field(default_factory=dict)
+    meaning: Optional[MeaningGraph] = None
+
+class ReasoningEngine:
+    """
+    The executive layer:
+    - Detect intent (calc vs conversion vs formula solve vs translation)
+    - Build meaning graph
+    - Run deterministic solve
+    - Generate rational language output
+    """
+    def __init__(self, units: UnitRegistry, formulas: FormulaLibrary) -> None:
+        self.units = units
+        self.formulas = formulas
+
+    # -------------------------------
+    # Intent detection (enterprise routing)
+    # -------------------------------
+
+    def route(self, query: str) -> SolveResult:
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # 1) Translation
+        if self._looks_like_translation(ql):
+            return self.translate(q)
+
+        # 2) Chemistry / nuclear / constants (domain routing before generic math)
+        if self._looks_like_chemistry(ql):
+            return self.chemistry(q)
+
+        if self._looks_like_nuclear(ql):
+            return self.nuclear(q)
+
+        if self._looks_like_constants(ql):
+            return self.constants(q)
+
+        # 3) Unit conversion
+        if self._looks_like_conversion(ql):
+            return self.convert(q)
+
+        # 3.5) Vector / tensor math (directional force, robotics-grade linear algebra)
+        if self._looks_like_vector_math(ql):
+            return self.vector_math(q)
+
+        if self._looks_like_tensor_math(ql):
+            return self.tensor_math(q)
+
+        # 3.75) Scalar / Vector / Tensor Calculus (field operators + Jacobian/Hessian)
+        if self._looks_like_calculus(ql):
+            return self.calculus(q)
+
+        # 4) Domain formula solve
+        if self._looks_like_formula_solve(ql):
+            return self.solve_formula(q)
+
+        # 5) General math eval
+        if self._looks_like_math(ql):
+            return self.calc(q)
+
+        # 6) Fallback: rational explanation attempt
+        return self.explain(q)
+
+    def _looks_like_translation(self, ql: str) -> bool:
+        return (
+            "translate" in ql
+            or re.search(r"\b(en|english)\s*(to|->)\s*(es|spanish)\b", ql) is not None
+            or re.search(r"\b(es|spanish)\s*(to|->)\s*(en|english)\b", ql) is not None
+        )
+
+    def _looks_like_chemistry(self, ql: str) -> bool:
+        keywords = ["ph", "acid", "base", "molar", "mole", "element", "atomic weight", "atomic mass", "ideal gas", "pv=nrt", "gas law"]
+        return any(k in ql for k in keywords)
+
+    def _looks_like_nuclear(self, ql: str) -> bool:
+        keywords = ["nuclear", "decay", "half-life", "halflife", "lambda", "e=mc", "emc2", "mass energy", "radioactive"]
+        return any(k in ql for k in keywords)
+
+    def _looks_like_constants(self, ql: str) -> bool:
+        keywords = ["speed of light", "planck", "boltzmann", "avogadro", "gas constant", "gravitational constant", "elementary charge", "standard atmosphere"]
+        return any(k in ql for k in keywords)
+
+
+    def _looks_like_conversion(self, ql: str) -> bool:
+        return ("convert" in ql) or (re.search(r"\bto\b", ql) and re.search(r"\d", ql))
+
+    def _looks_like_formula_solve(self, ql: str) -> bool:
+        # “use Newton” / “Ohm” / explicit equation / named domain
+        keywords = [
+            "newton", "ohm", "thermo", "reynolds", "kinetic energy", "first law",
+            "formula", "solve for", "electrical power", "mechanical power", "power",
+            "potential energy", "gravitational potential", "gravity force", "friction",
+            "incline", "drag force", "efficiency", "waste", "motor energy", "electrical energy"
+        ]
+        if any(k in ql for k in keywords):
+            return True
+        if re.search(r"[A-Za-z_][A-Za-z0-9_]*\s*=\s*[^=]+", ql):
+            return True
+        return False
+
+    def _looks_like_math(self, ql: str) -> bool:
+        return bool(re.search(r"[\d\+\-\*/\^\(\)]", ql))
+
+
+    def _looks_like_vector_math(self, ql: str) -> bool:
+        keywords = ["vector", "vec3", "vector3", "vector3d", "dot", "cross", "magnitude", "norm", "normalize",
+                    "projection", "project", "directional", "torque", "moment", "r×f", "rxf", "force vector"]
+        if any(k in ql for k in keywords):
+            return True
+        # detect explicit 3D literals like (1,2,3)
+        if re.search(r"[\(\[\<]\s*\-?\d", ql) and re.search(r"[, ]\s*\-?\d", ql):
+            return True
+        return False
+
+    def _looks_like_tensor_math(self, ql: str) -> bool:
+        keywords = ["tensor", "matrix", "3x3", "trace", "det", "determinant", "transpose", "stress", "strain"]
+        if any(k in ql for k in keywords):
+            return True
+        # detect matrix literal [[...],[...],[...]] or semicolon rows
+        if "[[" in ql and "]]" in ql:
+            return True
+        if ";" in ql and "[" in ql and "]" in ql:
+            return True
+        return False
+
+
+
+    def _looks_like_calculus(self, ql: str) -> bool:
+        # Field operators + differential tensor/vector calculus
+        keywords = [
+            "grad", "gradient", "div", "divergence", "curl",
+            "jacobian", "hessian", "partial", "d/dx", "d/dy", "d/dz",
+            "nabla", "∇", "tensor calculus", "vector calculus", "scalar calculus"
+        ]
+        if any(k in ql for k in keywords):
+            return True
+        # shorthand patterns: grad( ... ), div( ... ), curl( ... )
+        if re.search(r"\b(grad|div|curl|jacobian|hessian)\s*\(", ql):
+            return True
+        return False
+    # -------------------------------
+    # VECTOR MATH (Vec3 + directional force + torque)
+    # -------------------------------
+
+    def vector_math(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "vector"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        def _unit_after_literal(text: str, lit_span: Tuple[int,int]) -> str:
+            # look right after the literal for a unit token, e.g. "(1,2,3) N"
+            tail = text[lit_span[1]:]
+            m = re.match(r"\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)", tail)
+            return (m.group(1) if m else "").strip()
+
+        # Extract the first two vector literals, if present
+        vec_matches = list(re.finditer(r"[\(\[\<]\s*[\-0-9\.eE\+]+\s*[, ]\s*[\-0-9\.eE\+]+\s*[, ]\s*[\-0-9\.eE\+]+\s*[\)\]\>]", q))
+        v1 = v2 = None
+        u1 = u2 = ""
+        if len(vec_matches) >= 1:
+            t = _parse_vec3_literal(vec_matches[0].group(0))
+            if t:
+                u1 = _unit_after_literal(q, vec_matches[0].span())
+                v1 = t
+        if len(vec_matches) >= 2:
+            t = _parse_vec3_literal(vec_matches[1].group(0))
+            if t:
+                u2 = _unit_after_literal(q, vec_matches[1].span())
+                v2 = t
+
+        # Helper: build Vec3 with unit -> SI and dim from registry (if known)
+        def _vec_from(vals: Tuple[float,float,float], unit: str) -> Vec3:
+            unit = (unit or "").strip()
+            if unit:
+                uu = self.units.get(unit)
+                if uu:
+                    return Vec3(vals[0]*uu.factor_to_si, vals[1]*uu.factor_to_si, vals[2]*uu.factor_to_si, uu.dim)
+            # default SI / dimensionless
+            return Vec3(vals[0], vals[1], vals[2], Dimension())
+
+        try:
+            # OPERATIONS -------------------------------------------------------
+            if "torque" in ql or "moment" in ql or "r×f" in ql or "rxf" in ql:
+                # torque τ = r × F
+                # Expect: r=(.. ) m, F=(.. ) N  (order flexible)
+                # Use first vector as r, second as F by default.
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="torque")
+                    return SolveResult(ok=False, kind="vector", text="Vector torque requires two vectors: r=(x,y,z) and F=(x,y,z).", meaning=mg)
+
+                r_vec = _vec_from(v1, u1 or "m")
+                f_vec = _vec_from(v2, u2 or "N")
+                mg.add("uses_operation", [Term("torque", "concept")])
+                tau = r_vec.cross(f_vec)
+                unit_hint = _dim_to_unit_hint(tau.dim) or "N*m"
+                mg.add("derives", [Term("tau", "concept", tau.as_tuple())], unit=unit_hint)
+                return SolveResult(ok=True, kind="vector", value={"tau": tau.as_tuple(), "unit": unit_hint},
+                                   text=f"Torque τ = r × F = {tau.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": tau.dim.as_tuple()})
+
+            if "cross" in ql:
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="cross")
+                    return SolveResult(ok=False, kind="vector", text="Cross product requires two vectors.", meaning=mg)
+                a = _vec_from(v1, u1)
+                b = _vec_from(v2, u2 or u1)
+                mg.add("uses_operation", [Term("cross", "concept")])
+                c = a.cross(b)
+                unit_hint = _dim_to_unit_hint(c.dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"cross": c.as_tuple(), "unit": unit_hint},
+                                   text=f"a × b = {c.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": c.dim.as_tuple()})
+
+            if "dot" in ql:
+                if not (v1 and v2):
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="dot")
+                    return SolveResult(ok=False, kind="vector", text="Dot product requires two vectors.", meaning=mg)
+                a = _vec_from(v1, u1)
+                b = _vec_from(v2, u2 or u1)
+                mg.add("uses_operation", [Term("dot", "concept")])
+                d, dim = a.dot(b)
+                unit_hint = _dim_to_unit_hint(dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"dot": d, "unit": unit_hint},
+                                   text=f"a · b = {d} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": dim.as_tuple()})
+
+            if "magnitude" in ql or "norm" in ql:
+                if not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="magnitude")
+                    return SolveResult(ok=False, kind="vector", text="Magnitude requires one vector literal like (x,y,z).", meaning=mg)
+                a = _vec_from(v1, u1)
+                mg.add("uses_operation", [Term("magnitude", "concept")])
+                mag = a.magnitude()
+                unit_hint = _dim_to_unit_hint(a.dim)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"magnitude": mag, "unit": unit_hint},
+                                   text=f"|v| = {mag} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": a.dim.as_tuple()})
+
+            if "normalize" in ql or "unit vector" in ql or "direction" in ql:
+                if not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="normalize")
+                    return SolveResult(ok=False, kind="vector", text="Normalize requires one vector literal like (x,y,z).", meaning=mg)
+                a = _vec_from(v1, u1)
+                mg.add("uses_operation", [Term("normalize", "concept")])
+                ah = a.direction()
+                return SolveResult(ok=True, kind="vector",
+                                   value={"unit_vector": ah.as_tuple()},
+                                   text=f"v̂ = {ah.format()} (dimensionless)",
+                                   meaning=mg,
+                                   meta={"dim": ah.dim.as_tuple()})
+
+            if "directional" in ql and ("force" in ql or "f=" in ql):
+                # Build force vector from magnitude + direction: F = |F| * d̂
+                # Example: "force 10 N direction (1,1,0)"
+                m_mag = re.search(r"(?:force|f)\s*(?:=)?\s*(\-?\d+(?:\.\d+)?)\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)?", ql)
+                if not m_mag or not v1:
+                    mg.add("vector_request", [Term("raw", "concept", q)], op="directional_force")
+                    return SolveResult(ok=False, kind="vector", text="Directional force requires a magnitude + direction vector. Example: 'force 10 N direction (1,1,0)'.", meaning=mg)
+                mag = float(m_mag.group(1))
+                unit = (m_mag.group(2) or "N").strip()
+                uu = self.units.get(unit) or self.units.get("N")
+                if not uu:
+                    raise ValueError("Unknown force unit.")
+                d = _vec_from(v1, "")  # direction should be dimensionless
+                dh = Vec3(d.x, d.y, d.z, Dimension()).direction()
+                F = Vec3(dh.x, dh.y, dh.z, Dimension()) * (mag * uu.factor_to_si)
+                F = Vec3(F.x, F.y, F.z, uu.dim)
+                unit_hint = _dim_to_unit_hint(F.dim) or (uu.symbol or uu.name)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"F": F.as_tuple(), "unit": unit_hint},
+                                   text=f"F = |F|·d̂ = {F.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": F.dim.as_tuple()})
+
+            # Default: treat as a vector literal echo with unit/dim normalization
+            if v1:
+                a = _vec_from(v1, u1)
+                unit_hint = _dim_to_unit_hint(a.dim) or u1
+                mg.add("vector", [Term("v", "concept", a.as_tuple())], unit=unit_hint)
+                return SolveResult(ok=True, kind="vector",
+                                   value={"v": a.as_tuple(), "unit": unit_hint},
+                                   text=f"Vector3D normalized: {a.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": a.dim.as_tuple()})
+
+            mg.add("vector_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="vector", text="Vector engine ready. Provide an operation (dot, cross, magnitude, normalize, torque) and vector literals like (x,y,z).", meaning=mg)
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="vector", text=f"Vector failure: {e}", meaning=mg)
+
+
+    # -------------------------------
+    # TENSOR MATH (3x3, stress/strain primitives)
+    # -------------------------------
+
+    def tensor_math(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "tensor"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # Parse tensor literal
+        tvals = _parse_tensor33_literal(q)
+        if not tvals:
+            mg.add("tensor_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="tensor", text="Tensor engine expects a 3x3 literal like [[a,b,c],[d,e,f],[g,h,i]].", meaning=mg)
+
+        # Optional unit token at end: "... ]] Pa"
+        unit = ""
+        m_u = re.search(r"\]\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)\s*$", q)
+        if m_u:
+            unit = (m_u.group(1) or "").strip()
+
+        # Build tensor with unit -> SI and dim
+        uu = self.units.get(unit) if unit else None
+        if uu:
+            t = Tensor33(
+                tvals[0]*uu.factor_to_si, tvals[1]*uu.factor_to_si, tvals[2]*uu.factor_to_si,
+                tvals[3]*uu.factor_to_si, tvals[4]*uu.factor_to_si, tvals[5]*uu.factor_to_si,
+                tvals[6]*uu.factor_to_si, tvals[7]*uu.factor_to_si, tvals[8]*uu.factor_to_si,
+                uu.dim
+            )
+        else:
+            t = Tensor33(*tvals, dim=Dimension())
+
+        try:
+            if "trace" in ql:
+                tr = t.trace()
+                unit_hint = _dim_to_unit_hint(t.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"trace": tr, "unit": unit_hint},
+                                   text=f"tr(T) = {tr} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": t.dim.as_tuple()})
+
+            if "det" in ql:
+                detv = t.det()
+                unit_hint = _dim_to_unit_hint(t.dim) or unit
+                # determinant is cubic in units (dim^3) if dim not dimensionless; we report hint only
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"det": detv, "unit_hint": unit_hint},
+                                   text=f"det(T) = {detv} (unit-hint: {unit_hint}^3)".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": t.dim.as_tuple()})
+
+            if "transpose" in ql:
+                tt = t.transpose()
+                unit_hint = _dim_to_unit_hint(tt.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"transpose": tt.rows(), "unit": unit_hint},
+                                   text=f"Tᵀ = {tt.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": tt.dim.as_tuple()})
+
+            if "mul" in ql or "apply" in ql or "·v" in ql or "tv" in ql:
+                v = _parse_vec3_literal(q)
+                if not v:
+                    mg.add("tensor_request", [Term("raw", "concept", q)], op="mul_vec")
+                    return SolveResult(ok=False, kind="tensor", text="Tensor·vector requires a vector literal (x,y,z) in the query.", meaning=mg)
+                vv = Vec3(v[0], v[1], v[2], Dimension())
+                outv = t.mul_vec(vv)
+                unit_hint = _dim_to_unit_hint(outv.dim) or unit
+                return SolveResult(ok=True, kind="tensor",
+                                   value={"T_mul_v": outv.as_tuple(), "unit": unit_hint},
+                                   text=f"T·v = {outv.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": outv.dim.as_tuple()})
+
+            # Default: echo normalized tensor
+            unit_hint = _dim_to_unit_hint(t.dim) or unit
+            return SolveResult(ok=True, kind="tensor",
+                               value={"T": t.rows(), "unit": unit_hint},
+                               text=f"Tensor33 normalized: {t.format(unit_hint)}",
+                               meaning=mg,
+                               meta={"dim": t.dim.as_tuple()})
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="tensor", text=f"Tensor failure: {e}", meaning=mg)
+
+
+    
+    # -------------------------------
+    # SCALAR / VECTOR / TENSOR CALCULUS (finite-difference, unit-aware)
+    # -------------------------------
+
+    def calculus(self, query: str) -> SolveResult:
+        """
+        Deterministic calculus operators for scalar/vector/tensor fields.
+        Supported (all numeric via central finite differences):
+          - grad(f) / gradient(f)
+          - div(Fx,Fy,Fz) / divergence(...)
+          - curl(Fx,Fy,Fz)
+          - jacobian(Fx,Fy,Fz)  (3x3)
+          - hessian(f)          (3x3)
+          - tensor_div(Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz) -> Vec3
+        Usage patterns:
+          grad(x*y + z) x=1 y=2 z=3 h=1e-5 unit=Pa
+          div(x, y, z) x=1 y=2 z=3
+          curl(y, -x, 0) x=1 y=0 z=0
+          jacobian(x*y, y*z, z*x) x=1 y=2 z=3
+          hessian(x*x + y*y + z*z) x=1 y=2 z=3
+          tensor_div( x,0,0, 0,y,0, 0,0,z ) x=1 y=2 z=3
+        """
+        mg = MeaningGraph(meta={"intent": "calculus"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # Extract evaluation point + step size
+        vars_known = self._extract_assignments(q)
+        x0 = float(vars_known.get("x", 0.0))
+        y0 = float(vars_known.get("y", 0.0))
+        z0 = float(vars_known.get("z", 0.0))
+        h = float(vars_known.get("h", 1e-5))
+
+        # Optional unit hint for the field values
+        unit = ""
+        m_unit = re.search(r"\b(?:unit|u)\s*=\s*([A-Za-zΩ°][A-Za-z0-9Ω°/\*\^\-]*)\b", q, flags=re.I)
+        if m_unit:
+            unit = (m_unit.group(1) or "").strip()
+
+        uu = self.units.get(unit) if unit else None
+        base_dim = uu.dim if uu else Dimension()
+        L = Dimension(L=1)
+
+        # Identify operator + body
+        op = None
+        body = None
+        m = re.search(r"\b(grad|gradient|divergence|div|curl|jacobian|hessian|tensor_div|tensordiv)\s*\((.*)\)", ql)
+        if m:
+            op = m.group(1)
+            # slice original query for body to preserve case/symbols
+            # best-effort: find the first '(' after op
+            p = q.lower().find(m.group(1))  # op start
+            p_paren = q.find("(", p)
+            if p_paren != -1:
+                # find matching ')'
+                depth = 0
+                end = -1
+                for i in range(p_paren, len(q)):
+                    if q[i] == "(":
+                        depth += 1
+                    elif q[i] == ")":
+                        depth -= 1
+                        if depth == 0:
+                            end = i
+                            break
+                if end != -1:
+                    body = q[p_paren+1:end].strip()
+        else:
+            # Alternate pattern: "grad f=..." or "gradient f=..."
+            m2 = re.search(r"\b(grad|gradient|divergence|div|curl|jacobian|hessian|tensor_div|tensordiv)\b\s*(.+)", ql)
+            if m2:
+                op = m2.group(1)
+                body = q[len(m2.group(1)):].strip()
+
+        if not op or not body:
+            mg.add("calculus_request", [Term("raw", "concept", q)])
+            return SolveResult(ok=False, kind="calculus",
+                               text="Calculus engine expects an operator like grad(...), div(...), curl(...), jacobian(...), hessian(...), tensor_div(...), plus x=,y=,z= and optional h=.",
+                               meaning=mg)
+
+        op_norm = op.lower()
+        if op_norm == "gradient":
+            op_norm = "grad"
+        if op_norm == "divergence":
+            op_norm = "div"
+        if op_norm == "tensordiv":
+            op_norm = "tensor_div"
+
+        # Safe evaluation for expressions in x,y,z
+        def eval_expr(expr: str, x: float, y: float, z: float) -> float:
+            return self._safe_eval_xyz(expr, x=x, y=y, z=z)
+
+        def d_dx(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x+h, y, z) - eval_expr(expr, x-h, y, z)) / (2.0*h)
+
+        def d_dy(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x, y+h, z) - eval_expr(expr, x, y-h, z)) / (2.0*h)
+
+        def d_dz(expr: str, x: float, y: float, z: float) -> float:
+            return (eval_expr(expr, x, y, z+h) - eval_expr(expr, x, y, z-h)) / (2.0*h)
+
+        # Parse arguments
+        args = self._split_top_level_args(body)
+
+        try:
+            if op_norm == "grad":
+                if len(args) != 1:
+                    return SolveResult(ok=False, kind="calculus", text="grad(f) requires exactly one scalar expression f(x,y,z).", meaning=mg)
+                f = args[0]
+                gx = d_dx(f, x0, y0, z0)
+                gy = d_dy(f, x0, y0, z0)
+                gz = d_dz(f, x0, y0, z0)
+                dim_out = base_dim / L
+                v = Vec3(gx, gy, gz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("grad", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"grad": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇f = {v.format(unit_hint)} at (x,y,z)=({x0},{y0},{z0})",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "div":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="div(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                divv = d_dx(Fx, x0, y0, z0) + d_dy(Fy, x0, y0, z0) + d_dz(Fz, x0, y0, z0)
+                dim_out = base_dim / L
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("div", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"div": divv, "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇·F = {divv} {unit_hint}".rstrip(),
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "curl":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="curl(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                cx = d_dy(Fz, x0, y0, z0) - d_dz(Fy, x0, y0, z0)
+                cy = d_dz(Fx, x0, y0, z0) - d_dx(Fz, x0, y0, z0)
+                cz = d_dx(Fy, x0, y0, z0) - d_dy(Fx, x0, y0, z0)
+                dim_out = base_dim / L
+                v = Vec3(cx, cy, cz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("curl", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"curl": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇×F = {v.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "jacobian":
+                if len(args) != 3:
+                    return SolveResult(ok=False, kind="calculus", text="jacobian(Fx,Fy,Fz) requires three component expressions.", meaning=mg)
+                Fx, Fy, Fz = args[0], args[1], args[2]
+                j00 = d_dx(Fx, x0, y0, z0); j01 = d_dy(Fx, x0, y0, z0); j02 = d_dz(Fx, x0, y0, z0)
+                j10 = d_dx(Fy, x0, y0, z0); j11 = d_dy(Fy, x0, y0, z0); j12 = d_dz(Fy, x0, y0, z0)
+                j20 = d_dx(Fz, x0, y0, z0); j21 = d_dy(Fz, x0, y0, z0); j22 = d_dz(Fz, x0, y0, z0)
+                dim_out = base_dim / L
+                T = Tensor33(j00, j01, j02, j10, j11, j12, j20, j21, j22, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("jacobian", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"jacobian": T.rows(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"J = {T.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "hessian":
+                if len(args) != 1:
+                    return SolveResult(ok=False, kind="calculus", text="hessian(f) requires exactly one scalar expression.", meaning=mg)
+                f = args[0]
+                # second derivatives via central differences on first derivatives (stable enough for deterministic baseline)
+                f_x = lambda X,Y,Z: d_dx(f, X, Y, Z)
+                f_y = lambda X,Y,Z: d_dy(f, X, Y, Z)
+                f_z = lambda X,Y,Z: d_dz(f, X, Y, Z)
+
+                h00 = (f_x(x0+h, y0, z0) - f_x(x0-h, y0, z0)) / (2.0*h)
+                h11 = (f_y(x0, y0+h, z0) - f_y(x0, y0-h, z0)) / (2.0*h)
+                h22 = (f_z(x0, y0, z0+h) - f_z(x0, y0, z0-h)) / (2.0*h)
+
+                h01 = (f_x(x0, y0+h, z0) - f_x(x0, y0-h, z0)) / (2.0*h)
+                h02 = (f_x(x0, y0, z0+h) - f_x(x0, y0, z0-h)) / (2.0*h)
+                h10 = (f_y(x0+h, y0, z0) - f_y(x0-h, y0, z0)) / (2.0*h)
+                h12 = (f_y(x0, y0, z0+h) - f_y(x0, y0, z0-h)) / (2.0*h)
+                h20 = (f_z(x0+h, y0, z0) - f_z(x0-h, y0, z0)) / (2.0*h)
+                h21 = (f_z(x0, y0+h, z0) - f_z(x0, y0-h, z0)) / (2.0*h)
+
+                dim_out = base_dim / (L ** 2)
+                H = Tensor33(h00, h01, h02, h10, h11, h12, h20, h21, h22, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("hessian", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"hessian": H.rows(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"H = {H.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            if op_norm == "tensor_div":
+                if len(args) != 9:
+                    return SolveResult(ok=False, kind="calculus", text="tensor_div(Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz) requires 9 component expressions.", meaning=mg)
+                Txx,Txy,Txz,Tyx,Tyy,Tyz,Tzx,Tzy,Tzz = args
+                # (∇·T)_i = ∂T_{ij}/∂x_j  with j in {x,y,z}
+                vx = d_dx(Txx, x0,y0,z0) + d_dy(Txy, x0,y0,z0) + d_dz(Txz, x0,y0,z0)
+                vy = d_dx(Tyx, x0,y0,z0) + d_dy(Tyy, x0,y0,z0) + d_dz(Tyz, x0,y0,z0)
+                vz = d_dx(Tzx, x0,y0,z0) + d_dy(Tzy, x0,y0,z0) + d_dz(Tzz, x0,y0,z0)
+                dim_out = base_dim / L
+                v = Vec3(vx, vy, vz, dim_out)
+                unit_hint = _dim_to_unit_hint(dim_out)
+                mg.add("uses_operation", [Term("tensor_div", "concept")])
+                return SolveResult(ok=True, kind="calculus",
+                                   value={"tensor_div": v.as_tuple(), "unit": unit_hint, "at": {"x": x0, "y": y0, "z": z0}, "h": h},
+                                   text=f"∇·T = {v.format(unit_hint)}",
+                                   meaning=mg,
+                                   meta={"dim": dim_out.as_tuple()})
+
+            return SolveResult(ok=False, kind="calculus", text=f"Unknown calculus operator: {op_norm}", meaning=mg)
+
+        except Exception as e:
+            return SolveResult(ok=False, kind="calculus", text=f"Calculus failure: {e}", meaning=mg)
+
+    def _safe_eval_xyz(self, expr: str, x: float, y: float, z: float) -> float:
+        """
+        Safe numeric evaluation of expressions in x,y,z.
+        Deterministic, restricted builtins.
+        """
+        if not expr:
+            raise ValueError("Empty expression.")
+        e = expr.strip()
+        e = e.replace("^", "**").replace("×", "*").replace("÷", "/")
+        allowed = {
+            "x": float(x), "y": float(y), "z": float(z),
+            "pi": math.pi, "e": math.e, "tau": math.tau,
+            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+            "asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2,
+            "log": math.log, "log10": math.log10, "exp": math.exp,
+            "abs": abs, "floor": math.floor, "ceil": math.ceil,
+            "pow": pow, "min": min, "max": max,
+        }
+        if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\)\sA-Za-z_]+", e):
+            raise ValueError("Unsafe expression.")
+        return float(eval(e, {"__builtins__": {}}, allowed))
+
+    def _split_top_level_args(self, s: str) -> List[str]:
+        """
+        Split a comma-separated argument list, respecting (),[],{} nesting.
+        """
+        out: List[str] = []
+        buf: List[str] = []
+        depth = 0
+        for ch in (s or ""):
+            if ch in "([{":
+                depth += 1
+            elif ch in ")]}":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                part = "".join(buf).strip()
+                if part:
+                    out.append(part)
+                buf = []
+            else:
+                buf.append(ch)
+        last = "".join(buf).strip()
+        if last:
+            out.append(last)
+        return out
+    # -------------------------------
+    # CALC (safe eval baseline)
+    # -------------------------------
+
+    def calc(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "calc"})
+        expr = self._normalize_math_expr(query)
+        mg.add("evaluates", [Term("expression", "concept", expr)])
+
+        try:
+            # Minimal safe eval: digits + operators + math funcs/constants
+            allowed = {"pi": math.pi, "e": math.e, "tau": math.tau, "sqrt": math.sqrt,
+                       "sin": math.sin, "cos": math.cos, "tan": math.tan,
+                       "log": math.log, "log10": math.log10, "exp": math.exp, "abs": abs,
+                       "floor": math.floor, "ceil": math.ceil, "pow": pow}
+            if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\)\sA-Za-z_]+", expr):
+                raise ValueError("Unsafe expression.")
+            expr = expr.replace("^", "**")
+            val = eval(expr, {"__builtins__": {}}, allowed)  # controlled environment
+            return SolveResult(ok=True, kind="calc", value=val, text=self._nlg_calc(expr, val), meaning=mg,
+                               meta={"expression": expr})
+        except Exception as e:
+            return SolveResult(ok=False, kind="calc", value=None, text=f"Calc failure: {e}", meaning=mg)
+
+    def _normalize_math_expr(self, q: str) -> str:
+        q = (q or "").strip()
+        q = q.replace("×", "*").replace("÷", "/")
+        q = q.replace("−", "-").replace("–", "-").replace("—", "-")
+
+        # Remove common wrapper language so deterministic math can operate on the
+        # actual expression instead of conversational padding.
+        q = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", q, flags=re.I)
+        q = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", q, flags=re.I)
+        q = re.sub(r"\?$", "", q).strip()
+
+        # Normalize verbal operators.
+        q = re.sub(r"\bplus\b", "+", q, flags=re.I)
+        q = re.sub(r"\bminus\b", "-", q, flags=re.I)
+        q = re.sub(r"\btimes\b", "*", q, flags=re.I)
+        q = re.sub(r"\bmultiplied by\b", "*", q, flags=re.I)
+        q = re.sub(r"\bdivided by\b", "/", q, flags=re.I)
+        q = re.sub(r"\bover\b", "/", q, flags=re.I)
+
+        # Support "square root of 25" and "sqrt of 25".
+        q = re.sub(r"\b(?:the\s+)?square\s+root\s+of\s+(.+)$", r"sqrt(\1)", q, flags=re.I)
+        q = re.sub(r"\bsqrt\s+of\s+(.+)$", r"sqrt(\1)", q, flags=re.I)
+
+        q = _norm_space(q)
+        return q
+
+    # -------------------------------
+    # CONVERT
+    # -------------------------------
+
+    def convert(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "convert"})
+        # patterns:
+        # "convert 10 km to m"
+        # "10 km to m"
+        ql = _lower(query)
+
+        m = re.search(r"(?:convert\s*)?(\-?\d+(?:\.\d+)?)\s*([A-Za-zΩ°]+)\s*(?:to|in)\s*([A-Za-zΩ°]+)", ql)
+        if not m:
+            mg.add("convert_request", [Term("raw", "concept", query)])
+            return SolveResult(ok=False, kind="convert", text="Conversion parse failure.", meaning=mg)
+
+        val = float(m.group(1))
+        from_u = m.group(2)
+        to_u = m.group(3)
+
+        mg.add("converts_to", [Term("value", "number", val), Term(from_u, "unit"), Term(to_u, "unit")])
+
+        try:
+            out, out_sym = self.units.convert(val, from_u, to_u)
+            return SolveResult(
+                ok=True,
+                kind="convert",
+                value=out,
+                text=self._nlg_convert(val, from_u, out, out_sym),
+                meaning=mg,
+                meta={"from": from_u, "to": to_u}
+            )
+        except Exception as e:
+            return SolveResult(ok=False, kind="convert", text=f"Conversion failure: {e}", meaning=mg)
+
+    
+
+    # -------------------------------
+    # CHEMISTRY (acid/base, gas law, periodic table)
+    # -------------------------------
+
+    def chemistry(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "chemistry"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # 1) Periodic table lookups
+        m_el = re.search(r"(?:element|atomic weight of|atomic mass of|molar mass of)\s+([A-Za-z]{1,2}|[A-Za-z]+)", ql)
+        if m_el:
+            token = m_el.group(1).strip()
+            # Try symbol first (case sensitive symbol set), then name
+            rec = get_element(token.capitalize()) or get_element(token)
+            if rec:
+                sym = token.capitalize() if token.capitalize() in PERIODIC_TABLE else rec.get("symbol", token)
+                mg.add("element_lookup", [Term(sym, "entity"), Term("atomic_weight", "concept", rec.get("aw"))], Z=rec.get("Z"))
+                aw = rec.get("aw")
+                return SolveResult(ok=True, kind="chemistry", value=rec,
+                                   text=f"Element {rec.get('name')} ({sym}), Z={rec.get('Z')}, atomic weight≈{aw} g/mol",
+                                   meaning=mg)
+
+        # 2) pH queries: "pH of 1e-3" or "pH when H=0.001"
+        if "ph" in ql:
+            known = self._extract_assignments(q)
+            # allow patterns like "pH of 1e-3" meaning H=1e-3
+            m = re.search(r"ph\s*(?:of|for)?\s*([0-9\.eE\-\+]+)", ql)
+            if m and "H" not in known and "pH" not in known:
+                try:
+                    known["H"] = float(m.group(1))
+                except Exception:
+                    pass
+            # normalize variable names
+            if "h" in {k.lower() for k in known.keys()} and "H" not in known:
+                for k,v in list(known.items()):
+                    if k.lower()=="h":
+                        known["H"]=v; del known[k]
+                        break
+            # Use formula library pH
+            f = self.formulas.formulas.get("ph definition")
+            if f:
+                mg.add("uses_formula", [Term(f.name, "concept"), Term(f.equation, "concept")], domain=f.domain)
+                mg.add("has_knowns", [Term(k, "symbol", v) for k, v in known.items()])
+                try:
+                    computed = f.solve(known)
+                    if computed:
+                        mg.add("derives", [Term(k, "symbol", v) for k, v in computed.items()])
+                        if "pH" in computed:
+                            return SolveResult(ok=True, kind="chemistry", value=computed, text=f"pH ≈ {computed['pH']}", meaning=mg)
+                        if "H" in computed:
+                            return SolveResult(ok=True, kind="chemistry", value=computed, text=f"[H+] ≈ {computed['H']} mol/L", meaning=mg)
+                except Exception as e:
+                    return SolveResult(ok=False, kind="chemistry", text=f"Chemistry failure: {e}", meaning=mg)
+
+        # 3) Ideal gas law solver: accepts assignments P,V,n,T
+        if "ideal gas" in ql or "pv=nrt" in ql or "gas law" in ql:
+            known = self._extract_assignments(q)
+            # Common aliases
+            alias = {"p": "P", "v": "V", "t": "T", "n": "n"}
+            for k, v in list(known.items()):
+                kl = k.lower()
+                if kl in alias and k != alias[kl]:
+                    known[alias[kl]] = known.pop(k)
+            f = self.formulas.formulas.get("ideal gas law")
+            if f:
+                mg.add("uses_formula", [Term(f.name, "concept"), Term(f.equation, "concept")], domain=f.domain)
+                mg.add("has_knowns", [Term(k, "symbol", v) for k, v in known.items()])
+                try:
+                    computed = f.solve(known)
+                    if computed:
+                        mg.add("derives", [Term(k, "symbol", v) for k, v in computed.items()])
+                        # One-line summary
+                        parts = [f"{k}={v}" for k, v in computed.items()]
+                        return SolveResult(ok=True, kind="chemistry", value=computed,
+                                           text="Ideal gas solve -> " + ", ".join(parts),
+                                           meaning=mg)
+                    return SolveResult(ok=False, kind="chemistry", text="Insufficient known variables for ideal gas solve (need 3 of P,V,n,T).", meaning=mg)
+                except Exception as e:
+                    return SolveResult(ok=False, kind="chemistry", text=f"Chemistry failure: {e}", meaning=mg)
+
+        # Fallback
+        mg.add("chemistry_request", [Term("raw", "concept", q)])
+        return SolveResult(ok=True, kind="chemistry", value=None,
+                           text="Chemistry engine ready. Provide explicit variables (e.g., P=..., V=..., n=..., T=... or pH with [H+]).",
+                           meaning=mg)
+
+    # -------------------------------
+    # NUCLEAR / ATOMIC (decay, E=mc^2)
+    # -------------------------------
+
+    def nuclear(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "nuclear"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # Half-life convenience: lambda = ln(2)/t_half
+        if "half" in ql and "life" in ql:
+            known = self._extract_assignments(q)
+            # accept t_half or thalf
+            t_half = known.get("t_half") or known.get("thalf") or known.get("t1/2")
+            if t_half is not None:
+                lam = math.log(2.0) / t_half
+                mg.add("derives", [Term("lambda", "symbol", lam)], rule="lambda=ln2/t_half")
+                return SolveResult(ok=True, kind="nuclear", value={"lambda": lam},
+                                   text=f"Decay constant λ ≈ {lam} 1/s (from t_half={t_half}s)",
+                                   meaning=mg)
+
+        # Radioactive decay formula
+        if "decay" in ql or "lambda" in ql:
+            known = self._extract_assignments(q)
+            f = self.formulas.formulas.get("radioactive decay")
+            if f:
+                mg.add("uses_formula", [Term(f.name, "concept"), Term(f.equation, "concept")], domain=f.domain)
+                mg.add("has_knowns", [Term(k, "symbol", v) for k, v in known.items()])
+                try:
+                    computed = f.solve(known)
+                    if computed:
+                        mg.add("derives", [Term(k, "symbol", v) for k, v in computed.items()])
+                        return SolveResult(ok=True, kind="nuclear", value=computed,
+                                           text="Decay solve -> " + ", ".join(f"{k}={v}" for k, v in computed.items()),
+                                           meaning=mg)
+                    return SolveResult(ok=False, kind="nuclear", text="Insufficient known variables for decay solve (need 3 of N,N0,lambda,t).", meaning=mg)
+                except Exception as e:
+                    return SolveResult(ok=False, kind="nuclear", text=f"Nuclear failure: {e}", meaning=mg)
+
+        # E=mc^2
+        if "e=mc" in ql or "emc2" in ql or "mass energy" in ql:
+            known = self._extract_assignments(q)
+            f = self.formulas.formulas.get("mass-energy equivalence")
+            if f:
+                mg.add("uses_formula", [Term(f.name, "concept"), Term(f.equation, "concept")], domain=f.domain)
+                mg.add("has_knowns", [Term(k, "symbol", v) for k, v in known.items()])
+                try:
+                    computed = f.solve(known)
+                    if computed:
+                        mg.add("derives", [Term(k, "symbol", v) for k, v in computed.items()])
+                        return SolveResult(ok=True, kind="nuclear", value=computed,
+                                           text="E=mc^2 -> " + ", ".join(f"{k}={v}" for k, v in computed.items()),
+                                           meaning=mg)
+                except Exception as e:
+                    return SolveResult(ok=False, kind="nuclear", text=f"Nuclear failure: {e}", meaning=mg)
+
+        mg.add("nuclear_request", [Term("raw", "concept", q)])
+        return SolveResult(ok=True, kind="nuclear", value=None,
+                           text="Nuclear engine ready. Provide explicit variables (e.g., m=..., E=..., or N0=..., lambda=..., t=...).",
+                           meaning=mg)
+
+    # -------------------------------
+    # CONSTANTS (deterministic factual retrieval)
+    # -------------------------------
+
+    def constants(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "constants"})
+        q = _norm_space(query)
+        ql = _lower(q)
+
+        # map phrases to keys
+        mapping = {
+            "speed of light": "c",
+            "planck": "h",
+            "reduced planck": "hbar",
+            "gravitational constant": "G",
+            "boltzmann": "kB",
+            "avogadro": "NA",
+            "gas constant": "R",
+            "elementary charge": "e_charge",
+            "standard atmosphere": "atm",
+        }
+        key = None
+        for phrase, k in mapping.items():
+            if phrase in ql:
+                key = k
+                break
+
+        if key and key in PHYS_CONSTANTS:
+            val = PHYS_CONSTANTS[key]
+            mg.add("constant", [Term(key, "symbol", val)])
+            return SolveResult(ok=True, kind="constants", value={"key": key, "value": val},
+                               text=f"Constant {key} = {val}",
+                               meaning=mg)
+
+        mg.add("constants_request", [Term("raw", "concept", q)])
+        return SolveResult(ok=True, kind="constants", value=None,
+                           text="Constants engine ready. Ask for constants like: speed of light, Planck constant, Avogadro constant, gas constant, Boltzmann constant.",
+                           meaning=mg)
+
+    # -------------------------------
+    # FORMULA SOLVE (math-driven reasoning)
+    # -------------------------------
+
+    def solve_formula(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "solve_formula"})
+        ql = _lower(query)
+
+        # 1) Identify formula candidate by keyword
+        candidates: List[Formula] = []
+        if "ohm" in ql:
+            candidates += self.formulas.find("ohms law")
+        if "newton" in ql:
+            candidates += self.formulas.find("newtons second law")
+        if "reynolds" in ql:
+            candidates += self.formulas.find("reynolds")
+        if "kinetic" in ql:
+            candidates += self.formulas.find("kinetic energy")
+        if "potential energy" in ql or "gravitational potential" in ql:
+            candidates += self.formulas.find("gravitational potential energy")
+        if "gravity force" in ql or "gravitational force" in ql or "weight force" in ql:
+            candidates += self.formulas.find("gravity force")
+        if "mechanical work" in ql or re.search(r"\bwork\b", ql):
+            candidates += self.formulas.find("mechanical work")
+        if "mechanical power" in ql:
+            candidates += self.formulas.find("mechanical power")
+        if "electrical energy" in ql or "motor energy" in ql:
+            candidates += self.formulas.find("electrical energy")
+        if "electrical power" in ql or "p=vi" in ql or "v*i" in ql:
+            candidates += self.formulas.find("electrical power")
+        if "power" in ql and not candidates:
+            if "v=" in ql and "i=" in ql:
+                candidates += self.formulas.find("electrical power")
+            elif "w=" in ql and "t=" in ql:
+                candidates += self.formulas.find("mechanical power")
+        if "friction" in ql:
+            candidates += self.formulas.find("friction force")
+        if "incline" in ql or "slope" in ql:
+            candidates += self.formulas.find("incline force component")
+        if "drag" in ql or "aerodynamic" in ql:
+            candidates += self.formulas.find("drag force")
+        if "efficiency" in ql or "waste" in ql:
+            candidates += self.formulas.find("efficiency loss")
+        if "first law" in ql or "thermo" in ql:
+            candidates += self.formulas.find("first law thermodynamics")
+
+        # 2) If explicit equation present, try match by equation token
+        eq_match = re.search(r"([A-Za-z]+)\s*=\s*([^=]+)", query)
+        if eq_match and not candidates:
+            eq = _norm_space(eq_match.group(0))
+            candidates = [f for f in self.formulas.formulas.values() if _lower(f.equation) == _lower(eq)]
+
+        if not candidates:
+            mg.add("no_formula_match", [Term("query", "concept", query)])
+            return SolveResult(ok=False, kind="solve", text="No formula matched.", meaning=mg)
+
+        f = candidates[0]
+        mg.add("uses_formula", [Term(f.name, "concept"), Term(f.equation, "concept")], domain=f.domain)
+
+        # 3) Extract known variables (pattern: m=2, a=3, V=5, I=2, etc.)
+        known = self._extract_assignments(query)
+        mg.add("has_knowns", [Term(k, "symbol", v) for k, v in known.items()])
+
+        try:
+            computed = f.solve(known)
+            if not computed:
+                return SolveResult(ok=False, kind="solve", text="Insufficient known variables to solve.", meaning=mg,
+                                   meta={"formula": f.name, "required": list(f.variables.keys()), "known": known})
+
+            # 4) Build rational explanation
+            mg.add("derives", [Term(k, "symbol", v) for k, v in computed.items()])
+            text = self._nlg_solve_formula(f, known, computed)
+            return SolveResult(ok=True, kind="solve", value=computed, text=text, meaning=mg,
+                               meta={"formula": f.name, "equation": f.equation, "known": known, "computed": computed})
+        except Exception as e:
+            return SolveResult(ok=False, kind="solve", text=f"Solve failure: {e}", meaning=mg,
+                               meta={"formula": f.name, "known": known})
+
+    def _extract_assignments(self, query: str) -> Dict[str, float]:
+        # Accept formats:
+        # m=2, a=3
+        # m = 2 kg
+        # V=5, I=2
+        out: Dict[str, float] = {}
+        for m in re.finditer(r"\b([A-Za-z_][A-Za-z0-9_]{0,15})\s*=\s*(\-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][\+\-]?\d+)?)", query):
+            out[m.group(1)] = float(m.group(2))
+        return out
+
+    # -------------------------------
+    # EXPLAIN (math/logic to language)
+    # -------------------------------
+
+    def explain(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "explain"})
+        mg.add("requests_explanation", [Term("query", "concept", query)])
+
+        # Deterministic “logic framing”:
+        # Convert statement to structured claim, then generate rational reply.
+        claims = self._extract_claims(query)
+        for c in claims:
+            mg.add("claim", [Term("text", "concept", c)])
+
+        text = self._nlg_explain(query, claims)
+        return SolveResult(ok=True, kind="explain", value={"claims": claims}, text=text, meaning=mg)
+
+    def _extract_claims(self, query: str) -> List[str]:
+        # Minimal claim segmentation, expandable
+        parts = re.split(r"[.;\n]+", query)
+        return [p.strip() for p in parts if len(p.strip()) > 0]
+
+    # -------------------------------
+    # TRANSLATE (interlingua-driven “Rosetta Stone”)
+    # -------------------------------
+
+    def translate(self, query: str) -> SolveResult:
+        mg = MeaningGraph(meta={"intent": "translate"})
+
+        # Supported patterns:
+        # "translate: <text> en->es"
+        # "translate <text> to spanish"
+        ql = _lower(query)
+
+        src, dst = self._parse_lang_pair(ql)
+        payload = self._parse_translate_payload(query)
+
+        if not payload:
+            mg.add("translate_request", [Term("raw", "concept", query)], src=src, dst=dst)
+            return SolveResult(ok=False, kind="translate", text="Translation parse failure.", meaning=mg)
+
+        # Build meaning graph via lightweight semantics
+        # (Tokenize -> map to concepts -> assemble propositions)
+        inter = self._interlingua_from_text(payload, src=src)
+        mg.props.extend(inter.props)
+        mg.meta.update({"src": src, "dst": dst})
+
+        # Generate target language from interlingua using language packs
+        out_text = self._generate_from_interlingua(inter, dst=dst)
+
+        return SolveResult(ok=True, kind="translate", value=out_text, text=out_text, meaning=mg,
+                           meta={"src": src, "dst": dst, "input": payload})
+
+    def _parse_lang_pair(self, ql: str) -> Tuple[str, str]:
+        # default: English -> Spanish as baseline demonstration
+        src, dst = "en", "es"
+        m = re.search(r"\b(en|english)\s*(to|->)\s*(es|spanish)\b", ql)
+        if m:
+            return ("en", "es")
+        m = re.search(r"\b(es|spanish)\s*(to|->)\s*(en|english)\b", ql)
+        if m:
+            return ("es", "en")
+        if "to spanish" in ql:
+            return ("en", "es")
+        if "to english" in ql:
+            return ("es", "en")
+        return (src, dst)
+
+    def _parse_translate_payload(self, query: str) -> str:
+        # Remove leading directive
+        q = query.strip()
+        q = re.sub(r"^\s*translate\s*[:\-]?\s*", "", q, flags=re.I)
+        # Strip trailing lang hint
+        q = re.sub(r"\s*\b(en|english)\s*(to|->)\s*(es|spanish)\b\s*$", "", q, flags=re.I)
+        q = re.sub(r"\s*\b(es|spanish)\s*(to|->)\s*(en|english)\b\s*$", "", q, flags=re.I)
+        q = re.sub(r"\s*\bto\s+(spanish|english)\b\s*$", "", q, flags=re.I)
+        return _norm_space(q)
+
+    # -------------------------------
+    # Interlingua model (math/logic semantics)
+    # -------------------------------
+
+    def _interlingua_from_text(self, text: str, src: str = "en") -> MeaningGraph:
+        """
+        Lightweight interlingua:
+        - Tokenize
+        - Map lexemes -> concepts
+        - Detect intent (request/command/assertion)
+        - Assemble propositions
+
+        This is the scalable enterprise approach: semantics first, language second.
+        """
+        mg = MeaningGraph(meta={"src": src, "type": "interlingua"})
+        t = _norm_space(text)
+        tl = _lower(t)
+
+        # Intent typing
+        intent = "assertion"
+        if tl.endswith("?") or any(w in tl.split()[:3] for w in ("what", "why", "how", "when", "where", "who")):
+            intent = "question"
+        if any(tl.startswith(w) for w in ("please", "do", "make", "create", "open", "close", "calculate")):
+            intent = "command"
+        mg.meta["intent"] = intent
+
+        # Basic concept extraction
+        concepts = self._map_concepts(tl, src=src)
+        mg.add("has_text", [Term("text", "concept", t)])
+        for c in concepts:
+            mg.add("mentions", [Term(c, "concept")])
+
+        # Basic predicate assembly (expand over time)
+        if intent == "question":
+            mg.add("asks_about", [Term("topic", "concept", concepts[0] if concepts else "unknown")])
+        elif intent == "command":
+            mg.add("requests_action", [Term("action", "concept", concepts[0] if concepts else "unknown")])
+        else:
+            mg.add("states", [Term("statement", "concept", t)])
+
+        return mg
+
+    def _map_concepts(self, tl: str, src: str) -> List[str]:
+        # Minimal bilingual lexicon map; this is where “everything possible” scales:
+        # you expand concept tables per domain (physics, fluids, EE, etc.) and per language.
+        lex = LanguagePacks.get(src).lexicon
+        concepts: List[str] = []
+        for token in re.findall(r"[a-zA-ZáéíóúñüΩ]+", tl):
+            c = lex.get(token)
+            if c and c not in concepts:
+                concepts.append(c)
+        return concepts
+
+    def _generate_from_interlingua(self, mg: MeaningGraph, dst: str) -> str:
+        pack = LanguagePacks.get(dst)
+        # Priority: preserve direct original for unknown content, but translate recognized concepts.
+        # Enterprise behavior: graceful degradation; never hallucinate.
+        original = ""
+        for p in mg.props:
+            if p.predicate == "has_text":
+                original = str(p.args[0].value or "")
+                break
+
+        if not original:
+            return pack.render_fallback(mg)
+
+        # Token-level deterministic translation (baseline), enhanced by concept-level rendering
+        # 1) Try concept-level sentence templates if intent is recognized
+        intent = mg.meta.get("intent", "assertion")
+        mentions = [p.args[0].name for p in mg.props if p.predicate == "mentions" and p.args]
+        if mentions:
+            templ = pack.templates.get(intent)
+            if templ:
+                topic = pack.concept_to_word(mentions[0]) or mentions[0]
+                return templ.format(topic=topic)
+
+        # 2) Fallback: word-by-word deterministic map for known lexemes
+        return pack.word_translate(original)
+
+    # -------------------------------
+    # NLG (Rational replies)
+    # -------------------------------
+
+    def _nlg_calc(self, expr: str, val: Any) -> str:
+        return f"Computed result using deterministic evaluation: {expr} = {val}"
+
+    def _nlg_convert(self, v: float, from_u: str, out: float, out_u: str) -> str:
+        return f"Unit conversion executed with dimensional controls: {v} {from_u} = {out} {out_u}"
+
+    def _nlg_solve_formula(self, f: Formula, known: Dict[str, float], computed: Dict[str, float]) -> str:
+        # Enterprise explanation with substitution + output
+        lines = []
+        lines.append(f"Formula selected: {f.name} ({f.domain})")
+        lines.append(f"Equation: {f.equation}")
+        if known:
+            lines.append("Known inputs:")
+            for k, v in known.items():
+                u = f.units.get(k, "")
+                lines.append(f" - {k} = {v} {u}".rstrip())
+        lines.append("Derived outputs:")
+        for k, v in computed.items():
+            u = f.units.get(k, "")
+            lines.append(f" - {k} = {v} {u}".rstrip())
+        lines.append("Rationale: deterministic algebraic isolation and substitution.")
+        return "\n".join(lines)
+
+    def _nlg_explain(self, query: str, claims: List[str]) -> str:
+        # This is the “math-to-language” baseline: structured response, no hype.
+        lines = []
+        lines.append("Rational response generated from structured claims.")
+        for i, c in enumerate(claims, 1):
+            lines.append(f"{i}. {c}")
+        lines.append("Next step: provide variables/constraints to formalize and solve deterministically.")
+        return "\n".join(lines)
+
+
+# =============================================================================
+# LANGUAGE PACKS (TRANSLATION CONTROL PLANE)
+# =============================================================================
+
+class LanguagePack:
+    """
+    Deterministic language pack:
+    - lexicon maps word -> concept
+    - reverse maps concept -> word
+    - templates render interlingua into language
+    - word_translate provides graceful degradation
+    """
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.lexicon: Dict[str, str] = {}          # word -> concept
+        self.reverse: Dict[str, str] = {}          # concept -> preferred word
+        self.templates: Dict[str, str] = {}        # intent -> template
+
+    def add(self, word: str, concept: str, preferred: Optional[str] = None) -> None:
+        self.lexicon[word.lower()] = concept
+        if preferred:
+            self.reverse[concept] = preferred
+
+    def concept_to_word(self, concept: str) -> Optional[str]:
+        return self.reverse.get(concept)
+
+    def word_translate(self, text: str) -> str:
+        # Deterministic token translation: preserves punctuation/unknowns
+        tokens = re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE)
+        out: List[str] = []
+        for tok in tokens:
+            low = tok.lower()
+            if low in self.lexicon:
+                concept = self.lexicon[low]
+                out.append(self.reverse.get(concept, tok))
+            else:
+                out.append(tok)
+        # Restore spacing reasonably
+        s = ""
+        for i, tok in enumerate(out):
+            if i == 0:
+                s = tok
+            elif re.fullmatch(r"[.,;:!?)]", tok):
+                s += tok
+            elif re.fullmatch(r"[(]", tok):
+                s += " " + tok
+            else:
+                s += " " + tok
+        return s
+
+    def render_fallback(self, mg: MeaningGraph) -> str:
+        # Enterprise fallback: no hallucination
+        return "Translation engine: insufficient semantic coverage for deterministic render."
+
+
+class LanguagePacks:
+    _packs: Dict[str, LanguagePack] = {}
+
+    @classmethod
+    def bootstrap(cls) -> None:
+        # English pack
+        en = LanguagePack("en")
+        en.templates = {
+            "question": "You are asking about: {topic}. Provide variables/constraints for a deterministic solution.",
+            "command": "Request recognized: {topic}. Provide parameters to execute deterministically.",
+            "assertion": "Statement acknowledged about: {topic}."
+        }
+
+        # Spanish pack
+        es = LanguagePack("es")
+        es.templates = {
+            "question": "Estás preguntando sobre: {topic}. Proporciona variables/restricciones para una solución determinista.",
+            "command": "Solicitud reconocida: {topic}. Proporciona parámetros para ejecutar de forma determinista.",
+            "assertion": "Declaración reconocida sobre: {topic}."
+
+        }
+
+        # French pack
+        fr = LanguagePack("fr")
+        fr.templates = {
+            "question": "Vous demandez à propos de : {topic}. Fournissez des variables/contraintes pour une solution déterministe.",
+            "command": "Demande reconnue : {topic}. Fournissez des paramètres pour exécuter de façon déterministe.",
+            "assertion": "Déclaration reconnue à propos de : {topic}."
+        }
+
+        # German pack
+        de = LanguagePack("de")
+        de.templates = {
+            "question": "Du fragst nach: {topic}. Bitte Variablen/Randbedingungen für eine deterministische Lösung angeben.",
+            "command": "Anfrage erkannt: {topic}. Bitte Parameter angeben, um deterministisch auszuführen.",
+            "assertion": "Aussage erkannt über: {topic}."
+        }
+
+        # Core concepts (expand aggressively)
+        # Concepts are language-agnostic keys: "concept.physics.force", etc.
+        # English terms
+        en.add("force", "concept.physics.force", preferred="force")
+        en.add("mass", "concept.physics.mass", preferred="mass")
+        en.add("acceleration", "concept.physics.acceleration", preferred="acceleration")
+        en.add("voltage", "concept.ee.voltage", preferred="voltage")
+        en.add("current", "concept.ee.current", preferred="current")
+        en.add("resistance", "concept.ee.resistance", preferred="resistance")
+        en.add("energy", "concept.physics.energy", preferred="energy")
+        en.add("pressure", "concept.fluids.pressure", preferred="pressure")
+
+        # Spanish terms mapped to same concepts
+        es.add("fuerza", "concept.physics.force", preferred="fuerza")
+        es.add("masa", "concept.physics.mass", preferred="masa")
+        es.add("aceleración", "concept.physics.acceleration", preferred="aceleración")
+        es.add("voltaje", "concept.ee.voltage", preferred="voltaje")
+        es.add("corriente", "concept.ee.current", preferred="corriente")
+        es.add("resistencia", "concept.ee.resistance", preferred="resistencia")
+        es.add("energía", "concept.physics.energy", preferred="energía")
+        es.add("presión", "concept.fluids.pressure", preferred="presión")
+
+        cls._packs["en"] = en
+        cls._packs["es"] = es
+        cls._packs["fr"] = fr
+        cls._packs["de"] = de
+
+    @classmethod
+    def get(cls, code: str) -> LanguagePack:
+        c = (code or "en").lower()
+        if not cls._packs:
+            cls.bootstrap()
+        return cls._packs.get(c, cls._packs["en"])
+
+
+
+
+# =============================================================================
+# GOVERNED COLLAPSE MATH: NEURON AXIS / MODEL / UNIVERSAL COMPUTE
+# =============================================================================
+# SARAHMEMORY_PATCH_NOTE:
+# This section implements the classical, deterministic "superstate-to-binary"
+# governance math discussed for SarahMemory AiOS. It is not quantum hardware
+# control and does not claim to read a physical qubit. It stores multiple
+# governance influences as bounded classical amplitudes/probabilities and
+# collapses them into an auditable binary execution decision:
+#
+#   0 = deny / hold / quarantine / audit
+#   1 = allow / route / execute within the assigned lane
+#
+# Doctrine:
+# - The model/helper/agent/processor never self-authorizes.
+# - CognitiveCompass/SMGET/TriForce/ARILE-style governance is represented as the
+#   governance modifier signal.
+# - Any unknown, missing, invalid, or high-risk input fails toward denial.
+# - This file performs deterministic math only. It does not execute actions,
+#   open network sockets, touch hardware, mutate files, or grant authority.
+
+
+def _bounded01(value: Any, default: float = 0.0) -> float:
+    """Return value as a finite float clipped to [0.0, 1.0]."""
+    v = _safe_float(value)
+    if v is None or math.isnan(v) or math.isinf(v):
+        v = default
+    return max(0.0, min(1.0, float(v)))
+
+
+def _bounded_weight_map(weights: Optional[Dict[str, Any]], defaults: Dict[str, float]) -> Dict[str, float]:
+    """Normalize a named weight map while preserving deterministic fallback behavior."""
+    raw = dict(defaults)
+    if isinstance(weights, dict):
+        for key in defaults:
+            if key in weights:
+                val = _safe_float(weights.get(key))
+                if val is not None and not math.isnan(val) and not math.isinf(val) and val >= 0:
+                    raw[key] = float(val)
+
+    total = sum(raw.values())
+    if total <= 0:
+        return dict(defaults)
+    return {key: val / total for key, val in raw.items()}
+
+
+def _collapse_verdict(score: float, threshold: float) -> Tuple[int, str]:
+    """Collapse a bounded or signed governance score into a binary verdict."""
+    t = _bounded01(threshold, 0.50)
+    decision = 1 if score >= t else 0
+    verdict = "ALLOW" if decision == 1 else "DENY"
+    return decision, verdict
+
+
+def governed_binary_collapse(
+    positive_signals: Dict[str, Any],
+    risk_score: Any = 0.0,
+    threshold: Any = 0.50,
+    weights: Optional[Dict[str, Any]] = None,
+    gate_name: str = "governed_binary_collapse",
+) -> Dict[str, Any]:
+    """General deterministic governance collapse.
+
+    Formula:
+        score = Σ(weight_i * signal_i) - risk_score
+
+    Output:
+        0 = deny / hold / quarantine / audit
+        1 = allow / route / execute
+
+    This is the common math substrate used by Neuron Axis, Model Safety, and
+    Universal Compute governance. It is intentionally processor/model agnostic.
+    """
+    start = _now_ms()
+    signals = dict(positive_signals or {})
+    if not signals:
+        return {
+            "ok": False,
+            "gate": gate_name,
+            "decision": 0,
+            "verdict": "DENY",
+            "reason": "missing_positive_signals",
+            "deterministic": True,
+            "authority": "advisory_math_only",
+            "duration_ms": _now_ms() - start,
+        }
+
+    defaults = {key: 1.0 for key in signals.keys()}
+    w = _bounded_weight_map(weights, defaults)
+
+    normalized = {key: _bounded01(value, 0.0) for key, value in signals.items()}
+    weighted_positive = sum(w.get(key, 0.0) * normalized.get(key, 0.0) for key in normalized)
+    risk = _bounded01(risk_score, 0.0)
+    score = weighted_positive - risk
+    decision, verdict = _collapse_verdict(score, threshold)
+
+    return {
+        "ok": True,
+        "gate": gate_name,
+        "decision": decision,
+        "verdict": verdict,
+        "score": score,
+        "threshold": _bounded01(threshold, 0.50),
+        "weighted_positive": weighted_positive,
+        "risk_score": risk,
+        "signals": normalized,
+        "weights": w,
+        "formula": "score = sum(weight_i * signal_i) - risk_score",
+        "binary_meaning": {
+            "0": "deny / hold / quarantine / audit",
+            "1": "allow / route / execute inside assigned lane",
+        },
+        "deterministic": True,
+        "truth_locked": True,
+        "authority": "advisory_math_only",
+        "hardware_control": False,
+        "network_access": False,
+        "file_mutation": False,
+        "duration_ms": _now_ms() - start,
+    }
+
+
+def neuron_axis_gate(
+    current_lane_confidence: Any,
+    requested_lane_validity: Any,
+    governance_score: Any = None,
+    risk_score: Any = None,
+    threshold: Any = 0.50,
+    weights: Optional[Dict[str, Any]] = None,
+    **compat_aliases: Any,
+) -> Dict[str, Any]:
+    """SarahMemory Neuron Axis lane-change governance math.
+
+    Formula:
+        L = (wa * A) + (wb * B) + (wg * G) - R
+
+    Where:
+        A = current authorized lane confidence
+        B = requested new lane validity
+        G = governance modifier / Compass-SMGET-TriForce-ARILE approval
+        R = risk score
+
+    Collapse:
+        0 = deny lane change, hold/quarantine/audit
+        1 = allow lane transition through governed routing
+
+    Reality Patch 2026-07-26: accept both v9 keyword contracts.
+    Older callers use governance_modifier/risk_penalty; newer callers use
+    governance_score/risk_score.  The math is unchanged and remains advisory
+    evidence only; this function never grants execution authority.
+    """
+    alias_notes: List[str] = []
+    if governance_score is None and "governance_modifier" in compat_aliases:
+        governance_score = compat_aliases.get("governance_modifier")
+        alias_notes.append("governance_modifier->governance_score")
+    if risk_score is None and "risk_penalty" in compat_aliases:
+        risk_score = compat_aliases.get("risk_penalty")
+        alias_notes.append("risk_penalty->risk_score")
+    if governance_score is None:
+        governance_score = 0.0
+        alias_notes.append("governance_score_defaulted")
+    if risk_score is None:
+        risk_score = 1.0
+        alias_notes.append("risk_score_defaulted_fail_closed")
+
+    defaults = {
+        "current_lane_confidence": 0.30,
+        "requested_lane_validity": 0.30,
+        "governance_score": 0.40,
+    }
+    out = governed_binary_collapse(
+        positive_signals={
+            "current_lane_confidence": current_lane_confidence,
+            "requested_lane_validity": requested_lane_validity,
+            "governance_score": governance_score,
+        },
+        risk_score=risk_score,
+        threshold=threshold,
+        weights=weights or defaults,
+        gate_name="neuron_axis_gate",
+    )
+    if isinstance(out, dict):
+        out.setdefault("compatibility_contract", "v9_score_and_modifier_aliases")
+        out.setdefault("compatibility_aliases", alias_notes)
+        out.setdefault("execution_authority", False)
+    return out
+
+
+def model_safety_gate(
+    expected_behavior_match: Any,
+    observed_boundary_respect: Any,
+    refusal_quality: Any,
+    hallucination_control: Any,
+    tool_discipline: Any,
+    risk_penalty: Any,
+    threshold: Any = 0.85,
+    weights: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Deterministic model intake / supply-chain safety scoring.
+
+    Intended use:
+        - model quarantine review
+        - helper model safety passport
+        - tool/network/filesystem escalation review
+
+    Formula:
+        SafetyScore =
+            expected_behavior_match * 0.35
+          + observed_boundary_respect * 0.25
+          + refusal_quality * 0.15
+          + hallucination_control * 0.15
+          + tool_discipline * 0.10
+          - risk_penalty
+    """
+    defaults = {
+        "expected_behavior_match": 0.35,
+        "observed_boundary_respect": 0.25,
+        "refusal_quality": 0.15,
+        "hallucination_control": 0.15,
+        "tool_discipline": 0.10,
+    }
+    result = governed_binary_collapse(
+        positive_signals={
+            "expected_behavior_match": expected_behavior_match,
+            "observed_boundary_respect": observed_boundary_respect,
+            "refusal_quality": refusal_quality,
+            "hallucination_control": hallucination_control,
+            "tool_discipline": tool_discipline,
+        },
+        risk_score=risk_penalty,
+        threshold=threshold,
+        weights=weights or defaults,
+        gate_name="model_safety_gate",
+    )
+
+    score = result.get("score", 0.0)
+    if score >= 0.85:
+        tier = "ALLOW_BOUNDED_USE"
+    elif score >= 0.65:
+        tier = "RESTRICTED_USE"
+    elif score >= 0.40:
+        tier = "SANDBOX_ONLY"
+    else:
+        tier = "QUARANTINE"
+    result["model_safety_tier"] = tier
+    return result
+
+
+def universal_compute_governance_gate(
+    identity_score: Any,
+    firmware_score: Any,
+    driver_score: Any,
+    dma_isolation_score: Any,
+    telemetry_score: Any,
+    workload_discipline: Any,
+    risk_penalty: Any,
+    threshold: Any = 0.85,
+    weights: Optional[Dict[str, Any]] = None,
+    processor_type: str = "generic_compute_resource",
+) -> Dict[str, Any]:
+    """Processor-agnostic hardware trust gate for any compute resource.
+
+    Applies to CPU, GPU, NPU, LPU, DPU, TPU, IPU, VPU, DSP, FPGA, ASIC, MCU,
+    SoC accelerators, inference cards, neuromorphic devices, photonic processors,
+    quantum-interface processors, and future processor classes.
+
+    Formula:
+        HardwareTrust =
+            IdentityScore
+          + FirmwareScore
+          + DriverScore
+          + DMAScore
+          + TelemetryScore
+          + WorkloadDiscipline
+          - RiskPenalty
+
+    The normalized weighted implementation below keeps the formula bounded and
+    comparable across processor classes.
+    """
+    defaults = {
+        "identity_score": 0.18,
+        "firmware_score": 0.18,
+        "driver_score": 0.16,
+        "dma_isolation_score": 0.20,
+        "telemetry_score": 0.14,
+        "workload_discipline": 0.14,
+    }
+    result = governed_binary_collapse(
+        positive_signals={
+            "identity_score": identity_score,
+            "firmware_score": firmware_score,
+            "driver_score": driver_score,
+            "dma_isolation_score": dma_isolation_score,
+            "telemetry_score": telemetry_score,
+            "workload_discipline": workload_discipline,
+        },
+        risk_score=risk_penalty,
+        threshold=threshold,
+        weights=weights or defaults,
+        gate_name="universal_compute_governance_gate",
+    )
+    result["processor_type"] = processor_type or "generic_compute_resource"
+    result["scope"] = "all_processor_unit_types"
+    result["safe_fallback"] = "CPU_OR_LOWEST_AUTHORITY_FALLBACK"
+    result["default_posture"] = "UNTRUSTED_UNTIL_PASSPORTED_AND_LANE_BOUND"
+    return result
+
+
+def processor_passport_score(passport: Dict[str, Any]) -> Dict[str, Any]:
+    """Score a processor passport without trusting processor type labels.
+
+    Expected passport keys are intentionally generic:
+        identity_score, firmware_score, driver_score, dma_isolation_score,
+        telemetry_score, workload_discipline, risk_penalty, threshold,
+        processor_type
+
+    Unknown fields are preserved in the returned audit packet but do not alter math.
+    """
+    data = dict(passport or {})
+    result = universal_compute_governance_gate(
+        identity_score=data.get("identity_score", 0.0),
+        firmware_score=data.get("firmware_score", 0.0),
+        driver_score=data.get("driver_score", 0.0),
+        dma_isolation_score=data.get("dma_isolation_score", 0.0),
+        telemetry_score=data.get("telemetry_score", 0.0),
+        workload_discipline=data.get("workload_discipline", 0.0),
+        risk_penalty=data.get("risk_penalty", 1.0),
+        threshold=data.get("threshold", 0.85),
+        weights=data.get("weights") if isinstance(data.get("weights"), dict) else None,
+        processor_type=str(data.get("processor_type", "generic_compute_resource")),
+    )
+    result["passport_echo"] = {
+        key: value for key, value in data.items()
+        if key not in {"weights"}
+    }
+    return result
+
+
+def lane_authority_matrix_collapse(matrix: Dict[str, Any]) -> Dict[str, Any]:
+    """Collapse a lane authority matrix into an execution verdict.
+
+    This is used when SarahMemory has multiple lane/capability signals, such as:
+        current_lane_confidence
+        requested_lane_validity
+        governance_score
+        memory_permission
+        filesystem_permission
+        network_permission
+        hardware_permission
+        tool_permission
+        risk_score
+
+    The result remains binary and auditable.
+    """
+    data = dict(matrix or {})
+    risk = data.get("risk_score", data.get("risk_penalty", 1.0))
+    threshold = data.get("threshold", 0.50)
+    weights = data.get("weights") if isinstance(data.get("weights"), dict) else None
+
+    positive = {
+        key: value for key, value in data.items()
+        if key not in {"risk_score", "risk_penalty", "threshold", "weights", "metadata"}
+        and _safe_float(value) is not None
+    }
+    result = governed_binary_collapse(
+        positive_signals=positive,
+        risk_score=risk,
+        threshold=threshold,
+        weights=weights,
+        gate_name="lane_authority_matrix_collapse",
+    )
+    result["metadata"] = data.get("metadata", {})
+    return result
+
+
+
+# =============================================================================
+# ENTERPRISE DECAY / RETENTION MATHEMATICS
+# =============================================================================
+
+def _finite_nonnegative(value: Any, name: str, *, allow_zero: bool = True) -> float:
+    """Return a finite non-negative float or raise a deterministic ValueError."""
+    try:
+        number = float(value)
+    except Exception as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    if number < 0.0 or (not allow_zero and number <= 0.0):
+        op = "greater than zero" if not allow_zero else "zero or greater"
+        raise ValueError(f"{name} must be {op}")
+    return number
+
+
+def nuclear_half_life_decay(
+    initial_amount: Any,
+    elapsed_time: Any,
+    half_life: Any,
+) -> Dict[str, Any]:
+    """Calculate exponential half-life decay using deterministic local math.
+
+    Formula:
+        lambda = ln(2) / half_life
+        remaining = initial_amount * exp(-lambda * elapsed_time)
+
+    Units are caller-defined but elapsed_time and half_life must use the same unit.
+    This function performs no deletion, mutation, training, or hardware action.
+    """
+    try:
+        initial = _finite_nonnegative(initial_amount, "initial_amount")
+        age = _finite_nonnegative(elapsed_time, "elapsed_time")
+        half = _finite_nonnegative(half_life, "half_life", allow_zero=False)
+        decay_constant = math.log(2.0) / half
+        exponent = -decay_constant * age
+        # exp(-745) is already near the smallest useful double.  Clamping avoids
+        # platform-specific underflow noise while preserving the correct zero limit.
+        remaining = 0.0 if exponent < -745.0 else initial * math.exp(exponent)
+        decayed = max(0.0, initial - remaining)
+        fraction_remaining = 0.0 if initial == 0.0 else remaining / initial
+        result = {
+            "ok": True,
+            "initial_amount": initial,
+            "elapsed_time": age,
+            "half_life": half,
+            "decay_constant": decay_constant,
+            "remaining_amount": remaining,
+            "decayed_amount": decayed,
+            "fraction_remaining": fraction_remaining,
+            "percent_remaining": fraction_remaining * 100.0,
+            "half_lives_elapsed": age / half,
+            "formula": "N=N0*exp(-(ln(2)/half_life)*elapsed_time)",
+            "deterministic": True,
+            "truth_locked": True,
+            "mutation_performed": False,
+        }
+        return result
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "deterministic": True,
+            "truth_locked": False,
+            "mutation_performed": False,
+        }
+
+
+def retention_state_from_score(
+    score: Any,
+    *,
+    hot_threshold: Any = 0.75,
+    warm_threshold: Any = 0.35,
+    cold_threshold: Any = 0.10,
+) -> Dict[str, Any]:
+    """Map a bounded retention score to a non-destructive storage state."""
+    try:
+        value = _finite_nonnegative(score, "score")
+        hot = _finite_nonnegative(hot_threshold, "hot_threshold")
+        warm = _finite_nonnegative(warm_threshold, "warm_threshold")
+        cold = _finite_nonnegative(cold_threshold, "cold_threshold")
+        if not (hot > warm > cold >= 0.0):
+            raise ValueError("thresholds must satisfy hot > warm > cold >= 0")
+        if value >= hot:
+            state = "hot"
+            action = "retain_full_payload"
+        elif value >= warm:
+            state = "warm"
+            action = "retain_summary_and_payload_reference"
+        elif value >= cold:
+            state = "cold"
+            action = "compress_or_archive_payload"
+        else:
+            state = "fossil"
+            action = "retain_receipt_hash_and_minimal_metadata"
+        return {
+            "ok": True,
+            "score": value,
+            "state": state,
+            "recommended_action": action,
+            "destructive_delete_authorized": False,
+            "deterministic": True,
+        }
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "destructive_delete_authorized": False,
+            "deterministic": True,
+        }
+
+
+def ledger_retention_decay(
+    age: Any,
+    half_life: Any,
+    *,
+    initial_value: Any = 1.0,
+    user_pin: Any = 0.0,
+    repeated_use: Any = 0.0,
+    governance_importance: Any = 0.0,
+    safety_relevance: Any = 0.0,
+    identity_relevance: Any = 0.0,
+    ticket_relevance: Any = 0.0,
+    redundancy_penalty: Any = 0.0,
+    stale_penalty: Any = 0.0,
+) -> Dict[str, Any]:
+    """Calculate a bounded ledger-retention score without deleting data.
+
+    Positive survival signals and negative penalties are additive adjustments to
+    the base half-life curve.  The final score is clamped to [0, 1].  A caller may
+    use the returned state as a proposal, but governance/user policy must authorize
+    any compaction or archival action.
+    """
+    base = nuclear_half_life_decay(initial_value, age, half_life)
+    if not base.get("ok"):
+        return base
+    try:
+        survival = {
+            "user_pin": _finite_nonnegative(user_pin, "user_pin"),
+            "repeated_use": _finite_nonnegative(repeated_use, "repeated_use"),
+            "governance_importance": _finite_nonnegative(governance_importance, "governance_importance"),
+            "safety_relevance": _finite_nonnegative(safety_relevance, "safety_relevance"),
+            "identity_relevance": _finite_nonnegative(identity_relevance, "identity_relevance"),
+            "ticket_relevance": _finite_nonnegative(ticket_relevance, "ticket_relevance"),
+        }
+        penalties = {
+            "redundancy_penalty": _finite_nonnegative(redundancy_penalty, "redundancy_penalty"),
+            "stale_penalty": _finite_nonnegative(stale_penalty, "stale_penalty"),
+        }
+        raw_score = float(base["remaining_amount"]) + sum(survival.values()) - sum(penalties.values())
+        score = max(0.0, min(1.0, raw_score))
+        state = retention_state_from_score(score)
+        return {
+            "ok": True,
+            "base_decay": base,
+            "survival_signals": survival,
+            "penalties": penalties,
+            "raw_score": raw_score,
+            "retention_score": score,
+            "retention_state": state.get("state"),
+            "recommended_action": state.get("recommended_action"),
+            "destructive_delete_authorized": False,
+            "requires_governance": True,
+            "deterministic": True,
+            "truth_locked": True,
+        }
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "destructive_delete_authorized": False,
+            "requires_governance": True,
+            "deterministic": True,
+            "truth_locked": False,
+        }
+
+
+def logiccalc_enterprise_self_test() -> Dict[str, Any]:
+    """Run bounded deterministic invariants for decay and retention math."""
+    tests: List[Dict[str, Any]] = []
+
+    def _record(name: str, passed: bool, observed: Any) -> None:
+        tests.append({"name": name, "passed": bool(passed), "observed": observed})
+
+    one_half = nuclear_half_life_decay(100.0, 10.0, 10.0)
+    _record("one_half_life", bool(one_half.get("ok") and abs(one_half.get("remaining_amount", 0.0) - 50.0) < 1e-10), one_half)
+
+    zero_age = nuclear_half_life_decay(42.0, 0.0, 5.0)
+    _record("zero_age", bool(zero_age.get("ok") and abs(zero_age.get("remaining_amount", 0.0) - 42.0) < 1e-10), zero_age)
+
+    bad_half = nuclear_half_life_decay(1.0, 1.0, 0.0)
+    _record("reject_zero_half_life", not bool(bad_half.get("ok")), bad_half)
+
+    retained = ledger_retention_decay(10.0, 10.0, user_pin=0.6, redundancy_penalty=0.1)
+    _record("bounded_retention", bool(retained.get("ok") and 0.0 <= retained.get("retention_score", -1.0) <= 1.0), retained)
+
+    compat_gate = neuron_axis_gate(
+        current_lane_confidence=0.92,
+        requested_lane_validity=0.90,
+        governance_modifier=0.86,
+        risk_penalty=0.05,
+        threshold=0.50,
+    )
+    _record("neuron_axis_legacy_keyword_compatibility", bool(compat_gate.get("ok") and "governance_modifier->governance_score" in compat_gate.get("compatibility_aliases", [])), compat_gate)
+
+    passed = sum(1 for item in tests if item["passed"])
+    return {
+        "ok": passed == len(tests),
+        "passed": passed,
+        "total": len(tests),
+        "tests": tests,
+        "deterministic": True,
+        "hardware_control": False,
+        "mutation_performed": False,
+    }
+
+
+# =============================================================================
+# PUBLIC FACADE (THIS IS WHAT OTHER CORE FILES CALL)
+# =============================================================================
+
+class SarahMemoryLogicCalc:
+    """
+    Single entrypoint for AiOS:
+    - route(query) -> SolveResult (structured)
+    - provides meaning graph for downstream “rational language” and governance
+    """
+    def __init__(self) -> None:
+        self.units = UnitRegistry()
+        self.formulas = FormulaLibrary(self.units)
+        self.engine = ReasoningEngine(self.units, self.formulas)
+
+    def _build_canonical_payload(self, query: str, res: SolveResult, duration_ms: int) -> Dict[str, Any]:
+        raw_value = res.value
+        canonical_answer = raw_value
+
+        if isinstance(raw_value, dict):
+            if len(raw_value) == 1:
+                canonical_answer = next(iter(raw_value.values()))
+            else:
+                canonical_answer = raw_value
+        elif isinstance(raw_value, (list, tuple)) and len(raw_value) == 1:
+            canonical_answer = raw_value[0]
+
+        presentation_hint = None
+        if res.ok and res.kind in {"calc", "convert", "solve", "vector", "tensor", "calculus", "chemistry", "nuclear", "constants"}:
+            if isinstance(canonical_answer, (int, float, str)):
+                presentation_hint = f"The answer is {canonical_answer}."
+            elif isinstance(canonical_answer, dict):
+                presentation_hint = res.text
+
+        payload = {
+            "ok": res.ok,
+            "kind": res.kind,
+            "value": raw_value,
+            "text": res.text,
+            "raw_answer": raw_value,
+            "canonical_answer": canonical_answer,
+            "canonical_type": res.kind,
+            "truth_locked": bool(res.ok),
+            "deterministic": True,
+            "presentation_hint": presentation_hint,
+            "meta": {**res.meta, "duration_ms": duration_ms, "truth_engine": "SarahMemoryLogicCalc"},
+            "meaning": res.meaning.summarize() if res.meaning else None
+        }
+        return payload
+
+    def solve_formula_by_name(self, formula_name: str, known: Dict[str, Any]) -> Dict[str, Any]:
+        """Deterministically solve a registered formula by name for organ-to-organ use.
+
+        This bypasses natural-language routing so SarahMemoryEnergetics and other
+        governed organs can request exact math proofs without relying on text parsing.
+        """
+        start = _now_ms()
+        name = _lower(formula_name)
+        formula = self.formulas.formulas.get(name)
+        if formula is None:
+            matches = self.formulas.find(name)
+            formula = matches[0] if matches else None
+        if formula is None:
+            return {
+                "ok": False,
+                "kind": "solve",
+                "formula": formula_name,
+                "error": "formula_not_found",
+                "known": dict(known or {}),
+                "duration_ms": _now_ms() - start,
+                "truth_engine": "SarahMemoryLogicCalc",
+            }
+        try:
+            computed = formula.solve(dict(known or {}))
+            return {
+                "ok": bool(computed),
+                "kind": "solve",
+                "formula": formula.name,
+                "domain": formula.domain,
+                "equation": formula.equation,
+                "known": dict(known or {}),
+                "value": computed,
+                "computed": computed,
+                "units": formula.units,
+                "dims": {k: v.as_tuple() for k, v in formula.dims.items()},
+                "deterministic": True,
+                "truth_locked": bool(computed),
+                "duration_ms": _now_ms() - start,
+                "truth_engine": "SarahMemoryLogicCalc",
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "kind": "solve",
+                "formula": formula.name,
+                "domain": formula.domain,
+                "equation": formula.equation,
+                "known": dict(known or {}),
+                "error": str(exc),
+                "deterministic": True,
+                "truth_locked": False,
+                "duration_ms": _now_ms() - start,
+                "truth_engine": "SarahMemoryLogicCalc",
+            }
+
+
+    def governed_binary_collapse(
+        self,
+        positive_signals: Dict[str, Any],
+        risk_score: Any = 0.0,
+        threshold: Any = 0.50,
+        weights: Optional[Dict[str, Any]] = None,
+        gate_name: str = "governed_binary_collapse",
+    ) -> Dict[str, Any]:
+        """Public facade for deterministic governance collapse math."""
+        return governed_binary_collapse(positive_signals, risk_score, threshold, weights, gate_name)
+
+    def neuron_axis_gate(
+        self,
+        current_lane_confidence: Any,
+        requested_lane_validity: Any,
+        governance_score: Any = None,
+        risk_score: Any = None,
+        threshold: Any = 0.50,
+        weights: Optional[Dict[str, Any]] = None,
+        **compat_aliases: Any,
+    ) -> Dict[str, Any]:
+        """Public facade for Neuron Axis lane-change math.
+
+        Accepts both current governance_score/risk_score keywords and legacy
+        governance_modifier/risk_penalty keywords used by older bridge code.
+        """
+        return neuron_axis_gate(
+            current_lane_confidence=current_lane_confidence,
+            requested_lane_validity=requested_lane_validity,
+            governance_score=governance_score,
+            risk_score=risk_score,
+            threshold=threshold,
+            weights=weights,
+            **compat_aliases,
+        )
+
+    def model_safety_gate(
+        self,
+        expected_behavior_match: Any,
+        observed_boundary_respect: Any,
+        refusal_quality: Any,
+        hallucination_control: Any,
+        tool_discipline: Any,
+        risk_penalty: Any,
+        threshold: Any = 0.85,
+        weights: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Public facade for model intake / supply-chain safety math."""
+        return model_safety_gate(
+            expected_behavior_match=expected_behavior_match,
+            observed_boundary_respect=observed_boundary_respect,
+            refusal_quality=refusal_quality,
+            hallucination_control=hallucination_control,
+            tool_discipline=tool_discipline,
+            risk_penalty=risk_penalty,
+            threshold=threshold,
+            weights=weights,
+        )
+
+    def universal_compute_governance_gate(
+        self,
+        identity_score: Any,
+        firmware_score: Any,
+        driver_score: Any,
+        dma_isolation_score: Any,
+        telemetry_score: Any,
+        workload_discipline: Any,
+        risk_penalty: Any,
+        threshold: Any = 0.85,
+        weights: Optional[Dict[str, Any]] = None,
+        processor_type: str = "generic_compute_resource",
+    ) -> Dict[str, Any]:
+        """Public facade for processor-agnostic compute-resource governance math."""
+        return universal_compute_governance_gate(
+            identity_score=identity_score,
+            firmware_score=firmware_score,
+            driver_score=driver_score,
+            dma_isolation_score=dma_isolation_score,
+            telemetry_score=telemetry_score,
+            workload_discipline=workload_discipline,
+            risk_penalty=risk_penalty,
+            threshold=threshold,
+            weights=weights,
+            processor_type=processor_type,
+        )
+
+    def processor_passport_score(self, passport: Dict[str, Any]) -> Dict[str, Any]:
+        """Public facade for processor passport scoring."""
+        return processor_passport_score(passport)
+
+    def lane_authority_matrix_collapse(self, matrix: Dict[str, Any]) -> Dict[str, Any]:
+        """Public facade for capability/lane matrix collapse."""
+        return lane_authority_matrix_collapse(matrix)
+
+
+    def nuclear_half_life_decay(self, initial_amount: Any, elapsed_time: Any, half_life: Any) -> Dict[str, Any]:
+        """Public deterministic half-life calculation."""
+        return nuclear_half_life_decay(initial_amount, elapsed_time, half_life)
+
+    def ledger_retention_decay(self, age: Any, half_life: Any, **signals: Any) -> Dict[str, Any]:
+        """Public deterministic ledger-retention calculation."""
+        return ledger_retention_decay(age, half_life, **signals)
+
+    def retention_state_from_score(self, score: Any, **thresholds: Any) -> Dict[str, Any]:
+        """Public deterministic retention-state classification."""
+        return retention_state_from_score(score, **thresholds)
+
+    def enterprise_self_test(self) -> Dict[str, Any]:
+        """Run bounded deterministic LogicCalc enterprise invariants."""
+        return logiccalc_enterprise_self_test()
+
+    def route(self, query: str) -> Dict[str, Any]:
+        start = _now_ms()
+        res = self.engine.route(query)
+        dur = _now_ms() - start
+        return self._build_canonical_payload(query, res, dur)
+
+
+# Global instance (import-safe)
+LogicCalc = SarahMemoryLogicCalc()
+
+
+# =============================================================================
+# QUANTUM-SAFE HELPER BRIDGE
+# =============================================================================
+# SARAHMEMORY_PATCH_NOTE: These wrappers expose bounded quantum-inspired math to
+# the deterministic LogicCalc lane. They are classical simulations/planning helpers
+# only. They do not call cloud APIs, do not control hardware, do not modify clocks,
+# do not modify voltages, do not energize devices, and do not authorize execution.
+try:
+    import SarahMemoryQuantumSafe as _SM_QSAFE  # type: ignore
+except Exception:
+    _SM_QSAFE = None  # type: ignore
+
+
+def quantum_safe_status() -> Dict[str, Any]:
+    """Return whether bounded quantum-safe helpers are available."""
+    return {
+        "ok": _SM_QSAFE is not None,
+        "available": _SM_QSAFE is not None,
+        "classical_only": True,
+        "hardware_control": False,
+        "authority": "advisory_math_only",
+        "max_vector_len": getattr(_SM_QSAFE, "MAX_VECTOR_LEN", 0) if _SM_QSAFE else 0,
+    }
+
+
+def quantum_safe_governance_balance(signals: Dict[str, float]) -> Dict[str, Any]:
+    """Compute a bounded governance-balance score without granting authority."""
+    if _SM_QSAFE is None:
+        return {"ok": False, "error": "SarahMemoryQuantumSafe unavailable", "hardware_control": False}
+    return _SM_QSAFE.governance_balance_score(signals or {})
+
+
+def quantum_safe_rank_options(options: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Rank candidate options with bounded quantum-inspired interference scoring."""
+    if _SM_QSAFE is None:
+        return {"ok": False, "error": "SarahMemoryQuantumSafe unavailable", "hardware_control": False}
+    return _SM_QSAFE.quantum_interference_rank(options or [])
+
+# ====================================================================
+# END OF SarahMemoryLogicCalc.py v9.0.0
+# ====================================================================
