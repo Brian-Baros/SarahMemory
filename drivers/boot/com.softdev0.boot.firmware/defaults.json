@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_dmidecode": true,
+  "allow_efivarfs": false,
+  "allow_uefi_writes": false,
+  "require_write_confirmation": true,
+  "history_limit": 200
+}

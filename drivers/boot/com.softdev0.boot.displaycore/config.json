@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_mode_switch": false,
+  "require_mode_confirmation": true,
+  "history_limit": 200
+}

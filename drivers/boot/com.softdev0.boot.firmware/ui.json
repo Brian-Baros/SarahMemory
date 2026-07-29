@@ -1,0 +1,88 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "get_firmware_info",
+      "method": "POST",
+      "label": "Get Firmware Info"
+    },
+    {
+      "name": "get_smbios_info",
+      "method": "POST",
+      "label": "Get Smbios Info"
+    },
+    {
+      "name": "get_acpi_snapshot",
+      "method": "POST",
+      "label": "Get Acpi Snapshot"
+    },
+    {
+      "name": "list_uefi_variables",
+      "method": "POST",
+      "label": "List Uefi Variables"
+    },
+    {
+      "name": "read_uefi_variable",
+      "method": "POST",
+      "label": "Read Uefi Variable"
+    },
+    {
+      "name": "write_uefi_variable",
+      "method": "POST",
+      "label": "Write Uefi Variable"
+    },
+    {
+      "name": "get_boot_entries",
+      "method": "POST",
+      "label": "Get Boot Entries"
+    },
+    {
+      "name": "set_boot_next",
+      "method": "POST",
+      "label": "Set Boot Next"
+    },
+    {
+      "name": "get_power_state",
+      "method": "POST",
+      "label": "Get Power State"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}

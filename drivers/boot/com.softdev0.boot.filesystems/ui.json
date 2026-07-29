@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "list_supported_filesystems",
+      "method": "POST",
+      "label": "List Supported Filesystems"
+    },
+    {
+      "name": "detect_filesystem",
+      "method": "POST",
+      "label": "Detect Filesystem"
+    },
+    {
+      "name": "check_mount_support",
+      "method": "POST",
+      "label": "Check Mount Support"
+    },
+    {
+      "name": "mount_device",
+      "method": "POST",
+      "label": "Mount Device"
+    },
+    {
+      "name": "unmount_device",
+      "method": "POST",
+      "label": "Unmount Device"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}

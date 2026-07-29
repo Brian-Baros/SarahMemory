@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_lspci": true,
+  "history_limit": 200
+}

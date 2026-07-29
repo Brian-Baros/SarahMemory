@@ -1,0 +1,53 @@
+{
+  "id": "com.softdev0.boot.installer",
+  "name": "SarahMemory Boot Installer Core",
+  "version": "1.0.0",
+  "driver_type": "boot",
+  "entry": "driver.py",
+  "description": "Installer bridge for target validation, partition plans, format plans, and boot media orchestration.",
+  "platform": {
+    "os": [
+      "linux",
+      "windows",
+      "macos",
+      "baremetal-planned"
+    ],
+    "transport": [
+      "local"
+    ],
+    "arch": [
+      "x86_64",
+      "arm64",
+      "armv7",
+      "generic"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "supported_actions": [
+    "probe_backends",
+    "describe_capabilities",
+    "validate_target",
+    "generate_partition_plan",
+    "generate_format_plan",
+    "generate_install_plan",
+    "stage_vault_plan",
+    "safe_stop",
+    "get_config",
+    "set_config"
+  ],
+  "manufacturer": "SOFTDEV0",
+  "driver_signature": "unsigned-dev-bootstrap",
+  "signature_type": "bootstrap-placeholder",
+  "trust_level": "boot-foundation",
+  "source": "generated-by-chatgpt",
+  "tags": [
+    "boot",
+    "installer",
+    "partition",
+    "format",
+    "deploy",
+    "recovery"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "list_audio_devices",
+      "method": "POST",
+      "label": "List Audio Devices"
+    },
+    {
+      "name": "get_default_audio_routes",
+      "method": "POST",
+      "label": "Get Default Audio Routes"
+    },
+    {
+      "name": "test_tone",
+      "method": "POST",
+      "label": "Test Tone"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}

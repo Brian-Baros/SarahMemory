@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "validate_target",
+      "method": "POST",
+      "label": "Validate Target"
+    },
+    {
+      "name": "generate_partition_plan",
+      "method": "POST",
+      "label": "Generate Partition Plan"
+    },
+    {
+      "name": "generate_format_plan",
+      "method": "POST",
+      "label": "Generate Format Plan"
+    },
+    {
+      "name": "generate_install_plan",
+      "method": "POST",
+      "label": "Generate Install Plan"
+    },
+    {
+      "name": "stage_vault_plan",
+      "method": "POST",
+      "label": "Stage Vault Plan"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}

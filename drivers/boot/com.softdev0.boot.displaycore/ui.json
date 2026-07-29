@@ -1,0 +1,68 @@
+{
+  "version": "1.0.0",
+  "title": "Boot Driver Control Surface",
+  "fields": [
+    {
+      "name": "enabled",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "name": "autoload",
+      "type": "bool",
+      "default": true
+    }
+  ],
+  "actions": [
+    {
+      "name": "probe_backends",
+      "method": "POST",
+      "label": "Probe Backends"
+    },
+    {
+      "name": "describe_capabilities",
+      "method": "POST",
+      "label": "Describe Capabilities"
+    },
+    {
+      "name": "list_displays",
+      "method": "POST",
+      "label": "List Displays"
+    },
+    {
+      "name": "get_framebuffer_info",
+      "method": "POST",
+      "label": "Get Framebuffer Info"
+    },
+    {
+      "name": "list_modes",
+      "method": "POST",
+      "label": "List Modes"
+    },
+    {
+      "name": "set_mode",
+      "method": "POST",
+      "label": "Set Mode"
+    },
+    {
+      "name": "get_active_display",
+      "method": "POST",
+      "label": "Get Active Display"
+    },
+    {
+      "name": "safe_stop",
+      "method": "POST",
+      "label": "Safe Stop"
+    },
+    {
+      "name": "get_config",
+      "method": "POST",
+      "label": "Get Config"
+    },
+    {
+      "name": "set_config",
+      "method": "POST",
+      "label": "Set Config"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "autoload": true,
+  "allow_test_tone": false,
+  "require_tone_confirmation": true,
+  "history_limit": 200
+}
