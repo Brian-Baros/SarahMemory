@@ -1,0 +1,21 @@
+[Desktop Entry]
+# --==The SarahMemory Project==--
+# File: SarahMemory.desktop.template
+# Part of the SarahMemory AiOS Governed Cognitive Runtime
+# Version: v9.0.0
+# Date: 2026-06-06
+# Time: 10:11:54
+# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+# Purpose: Linux desktop launcher template. Replace /absolute/path/to/SarahMemory before installing.
+Type=Application
+Name=SarahMemory AiOS
+Comment=Launch SarahMemory AiOS Governed Cognitive Runtime
+Exec=/absolute/path/to/SarahMemory/SarahMemory
+Path=/absolute/path/to/SarahMemory
+Terminal=true
+Categories=Development;Utility;
+StartupNotify=true
+
+# ====================================================================
+# END OF SarahMemory.desktop.template v9.0.0
+# ====================================================================

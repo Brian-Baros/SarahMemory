@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# --==The SarahMemory Project==--
+# File: SarahMemory-headless
+# Part of the SarahMemory AiOS Governed Cognitive Runtime
+# Version: v9.0.0
+# Date: 2026-06-06
+# Time: 10:11:54
+# Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+# Purpose: Headless/server ignition trigger for SarahMemory AiOS.
+# This file is a thin launcher only. It marks headless launch intent and runs ./core/SarahMemoryMain.py.
+
+set -u
+
+SARAHMEMORY_ROOT="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SARAHMEMORY_CORE="$SARAHMEMORY_ROOT/core"
+SARAHMEMORY_MAIN="$SARAHMEMORY_CORE/SarahMemoryMain.py"
+export SARAHMEMORY_ROOT
+export SARAHMEMORY_CORE
+export SARAHMEMORY_LAUNCHER="SarahMemory-headless"
+export SARAHMEMORY_LAUNCH_MODE="headless"
+export SARAHMEMORY_HEADLESS="1"
+
+if [[ ! -d "$SARAHMEMORY_CORE" ]]; then
+    echo "[SarahMemory Headless Launcher] ERROR: Missing core directory: $SARAHMEMORY_CORE" >&2
+    exit 2
+fi
+
+if [[ ! -f "$SARAHMEMORY_MAIN" ]]; then
+    echo "[SarahMemory Headless Launcher] ERROR: Missing core entry file: $SARAHMEMORY_MAIN" >&2
+    exit 3
+fi
+
+if [[ -x "$SARAHMEMORY_ROOT/venv/bin/python" ]]; then
+    PYTHON_EXE="$SARAHMEMORY_ROOT/venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_EXE="python3"
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_EXE="python"
+else
+    echo "[SarahMemory Headless Launcher] ERROR: Python was not found." >&2
+    exit 4
+fi
+
+cd "$SARAHMEMORY_CORE" || exit 5
+exec "$PYTHON_EXE" "SarahMemoryMain.py" "$@"
+
+# ====================================================================
+# END OF SarahMemory-headless v9.0.0
+# ====================================================================
