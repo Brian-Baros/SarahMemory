@@ -1,0 +1,57 @@
+{
+  "id": "com.softdev0.gamepad.bluetooth",
+  "name": "Game Controller Bluetooth Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Governed Bluetooth game controller driver with device scan, best-effort pairing, connection lifecycle, input polling, event buffering, and optional rumble/light/vendor control hooks.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "os": ["windows", "linux", "mac"],
+    "transport": ["bluetooth"],
+    "input_backends": ["pygame", "inputs", "hid"],
+    "notes": "Pair/connect behavior depends on host OS Bluetooth stack and installed controller drivers."
+  },
+  "transport": "bluetooth",
+  "category": "gamepad",
+  "permissions": [
+    "hardware.bluetooth",
+    "hardware.gamepad",
+    "filesystem.write_local",
+    "os.subprocess"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "get_config",
+    "set_config",
+    "backend_probe",
+    "scan_bt",
+    "discover_devices",
+    "pair",
+    "connect",
+    "pair_connect",
+    "disconnect",
+    "list_gamepads",
+    "start_listen",
+    "stop_listen",
+    "get_state",
+    "poll_state",
+    "get_events",
+    "clear_events",
+    "inject_event",
+    "rumble",
+    "set_light",
+    "vendor_passthrough"
+  ],
+  "tags": ["bluetooth", "gamepad", "controller", "joystick", "input"]
+}

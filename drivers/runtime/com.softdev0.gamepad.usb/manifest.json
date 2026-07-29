@@ -1,0 +1,51 @@
+{
+  "id": "com.softdev0.gamepad.usb",
+  "name": "Game Controller USB Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Governed USB gamepad driver with controller discovery, connection lifecycle, state polling, buffered events, and best-effort rumble support where the active backend exposes it.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "os": ["windows", "linux", "mac"],
+    "transport": ["usb"],
+    "hardware": ["gamepad", "joystick", "controller"]
+  },
+  "transport": "usb",
+  "category": "gamepad",
+  "permissions": [
+    "hardware.usb",
+    "os.input_read",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "backend_probe",
+    "list_controllers",
+    "connect",
+    "disconnect",
+    "read_state",
+    "start_listener",
+    "stop_listener",
+    "get_events",
+    "clear_events",
+    "inject_event",
+    "get_config",
+    "set_config",
+    "rumble",
+    "set_light",
+    "vendor_passthrough",
+    "safe_stop"
+  ],
+  "tags": ["gamepad", "usb", "controller", "joystick", "pygame"]
+}

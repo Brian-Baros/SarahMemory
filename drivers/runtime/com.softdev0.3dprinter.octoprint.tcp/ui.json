@@ -1,0 +1,106 @@
+{
+  "title": "3D Printer (OctoPrint) Driver",
+  "icon": "printer-3d",
+  "category": "drivers",
+  "sections": [
+    {
+      "id": "overview",
+      "label": "Overview",
+      "type": "status"
+    },
+    {
+      "id": "connection",
+      "label": "Connection",
+      "type": "form"
+    },
+    {
+      "id": "job_controls",
+      "label": "Job Controls",
+      "type": "actions"
+    },
+    {
+      "id": "safe_controls",
+      "label": "Safe Controls",
+      "type": "actions"
+    },
+    {
+      "id": "gcode",
+      "label": "G-code",
+      "type": "command"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "auto_connect_on_init": false,
+    "base_url": "",
+    "api_key": "",
+    "timeout_sec": 10,
+    "verify_tls": true,
+    "connection": {
+      "port": "",
+      "baudrate": 0,
+      "printerProfile": "",
+      "save": false,
+      "autoconnect": false
+    },
+    "safe_stop": {
+      "cancel_job_first": true,
+      "cooldown_hotend": true,
+      "cooldown_bed": true,
+      "disable_steppers": false,
+      "park_head": false,
+      "park_x": 0,
+      "park_y": 0,
+      "park_z_lift": 5
+    }
+  },
+  "buttons": [
+    {
+      "id": "ping",
+      "label": "Ping",
+      "action": "ping"
+    },
+    {
+      "id": "status",
+      "label": "Refresh Status",
+      "action": "status"
+    },
+    {
+      "id": "connect",
+      "label": "Connect Printer",
+      "action": "connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect Printer",
+      "action": "disconnect"
+    },
+    {
+      "id": "start_job",
+      "label": "Start Job",
+      "action": "start_job"
+    },
+    {
+      "id": "pause_job",
+      "label": "Pause Job",
+      "action": "pause_job"
+    },
+    {
+      "id": "resume_job",
+      "label": "Resume Job",
+      "action": "resume_job"
+    },
+    {
+      "id": "cancel_job",
+      "label": "Cancel Job",
+      "action": "cancel_job"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop",
+      "action": "safe_stop",
+      "severity": "warning"
+    }
+  ]
+}

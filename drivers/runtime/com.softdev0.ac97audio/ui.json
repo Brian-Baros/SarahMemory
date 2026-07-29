@@ -1,0 +1,24 @@
+{
+  "sections": [
+    {
+      "id": "audio",
+      "title": "Audio Control",
+      "fields": [
+        "default_volume",
+        "history_limit"
+      ]
+    }
+  ],
+  "actions": [
+    "probe_backends",
+    "discover_audio",
+    "set_active_output",
+    "set_active_input",
+    "set_volume",
+    "mute",
+    "unmute",
+    "play_test_tone",
+    "get_config",
+    "safe_stop"
+  ]
+}

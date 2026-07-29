@@ -1,0 +1,67 @@
+{
+  "id": "com.softdev0.ir.remote.hid",
+  "name": "IR Remote Receiver HID Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Operational HID IR remote receiver driver for keyboard-emulating receivers and generic HID endpoints.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "os": [
+      "windows",
+      "linux",
+      "mac"
+    ],
+    "transport": [
+      "hid",
+      "usb"
+    ],
+    "runtime": [
+      "python3"
+    ]
+  },
+  "transport": "hid",
+  "category": "ir",
+  "permissions": [
+    "hardware.usb",
+    "filesystem.read_local",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init",
+    "status_callable": "driver_status",
+    "action_callable": "driver_action",
+    "shutdown_callable": "driver_shutdown"
+  },
+  "actions_callable": [
+    "ping",
+    "probe_backend",
+    "list_hid",
+    "open",
+    "close",
+    "start_listen",
+    "stop_listen",
+    "read_once",
+    "inject_report",
+    "feed_keystrokes",
+    "parse_text",
+    "get_buffer",
+    "clear_buffer",
+    "get_events",
+    "get_config",
+    "set_config",
+    "safe_stop",
+    "vendor_passthrough"
+  ],
+  "tags": [
+    "hid",
+    "ir",
+    "remote",
+    "usb",
+    "keyboard-wedge"
+  ]
+}

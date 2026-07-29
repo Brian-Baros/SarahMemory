@@ -1,0 +1,54 @@
+{
+  "title": "Game Controller Bluetooth Driver",
+  "sections": [
+    {
+      "id": "connection",
+      "title": "Bluetooth Device",
+      "fields": [
+        {"key": "device_name", "label": "Device name", "type": "string", "placeholder": "DualShock 4 / Xbox Wireless Controller"},
+        {"key": "device_mac", "label": "Device MAC (optional)", "type": "string", "placeholder": "AA:BB:CC:DD:EE:FF"},
+        {"key": "scan_seconds", "label": "Scan seconds", "type": "number"},
+        {"key": "auto_pair", "label": "Auto pair", "type": "bool"},
+        {"key": "auto_connect", "label": "Auto connect", "type": "bool"},
+        {"key": "allow_os_pairing_commands", "label": "Allow OS pairing commands", "type": "bool"}
+      ]
+    },
+    {
+      "id": "input",
+      "title": "Input / Polling",
+      "fields": [
+        {"key": "backend_priority", "label": "Backend priority", "type": "list"},
+        {"key": "poll_hz", "label": "Poll rate (Hz)", "type": "number"},
+        {"key": "deadzone", "label": "Axis deadzone", "type": "number"},
+        {"key": "buffer_limit", "label": "Event buffer limit", "type": "number"},
+        {"key": "normalize_axes", "label": "Normalize axes", "type": "bool"}
+      ]
+    },
+    {
+      "id": "advanced",
+      "title": "Advanced",
+      "fields": [
+        {"key": "rumble_supported", "label": "Enable rumble contract", "type": "bool"},
+        {"key": "lightbar_supported", "label": "Enable light contract", "type": "bool"},
+        {"key": "vendor_passthrough_enabled", "label": "Enable vendor passthrough", "type": "bool"},
+        {"key": "enabled", "label": "Enabled", "type": "bool"},
+        {"key": "autoload", "label": "Autoload on boot", "type": "bool"}
+      ]
+    }
+  ],
+  "actions": [
+    {"id": "backend_probe", "label": "Probe Backends"},
+    {"id": "scan_bt", "label": "Scan Bluetooth"},
+    {"id": "list_gamepads", "label": "List Gamepads"},
+    {"id": "pair_connect", "label": "Pair + Connect"},
+    {"id": "disconnect", "label": "Disconnect"},
+    {"id": "start_listen", "label": "Start Listener"},
+    {"id": "stop_listen", "label": "Stop Listener"},
+    {"id": "get_state", "label": "Get State"},
+    {"id": "get_events", "label": "Get Events"},
+    {"id": "clear_events", "label": "Clear Events"},
+    {"id": "rumble", "label": "Rumble"},
+    {"id": "set_light", "label": "Set Light"},
+    {"id": "get_config", "label": "Get Config"}
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "vendor_id": "",
+  "product_id": "",
+  "usage_page": "0x01",
+  "usage": "0x06",
+  "interface_number": "",
+  "path": "",
+  "read_size": 64,
+  "read_timeout_ms": 120,
+  "line_timeout_ms": 80,
+  "prefix": "",
+  "suffix": "\n",
+  "charset": "utf-8",
+  "strict_decode": false,
+  "trim_whitespace": true,
+  "dedupe_window_ms": 400,
+  "max_buffer": 200,
+  "keyboard_wedge": true,
+  "case_mode": "preserve"
+}

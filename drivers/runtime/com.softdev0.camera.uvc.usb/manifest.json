@@ -1,0 +1,123 @@
+{
+  "id": "com.softdev0.camera.uvc.usb",
+  "name": "USB/UVC Camera Driver",
+  "type": "driver",
+  "version": "2.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Capability-driven USB/UVC camera driver package with discovery, capture, PTZ, optics, image controls, audio enumeration, vendor passthrough, and graceful degradation across host backends.",
+  "tags": [
+    "camera",
+    "uvc",
+    "usb",
+    "webcam",
+    "ptz",
+    "thermal",
+    "infrared",
+    "nightvision",
+    "audio",
+    "driver"
+  ],
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": "usb",
+    "device_classes": [
+      "uvc",
+      "webcam",
+      "ptz",
+      "thermal",
+      "infrared",
+      "nightvision",
+      "stereo",
+      "depth",
+      "vendor_extension"
+    ],
+    "os_support": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "backend_support": [
+      "opencv",
+      "v4l2",
+      "ffmpeg",
+      "directshow",
+      "msmf",
+      "avfoundation",
+      "gstreamer"
+    ]
+  },
+  "permissions": [
+    "hardware.camera",
+    "hardware.usb",
+    "hardware.microphone",
+    "filesystem.read_local",
+    "filesystem.write_local",
+    "subprocess.local_tools"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_callable": [
+    "ping",
+    "discover_devices",
+    "select_device",
+    "probe_capabilities",
+    "enumerate_controls",
+    "open_stream",
+    "close_stream",
+    "read_frame",
+    "save_snapshot",
+    "start_recording",
+    "record_frame",
+    "stop_recording",
+    "start_audio_recording",
+    "stop_audio_recording",
+    "set_control",
+    "get_control",
+    "ptz",
+    "vendor_passthrough",
+    "get_config",
+    "update_config",
+    "safe_stop"
+  ],
+  "capability_notes": {
+    "generic": [
+      "brightness",
+      "contrast",
+      "saturation",
+      "sharpness",
+      "hue",
+      "gamma",
+      "gain",
+      "white_balance_auto",
+      "white_balance_temperature",
+      "exposure_auto",
+      "exposure",
+      "focus_auto",
+      "focus",
+      "zoom",
+      "pan",
+      "tilt",
+      "roll",
+      "iris",
+      "backlight",
+      "mirror",
+      "flip",
+      "roi",
+      "power_line_frequency",
+      "led"
+    ],
+    "advanced": [
+      "thermal palettes and night vision are device/vendor dependent",
+      "PTZ motor controls require firmware/driver exposure of relevant controls",
+      "vendor-specific extension units can be passed through on supported hosts"
+    ]
+  }
+}
