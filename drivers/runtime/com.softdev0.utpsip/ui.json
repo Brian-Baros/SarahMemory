@@ -1,0 +1,55 @@
+{
+  "title": "UTPSIP Bridge",
+  "tabs": [
+    "Hardware",
+    "SIP",
+    "Calls"
+  ],
+  "fields": [
+    {
+      "key": "sip_server",
+      "type": "text"
+    },
+    {
+      "key": "sip_port",
+      "type": "number"
+    },
+    {
+      "key": "username",
+      "type": "text"
+    },
+    {
+      "key": "password",
+      "type": "password"
+    },
+    {
+      "key": "display_name",
+      "type": "text"
+    },
+    {
+      "key": "transport",
+      "type": "select",
+      "options": [
+        "udp",
+        "tcp",
+        "tls"
+      ]
+    },
+    {
+      "key": "allow_call_control",
+      "type": "boolean"
+    }
+  ],
+  "actions": [
+    "probe_backends",
+    "discover_hardware",
+    "describe_capabilities",
+    "connect_stack",
+    "disconnect_stack",
+    "start_call",
+    "hangup",
+    "send_dtmf",
+    "get_config",
+    "safe_stop"
+  ]
+}

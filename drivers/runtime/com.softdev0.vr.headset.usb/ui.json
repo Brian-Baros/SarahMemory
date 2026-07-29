@@ -1,0 +1,24 @@
+{
+  "sections": [
+    {
+      "id": "native_hmd",
+      "title": "SarahMemory Native HMD",
+      "fields": [
+        "selected_profile",
+        "auto_start_on_headset_connected",
+        "auto_stop_on_headset_disconnected",
+        "poll_interval_ms"
+      ]
+    }
+  ],
+  "actions": [
+    "probe",
+    "discover_devices",
+    "native_hmd_status",
+    "native_headset_profile",
+    "operator_hud_status",
+    "build_operator_hud_request",
+    "get_config",
+    "safe_stop"
+  ]
+}

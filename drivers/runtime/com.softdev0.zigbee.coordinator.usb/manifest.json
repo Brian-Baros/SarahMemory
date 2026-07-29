@@ -1,0 +1,61 @@
+{
+  "id": "com.softdev0.zigbee.coordinator.usb",
+  "name": "Zigbee Coordinator Driver",
+  "type": "driver",
+  "version": "2.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "USB Zigbee coordinator bridge for serial coordinators and external stack integrations.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": "usb_serial",
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "stacks": [
+      "raw_serial",
+      "zigbee2mqtt",
+      "deconz",
+      "zha_bridge",
+      "vendor"
+    ]
+  },
+  "permissions": [
+    "hardware.usb",
+    "hardware.serial",
+    "filesystem.write_local",
+    "process.exec"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_supported": [
+    "ping",
+    "probe_backends",
+    "list_ports",
+    "connect",
+    "disconnect",
+    "start_listener",
+    "stop_listener",
+    "read_once",
+    "send_raw",
+    "feed_text",
+    "get_frames",
+    "get_events",
+    "clear_buffers",
+    "list_devices",
+    "set_network_state",
+    "launch_stack",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
+}

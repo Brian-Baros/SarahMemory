@@ -1,0 +1,59 @@
+{
+  "id": "com.softdev0.zwave.usb",
+  "name": "Z-Wave USB Controller Driver",
+  "type": "driver",
+  "version": "2.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Governed Z-Wave USB bridge for controller discovery, serial connectivity, event buffering, and external stack integration.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": "usb",
+    "bus": "serial",
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "runtime": [
+      "python",
+      "node_optional"
+    ]
+  },
+  "permissions": [
+    "hardware.usb",
+    "hardware.serial",
+    "filesystem.write_local",
+    "process.spawn_optional",
+    "network.local_optional"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backends",
+    "list_ports",
+    "discover_devices",
+    "connect",
+    "disconnect",
+    "start_listen",
+    "stop_listen",
+    "read_once",
+    "get_buffer",
+    "clear_buffer",
+    "send_raw",
+    "launch_stack",
+    "feed_text",
+    "describe_capabilities",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
+}

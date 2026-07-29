@@ -1,0 +1,89 @@
+{
+  "title": "Zigbee Coordinator Driver",
+  "sections": [
+    {
+      "id": "connection",
+      "label": "Connection",
+      "fields": [
+        {
+          "key": "port",
+          "label": "Serial Port",
+          "type": "string",
+          "placeholder": "COM6 or /dev/ttyUSB0"
+        },
+        {
+          "key": "baud",
+          "label": "Baud",
+          "type": "int"
+        },
+        {
+          "key": "stack",
+          "label": "Stack",
+          "type": "string",
+          "placeholder": "raw_serial|zigbee2mqtt|deconz|zha_bridge|vendor"
+        },
+        {
+          "key": "auto_discover",
+          "label": "Auto Discover",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "runtime",
+      "label": "Runtime",
+      "fields": [
+        {
+          "key": "frame_encoding",
+          "label": "Frame Encoding",
+          "type": "string",
+          "placeholder": "hex|ascii|json"
+        },
+        {
+          "key": "allow_raw_send",
+          "label": "Allow Raw Send",
+          "type": "bool"
+        },
+        {
+          "key": "require_send_confirmation",
+          "label": "Require Send Confirmation",
+          "type": "bool"
+        },
+        {
+          "key": "allow_stack_launch",
+          "label": "Allow Stack Launch",
+          "type": "bool"
+        }
+      ]
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "port": "",
+    "baud": 115200,
+    "stack": "raw_serial",
+    "auto_discover": true,
+    "frame_encoding": "hex",
+    "allow_raw_send": false,
+    "require_send_confirmation": true,
+    "allow_stack_launch": false
+  },
+  "available_actions": [
+    "probe_backends",
+    "list_ports",
+    "connect",
+    "disconnect",
+    "start_listener",
+    "stop_listener",
+    "read_once",
+    "send_raw",
+    "get_frames",
+    "get_events",
+    "clear_buffers",
+    "list_devices",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ]
+}
