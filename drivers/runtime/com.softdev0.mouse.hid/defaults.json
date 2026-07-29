@@ -1,0 +1,33 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "backend_priority": [
+    "hid"
+  ],
+  "capture_mode": "listen",
+  "device_filter": "",
+  "vendor_id": null,
+  "product_id": null,
+  "usage_page": 1,
+  "usage": 2,
+  "interface_number": null,
+  "path": "",
+  "serial_number": "",
+  "read_size": 8,
+  "read_timeout_ms": 120,
+  "poll_interval_ms": 20,
+  "buffer_limit": 512,
+  "emit_raw_reports": false,
+  "emit_move_events": true,
+  "emit_button_events": true,
+  "emit_wheel_events": true,
+  "absolute_mode": false,
+  "normalize_axes": false,
+  "x_min": 0,
+  "x_max": 32767,
+  "y_min": 0,
+  "y_max": 32767,
+  "dedupe_window_ms": 0,
+  "allow_output_control": false,
+  "allow_vendor_passthrough": false
+}

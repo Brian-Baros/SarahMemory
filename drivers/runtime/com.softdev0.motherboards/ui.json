@@ -1,0 +1,27 @@
+{
+  "sections": [
+    {
+      "id": "identity",
+      "title": "Identity / SMBIOS"
+    },
+    {
+      "id": "firmware",
+      "title": "Firmware / UEFI"
+    },
+    {
+      "id": "acpi",
+      "title": "ACPI / Soft Power"
+    }
+  ],
+  "actions": [
+    "inventory",
+    "identity_packet",
+    "firmware_info",
+    "uefi_read_variable",
+    "boot_order_read",
+    "acpi_snapshot",
+    "acpi_listener_start",
+    "acpi_listener_stop",
+    "safe_stop"
+  ]
+}

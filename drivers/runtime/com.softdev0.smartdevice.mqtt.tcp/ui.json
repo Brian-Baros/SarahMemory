@@ -1,0 +1,94 @@
+{
+  "title": "Smart Device MQTT Driver",
+  "sections": [
+    {
+      "id": "probe_backends",
+      "label": "Probe Backends"
+    },
+    {
+      "id": "connect",
+      "label": "Connect Broker"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect Broker"
+    },
+    {
+      "id": "subscribe",
+      "label": "Subscribe Topic"
+    },
+    {
+      "id": "unsubscribe",
+      "label": "Unsubscribe Topic"
+    },
+    {
+      "id": "publish",
+      "label": "Publish Message"
+    },
+    {
+      "id": "send_command",
+      "label": "Send Device Command"
+    },
+    {
+      "id": "publish_state",
+      "label": "Publish Device State"
+    },
+    {
+      "id": "publish_discovery",
+      "label": "Publish Discovery"
+    },
+    {
+      "id": "list_devices",
+      "label": "List Devices"
+    },
+    {
+      "id": "get_events",
+      "label": "Get Events"
+    },
+    {
+      "id": "clear_events",
+      "label": "Clear Events"
+    },
+    {
+      "id": "describe_capabilities",
+      "label": "Describe Capabilities"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "host": "",
+    "port": 1883,
+    "client_id": "",
+    "username": "",
+    "password": "",
+    "keepalive": 60,
+    "use_tls": false,
+    "tls_insecure": false,
+    "base_topic": "home/sarahmemory",
+    "default_qos": 0,
+    "default_retain": false,
+    "auto_subscribe": true,
+    "auto_subscribe_topics": [
+      "homeassistant/#",
+      "+/state",
+      "+/status"
+    ],
+    "listen_topics": [],
+    "state_topic_suffix": "state",
+    "command_topic_suffix": "set",
+    "availability_topic_suffix": "availability",
+    "discovery_prefix": "homeassistant",
+    "allow_publish": true,
+    "allow_raw_publish": false,
+    "require_publish_confirmation": true,
+    "allow_retained_publish": true,
+    "allow_device_discovery_publish": true,
+    "event_buffer_limit": 500,
+    "device_buffer_limit": 200
+  }
+}

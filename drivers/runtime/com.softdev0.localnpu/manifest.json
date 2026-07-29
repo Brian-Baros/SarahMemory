@@ -1,0 +1,39 @@
+{
+  "driver_id": "com.softdev0.localnpu",
+  "name": "Local NPU / AI Accelerator Bridge",
+  "version": "2.0.0",
+  "entry": "driver.py",
+  "platform": {
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "transport": [
+      "pci",
+      "usb",
+      "runtime"
+    ],
+    "architectures": [
+      "x86_64",
+      "arm64"
+    ]
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "probe_backends",
+    "discover_accelerators",
+    "select_runtime",
+    "assign_model_target",
+    "queue_benchmark",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ],
+  "permissions": [
+    "subprocess",
+    "filesystem_read"
+  ]
+}

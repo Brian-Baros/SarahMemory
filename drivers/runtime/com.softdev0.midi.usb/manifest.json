@@ -1,0 +1,62 @@
+{
+  "id": "com.softdev0.midi.usb",
+  "name": "MIDI USB Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / SarahMemory Community",
+  "description": "Governed USB MIDI driver using optional mido or pygame.midi backends for input, output, event listening, and device enumeration.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "os": [
+      "windows",
+      "linux",
+      "mac"
+    ],
+    "transport": [
+      "usb"
+    ]
+  },
+  "transport": "usb",
+  "category": "midi",
+  "permissions": [
+    "hardware.usb",
+    "media.midi",
+    "filesystem.write_local"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions": [
+    "ping",
+    "probe_backends",
+    "list_devices",
+    "connect",
+    "disconnect",
+    "start_listener",
+    "stop_listener",
+    "poll_once",
+    "get_events",
+    "clear_events",
+    "send_message",
+    "send_raw",
+    "feed_text",
+    "parse_packet",
+    "get_config",
+    "set_config",
+    "safe_stop"
+  ],
+  "tags": [
+    "midi",
+    "usb",
+    "keyboard",
+    "controller",
+    "synth"
+  ]
+}

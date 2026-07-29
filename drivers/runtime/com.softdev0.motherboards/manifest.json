@@ -1,0 +1,34 @@
+{
+  "id": "com.softdev0.motherboards",
+  "name": "Motherboard / Firmware Bridge",
+  "version": "3.0.0",
+  "enabled": true,
+  "autoload": false,
+  "manufacturer": "SOFTDEV0 LLC",
+  "driver_signature": "local_sha256_runtime",
+  "signature_type": "sha256",
+  "trust_level": "local_unsigned",
+  "targets": [
+    "motherboard",
+    "bios",
+    "uefi",
+    "acpi",
+    "raspberry_pi_firmware"
+  ],
+  "transport": "local_system",
+  "actions_callable": [
+    "inventory",
+    "identity_packet",
+    "firmware_info",
+    "uefi_read_variable",
+    "uefi_write_variable",
+    "boot_order_read",
+    "boot_order_write",
+    "acpi_listener_start",
+    "acpi_listener_stop",
+    "acpi_snapshot"
+  ],
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown"
+}

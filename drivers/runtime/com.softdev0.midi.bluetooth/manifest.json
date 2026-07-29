@@ -1,0 +1,60 @@
+{
+  "id": "com.softdev0.midi.bluetooth",
+  "name": "MIDI Bluetooth Driver",
+  "type": "driver",
+  "version": "1.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Bluetooth Low Energy MIDI (BLE-MIDI) driver with BLE scan/connect, MIDI event parsing, buffered receive, and best-effort send support.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transports": [
+      "bluetooth",
+      "ble"
+    ],
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "notes": "Uses Bleak for BLE GATT access and Mido for optional MIDI message handling when available."
+  },
+  "permissions": [
+    "hardware.bluetooth",
+    "media.audio"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_callable": [
+    "ping",
+    "probe_backends",
+    "scan",
+    "connect",
+    "disconnect",
+    "get_status",
+    "get_config",
+    "set_config",
+    "get_events",
+    "clear_events",
+    "parse_packet",
+    "send_bytes",
+    "send_message",
+    "feed_text",
+    "list_midi_ports",
+    "safe_stop"
+  ],
+  "tags": [
+    "midi",
+    "ble-midi",
+    "bluetooth",
+    "controller",
+    "music"
+  ]
+}

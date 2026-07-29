@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "autoload": false,
+  "endpoint": "opc.tcp://127.0.0.1:4840",
+  "security_mode": "None",
+  "security_policy": "None",
+  "username": "",
+  "password": "",
+  "certificate_path": "",
+  "private_key_path": "",
+  "application_uri": "",
+  "timeout": 4.0,
+  "session_timeout": 60.0,
+  "read_only": true,
+  "require_write_confirmation": true,
+  "allow_method_calls": false,
+  "require_method_confirmation": true,
+  "subscription_period_ms": 500,
+  "event_buffer_limit": 500,
+  "history_limit": 200,
+  "namespace_hints": []
+}

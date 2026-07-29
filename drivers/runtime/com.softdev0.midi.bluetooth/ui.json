@@ -1,0 +1,71 @@
+{
+  "title": "MIDI Bluetooth Driver",
+  "sections": [
+    {
+      "id": "probe_backends",
+      "label": "Probe Backends"
+    },
+    {
+      "id": "scan",
+      "label": "Scan BLE MIDI"
+    },
+    {
+      "id": "connect",
+      "label": "Connect"
+    },
+    {
+      "id": "disconnect",
+      "label": "Disconnect"
+    },
+    {
+      "id": "get_status",
+      "label": "Get Status"
+    },
+    {
+      "id": "get_events",
+      "label": "Get Events"
+    },
+    {
+      "id": "clear_events",
+      "label": "Clear Events"
+    },
+    {
+      "id": "send_message",
+      "label": "Send MIDI Message"
+    },
+    {
+      "id": "send_bytes",
+      "label": "Send MIDI Bytes"
+    },
+    {
+      "id": "parse_packet",
+      "label": "Parse BLE Packet"
+    },
+    {
+      "id": "list_midi_ports",
+      "label": "List MIDI Ports"
+    },
+    {
+      "id": "safe_stop",
+      "label": "Safe Stop"
+    }
+  ],
+  "actions": {
+    "enabled": true,
+    "autoload": false,
+    "device_name": "",
+    "device_address": "",
+    "service_uuid": "03b80e5a-ede8-4b33-a751-6ce34ec4c700",
+    "characteristic_uuid": "7772e5db-3868-4112-a1a9-f2669d106bf3",
+    "auto_pair": false,
+    "auto_connect": false,
+    "scan_timeout": 8.0,
+    "connect_timeout": 15.0,
+    "emit_raw_packets": false,
+    "emit_clock": true,
+    "emit_active_sensing": false,
+    "allow_send": true,
+    "allow_vendor_sysex": false,
+    "virtual_port_name": "SarahMemory BLE MIDI"
+  }
+}

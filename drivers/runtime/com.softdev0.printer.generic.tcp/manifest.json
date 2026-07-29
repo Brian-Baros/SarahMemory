@@ -1,0 +1,63 @@
+{
+  "id": "com.softdev0.printer.generic.tcp",
+  "name": "Generic Network Printer Driver",
+  "type": "driver",
+  "version": "2.0.0",
+  "author": "SOFTDEV0 LLC / Brian Lee Baros",
+  "description": "Protocol-driven generic network printer driver for raw TCP/JetDirect, LPR/LPD, and host-spooler IPP/IPPS submission. Built for broad compatibility, not vendor-specific finishing.",
+  "api_compat": {
+    "min": "8.0.0",
+    "max": "8.9.9"
+  },
+  "platform": {
+    "transport": "tcp",
+    "protocols": [
+      "raw_tcp",
+      "lpr",
+      "ipp",
+      "ipps",
+      "socket"
+    ],
+    "os": [
+      "windows",
+      "linux",
+      "macos"
+    ]
+  },
+  "permissions": [
+    "network.outbound",
+    "filesystem.read_local",
+    "filesystem.write_local",
+    "subprocess.exec"
+  ],
+  "entry": {
+    "module": "driver",
+    "callable": "driver_init"
+  },
+  "status_callable": "driver_status",
+  "action_callable": "driver_action",
+  "shutdown_callable": "driver_shutdown",
+  "actions_callable": [
+    "ping",
+    "probe_backends",
+    "get_config",
+    "set_config",
+    "connect",
+    "disconnect",
+    "print_text",
+    "print_raw",
+    "print_file",
+    "print_test",
+    "describe_capabilities",
+    "safe_stop"
+  ],
+  "tags": [
+    "printer",
+    "network",
+    "tcp",
+    "ipp",
+    "lpr",
+    "jetdirect",
+    "generic"
+  ]
+}
