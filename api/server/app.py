@@ -4319,25 +4319,80 @@ def _sm_try_keyboard_lighting(text: str, quick_route: dict) -> tuple[bool, str, 
     return False, 'Keyboard lighting route matched and drivers were discovered, but no executable lighting action succeeded.', {"driver_matches": [m[0] for m in matches]}
 
 
-def _sm_execute_quick_route(text: str) -> tuple[bool, dict | None]:
+def _sm_quick_route_is_read_only(route_id: str) -> bool:
+    """Return True only for quick routes that cannot mutate OS, drivers, memory, network, or files."""
+    return str(route_id or "").strip() in {"system.datetime.current"}
+
+
+def _sm_quick_action_confirmation_bundle(route: dict, *, governor: dict | None = None) -> dict:
+    """Presentation-only hold for quick routes that would mutate system/driver state."""
+    route_id = str((route or {}).get('route_id') or 'quick_action')
+    rationale = "This quick route changes system or driver state and requires governed approval before execution."
+    if isinstance(governor, dict) and governor.get("rationale"):
+        rationale = str(governor.get("rationale"))
+    bundle = _sm_make_outward_bundle(
+        rationale,
+        meta={
+            "source": "quick_system_route_hold",
+            "engine": "cognitive_governor",
+            "intent": "system",
+            "route_id": route_id,
+            "decision": "REQUIRE_USER",
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
+            "governance_rule": "fast_to_answer_slow_to_act",
+            "version": PROJECT_VERSION,
+        },
+        actions=[{"type": "quick_action_hold", "route_id": route_id, "requires_confirmation": True}],
+        errors=[],
+    )
+    bundle['ok'] = False
+    bundle['blocked'] = True
+    return bundle
+
+
+def _sm_execute_quick_route(
+    text: str,
+    *,
+    allow_actions: bool = False,
+    user_consented: bool = False,
+    governor: dict | None = None,
+) -> tuple[bool, dict | None]:
+    """Execute only read-only quick routes before governance.
+
+    Hardware/driver/system-mutating quick routes are intentionally inert until
+    /api/chat has built a context packet and passed CognitiveServices governance.
+    This preserves the speed of date/time answers without allowing keyboard, RGB,
+    driver, shell, filesystem, network, or memory mutation before authorization.
+    """
     route = _sm_match_quick_system_route(text)
     if not route:
         return False, None
     route_id = str(route.get('route_id') or '')
     if route_id == 'system.datetime.current':
         reply = _sm_now_reply(str(route.get('kind') or 'date'))
-        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "local_datetime", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION})
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "local_datetime", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION, "execution_authority": False})
         bundle.setdefault('actions', [])
-        bundle['actions'].append({"type": "route_match", "route_id": route_id})
+        bundle['actions'].append({"type": "route_match", "route_id": route_id, "read_only": True})
         return True, bundle
+
+    # Action quick routes must not execute during the pre-governor hot path.
+    if not allow_actions:
+        return False, None
+
+    # Even after the governor, quick actions require an explicit confirmation flag.
+    if not user_consented:
+        return True, _sm_quick_action_confirmation_bundle(route, governor=governor)
+
     if route_id == 'system.keyboard.key_state':
         ok, reply, details = _sm_set_lock_key_state(str(route.get('key_name') or 'caps_lock'), str(route.get('requested_state') or 'on'))
-        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_key_state", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION}, actions=[{"type": "keyboard_key_state", **details}], errors=[] if ok else [details])
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_key_state", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION, "governed_stage": "post_governor", "execution_authority": False}, actions=[{"type": "keyboard_key_state", **details}], errors=[] if ok else [details])
         bundle['ok'] = bool(ok)
         return True, bundle
     if route_id == 'drivers.keyboard.lighting':
         ok, reply, details = _sm_try_keyboard_lighting(text, route)
-        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_lighting", "intent": "drivers", "route_id": route_id, "version": PROJECT_VERSION}, actions=[{"type": "driver_route", **details}], errors=[] if ok else [details])
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_lighting", "intent": "drivers", "route_id": route_id, "version": PROJECT_VERSION, "governed_stage": "post_governor", "execution_authority": False}, actions=[{"type": "driver_route", **details}], errors=[] if ok else [details])
         bundle['ok'] = bool(ok)
         return True, bundle
     return False, None
@@ -5701,7 +5756,8 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
-        handled, quick_bundle = _sm_execute_quick_route(text)
+        # Pre-governor quick route pass: read-only only.
+        handled, quick_bundle = _sm_execute_quick_route(text, allow_actions=False)
         if handled and quick_bundle is not None:
             return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
 
@@ -5998,6 +6054,23 @@ def api_chat():
                 },
             )
             return jsonify(_sm_attach_reality_meta(bundle, locals().get("reality_flow"))), 200
+
+        # Post-governor quick action pass: system/driver mutations may only run
+        # after governance allows the task and the request carries explicit consent.
+        _quick_user_consented = bool(
+            context_packet.get("meta", {}).get("user_consented")
+            or payload.get("confirmed")
+            or payload.get("user_confirmed")
+            or payload.get("confirm")
+        )
+        handled, quick_bundle = _sm_execute_quick_route(
+            text,
+            allow_actions=True,
+            user_consented=_quick_user_consented,
+            governor=gov if isinstance(gov, dict) else None,
+        )
+        if handled and quick_bundle is not None:
+            return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
 
         # WAVE7: answer-only local LLM fast path. This is after CognitiveServices
         # governance and before OperatorCore/Neuron to avoid unnecessary DB/vector
@@ -9791,7 +9864,13 @@ def api_voice_phase1_contract():
                 pass
         return jsonify({"ok": True, "success": True, "text": preview_text, "voice": voice, "fallback": core_speak_text is None, "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
     if action in {"transcribe", "stt"}:
-        return jsonify({"ok": False, "success": False, "text": "", "error": "STT bridge is present, but browser audio transcription requires the local voice organ/runtime microphone loop.", "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 501
+        try:
+            from SarahMemoryVoice import transcribe_once as _sm_transcribe_once  # type: ignore
+            timeout = max(1.0, min(30.0, float(data.get("timeout") or data.get("timeout_s") or 8.0)))
+            text_out = str(_sm_transcribe_once(timeout=timeout) or "").strip()
+            return jsonify({"ok": bool(text_out), "success": bool(text_out), "text": text_out, "fallback": False, "source": "SarahMemoryVoice.transcribe_once", "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
+        except Exception as exc:
+            return jsonify({"ok": False, "success": False, "text": "", "error": str(exc), "source": "SarahMemoryVoice.transcribe_once", "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 501
     return jsonify({"ok": True, "success": True, "voices": _sm_phase1_voice_options(), "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
 
 
@@ -9828,15 +9907,30 @@ def api_voice_preview_phase1_contract():
 @app.route("/api/voice/transcribe", methods=["POST"])
 @app.route("/api/stt", methods=["POST"])
 def api_stt_phase1_contract():
-    return jsonify({
-        "ok": False,
-        "success": False,
-        "text": "",
-        "error": "STT compatibility route is online, but transcription requires the local SarahMemoryVoice runtime/microphone bridge on the target machine.",
-        "schema": _SM_PHASE1_CONTRACT_SCHEMA,
-        "source": "phase1_bridge_ui_contract",
-        "ts": time.time(),
-    }), 501
+    data = request.get_json(silent=True) or {}
+    try:
+        from SarahMemoryVoice import transcribe_once as _sm_transcribe_once  # type: ignore
+        timeout = max(1.0, min(30.0, float(data.get("timeout") or data.get("timeout_s") or 8.0)))
+        text_out = str(_sm_transcribe_once(timeout=timeout) or "").strip()
+        return jsonify({
+            "ok": bool(text_out),
+            "success": bool(text_out),
+            "text": text_out,
+            "fallback": False,
+            "schema": _SM_PHASE1_CONTRACT_SCHEMA,
+            "source": "SarahMemoryVoice.transcribe_once",
+            "ts": time.time(),
+        }), 200
+    except Exception as exc:
+        return jsonify({
+            "ok": False,
+            "success": False,
+            "text": "",
+            "error": str(exc),
+            "schema": _SM_PHASE1_CONTRACT_SCHEMA,
+            "source": "SarahMemoryVoice.transcribe_once",
+            "ts": time.time(),
+        }), 501
 
 
 @app.route("/api/ranking", methods=["GET", "POST"])
@@ -11059,6 +11153,78 @@ def api_terminal_execute():
     result = smterm.terminal_api_execute(payload, caller="Flask:/api/terminal/execute")
     return jsonify(result), (200 if result.get("ok") else 403 if result.get("blocked") else 400)
 
+def _sm_terminal_agent_response(result: dict, *, status_if_unavailable: int = 400):
+    """Return Terminal Bay JSON without losing governed block details.
+
+    Some local clients/proxies display an empty body for HTTP 403 responses.
+    Terminal Bay blocks are not transport failures; they are governed outcomes
+    that must remain visible to the Web UI, PowerShell, and Ledger/debug tests.
+    Use 409 for governance blocks and always serialize the full JSON body.
+    """
+    if not isinstance(result, dict):
+        result = {
+            "ok": False,
+            "blocked": True,
+            "reason": "terminal_agent_returned_non_dict",
+            "reply": "Terminal agent backend returned an invalid response shape.",
+            "stdout": "",
+            "stderr": "terminal_agent_returned_non_dict",
+            "mode": "terminal_agent",
+            "execution_authority": False,
+            "ts": time.time(),
+        }
+    ok = bool(result.get("ok"))
+    blocked = bool(result.get("blocked"))
+    if ok:
+        status = 200
+        transport_status = "ok"
+        governance_http_status = 200
+    elif blocked:
+        # Terminal Bay blocks are successful governed outcomes, not transport
+        # failures.  Some local clients/proxies drop JSON bodies for 4xx
+        # responses, which hides the reason, task_id, and Ledger proof.  Keep
+        # the HTTP transport at 200 and carry the semantic/governance status in
+        # the JSON body and headers.
+        status = 200
+        transport_status = "governance_block"
+        governance_http_status = 409
+    else:
+        status = int(status_if_unavailable or 400)
+        transport_status = "terminal_agent_error"
+        governance_http_status = status
+    result.setdefault("http_status", status)
+    result.setdefault("transport_http_status", status)
+    result.setdefault("governance_http_status", governance_http_status)
+    result.setdefault("semantic_status", governance_http_status)
+    result.setdefault("transport_status", transport_status)
+    result.setdefault("execution_authority", False)
+    result.setdefault("mode", "terminal_agent")
+    try:
+        body = json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as exc:
+        status = 500
+        body = json.dumps({
+            "ok": False,
+            "blocked": True,
+            "reason": "terminal_agent_json_serialization_failed",
+            "error": str(exc),
+            "mode": "terminal_agent",
+            "execution_authority": False,
+            "http_status": status,
+            "transport_status": "serialization_error",
+            "ts": time.time(),
+        }, ensure_ascii=False, default=str)
+    resp = Response(body, status=status, mimetype="application/json")
+    try:
+        resp.headers["Cache-Control"] = "no-store"
+        resp.headers["X-SarahMemory-Mode"] = "terminal_agent"
+        resp.headers["X-SarahMemory-Governance"] = "blocked" if blocked else "ok" if ok else "error"
+        resp.headers["X-SarahMemory-Governance-Status"] = str(governance_http_status)
+    except Exception:
+        pass
+    return resp
+
+
 @app.post("/api/terminal/agent")
 def api_terminal_agent():
     """Governed terminal AI-agent lane.
@@ -11069,7 +11235,7 @@ def api_terminal_agent():
     """
     payload = request.get_json(silent=True) or {}
     if smterm is None:
-        return jsonify({
+        return _sm_terminal_agent_response({
             "ok": False,
             "blocked": True,
             "reason": f"SarahMemoryTerminal.py unavailable: {_SM_TERMINAL_IMPORT_ERROR}",
@@ -11078,11 +11244,11 @@ def api_terminal_agent():
             "stderr": _SM_TERMINAL_IMPORT_ERROR,
             "caller": "Flask:/api/terminal/agent",
             "ts": time.time(),
-        }), 503
+        }, status_if_unavailable=503)
     try:
         result = smterm.terminal_api_agent(payload, caller="Flask:/api/terminal/agent")
     except AttributeError:
-        return jsonify({
+        return _sm_terminal_agent_response({
             "ok": False,
             "blocked": True,
             "reason": "SarahMemoryTerminal.py does not expose terminal_api_agent yet.",
@@ -11091,8 +11257,8 @@ def api_terminal_agent():
             "stderr": "terminal_api_agent missing",
             "caller": "Flask:/api/terminal/agent",
             "ts": time.time(),
-        }), 501
-    return jsonify(result), (200 if result.get("ok") else 403 if result.get("blocked") else 400)
+        }, status_if_unavailable=501)
+    return _sm_terminal_agent_response(result)
 
 
 # =============================================================================
