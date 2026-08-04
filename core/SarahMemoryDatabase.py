@@ -2047,7 +2047,7 @@ def _sm_dataset_db_skip_name(filename: str) -> bool:
 
 def search_local_dataset_pool(query: str, max_hits: int = 8, time_budget_sec: float = 2.0,
                               max_tables_per_db: int = 40, max_rows_per_table: int = 6,
-                              max_db_bytes: int = 512 * 1024 * 1024,
+                              max_db_bytes: int = 256 * 1024 * 1024,
                               max_db_files: int = 12):
     """Search local SQLite databases directly without Phase-7 vector embedding.
 
@@ -2634,6 +2634,21 @@ def search_semantic_memory_pools(query: str, *, intent: str = "", query_type: st
             continue
         if not os.path.abspath(db_path).startswith(os.path.abspath(root)):
             continue
+        try:
+            semantic_max_bytes = int(getattr(config, "SEMANTIC_SQLITE_MAX_DB_BYTES", 256 * 1024 * 1024))
+        except Exception:
+            semantic_max_bytes = 256 * 1024 * 1024
+        try:
+            large_scan_override = bool(getattr(config, "SARAHMEMORY_ALLOW_LARGE_DB_ROUTED_SCAN", False))
+        except Exception:
+            large_scan_override = False
+        try:
+            db_size = os.path.getsize(db_path)
+            if db_size > semantic_max_bytes and not large_scan_override:
+                out["errors"].append(f"skipped_large_db:{db_name}")
+                continue
+        except Exception:
+            pass
         conn = None
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.25)

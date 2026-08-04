@@ -208,6 +208,12 @@ except Exception:
 recognizer = sr.Recognizer() if sr is not None else None
 if recognizer is not None:
     recognizer.dynamic_energy_threshold = True
+    try:
+        recognizer.pause_threshold = float(getattr(config, "VOICE_PAUSE_THRESHOLD", 0.95) or 0.95)
+        recognizer.non_speaking_duration = float(getattr(config, "VOICE_NON_SPEAKING_DURATION", 0.45) or 0.45)
+        recognizer.phrase_threshold = float(getattr(config, "VOICE_PHRASE_THRESHOLD", 0.25) or 0.25)
+    except Exception:
+        pass
 
 # pyttsx3 TTS (Primary)
 try:  # pragma: no cover
@@ -1508,7 +1514,9 @@ def initialize_microphone():
     global mic
     if mic is not None:
         return mic
-    if SAFE_MODE or LOCAL_ONLY_MODE:
+    # SAFE_MODE disables microphone capture. LOCAL_ONLY_MODE must not disable the
+    # local microphone; STT is a local hardware/runtime function, not a cloud call.
+    if SAFE_MODE:
         return None
     if sr is None or recognizer is None:
         return None
@@ -1532,34 +1540,45 @@ def _recognize_chunk(audio: "sr.AudioData") -> Optional[str]:
         return None
 
 
-def listen_and_process(timeout: Optional[float] = None, phrase_time_limit: Optional[float] = None) -> Optional[str]:
-    if SAFE_MODE or LOCAL_ONLY_MODE:
+def listen_and_process(timeout: Optional[float] = None, phrase_time_limit: Optional[float] = None, retry_count: Optional[int] = None) -> Optional[str]:
+    if SAFE_MODE:
         return None
     mic_obj = initialize_microphone()
     if mic_obj is None or sr is None or recognizer is None:
         return None
 
-    timeout = float(timeout if timeout is not None else 5.0)
-    phrase_time_limit = float(phrase_time_limit if phrase_time_limit is not None else 10.0)
+    timeout = float(timeout if timeout is not None else getattr(config, "VOICE_STT_TIMEOUT_SECONDS", 5.0))
+    phrase_time_limit = float(phrase_time_limit if phrase_time_limit is not None else getattr(config, "VOICE_STT_PHRASE_LIMIT_SECONDS", 12.0))
+    retries = max(1, min(4, int(retry_count if retry_count is not None else getattr(config, "VOICE_STT_RETRY_COUNT", 2))))
 
-    try:
-        with mic_obj as source:
-            try:
-                recognizer.adjust_for_ambient_noise(source, duration=0.2)
-            except Exception:
-                pass
-            audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
+    for attempt in range(retries):
+        try:
+            with mic_obj as source:
+                try:
+                    recognizer.pause_threshold = float(getattr(config, "VOICE_PAUSE_THRESHOLD", 0.95) or 0.95)
+                    recognizer.non_speaking_duration = float(getattr(config, "VOICE_NON_SPEAKING_DURATION", 0.45) or 0.45)
+                    recognizer.phrase_threshold = float(getattr(config, "VOICE_PHRASE_THRESHOLD", 0.25) or 0.25)
+                    recognizer.adjust_for_ambient_noise(source, duration=float(getattr(config, "VOICE_AMBIENT_ADJUST_SECONDS", 0.25) or 0.25))
+                except Exception:
+                    pass
+                audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
 
-        txt = _recognize_chunk(audio)
-        if txt:
-            log_voice_event("Voice Input Recognized", txt)
-        return txt
-    except Exception:
-        return None
+            txt = _recognize_chunk(audio)
+            if txt:
+                log_voice_event("Voice Input Recognized", txt)
+                return txt
+            log_voice_event("Voice Input Empty", f"No recognized text on attempt {attempt + 1}/{retries}.")
+        except Exception as exc:
+            name = type(exc).__name__
+            log_voice_event("Voice Input Retry", f"{name}: attempt {attempt + 1}/{retries}")
+            # SpeechRecognition may raise WaitTimeoutError/UnknownValueError; both
+            # should fail soft and immediately allow the UI/backend loop to re-listen.
+            continue
+    return None
 
 
-def transcribe_once(timeout: float = 10.0) -> str:
-    txt = listen_and_process(timeout=timeout)
+def transcribe_once(timeout: float = 10.0, phrase_time_limit: Optional[float] = None) -> str:
+    txt = listen_and_process(timeout=timeout, phrase_time_limit=phrase_time_limit)
     return txt or ""
 
 # =============================================================================

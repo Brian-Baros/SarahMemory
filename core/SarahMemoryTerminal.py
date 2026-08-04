@@ -72,6 +72,8 @@ import logging
 import platform
 import subprocess
 import threading
+import hashlib
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -149,6 +151,97 @@ def _ensure_tables() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS terminal_agent_tasks (
+                task_id TEXT PRIMARY KEY,
+                created_ts TEXT NOT NULL,
+                updated_ts TEXT NOT NULL,
+                status TEXT NOT NULL,
+                objective TEXT NOT NULL,
+                command_text TEXT,
+                task_truth_hash TEXT NOT NULL,
+                task_truth_json TEXT NOT NULL,
+                backend TEXT,
+                skill_id TEXT,
+                risk_level TEXT,
+                session_id TEXT,
+                cwd TEXT,
+                current_stage TEXT,
+                completion_state TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS terminal_agent_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                verdict TEXT,
+                risk TEXT,
+                input_hash TEXT,
+                output_hash TEXT,
+                receipt_hash TEXT,
+                details TEXT,
+                meta_json TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS terminal_agent_constraints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                constraint_type TEXT NOT NULL,
+                constraint_text TEXT NOT NULL,
+                source TEXT NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS terminal_agent_passports (
+                passport_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                mission_id TEXT,
+                backend TEXT,
+                skill_id TEXT,
+                status TEXT NOT NULL,
+                issued_ts TEXT,
+                expires_ts TEXT,
+                passport_hash TEXT,
+                passport_json TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS terminal_agent_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                agent_id TEXT,
+                passport_id TEXT,
+                artifact_type TEXT,
+                source_type TEXT,
+                source_ref_hash TEXT,
+                payload_hash TEXT,
+                quarantine_status TEXT,
+                compare_status TEXT,
+                memory_write_status TEXT,
+                meta_json TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_terminal_agent_events_task ON terminal_agent_events(task_id, id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_terminal_agent_events_type ON terminal_agent_events(event_type, ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_terminal_agent_constraints_task ON terminal_agent_constraints(task_id, active)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_terminal_agent_passports_task ON terminal_agent_passports(task_id, status)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_terminal_agent_artifacts_task ON terminal_agent_artifacts(task_id, quarantine_status, compare_status)")
         con.commit()
     except Exception as e:
         logger.debug("Terminal DB ensure failed: %s", e)
@@ -184,6 +277,615 @@ def log_terminal_event(
         con.close()
     except Exception as e:
         logger.debug("Failed to log terminal event: %s", e)
+
+
+# -----------------------------------------------------------------------------
+# Terminal Agent Task Spine (SQLite live state + Ledger proof receipts)
+# -----------------------------------------------------------------------------
+_SECRET_KEY_TOKENS = (
+    "api_key", "apikey", "secret", "token", "authorization", "cookie",
+    "password", "passwd", "private_key", "credential", "bearer",
+)
+_DEFAULT_TERMINAL_AGENT_DENIED_RESOURCES = [
+    "core/*", ".env", "credentials", "private_keys", "shell", "device_control",
+    "unapproved_memory_dbs", "data/memory/*", "system_index.db", "ai_learning.db",
+]
+_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES = [
+    "shell", "core_write", "device_control", "credential_access", "self_authorization",
+    "hidden_persistence", "unbounded_scrape", "memory_write_without_compare",
+]
+
+
+def _canonical_json(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    except Exception:
+        return json.dumps({"repr": repr(value)}, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _hash_obj(value: Any) -> str:
+    try:
+        return hashlib.sha256(_canonical_json(value).encode("utf-8", "ignore")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _hash_text(value: str) -> str:
+    try:
+        return hashlib.sha256(str(value or "").encode("utf-8", "ignore")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _redact_terminal_agent_value(key: str, value: Any) -> Any:
+    key_l = str(key or "").strip().lower().replace("-", "_")
+    if any(tok in key_l for tok in _SECRET_KEY_TOKENS):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(k)[:120]: _redact_terminal_agent_value(str(k), v) for k, v in list(value.items())[:128]}
+    if isinstance(value, (list, tuple, set)):
+        return [_redact_terminal_agent_value(key, v) for v in list(value)[:128]]
+    if isinstance(value, bytes):
+        return {"bytes_sha256": hashlib.sha256(value).hexdigest(), "size_bytes": len(value)}
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    text = str(value)
+    low = text.lower()
+    if any(tok in low for tok in ("sk-", "api_key=", "authorization:", "bearer ")):
+        return "<redacted>"
+    return text[:2000]
+
+
+def _redact_terminal_agent_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        return {str(k)[:120]: _redact_terminal_agent_value(str(k), v) for k, v in list(payload.items())[:128]}
+    return _redact_terminal_agent_value("value", payload)
+
+
+def _as_string_list(value: Any, *, limit: int = 64) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw = value.replace(";", ",").split(",") if "," in value or ";" in value else value.split()
+    elif isinstance(value, (list, tuple, set)):
+        raw = list(value)
+    else:
+        raw = [value]
+    out: List[str] = []
+    for item in raw[:limit]:
+        text = str(item or "").strip()
+        if text and text not in out:
+            out.append(text[:500])
+    return out
+
+
+_TERMINAL_AGENT_COMMAND_FIELD_ALIASES = {
+    "source": "allowed_sources",
+    "sources": "allowed_sources",
+    "allowed_source": "allowed_sources",
+    "allowed_sources": "allowed_sources",
+    "resource": "allowed_resources",
+    "resources": "allowed_resources",
+    "allowed_resource": "allowed_resources",
+    "allowed_resources": "allowed_resources",
+    "denied_source": "denied_sources",
+    "denied_sources": "denied_sources",
+    "denied_resource": "denied_resources",
+    "denied_resources": "denied_resources",
+    "capability": "allowed_capabilities",
+    "capabilities": "allowed_capabilities",
+    "allowed_capability": "allowed_capabilities",
+    "allowed_capabilities": "allowed_capabilities",
+    "denied_capability": "denied_capabilities",
+    "denied_capabilities": "denied_capabilities",
+    "backend": "backend",
+    "model_backend": "model_backend",
+    "model_backends": "model_backends",
+    "skill": "skill",
+    "skill_id": "skill_id",
+    "mission": "mission",
+    "mission_id": "mission_id",
+    "api_key_alias": "api_key_alias",
+    "api_key_aliases": "api_key_aliases",
+    "key_alias": "api_key_alias",
+    "key_aliases": "api_key_aliases",
+    "passport_id": "passport_id",
+    "passport": "passport_id",
+    "confirmed": "confirmed",
+    "confirmation": "confirmation",
+    "user_approved": "user_approved",
+    "approved": "user_approved",
+    "approval": "user_approved",
+    "launch_approved": "user_approved",
+    "ttl": "ttl_seconds",
+    "ttl_seconds": "ttl_seconds",
+    "require_passport": "passport_required",
+    "passport_required": "passport_required",
+    "require_compare": "compare_required",
+    "compare_required": "compare_required",
+    "network_allowed": "network_allowed",
+    "filesystem_allowed": "filesystem_allowed",
+    "memory_allowed": "memory_allowed",
+    "risk": "risk_level",
+    "risk_level": "risk_level",
+}
+_TERMINAL_AGENT_BOOL_FIELDS = {
+    "passport_required", "compare_required", "network_allowed", "filesystem_allowed",
+    "memory_allowed", "confirmed", "confirmation", "user_approved",
+}
+_TERMINAL_AGENT_INT_FIELDS = {"ttl_seconds"}
+
+
+def _coerce_terminal_agent_command_value(key: str, value: str) -> Any:
+    text = str(value or "").strip().strip('"\'')
+    key_l = str(key or "").strip().lower()
+    if key_l in _TERMINAL_AGENT_BOOL_FIELDS:
+        return text.lower() in ("1", "true", "yes", "on", "required", "require")
+    if key_l in _TERMINAL_AGENT_INT_FIELDS:
+        try:
+            return max(1, int(float(text)))
+        except Exception:
+            return text
+    return text
+
+
+def _terminal_agent_command_fields(task: str) -> Dict[str, Any]:
+    """Parse `/agent ... key=value` command fields without granting authority.
+
+    The API may pass only a raw `task` string.  Terminal Bay policy fields must
+    therefore be extracted from that string before task-spine validation.  This
+    parser is intentionally bounded and only recognizes a fixed allowlist of
+    command keys; unrecognized prose remains part of the objective, not policy.
+    """
+    text = str(task or "").strip()
+    if not text:
+        return {}
+    try:
+        tokens = shlex.split(text, posix=True)
+    except Exception:
+        tokens = text.split()
+    out: Dict[str, Any] = {}
+    for token in tokens[:160]:
+        if "=" not in token:
+            continue
+        raw_key, raw_value = token.split("=", 1)
+        key = str(raw_key or "").strip().lower().replace("-", "_").lstrip("/")
+        if not key:
+            continue
+        target = _TERMINAL_AGENT_COMMAND_FIELD_ALIASES.get(key)
+        if not target:
+            continue
+        out[target] = _coerce_terminal_agent_command_value(target, raw_value)
+    if out:
+        out["command_fields_detected"] = sorted(k for k in out.keys() if k != "command_fields_detected")
+    return out
+
+
+def _merge_terminal_agent_payload(task: str, payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Merge task-string command fields with JSON payload fields.
+
+    Explicit JSON fields win over parsed task-string fields.  The raw task text
+    itself is preserved under `task` for audit/objective purposes.
+    """
+    parsed = _terminal_agent_command_fields(task)
+    base = parsed if isinstance(parsed, dict) else {}
+    supplied = payload if isinstance(payload, dict) else {}
+    merged = {**base, **supplied}
+    merged.setdefault("task", str(task or ""))
+    return merged
+
+
+def _terminal_agent_command_verb(task: str) -> str:
+    """Return the bounded `/agent` verb without granting execution authority."""
+    text = str(task or "").strip()
+    if not text:
+        return ""
+    try:
+        tokens = shlex.split(text, posix=True)
+    except Exception:
+        tokens = text.split()
+    tokens = [str(t or "").strip() for t in tokens if str(t or "").strip()]
+    if not tokens:
+        return ""
+    first = tokens[0].lower()
+    if first in ("/agent", "agent"):
+        return tokens[1].lower().lstrip("/") if len(tokens) > 1 else ""
+    if first.startswith("/agent") and len(first) > len("/agent"):
+        return first[len("/agent"):].strip("/:-_")
+    return first.lstrip("/")
+
+
+def _terminal_agent_passport_id(payload: Optional[Dict[str, Any]], task_truth: Optional[Dict[str, Any]] = None) -> str:
+    """Extract a bounded passport id from approved payload/task truth surfaces."""
+    payload = payload if isinstance(payload, dict) else {}
+    task_truth = task_truth if isinstance(task_truth, dict) else {}
+    for source in (payload, task_truth):
+        value = source.get("passport_id") or source.get("passport")
+        if value:
+            return str(value).strip()[:180]
+    nested = payload.get("passport")
+    if isinstance(nested, dict):
+        value = nested.get("passport_id") or nested.get("id")
+        if value:
+            return str(value).strip()[:180]
+    creds = payload.get("departure_credentials")
+    if isinstance(creds, dict):
+        value = creds.get("passport_id")
+        if value:
+            return str(value).strip()[:180]
+    return ""
+
+
+def _terminal_agent_launch_gate_reason(task: str, payload: Optional[Dict[str, Any]], task_truth: Dict[str, Any]) -> str:
+    """Enterprise launch gate: `/agent launch` is never treated as success without a passport.
+
+    This gate does not enable execution. It only upgrades unsafe/ambiguous launch
+    semantics into a clear governed block when the launch request lacks the
+    required passport and approval proof.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    verb = _terminal_agent_command_verb(task)
+    if verb != "launch":
+        return ""
+    if not bool(task_truth.get("passport_required", True)):
+        return "passport_required_must_remain_true"
+    passport_id = _terminal_agent_passport_id(payload, task_truth)
+    if not passport_id:
+        return "launch_requires_passport_or_explicit_approval"
+    if not _truthy_confirmation(payload, task):
+        return "launch_requires_explicit_user_approval"
+    return ""
+
+
+def _terminal_agent_skill_catalog() -> Dict[str, Dict[str, Any]]:
+    """Built-in Terminal Bay skill policy. This is a registry view, not a new organ."""
+    return {
+        "internal.terminal.status": {
+            "allowed_capabilities": ["inspect", "summarize", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "requires_network": False,
+            "requires_filesystem": False,
+            "compare_required": True,
+            "risk_level": "low",
+        },
+        "api.local.health_check": {
+            "allowed_capabilities": ["api_read", "summarize", "extract_metadata", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "requires_network": True,
+            "requires_filesystem": False,
+            "compare_required": True,
+            "risk_level": "medium",
+        },
+        "agent.inspect.propose": {
+            "allowed_capabilities": ["inspect", "summarize", "propose", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "requires_network": False,
+            "requires_filesystem": False,
+            "compare_required": False,
+            "risk_level": "low",
+        },
+        "research.public_web": {
+            "allowed_capabilities": ["read", "research", "summarize", "extract_metadata", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "requires_network": True,
+            "requires_filesystem": False,
+            "compare_required": True,
+            "risk_level": "medium",
+        },
+        "research.approved_api": {
+            "allowed_capabilities": ["api_read", "summarize", "extract_metadata", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "requires_network": True,
+            "requires_filesystem": False,
+            "compare_required": True,
+            "risk_level": "medium",
+        },
+        "codebase.inspect": {
+            "allowed_capabilities": ["read", "inspect", "summarize", "diff_propose", "return_data"],
+            "denied_capabilities": [x for x in _DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES if x != "shell"],
+            "requires_network": False,
+            "requires_filesystem": True,
+            "compare_required": True,
+            "risk_level": "medium",
+        },
+    }
+
+
+def _resolve_terminal_agent_skill(payload: Dict[str, Any], task: str) -> Tuple[str, Dict[str, Any]]:
+    catalog = _terminal_agent_skill_catalog()
+    skill_id = str(payload.get("skill_id") or payload.get("skill") or "").strip()
+    low = str(task or "").lower()
+    if not skill_id:
+        if any(x in low for x in ("webscrap", "web scrap", "scrape", "crawl", "public web", "website", "news", "latest")):
+            skill_id = "research.public_web"
+        elif any(x in low for x in ("api", "endpoint", "rest", "graphql")):
+            skill_id = "research.approved_api"
+        elif any(x in low for x in ("codebase", "file", "repo", "patch", "diff", "inspect core")):
+            skill_id = "codebase.inspect"
+        else:
+            skill_id = "agent.inspect.propose"
+    if skill_id not in catalog:
+        skill_id = "agent.inspect.propose"
+    return skill_id, dict(catalog[skill_id])
+
+
+def _terminal_agent_backend(payload: Dict[str, Any], task: str) -> str:
+    backend = str(payload.get("backend") or payload.get("model_backend") or "").strip().lower()
+    if backend:
+        return backend[:80]
+    low = str(task or "").lower()
+    if "claude" in low:
+        return "claude_code"
+    if "openai" in low:
+        return "openai_agents"
+    if "openclaw" in low:
+        return "openclaw"
+    if "browser" in low or "web" in low or "scrape" in low:
+        return "browser_agent"
+    return "local_terminal_agent"
+
+
+def _task_id_from_payload(payload: Dict[str, Any]) -> str:
+    task_id = str(payload.get("task_id") or payload.get("mission_task_id") or "").strip()
+    if task_id:
+        return task_id[:180]
+    return "sm-task-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:10]
+
+
+def _pretoken_packet(task: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from SarahMemoryPreTokenAnalyzer import analyze_text  # type: ignore
+        packet = analyze_text(str(task or ""), context_packet={"source": "SarahMemoryTerminal", "task_id": payload.get("task_id") or ""})
+        if isinstance(packet, dict):
+            return _redact_terminal_agent_payload(packet)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:300], "module": "SarahMemoryPreTokenAnalyzer"}
+    return {"ok": False, "error": "pretoken_unavailable"}
+
+
+def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, session_id: str = "", cwd: str = "", operation: str = "agent_task") -> Dict[str, Any]:
+    payload = _merge_terminal_agent_payload(task, payload)
+    skill_id, skill = _resolve_terminal_agent_skill(payload, task)
+    backend = _terminal_agent_backend(payload, task)
+    allowed_sources = _as_string_list(payload.get("allowed_sources") or payload.get("allowed_resources") or payload.get("source_scope") or payload.get("sources") or payload.get("source"))
+    denied_sources = _as_string_list(payload.get("denied_sources") or payload.get("denied_resources") or payload.get("denied_source") or payload.get("denied_resource")) or list(_DEFAULT_TERMINAL_AGENT_DENIED_RESOURCES)
+    allowed_capabilities = _as_string_list(payload.get("allowed_capabilities") or payload.get("capabilities") or payload.get("capability")) or list(skill.get("allowed_capabilities") or [])
+    denied_capabilities = _as_string_list(payload.get("denied_capabilities")) or list(skill.get("denied_capabilities") or _DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES)
+    model_backends = _as_string_list(payload.get("model_backends") or payload.get("model_backend") or backend, limit=16)
+    api_key_aliases = _as_string_list(payload.get("api_key_aliases") or payload.get("api_key_alias") or payload.get("key_aliases"), limit=16)
+    mission_id = str(payload.get("mission_id") or payload.get("mission") or "").strip()[:180]
+    if not mission_id:
+        mission_id = "sm-mission-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    pretoken = _pretoken_packet(task, payload)
+    return {
+        "schema": "SarahMemory.terminal.agent_task_truth.v1",
+        "objective": str(task or "")[:4000],
+        "operation": str(operation or "agent_task")[:80],
+        "mission_id": mission_id,
+        "passport_id": str(payload.get("passport_id") or payload.get("passport") or "").strip()[:180],
+        "backend": backend,
+        "skill_id": skill_id,
+        "skill_policy": _redact_terminal_agent_payload(skill),
+        "allowed_actions": ["inspect", "summarize", "propose", "passport_issue", "capture_return", "compare_verify", "release_after_verification"],
+        "forbidden_actions": ["self_authorize", "raw_shell_without_operatorcore", "unapproved_core_write", "credential_access", "hidden_persistence", "unbounded_scrape", "memory_write_without_compare", "device_control_without_msdc"],
+        "allowed_sources": allowed_sources,
+        "denied_sources": denied_sources,
+        "allowed_capabilities": allowed_capabilities,
+        "denied_capabilities": denied_capabilities,
+        "model_backends": model_backends,
+        "api_key_aliases": api_key_aliases,
+        "api_key_raw_value_allowed": False,
+        "network_allowed": bool(payload.get("network_allowed", skill.get("requires_network", False))),
+        "filesystem_allowed": bool(payload.get("filesystem_allowed", skill.get("requires_filesystem", False))),
+        "shell_allowed": False,
+        "device_allowed": False,
+        "memory_allowed": bool(payload.get("memory_allowed", False)),
+        "passport_required": bool(payload.get("passport_required", True)),
+        "roachmotel_required": True,
+        "compare_required": bool(payload.get("compare_required", skill.get("compare_required", True))),
+        "user_approval_required": True,
+        "ttl_seconds": int(payload.get("ttl_seconds") or getattr(config, "SARAH_AGENT_PASSPORT_DEFAULT_TTL_SECONDS", 3600)),
+        "risk_level": str(payload.get("risk_level") or skill.get("risk_level") or "medium")[:32],
+        "session_id": str(session_id or "")[:180],
+        "cwd": str(cwd or "")[:500],
+        "pretoken": pretoken,
+    }
+
+
+def _validate_terminal_task_truth(task_truth: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    errors: List[str] = []
+    warnings: List[str] = []
+    allowed_sources = list(task_truth.get("allowed_sources") or [])
+    allowed_capabilities = {str(x).lower() for x in list(task_truth.get("allowed_capabilities") or [])}
+    denied_capabilities = {str(x).lower() for x in list(task_truth.get("denied_capabilities") or [])}
+    needs_external_scope = bool(task_truth.get("network_allowed") or task_truth.get("filesystem_allowed") or any(x in allowed_capabilities for x in ("research", "api_read", "read", "web_scrape")))
+
+    if any(k in payload for k in ("api_key", "openai_api_key", "claude_api_key", "authorization", "token", "secret")):
+        errors.append("raw_secret_or_api_key_detected_use_alias_only")
+    if needs_external_scope and not allowed_sources:
+        errors.append("allowed_sources_or_allowed_resources_required")
+    blocked_caps = sorted(allowed_capabilities.intersection({"shell", "core_write", "device_control", "credential_access", "self_authorization", "hidden_persistence"}))
+    if blocked_caps:
+        errors.append("denied_capability_requested:" + ",".join(blocked_caps))
+    if "shell" not in denied_capabilities:
+        warnings.append("shell_should_remain_denied_for_terminal_agents")
+    if not task_truth.get("passport_required"):
+        errors.append("passport_required_must_remain_true")
+    if not task_truth.get("roachmotel_required"):
+        errors.append("roachmotel_required_must_remain_true")
+    if int(task_truth.get("ttl_seconds") or 0) <= 0:
+        errors.append("positive_ttl_seconds_required")
+
+    return {
+        "ok": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "verdict": "ALLOW" if not errors else "BLOCK",
+        "execution_authority": False,
+    }
+
+
+def _insert_task_constraints(cur: sqlite3.Cursor, task_id: str, task_truth: Dict[str, Any]) -> None:
+    existing = cur.execute("SELECT COUNT(*) FROM terminal_agent_constraints WHERE task_id=?", (task_id,)).fetchone()
+    if existing and int(existing[0]) > 0:
+        return
+    constraints: List[Tuple[str, str, str]] = []
+    for item in list(task_truth.get("forbidden_actions") or []):
+        constraints.append(("forbidden_action", str(item), "task_truth"))
+    for item in list(task_truth.get("denied_sources") or []):
+        constraints.append(("denied_source", str(item), "task_truth"))
+    for item in list(task_truth.get("denied_capabilities") or []):
+        constraints.append(("denied_capability", str(item), "task_truth"))
+    constraints.extend([
+        ("required_gate", "passport_required", "task_truth"),
+        ("required_gate", "roachmotel_required", "task_truth"),
+        ("required_gate", "compare_required_before_release", "task_truth"),
+        ("approval_boundary", "new_production_files_require_explicit_user_approval", "user_governance_rule"),
+        ("approval_boundary", "raw_api_keys_never_enter_agent_prompt_log_or_ledger", "terminal_bay_security_rule"),
+    ])
+    cur.executemany(
+        "INSERT INTO terminal_agent_constraints(task_id,constraint_type,constraint_text,source,active) VALUES(?,?,?,?,1)",
+        [(task_id, ctype, ctext[:1000], source) for ctype, ctext, source in constraints],
+    )
+
+
+def _prepare_terminal_agent_task_spine(
+    *,
+    task: str,
+    payload: Optional[Dict[str, Any]] = None,
+    session_id: str = "",
+    cwd: str = "",
+    operation: str = "agent_task",
+) -> Dict[str, Any]:
+    payload = _merge_terminal_agent_payload(task, payload)
+    task_id = _task_id_from_payload(payload)
+    truth = _build_terminal_task_truth(task, {**payload, "task_id": task_id}, session_id=session_id, cwd=cwd, operation=operation)
+    validation = _validate_terminal_task_truth(truth, payload)
+    truth_hash = _hash_obj(truth)
+    now = datetime.now().isoformat()
+    objective = str(truth.get("objective") or task or operation)[:1000]
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        cur = con.cursor()
+        cur.execute(
+            """INSERT INTO terminal_agent_tasks(task_id,created_ts,updated_ts,status,objective,command_text,task_truth_hash,task_truth_json,backend,skill_id,risk_level,session_id,cwd,current_stage,completion_state)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(task_id) DO UPDATE SET updated_ts=excluded.updated_ts,current_stage=excluded.current_stage,status=excluded.status""",
+            (
+                task_id, now, now, "blocked" if not validation.get("ok") else "active", objective,
+                str(task or "")[:4000], truth_hash, _canonical_json(_redact_terminal_agent_payload(truth)),
+                str(truth.get("backend") or ""), str(truth.get("skill_id") or ""), str(truth.get("risk_level") or "medium"),
+                str(session_id or ""), str(cwd or ""), "TASK_CREATED", "not_complete",
+            ),
+        )
+        _insert_task_constraints(cur, task_id, truth)
+        con.commit()
+        con.close()
+    except Exception as exc:
+        return {"ok": False, "task_id": task_id, "task_truth": truth, "task_truth_hash": truth_hash, "validation": validation, "error": str(exc), "execution_authority": False}
+
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="TASK_SPINE",
+        event_type="TASK_CREATED" if validation.get("ok") else "TASK_BLOCKED",
+        verdict=str(validation.get("verdict") or "UNKNOWN"),
+        risk=str(truth.get("risk_level") or "medium"),
+        task=task,
+        details="Terminal Agent Task Spine created canonical task truth." if validation.get("ok") else "Terminal Agent Task Spine blocked invalid task truth.",
+        metadata={"task_truth_hash": truth_hash, "validation": validation, "operation": operation, "backend": truth.get("backend"), "skill_id": truth.get("skill_id")},
+    )
+    return {"ok": bool(validation.get("ok")), "task_id": task_id, "task_truth": truth, "task_truth_hash": truth_hash, "validation": validation, "execution_authority": False}
+
+
+def _record_terminal_agent_task_event(
+    task_id: str,
+    *,
+    stage: str,
+    event_type: str,
+    verdict: str = "OBSERVED",
+    risk: str = "low",
+    task: str = "",
+    details: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+    output: Any = None,
+) -> Dict[str, Any]:
+    metadata = _redact_terminal_agent_payload(metadata or {}) if isinstance(metadata or {}, dict) else {}
+    output_hash = _hash_obj(output) if output is not None else ""
+    input_hash = _hash_text(task or "")
+    receipt_hash = ""
+    try:
+        _terminal_agent_receipt(
+            event_type,
+            verdict=verdict,
+            task=task,
+            risk=risk,
+            summary=details or event_type,
+            metadata={"task_id": task_id, "stage": stage, "output_hash": output_hash, **(metadata if isinstance(metadata, dict) else {})},
+        )
+    except Exception:
+        pass
+    try:
+        # The ledger helper intentionally hides its response; store the task event locally.
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        cur = con.cursor()
+        cur.execute(
+            "INSERT INTO terminal_agent_events(ts,task_id,stage,event_type,verdict,risk,input_hash,output_hash,receipt_hash,details,meta_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                datetime.now().isoformat(), str(task_id or "")[:180], str(stage or "")[:96], str(event_type or "")[:128],
+                str(verdict or "")[:64], str(risk or "")[:32], input_hash, output_hash, receipt_hash,
+                str(details or "")[:1000], _canonical_json(metadata),
+            ),
+        )
+        cur.execute("UPDATE terminal_agent_tasks SET updated_ts=?, current_stage=?, status=? WHERE task_id=?", (datetime.now().isoformat(), str(stage or "")[:96], "blocked" if str(verdict).upper() in ("DENY", "BLOCK") else "active", str(task_id or "")[:180]))
+        con.commit()
+        con.close()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "task_id": task_id, "event_type": event_type, "execution_authority": False}
+    return {"ok": True, "task_id": task_id, "event_type": event_type, "output_hash": output_hash, "execution_authority": False}
+
+
+def _record_terminal_agent_passport(task_id: str, passport_result: Dict[str, Any], *, backend: str = "", skill_id: str = "") -> None:
+    try:
+        passport = passport_result.get("passport") if isinstance(passport_result.get("passport"), dict) else {}
+        creds = passport_result.get("departure_credentials") if isinstance(passport_result.get("departure_credentials"), dict) else {}
+        passport_id = str(passport.get("passport_id") or creds.get("passport_id") or passport_result.get("passport_id") or "")
+        if not passport_id:
+            return
+        safe_passport = _passport_safe_summary(passport) if callable(globals().get("_passport_safe_summary")) else _redact_terminal_agent_payload(passport)
+        con = _connect(_system_logs_db())
+        con.execute(
+            """INSERT OR REPLACE INTO terminal_agent_passports(passport_id,task_id,agent_id,mission_id,backend,skill_id,status,issued_ts,expires_ts,passport_hash,passport_json)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                passport_id[:180], str(task_id or "")[:180], str((safe_passport or {}).get("agent_id") or creds.get("agent_id") or "")[:180],
+                str(((safe_passport or {}).get("metadata") or {}).get("mission_id") or "")[:180], str(backend or "")[:80], str(skill_id or "")[:120],
+                str((safe_passport or {}).get("status") or "issued")[:80], str((safe_passport or {}).get("issued_ts") or ""), str((safe_passport or {}).get("expires_ts") or ""),
+                _hash_obj(safe_passport), _canonical_json(_redact_terminal_agent_payload(safe_passport)),
+            ),
+        )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def _terminal_task_status(task_id: str) -> Dict[str, Any]:
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        con.row_factory = sqlite3.Row
+        task_row = con.execute("SELECT * FROM terminal_agent_tasks WHERE task_id=?", (str(task_id or "")[:180],)).fetchone()
+        events = con.execute("SELECT ts,stage,event_type,verdict,risk,details,meta_json FROM terminal_agent_events WHERE task_id=? ORDER BY id ASC", (str(task_id or "")[:180],)).fetchall()
+        con.close()
+        out = dict(task_row) if task_row else {"task_id": task_id, "status": "not_found"}
+        out["events"] = [dict(e) for e in events]
+        out["execution_authority"] = False
+        return out
+    except Exception as exc:
+        return {"task_id": task_id, "status": "error", "error": str(exc), "execution_authority": False}
 
 
 # -----------------------------------------------------------------------------
@@ -1296,14 +1998,17 @@ def execute_terminal_agent_task(
     workdir: Optional[str] = None,
     caller: str = "unknown",
     smoke_test: bool = False,
+    payload: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Run a governed terminal AI-agent check/proposal lane without executing commands.
+    """Run a governed Terminal Bay AI-agent task without direct execution.
 
-    This function intentionally does not call subprocess, tools, network, drivers,
-    DevBridge apply, OperatorCore, or shell routes.  It verifies the local agent
-    task against AgentFirewall and returns a bounded status/proposal packet.
+    The /agent lane remains inspect/propose by default. This function now also
+    anchors every request to the SQLite Task Spine and records immutable Ledger
+    receipts for meaningful transitions. It does not call subprocess, network,
+    drivers, DevBridge apply, or shell routes.
     """
     ts = datetime.now().isoformat()
+    payload = payload if isinstance(payload, dict) else {}
     if not developers_mode_enabled():
         return {
             "ok": False,
@@ -1315,6 +2020,7 @@ def execute_terminal_agent_task(
             "session_id": session_id or "",
             "cwd": None,
             "mode": "terminal_agent",
+            "execution_authority": False,
             "ts": ts,
         }
 
@@ -1330,6 +2036,7 @@ def execute_terminal_agent_task(
             "session_id": session_id or "",
             "cwd": None,
             "mode": "terminal_agent",
+            "execution_authority": False,
             "ts": ts,
         }
 
@@ -1338,6 +2045,11 @@ def execute_terminal_agent_task(
     state = get_session_state(sid) or {}
     cwd = _sanitize_workdir(state.get("cwd") or wd)
 
+    spine = _prepare_terminal_agent_task_spine(task=task_text, payload=payload, session_id=sid, cwd=cwd, operation="agent_task")
+    task_id = str(spine.get("task_id") or "")
+    task_truth = spine.get("task_truth") if isinstance(spine.get("task_truth"), dict) else {}
+    spine_blocked = not bool(spine.get("ok"))
+
     available, firewall, error = _agent_firewall_available()
     if available and firewall is not None:
         task_payload = {
@@ -1345,6 +2057,11 @@ def execute_terminal_agent_task(
             "json": {
                 "agent_name": "SarahMemory Local Terminal Agent",
                 "task": task_text[:4000],
+                "task_id": task_id,
+                "mission_id": str(task_truth.get("mission_id") or ""),
+                "requested_lane": "terminal_agent",
+                "requested_capabilities": list(task_truth.get("allowed_capabilities") or ["inspect", "propose", "return_data"]),
+                "requested_resources": list(task_truth.get("allowed_sources") or []),
                 "authority": "inspect_or_propose_only",
                 "execution": "no_shell_no_network_no_filesystem_mutation",
                 "caller": caller,
@@ -1358,18 +2075,85 @@ def execute_terminal_agent_task(
         task_verdict = {"ok": False, "verdict": "ERROR", "reason": error or "SarahMemoryAgentFirewall.py unavailable", "risk_tier": "UNKNOWN", "containment_state": "ERROR"}
 
     compact_task_verdict = _compact_firewall_result(task_verdict)
-    blocked = str(compact_task_verdict.get("verdict") or "").upper() == "DENY"
+    firewall_blocked = str(compact_task_verdict.get("verdict") or "").upper() == "DENY"
+    launch_gate_reason = _terminal_agent_launch_gate_reason(task_text, payload, task_truth)
+    launch_gate_blocked = bool(launch_gate_reason)
+    blocked = bool(spine_blocked or firewall_blocked or launch_gate_blocked)
     smoke = _agent_firewall_smoke_tests(task_text, caller=caller) if smoke_test else {"ok": True, "available": available, "passed": 0, "total": 0, "tests": []}
     reply = _build_agent_reply(task_text, task_verdict, smoke, cwd=cwd)
+    if launch_gate_blocked:
+        reply = (
+            "BLOCK / LAUNCH_GATE\n"
+            "Reason: " + launch_gate_reason + "\n"
+            "No agent was launched. No API call, network call, shell command, file mutation, driver action, DevBridge apply, or memory write was executed.\n"
+            "Required next step: issue a governed passport with explicit user approval, then route any real execution through the approved adapter, RoachMotel capture, Ledger receipts, and Compare verification.\n\n"
+            + reply
+        )
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="LAUNCH_GATE",
+            event_type="LAUNCH_BLOCKED_PASSPORT_REQUIRED",
+            verdict="BLOCK",
+            risk=str(task_truth.get("risk_level") or "medium"),
+            task=task_text,
+            details=launch_gate_reason,
+            metadata={
+                "caller": caller,
+                "session_id": sid,
+                "command_verb": _terminal_agent_command_verb(task_text),
+                "passport_required": bool(task_truth.get("passport_required", True)),
+                "passport_id": _terminal_agent_passport_id(payload, task_truth),
+                "user_approval_detected": bool(_truthy_confirmation(payload, task_text)),
+                "task_truth_hash": spine.get("task_truth_hash"),
+                "execution_authority": False,
+            },
+            output={"reason": launch_gate_reason, "execution_authority": False},
+        )
+    if spine_blocked:
+        validation = spine.get("validation") if isinstance(spine.get("validation"), dict) else {}
+        errors = ", ".join(str(x) for x in list(validation.get("errors") or [])[:8]) or "task_spine_validation_failed"
+        reply = "BLOCK / TASK_SPINE\nReason: " + errors + "\nNo agent was launched and no data acquisition was authorized.\n\n" + reply
+
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="FIREWALL",
+        event_type="FIREWALL_VERDICT",
+        verdict="DENY" if firewall_blocked else str(compact_task_verdict.get("verdict") or "OBSERVED"),
+        risk=str(compact_task_verdict.get("risk_tier") or task_truth.get("risk_level") or "low").lower(),
+        task=task_text,
+        details=str(compact_task_verdict.get("reason") or "AgentFirewall inspected Terminal Bay task."),
+        metadata={"caller": caller, "session_id": sid, "firewall": compact_task_verdict, "task_truth_hash": spine.get("task_truth_hash")},
+        output=compact_task_verdict,
+    )
 
     status = {
         "mode": "terminal_agent",
+        "task_id": task_id,
+        "mission_id": str(task_truth.get("mission_id") or ""),
+        "task_truth_hash": spine.get("task_truth_hash"),
+        "task_spine": {"ok": bool(spine.get("ok")), "validation": spine.get("validation")},
+        "backend": str(task_truth.get("backend") or ""),
+        "skill_id": str(task_truth.get("skill_id") or ""),
+        "allowed_sources": list(task_truth.get("allowed_sources") or []),
+        "api_key_aliases": list(task_truth.get("api_key_aliases") or []),
         "execution_authority": "inspect_or_propose_only",
         "shell_execution": False,
         "tool_execution": False,
         "network_execution": False,
         "file_mutation": False,
         "devbridge_apply": False,
+        "roachmotel_required": True,
+        "compare_required": bool(task_truth.get("compare_required", True)),
+        "launch_gate": {
+            "command_verb": _terminal_agent_command_verb(task_text),
+            "ok": not launch_gate_blocked,
+            "blocked": launch_gate_blocked,
+            "reason": launch_gate_reason,
+            "passport_required": bool(task_truth.get("passport_required", True)),
+            "passport_id": _terminal_agent_passport_id(payload, task_truth),
+            "user_approval_detected": bool(_truthy_confirmation(payload, task_text)),
+            "execution_authority": False,
+        },
         "agent_firewall_available": bool(available),
         "task_verdict": compact_task_verdict,
         "smoke_tests": smoke,
@@ -1377,31 +2161,37 @@ def execute_terminal_agent_task(
 
     log_terminal_event(
         "TerminalAgentTask",
-        "Terminal AI-agent lane inspected a task.",
+        "Terminal AI-agent lane inspected a task with Task Spine tracking.",
         severity="WARN" if blocked else "INFO",
-        meta={"caller": caller, "session_id": sid, "task_sha256": compact_task_verdict.get("payload_sha256"), "blocked": blocked, "smoke_ok": smoke.get("ok")},
+        meta={"caller": caller, "session_id": sid, "task_id": task_id, "task_sha256": compact_task_verdict.get("payload_sha256"), "blocked": blocked, "smoke_ok": smoke.get("ok")},
     )
-    _terminal_agent_receipt(
-        "TERMINAL_AGENT_TASK_BLOCKED" if blocked else "TERMINAL_AGENT_TASK_INSPECTED",
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="AGENT_TASK",
+        event_type="TERMINAL_AGENT_TASK_BLOCKED" if blocked else "TERMINAL_AGENT_TASK_INSPECTED",
         verdict="DENY" if blocked else "INSPECTED",
+        risk=str(compact_task_verdict.get("risk_tier") or task_truth.get("risk_level") or "low").lower(),
         task=task_text,
-        risk=str(compact_task_verdict.get("risk_tier") or "low").lower(),
-        summary=str(compact_task_verdict.get("reason") or "Terminal AI-agent task inspected."),
-        metadata={"caller": caller, "session_id": sid, "smoke_test": bool(smoke_test)},
+        details=str(compact_task_verdict.get("reason") or "Terminal AI-agent task inspected."),
+        metadata={"caller": caller, "session_id": sid, "smoke_test": bool(smoke_test), "spine_blocked": spine_blocked},
+        output=status,
     )
 
     return {
         "ok": not blocked and bool(smoke.get("available", available)),
         "blocked": blocked,
-        "reason": compact_task_verdict.get("reason") if blocked else None,
+        "reason": (launch_gate_reason if launch_gate_blocked else ", ".join(list((spine.get("validation") or {}).get("errors") or [])[:4]) if spine_blocked else compact_task_verdict.get("reason") if firewall_blocked else None),
         "reply": reply,
         "stdout": reply,
-        "stderr": "" if not blocked else str(compact_task_verdict.get("reason") or "Blocked by AgentFirewall."),
+        "stderr": "" if not blocked else str(compact_task_verdict.get("reason") or "Blocked by Terminal Bay governance."),
         "session_id": sid,
         "cwd": cwd,
         "mode": "terminal_agent",
+        "task_id": task_id,
+        "task_truth_hash": spine.get("task_truth_hash"),
         "agent_status": status,
         "actions": [],
+        "execution_authority": False,
         "ts": ts,
     }
 
@@ -1512,12 +2302,22 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
     passport_id = str(merged.get("passport_id") or "").strip()
     agent_id = str(merged.get("agent_id") or "").strip()
     ts = datetime.now().isoformat()
+    spine: Dict[str, Any] = {}
+    if operation not in ("passport_help", "passport"): 
+        spine_task_text = task or str(merged.get("purpose") or operation)
+        spine = _prepare_terminal_agent_task_spine(task=spine_task_text, payload=merged, session_id=str(merged.get("session_id") or ""), cwd=str(merged.get("workdir") or ""), operation=operation)
+        merged.setdefault("task_id", spine.get("task_id") or "")
 
     def response(ok: bool, text: str, data: Optional[Dict[str, Any]] = None, *, blocked: bool = False, reason: str = "") -> Dict[str, Any]:
+        out_data = data or {}
+        if spine:
+            out_data = {**out_data, "task_spine": {"task_id": spine.get("task_id"), "ok": spine.get("ok"), "task_truth_hash": spine.get("task_truth_hash"), "validation": spine.get("validation")}}
         return {
             "ok": bool(ok), "blocked": bool(blocked), "reason": reason or None,
             "reply": text, "stdout": text, "stderr": reason if blocked else "",
-            "mode": "terminal_agent_passport", "passport_data": data or {},
+            "mode": "terminal_agent_passport", "passport_data": out_data,
+            "task_id": str((spine or {}).get("task_id") or merged.get("task_id") or ""),
+            "task_truth_hash": str((spine or {}).get("task_truth_hash") or ""),
             "execution_authority": False, "actions": [], "ts": ts,
         }
 
@@ -1544,7 +2344,13 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
 
     if operation == "passport_issue":
         if not confirmed:
+            _record_terminal_agent_task_event(str((spine or {}).get("task_id") or merged.get("task_id") or ""), stage="PASSPORT", event_type="PASSPORT_BLOCKED", verdict="BLOCK", risk="medium", task=task, details="Passport issuance blocked because explicit user approval was missing.", metadata={"operation": operation})
             return response(False, "Passport issuance requires explicit confirmation. Re-run with --confirm or confirmed=true.", blocked=True, reason="explicit_user_approval_required")
+        if spine and not bool(spine.get("ok")):
+            validation = spine.get("validation") if isinstance(spine.get("validation"), dict) else {}
+            errors = ", ".join(str(x) for x in list(validation.get("errors") or [])[:8]) or "task_spine_validation_failed"
+            _record_terminal_agent_task_event(str(spine.get("task_id") or ""), stage="PASSPORT", event_type="PASSPORT_BLOCKED", verdict="BLOCK", risk="medium", task=task, details=errors, metadata={"operation": operation, "validation": validation})
+            return response(False, "Passport issuance blocked by Terminal Bay task-spine policy: " + errors, blocked=True, reason="task_spine_validation_failed")
         firewall_ok, firewall, fw_error = _agent_firewall_available()
         if not firewall_ok or not callable(getattr(firewall, "issue_outbound_agent_passport", None)):
             return response(False, "AgentFirewall passport issuer unavailable.", blocked=True, reason=fw_error or "passport_issuer_unavailable")
@@ -1553,12 +2359,12 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             agent_name=str(merged.get("agent_name") or agent_id),
             purpose=str(merged.get("purpose") or "Governed outbound task"),
             task_id=str(merged.get("task_id") or ""),
-            origin_lane=str(merged.get("origin_lane") or "research"),
+            origin_lane=str(merged.get("origin_lane") or (spine.get("task_truth") or {}).get("skill_id") or "research"),
             allowed_lanes=list(merged.get("allowed_lanes") or [str(merged.get("origin_lane") or "research")]),
-            allowed_capabilities=list(merged.get("allowed_capabilities") or ["research", "return_data"]),
-            allowed_resources=list(merged.get("allowed_resources") or []),
-            denied_resources=list(merged.get("denied_resources") or ["core/*", ".env", "credentials", "shell", "device_control"]),
-            maximum_risk_tier=str(merged.get("maximum_risk_tier") or "low"),
+            allowed_capabilities=list(merged.get("allowed_capabilities") or list(((spine.get("task_truth") or {}).get("allowed_capabilities") or ["research", "return_data"]))),
+            allowed_resources=list(merged.get("allowed_resources") or merged.get("allowed_sources") or list(((spine.get("task_truth") or {}).get("allowed_sources") or []))),
+            denied_resources=list(merged.get("denied_resources") or merged.get("denied_sources") or list(((spine.get("task_truth") or {}).get("denied_sources") or ["core/*", ".env", "credentials", "shell", "device_control"]))),
+            maximum_risk_tier=str(merged.get("maximum_risk_tier") or (spine.get("task_truth") or {}).get("risk_level") or "low"),
             ttl_seconds=int(merged.get("ttl_seconds") or getattr(config, "SARAH_AGENT_PASSPORT_DEFAULT_TTL_SECONDS", 3600)),
             one_time_use=bool(merged.get("one_time_use", True)),
             network_allowed=bool(merged.get("network_allowed", True)),
@@ -1573,6 +2379,8 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             return response(False, "Passport issuance failed: " + str(result.get("error") or "unknown_error"), blocked=True, reason=str(result.get("error") or "passport_issue_failed"), data=result)
         passport = _passport_safe_summary(result.get("passport"))
         creds = result.get("departure_credentials") if isinstance(result.get("departure_credentials"), dict) else {}
+        _record_terminal_agent_passport(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), result, backend=str((spine.get("task_truth") or {}).get("backend") or merged.get("backend") or ""), skill_id=str((spine.get("task_truth") or {}).get("skill_id") or merged.get("skill_id") or ""))
+        _record_terminal_agent_task_event(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), stage="PASSPORT", event_type="PASSPORT_ISSUED", verdict="ISSUED", risk=str((spine.get("task_truth") or {}).get("risk_level") or "low"), task=task, details="Governed AI-agent passport issued by Terminal Bay; no launch authority granted.", metadata={"passport_id": str(creds.get("passport_id") or ""), "agent_id": agent_id, "backend": str((spine.get("task_truth") or {}).get("backend") or ""), "skill_id": str((spine.get("task_truth") or {}).get("skill_id") or "")})
         text = "\n".join([
             "Governed AI-agent passport issued.",
             f"passport_id={creds.get('passport_id')}", f"agent_id={creds.get('agent_id')}",
@@ -1626,6 +2434,7 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             },
         }
         verdict = firewall.inspect_payload(return_packet, source=f"{caller}.passport_return", remote_addr=str(merged.get("remote_addr") or "agent-return"))
+        _record_terminal_agent_task_event(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), stage="ROACHMOTEL", event_type="RESULT_CAPTURED", verdict=str(verdict.get("verdict") or "UNKNOWN"), risk=str(verdict.get("risk_tier") or "medium").lower(), task=task, details="Returned AI-agent payload captured by AgentFirewall/RoachMotel. No execution performed.", metadata={"passport_id": passport_id, "agent_id": agent_id, "containment_state": verdict.get("containment_state"), "payload_sha256": verdict.get("payload_sha256")}, output=_compact_firewall_result(verdict))
         text = f"{verdict.get('verdict')} / {verdict.get('containment_state')}\nReason: {verdict.get('reason')}\nNo returned agent data was executed. Valid returns remain captured for review."
         return response(str(verdict.get("verdict")) == "REQUIRE_REVIEW", text, {"firewall_verdict": verdict}, blocked=str(verdict.get("verdict")) == "DENY", reason=str(verdict.get("reason") or ""))
 
@@ -1697,6 +2506,7 @@ def terminal_api_agent(payload: Dict[str, Any], *, caller: str = "api") -> Dict[
     """
     payload = payload or {}
     task = str(payload.get("task") or payload.get("text") or payload.get("message") or payload.get("query") or "")
+    payload = _merge_terminal_agent_payload(task, payload)
     operation_result = _passport_operation_reply(payload, task=task, caller=str(payload.get("caller") or caller))
     if operation_result is not None:
         return operation_result
@@ -1706,6 +2516,7 @@ def terminal_api_agent(payload: Dict[str, Any], *, caller: str = "api") -> Dict[
         workdir=payload.get("workdir"),
         caller=str(payload.get("caller") or caller),
         smoke_test=bool(payload.get("smoke_test", False) or "self-test" in task.lower() or "smoke test" in task.lower()),
+        payload=payload,
     )
 
 # ====================================================================
