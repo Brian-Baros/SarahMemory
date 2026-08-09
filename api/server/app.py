@@ -1878,6 +1878,16 @@ try:
 except Exception as _ledger_init_exc:
     app_logger.warning("Ledger receipt API mount skipped: %s", _ledger_init_exc)
 
+# Mount the NAILDE SDK/API bridge outside app.py to avoid expanding the main
+# Flask ingress file. appsdk.py owns /api/nailde/* route definitions; app.py
+# only performs guarded registration.
+try:
+    import appsdk as appsdk_mod  # type: ignore
+    if hasattr(appsdk_mod, "init_app"):
+        appsdk_mod.init_app(app, logger=app_logger)
+except Exception as _appsdk_init_exc:
+    app_logger.warning("NAILDE SDK API mount skipped: %s", _appsdk_init_exc)
+
 # ARILE API boundary guard. The API server is a boundary sensor, not the ARILE engine.
 try:
     from SarahMemoryARILE import arile_endpoint_guard, arile_emit, get_arile_runtime_status
@@ -2342,6 +2352,7 @@ def api_desktop_mjpeg_stream():
         mimetype="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "X-SarahMemory-Source": "desktop_mirror"},
     )
+
 
 
 # =============================================================================
@@ -6168,6 +6179,98 @@ def api_chat():
                     pass
                 return None
 
+        def _api_chat_governed_agent_assist_fallback(reason: str):
+            """Stage a governed Terminal Bay agent-assist proposal after local answer paths fail.
+
+            SARAHMEMORY_PATCH_NOTE 2026-08-04:
+            Chat UI may request agent assistance only after local answer attempts fail.
+            This fallback does not launch an agent. It creates a task-scoped
+            inspect/propose packet against approved local GET endpoints only, so
+            the UI can display task_id/agent_status/blocked/receipt evidence while
+            preserving user authority.
+            """
+            try:
+                if bool(payload.get("disable_agent_assist") or payload.get("no_agent_fallback")):
+                    return None
+                assist_classification = {"allow_agent_proposal": True, "execution_authority": False}
+                try:
+                    from SarahMemoryCognitiveServices import classify_agent_assist_need  # type: ignore
+                    assist_classification = classify_agent_assist_need(
+                        text,
+                        local_answer_available=False,
+                        fallback_reason=reason,
+                        governor=gov if isinstance(gov, dict) else {},
+                        local_only=local_only,
+                    )
+                except Exception:
+                    assist_classification = {"allow_agent_proposal": True, "execution_authority": False, "classifier_unavailable": True}
+                if not bool(assist_classification.get("allow_agent_proposal", True)):
+                    return None
+                smterm_mod = globals().get("smterm")
+                if smterm_mod is None or not callable(getattr(smterm_mod, "terminal_api_agent", None)):
+                    return None
+                allowed = "http://127.0.0.1:8000/api/health,http://127.0.0.1:8000/api/version,http://127.0.0.1:8000/api/ledger/status"
+                agent_task = (
+                    '/agent plan mission="CHAT UI GOVERNED AGENT ASSIST FALLBACK" '
+                    'backend="local" skill="api.local.health_check" '
+                    f'allowed_sources="{allowed}" '
+                    'denied_sources=".env,credentials,private_keys,external_network,unapproved_api_routes" '
+                    'capabilities="api_read,summarize,return_data" allowed_methods="GET" '
+                    'denied_capabilities="post_mutation,delete,write_core,shell,device_control,credential_access,self_authorization" '
+                    'require_passport=true require_roachmotel=true require_ledger=true require_compare=true ttl_seconds=300 '
+                    'output="Local DB and local model answer paths did not return a usable answer. Stage a governed read-only agent-assist proposal only; do not launch."'
+                )
+                result = smterm_mod.terminal_api_agent({
+                    "task": agent_task,
+                    "caller": "api_chat_governed_agent_assist_fallback",
+                    "session_id": context_packet.get("session_id"),
+                    "reason": reason,
+                }, caller="Flask:/api/chat.agent_assist_fallback")
+                if not isinstance(result, dict):
+                    return None
+                agent_status = result.get("agent_status") if isinstance(result.get("agent_status"), dict) else {}
+                lines = [
+                    "Local answer paths did not produce a verified answer.",
+                    "SarahMemory staged a governed AI-agent assist proposal only; no agent was launched.",
+                    f"Reason: {reason}",
+                    f"Task ID: {result.get('task_id') or agent_status.get('task_id') or ''}",
+                    f"Blocked: {bool(result.get('blocked'))}",
+                    f"Execution authority: {bool(result.get('execution_authority'))}",
+                    "Allowed next step: issue a scoped passport for read-only local GET adapter testing, then run a user-approved launch.",
+                ]
+                bundle = _sm_make_outward_bundle(
+                    "\n".join(lines),
+                    meta={
+                        "source": "api_chat_governed_agent_assist_fallback",
+                        "engine": "TerminalBay.inspect_propose",
+                        "intent": intent or "question",
+                        "fallback_reason": reason,
+                        "task_id": result.get("task_id") or agent_status.get("task_id"),
+                        "agent_status": agent_status,
+                        "blocked": bool(result.get("blocked")),
+                        "verified_answer_state": "agent_assist_proposal_only",
+                        "agent_assist_classification": assist_classification,
+                        "execution_authority": False,
+                        "local_only": local_only,
+                        "version": PROJECT_VERSION,
+                    },
+                    errors=[] if result.get("ok") else [str(result.get("reason") or "agent_assist_proposal_blocked")],
+                    raw_answer="\n".join(lines),
+                )
+                bundle["ok"] = True
+                bundle["agent_status"] = agent_status
+                bundle["task_id"] = result.get("task_id") or agent_status.get("task_id")
+                bundle["blocked"] = bool(result.get("blocked"))
+                bundle["verified_answer_state"] = "agent_assist_proposal_only"
+                bundle["execution_authority"] = False
+                return bundle
+            except Exception as agent_exc:
+                try:
+                    app_logger.warning(f"Governed agent-assist fallback failed: {agent_exc}", exc_info=True)
+                except Exception:
+                    pass
+                return None
+
         try:
             if _sm_module_approved("SarahMemoryNeuron", capability="router"):
                 from SarahMemoryNeuron import neuron_route  # type: ignore
@@ -6210,6 +6313,9 @@ def api_chat():
                     local_bundle = _api_chat_local_research_fallback("neuron_empty_reply")
                     if isinstance(local_bundle, dict):
                         return jsonify(local_bundle), 200
+                    agent_bundle = _api_chat_governed_agent_assist_fallback("neuron_empty_reply")
+                    if isinstance(agent_bundle, dict):
+                        return jsonify(agent_bundle), 200
                 meta_out = {
                     "source": source_label,
                     "engine": "neuron_route",
@@ -6255,6 +6361,9 @@ def api_chat():
         local_bundle = _api_chat_local_research_fallback("neuron_exception_or_unavailable")
         if isinstance(local_bundle, dict):
             return jsonify(local_bundle), 200
+        agent_bundle = _api_chat_governed_agent_assist_fallback("neuron_exception_or_unavailable")
+        if isinstance(agent_bundle, dict):
+            return jsonify(agent_bundle), 200
 
         try:
             import SarahMemoryReply as _SMReply  # type: ignore
@@ -6284,6 +6393,9 @@ def api_chat():
             local_bundle = _api_chat_local_research_fallback("reply_empty")
             if isinstance(local_bundle, dict):
                 return jsonify(local_bundle), 200
+            agent_bundle = _api_chat_governed_agent_assist_fallback("reply_empty")
+            if isinstance(agent_bundle, dict):
+                return jsonify(agent_bundle), 200
             raw_reply = "I’m having trouble generating a response right now."
 
         meta_out = {
@@ -8269,10 +8381,10 @@ If you didn't request this, please ignore this email.
 
 
 # ---------------------------------------------------------------------------
-# SarahMemory 2D Avatar Live PNG State / Manifest / Life-Cycle Contract
+# SarahMemory 2D Avatar Live WebP Morph State / Manifest / Life-Cycle Contract
 # ---------------------------------------------------------------------------
 # WebUI-facing contract for the Custom AvatarPanel. This exposes the current
-# governed 2D still-frame selection while preserving the existing 3D, media,
+# governed 2D morphic/WebP runtime selection while preserving the existing 3D, media,
 # desktop mirror, and legacy AvatarPanel API paths.
 #
 # Design rule:
@@ -8441,8 +8553,40 @@ def _avatar_effective_role_map() -> dict:
             if key and val:
                 role_map[key] = val
     for alias in ("state_29", "extra_29", "concept_29", "random_29"):
-        role_map.setdefault(alias, "29_extra_avatar_state.png")
+        role_map.setdefault(alias, "29_extra_avatar_state.webp")
     return role_map
+
+_AVATAR_2D_ALLOWED_EXTENSIONS = {".webp", ".png", ".jpg", ".jpeg"}
+_AVATAR_2D_MIMETYPES = {
+    ".webp": "image/webp",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+}
+
+def _avatar_2d_safe_name(filename: str) -> str:
+    safe = os.path.basename(str(filename or "").strip().replace("\\", "/"))
+    if not safe or safe in {".", ".."} or ".." in safe:
+        return ""
+    ext = os.path.splitext(safe)[1].lower()
+    if ext not in _AVATAR_2D_ALLOWED_EXTENSIONS:
+        return ""
+    return safe
+
+def _avatar_load_sidecar_json(filename: str) -> dict:
+    try:
+        safe = os.path.basename(str(filename or "").strip())
+        if not safe.lower().endswith(".json"):
+            return {}
+        pth = os.path.abspath(os.path.join(_avatar_default_dir(), safe))
+        base = os.path.abspath(_avatar_default_dir())
+        if os.path.commonpath([base, pth]) != base or not os.path.isfile(pth):
+            return {}
+        with open(pth, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
 
 def _safe_avatar_files() -> list[str]:
     files: list[str] = []
@@ -8451,8 +8595,8 @@ def _safe_avatar_files() -> list[str]:
         raw = data.get("files") if isinstance(data, dict) else []
         if isinstance(raw, list):
             for item in raw:
-                name = os.path.basename(str(item or "").strip())
-                if name.lower().endswith(".png") and name not in files:
+                name = _avatar_2d_safe_name(str(item or "").strip())
+                if name and name not in files:
                     files.append(name)
     except Exception:
         pass
@@ -8460,15 +8604,15 @@ def _safe_avatar_files() -> list[str]:
         d = _avatar_default_dir()
         if os.path.isdir(d):
             for fn in sorted(os.listdir(d)):
-                safe = os.path.basename(fn)
-                if safe.lower().endswith(".png") and safe not in files:
+                safe = _avatar_2d_safe_name(fn)
+                if safe and safe not in files:
                     files.append(safe)
     except Exception:
         pass
     return files
 
 def _avatar_public_url(filename: str) -> str:
-    return f"/api/avatar/2d/{os.path.basename(filename or 'sarah-avatar.png')}"
+    return f"/api/avatar/2d/{os.path.basename(filename or 'sarah_avatar.webp')}"
 
 
 # ---------------------------------------------------------------------------
@@ -8913,7 +9057,8 @@ def _avatar_role_candidates(role_or_file: str, available: set[str]) -> list[str]
 
     for prefix in prefixes:
         for name in sorted(available):
-            if name.lower().startswith(prefix) and name.lower().endswith(".png"):
+            low = name.lower()
+            if low.startswith(prefix) and os.path.splitext(low)[1] in _AVATAR_2D_ALLOWED_EXTENSIONS:
                 add(name)
 
     return candidates
@@ -8932,11 +9077,10 @@ def _avatar_pick_image(state: dict | None = None) -> str:
         selected = _avatar_select_existing(role_or_file, available)
         if selected:
             return selected
-        if "sarah-avatar.png" in available:
-            return "sarah-avatar.png"
-        if "19_neutral_forward.png" in available:
-            return "19_neutral_forward.png"
-        return sorted(available)[0] if available else "sarah-avatar.png"
+        for default_name in ("sarah_avatar.webp", "sarah-avatar.webp", "sarah_avatar.png", "sarah-avatar.png", "19_neutral_forward.webp", "19_neutral_forward.png"):
+            if default_name in available:
+                return default_name
+        return sorted(available)[0] if available else "sarah_avatar.webp"
 
     if bool(state.get("speaking")):
         return choose("speaking_open" if int(time.monotonic() * 8) % 2 == 0 else "speaking_soft")
@@ -9056,17 +9200,33 @@ def _avatar_life_tick(force: bool = False) -> None:
         _AVATAR_LIVE_STATE["updated_at"] = now
 
 def _avatar_manifest_payload() -> dict:
+    data = _avatar_read_manifest()
     role_map = _avatar_effective_role_map()
     files = _safe_avatar_files()
+    morph_meta = data.get("morph") if isinstance(data.get("morph"), dict) else {}
+    graph = _avatar_load_sidecar_json(str(morph_meta.get("graph") or "avatar-morph-graph.json"))
+    anchors = _avatar_load_sidecar_json(str(morph_meta.get("anchors") or "avatar-morph-anchors.json"))
+    image_files = [f for f in files if os.path.splitext(f.lower())[1] in _AVATAR_2D_ALLOWED_EXTENSIONS]
     return {
         "success": True,
+        "ok": True,
+        "schema": str(data.get("schema") or "SarahMemory.avatar.2d_manifest.v2"),
         "base_url": "/api/avatar/2d",
-        "default_file": "sarah-avatar.png",
+        "default_file": str(data.get("default_file") or "sarah_avatar.webp"),
         "role_map": role_map,
         "files": files,
-        "target_dimensions": [1254, 1254],
-        "state_count": len([f for f in files if f.lower().endswith(".png")]),
+        "source_files": data.get("source_files", []),
+        "assets": data.get("assets", {}),
+        "target_dimensions": data.get("target_dimensions", [1254, 1254]),
+        "runtime_dimensions": data.get("runtime_dimensions", data.get("target_dimensions", [1254, 1254])),
+        "source_format": str(data.get("source_format") or "png"),
+        "runtime_format": str(data.get("runtime_format") or "webp"),
+        "state_count": len(image_files),
         "supports_dynamic_29": True,
+        "supports_morph": bool(data.get("supports_morph", True)),
+        "store_generated_frames": False,
+        "ram_only": True,
+        "morph": {**morph_meta, "graph_data": graph, "anchors_data": anchors},
         "manifest_path": _avatar_manifest_path(),
     }
 
@@ -9221,15 +9381,71 @@ def avatar_live_heartbeat():
 
 @app.route("/api/avatar/2d/<path:filename>", methods=["GET"])
 def avatar_live_asset(filename: str):
-    safe_name = os.path.basename(filename or "")
+    safe_name = _avatar_2d_safe_name(filename or "")
     allowed = set(_safe_avatar_files())
-    if safe_name not in allowed and safe_name != "sarah-avatar.png":
-        abort(404)
+    if safe_name not in allowed:
+        # legacy UI fallback name is allowed only if the file exists locally
+        if safe_name not in {"sarah-avatar.png", "sarah_avatar.png", "sarah-avatar.webp", "sarah_avatar.webp"}:
+            abort(404)
+        if not os.path.isfile(os.path.join(_avatar_default_dir(), safe_name)):
+            abort(404)
+    ext = os.path.splitext(safe_name)[1].lower()
+    mimetype = _AVATAR_2D_MIMETYPES.get(ext, "application/octet-stream")
     try:
-        return send_from_directory(_avatar_default_dir(), safe_name, mimetype="image/png", max_age=1)
+        return send_from_directory(_avatar_default_dir(), safe_name, mimetype=mimetype, max_age=30)
     except Exception:
         abort(404)
 
+
+@app.route("/api/avatar/morph/state", methods=["GET"])
+def avatar_live_morph_state():
+    state = _avatar_state_payload()
+    current = str(state.get("current_image") or "19_neutral_forward.webp")
+    target = current
+    if bool(state.get("speaking")):
+        target = _avatar_select_existing("speaking_open", set(_safe_avatar_files())) or current
+    elif bool(state.get("listening")):
+        target = _avatar_select_existing("listening", set(_safe_avatar_files())) or current
+    elif bool(state.get("thinking")) or bool(state.get("busy")):
+        target = _avatar_select_existing("thinking", set(_safe_avatar_files())) or current
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "schema": "SarahMemory.avatar.morphtoken.v1",
+        "from_state": str(state.get("expression") or "neutral"),
+        "to_state": "speaking_soft" if state.get("speaking") else str(state.get("expression") or "neutral"),
+        "from_asset": current,
+        "to_asset": target,
+        "duration_ms": 420,
+        "easing": "breath_sine",
+        "blend_mode": "canvas_2d_crossfade_breath_v1",
+        "ram_only": True,
+        "store_generated_frames": False,
+        "fallback": "last_good_frame_then_neutral",
+        "state": state,
+    }), 200
+
+
+@app.route("/api/avatar/speech/status", methods=["GET"])
+def avatar_speech_status():
+    try:
+        from UnifiedAvatarController import get_avatar_speech_status
+        return jsonify(get_avatar_speech_status()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "active": {}}), 200
+
+
+@app.route("/api/avatar/speech/finish", methods=["POST"])
+def avatar_speech_finish():
+    data = request.get_json(silent=True) or {}
+    try:
+        from UnifiedAvatarController import finish_avatar_speech_session
+        result = finish_avatar_speech_session(str(data.get("session_id") or ""), str(data.get("reason") or "ended"))
+    except Exception as exc:
+        result = {"ok": False, "error": str(exc)}
+    state = _avatar_update_state(speaking=False)
+    result["state"] = state
+    return jsonify(result), 200
 
 
 @app.route("/api/avatar/3d/manifest", methods=["GET"])
@@ -9630,9 +9846,15 @@ def api_ui_bootstrap():
 # --------------------------- TTS / VOICE HELPERS --------------------------
 
 core_speak_text = None
+core_speak_text_status = None
 try:
     from SarahMemoryVoice import speak_text as core_speak_text_func
     core_speak_text = core_speak_text_func
+    try:
+        from SarahMemoryVoice import speak_text_status as core_speak_text_status_func
+        core_speak_text_status = core_speak_text_status_func
+    except Exception:
+        core_speak_text_status = None
 except ImportError:
     app_logger.info("SarahMemoryVoice module not found for TTS.")
 except Exception as e:
@@ -9662,23 +9884,74 @@ def api_tts_speak():
         return jsonify({"ok": False, "error": "Invalid speech rate format."}), 400
 
 
-    if core_speak_text is None:
+    if core_speak_text is None and core_speak_text_status is None:
         return jsonify({
             "ok": False,
+            "success": False,
+            "server_tts_started": False,
+            "browser_fallback_required": True,
             "error": "TTS engine not available on this server.",
         }), 501
 
     try:
-        # SarahMemoryVoice.speak_text signature is:
-        #   speak_text(text, blocking=True, emotion=None, engine_pref=None)
-        # The Web UI may provide voice/rate, but this bridge must not pass unsupported
-        # kwargs that break the local TTS route. Voice/rate remain metadata until the
-        # voice organ exposes a governed setter for them.
-        result = core_speak_text(text, blocking=False, engine_pref=voice or None)
-        return jsonify({"ok": bool(result), "success": bool(result), "text": text, "voice": voice, "rate": rate}), 200
+        # Prefer UnifiedAvatarController so audio and morphic AvatarPanel state share one session.
+        avatar_session_result = None
+        try:
+            from UnifiedAvatarController import start_avatar_speech_session
+            avatar_session_result = start_avatar_speech_session(text=text, voice=voice or "default", emotion=None, start_tts=True)
+        except Exception as controller_exc:
+            app_logger.debug(f"UnifiedAvatarController speech session unavailable: {controller_exc}")
+
+        if isinstance(avatar_session_result, dict) and avatar_session_result.get("avatar_session"):
+            session = avatar_session_result.get("avatar_session") or {}
+            tts_status = avatar_session_result.get("tts_status") or session.get("tts_status") or {}
+        else:
+            if core_speak_text_status is not None:
+                tts_status = core_speak_text_status(text, blocking=False, engine_pref=voice or None)
+            else:
+                accepted = bool(core_speak_text(text, blocking=False, engine_pref=voice or None))
+                tts_status = {"ok": accepted, "accepted": accepted, "server_tts_started": accepted, "browser_fallback_required": not accepted}
+            session = {
+                "schema": "SarahMemory.avatar.voice_session.v1",
+                "session_id": "voice_" + hashlib.sha256(f"{time.time()}::{text[:80]}".encode("utf-8", "ignore")).hexdigest()[:16],
+                "text_preview": text[:180],
+                "voice": voice,
+                "speaking": bool(tts_status.get("accepted") or tts_status.get("ok")),
+                "started_at": time.time(),
+                "estimated_duration_ms": int(tts_status.get("estimated_duration_ms") or max(1600, min(180000, int(len(text.split()) / 1.45 * 1000) + 1200))),
+                "browser_fallback_allowed": True,
+                "browser_fallback_required": bool(tts_status.get("browser_fallback_required")),
+                "server_tts_started": bool(tts_status.get("server_tts_started") or tts_status.get("accepted") or tts_status.get("ok")),
+                "morph": {"schema": "SarahMemory.avatar.morphtoken.v1", "to_state": "speaking_soft", "ram_only": True, "store_generated_frames": False},
+            }
+
+        server_started = bool(tts_status.get("server_tts_started") or tts_status.get("accepted") or tts_status.get("ok"))
+        browser_required = bool(tts_status.get("browser_fallback_required") or not server_started)
+        try:
+            _avatar_update_state(speaking=server_started or browser_required, current_action="speaking", life_state="speaking")
+        except Exception:
+            pass
+        return jsonify({
+            "ok": bool(server_started or browser_required),
+            "success": bool(server_started or browser_required),
+            "text": text,
+            "voice": voice,
+            "rate": rate,
+            "audio_url": tts_status.get("audio_url"),
+            "audio_base64": tts_status.get("audio_base64"),
+            "server_tts_started": server_started,
+            "browser_fallback_required": browser_required,
+            "browser_fallback_allowed": True,
+            "playback_location": tts_status.get("playback_location") or ("server_local_audio" if server_started else "browser"),
+            "estimated_duration_ms": int(tts_status.get("estimated_duration_ms") or session.get("estimated_duration_ms") or 2400),
+            "engine": tts_status.get("engine"),
+            "requested_engine": tts_status.get("requested_engine"),
+            "avatar_session": session,
+            "tts_status": tts_status,
+        }), 200
     except Exception as e:
         app_logger.exception(f"Error during TTS speak request for text: '{text}...'")
-        return jsonify({"ok": False, "error": f"Failed to speak text: {e}"}), 500
+        return jsonify({"ok": False, "success": False, "server_tts_started": False, "browser_fallback_required": True, "error": f"Failed to speak text: {e}"}), 500
 
 # =============================================================================
 # PHASE1_BRIDGE_UI_CONTRACT_STABILIZATION
