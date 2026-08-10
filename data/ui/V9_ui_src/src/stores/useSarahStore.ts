@@ -340,24 +340,56 @@ function buildDataAudioUrl(base64: string): string {
   return `data:audio/mpeg;base64,${base64}`;
 }
 
-async function playVoiceResponseAudio(res: any): Promise<void> {
+function estimateSpeechDurationMs(text: string): number {
+  const words = String(text || "").split(/\s+/).filter(Boolean).length;
+  return Math.max(1600, Math.min(180000, Math.round((words / 1.45) * 1000) + 1800));
+}
+
+function useBrowserSpeechFallback(text: string, onDone: () => void): boolean {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return false;
+  try {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.pitch = 1.1;
+    utterance.rate = 0.95;
+    utterance.onend = onDone;
+    utterance.onerror = onDone;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function playVoiceResponseAudio(res: any, text: string, onDone: () => void): Promise<"audio" | "server" | "browser" | "none"> {
   const audioUrl: string | undefined = res?.audio_url || res?.audioUrl;
   const audioBase64: string | undefined = res?.audio_base64 || res?.audioBase64;
 
   const src = audioUrl ? audioUrl : audioBase64 ? buildDataAudioUrl(audioBase64) : null;
-  if (!src) return;
-
-  const audio = new Audio();
-  audio.src = src;
-  audio.preload = "auto";
-  audio.crossOrigin = "anonymous";
-
-  try {
-    await audio.play();
-  } catch {
-    // Autoplay restrictions (mobile) are common.
-    // Greeting text will still show; audio will work after first user interaction.
+  if (src) {
+    const audio = new Audio();
+    audio.src = src;
+    audio.preload = "auto";
+    audio.crossOrigin = "anonymous";
+    audio.onended = onDone;
+    audio.onerror = onDone;
+    try {
+      await audio.play();
+      return "audio";
+    } catch {
+      // Autoplay restrictions (mobile) are common; fall through to browser TTS if needed.
+    }
   }
+
+  if (res?.browser_fallback_required || res?.fallback || !res?.success) {
+    if (useBrowserSpeechFallback(text, onDone)) return "browser";
+  }
+
+  if (res?.server_tts_started) {
+    return "server";
+  }
+
+  return "none";
 }
 
 export const useSarahStore = create<SarahState>()(
@@ -605,15 +637,23 @@ export const useSarahStore = create<SarahState>()(
         try {
           const { api } = await import("@/lib/api");
 
-          // Flip avatar speaking on while we do TTS (best-effort)
+          const finish = () => {
+            get().setAvatarSpeaking(false);
+            try { api.avatar.setSpeaking(false).catch(() => {}); } catch {}
+          };
+
           get().setAvatarSpeaking(true);
+          try { api.avatar.setSpeaking(true).catch(() => {}); } catch {}
 
           const res = await api.voice.speak(greeting, settings.selectedVoice);
+          const mode = await playVoiceResponseAudio(res, greeting, finish);
+          const duration = Number(res?.estimated_duration_ms || res?.avatar_session?.estimated_duration_ms || estimateSpeechDurationMs(greeting));
 
-          // Actually PLAY the audio in browser (may be blocked until tap on mobile)
-          await playVoiceResponseAudio(res);
-
-          get().setAvatarSpeaking(false);
+          if (mode === "server") {
+            window.setTimeout(finish, Math.max(1200, duration + 1000));
+          } else if (mode === "none") {
+            finish();
+          }
         } catch {
           get().setAvatarSpeaking(false);
         }

@@ -266,6 +266,185 @@ function Avatar2DImageSurface({ src, onLoad, onError }: { src: string; onLoad: (
   );
 }
 
+type MorphImageEntry = { url: string; image: HTMLImageElement; loadedAt: number };
+
+type Avatar2DMorphSurfaceProps = {
+  src: string;
+  speaking: boolean;
+  listening: boolean;
+  expression: string;
+  onLoad: () => void;
+  onError: () => void;
+};
+
+function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, onError }: Avatar2DMorphSurfaceProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const cacheRef = useRef<Map<string, MorphImageEntry>>(new Map());
+  const currentRef = useRef<MorphImageEntry | null>(null);
+  const previousRef = useRef<MorphImageEntry | null>(null);
+  const targetUrlRef = useRef<string>("");
+  const transitionRef = useRef({ started: 0, duration: 420 });
+  const rafRef = useRef<number | null>(null);
+  const lastDrawRef = useRef<number>(0);
+  const fallbackSrcRef = useRef<string>(src);
+  const [canvasFailed, setCanvasFailed] = useState(false);
+
+  const drawContained = (
+    ctx: CanvasRenderingContext2D,
+    img: HTMLImageElement,
+    width: number,
+    height: number,
+    alpha: number,
+    phase: number,
+    emphasis: number,
+  ) => {
+    const iw = img.naturalWidth || img.width || 1;
+    const ih = img.naturalHeight || img.height || 1;
+    const scale = Math.min(width / iw, height / ih) * (1 + 0.006 * Math.sin(phase * Math.PI * 2) * emphasis);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    const bob = Math.sin(phase * Math.PI * 2) * 2.0 * emphasis;
+    const x = (width - dw) / 2;
+    const y = (height - dh) / 2 + bob;
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.drawImage(img, x, y, dw, dh);
+    ctx.globalAlpha = 1;
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const cleanSrc = String(src || "").trim();
+    if (!cleanSrc) return;
+    fallbackSrcRef.current = cleanSrc;
+    targetUrlRef.current = cleanSrc;
+
+    const cached = cacheRef.current.get(cleanSrc);
+    if (cached) {
+      previousRef.current = currentRef.current || cached;
+      currentRef.current = cached;
+      transitionRef.current = { started: performance.now(), duration: speaking ? 220 : listening ? 360 : 520 };
+      onLoad();
+      return;
+    }
+
+    const img = new Image();
+    img.decoding = "async";
+    img.loading = "eager";
+    img.onload = () => {
+      if (cancelled) return;
+      const entry = { url: cleanSrc, image: img, loadedAt: Date.now() };
+      cacheRef.current.set(cleanSrc, entry);
+      // Bounded hot cache. The current avatar pack is small, but this prevents runaway growth with future packs.
+      if (cacheRef.current.size > 16) {
+        const keep = new Set([cleanSrc, currentRef.current?.url, previousRef.current?.url].filter(Boolean));
+        for (const key of Array.from(cacheRef.current.keys())) {
+          if (cacheRef.current.size <= 12) break;
+          if (!keep.has(key)) cacheRef.current.delete(key);
+        }
+      }
+      previousRef.current = currentRef.current || entry;
+      currentRef.current = entry;
+      transitionRef.current = { started: performance.now(), duration: speaking ? 220 : listening ? 360 : 520 };
+      setCanvasFailed(false);
+      onLoad();
+    };
+    img.onerror = () => {
+      if (cancelled) return;
+      setCanvasFailed(true);
+      onError();
+    };
+    img.src = cleanSrc;
+    return () => {
+      cancelled = true;
+    };
+  // Deliberately keyed to avatar state inputs only. Parent onLoad/onError lambdas change every render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src, speaking, listening]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const wrap = wrapRef.current;
+    if (!canvas || !wrap || canvasFailed) return;
+
+    const render = (now: number) => {
+      rafRef.current = requestAnimationFrame(render);
+      const fps = speaking ? 24 : listening ? 18 : 12;
+      if (now - lastDrawRef.current < 1000 / fps) return;
+      lastDrawRef.current = now;
+
+      const rect = wrap.getBoundingClientRect();
+      const cssW = Math.max(1, Math.floor(rect.width));
+      const cssH = Math.max(1, Math.floor(rect.height));
+      const dpr = Math.min(1.5, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.floor(cssW * dpr));
+      const h = Math.max(1, Math.floor(cssH * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.width = `${cssW}px`;
+        canvas.style.height = `${cssH}px`;
+      }
+
+      const ctx = canvas.getContext("2d", { alpha: true });
+      if (!ctx) {
+        setCanvasFailed(true);
+        onError();
+        return;
+      }
+
+      const current = currentRef.current;
+      const previous = previousRef.current;
+      ctx.clearRect(0, 0, w, h);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = "high";
+
+      const transition = transitionRef.current;
+      const t = Math.max(0, Math.min(1, (now - transition.started) / Math.max(1, transition.duration)));
+      const eased = 0.5 - Math.cos(t * Math.PI) / 2;
+      const energy = speaking ? 1 : listening ? 0.55 : String(expression || "").toLowerCase().includes("thinking") ? 0.42 : 0.25;
+      const phase = (now / (speaking ? 780 : 2600)) % 1;
+
+      if (previous?.image && current?.image && previous.url !== current.url && t < 1) {
+        drawContained(ctx, previous.image, w, h, 1 - eased, phase, energy);
+        drawContained(ctx, current.image, w, h, eased, phase + 0.08, energy);
+      } else if (current?.image) {
+        drawContained(ctx, current.image, w, h, 1, phase, energy);
+      }
+
+      // Lightweight living-loop overlay: subtle speaking/listening pulse without writing frames to disk.
+      if (speaking || listening) {
+        const pulse = 0.08 + 0.06 * Math.sin(now / (speaking ? 90 : 180));
+        const grad = ctx.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.42);
+        grad.addColorStop(0, `rgba(34,211,238,${pulse})`);
+        grad.addColorStop(1, "rgba(34,211,238,0)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+    };
+
+    rafRef.current = requestAnimationFrame(render);
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speaking, listening, expression, canvasFailed]);
+
+  if (canvasFailed) {
+    return <Avatar2DImageSurface src={fallbackSrcRef.current || src} onLoad={onLoad} onError={onError} />;
+  }
+
+  return (
+    <div ref={wrapRef} className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+      <canvas ref={canvasRef} className="h-full w-full max-h-full max-w-full object-contain" aria-label="Sarah AI Avatar morphic LiveLoop" />
+      <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-cyan-500/20 bg-slate-950/70 px-1.5 py-0.5 text-[10px] text-cyan-100/70">
+        MorphLoop RAM
+      </div>
+    </div>
+  );
+}
+
 function ScreenHeader({ icon, title, right }: { icon: React.ReactNode; title: string; right?: React.ReactNode }) {
   return (
     <div className="pointer-events-none absolute left-3 right-3 top-3 z-30 flex items-center justify-between">
@@ -298,7 +477,15 @@ export function AvatarPanel() {
     night_mode?: boolean;
     busy?: boolean;
     diagnostics?: boolean;
-    manifest?: { files?: string[]; base_url?: string; role_map?: Record<string, string>; supports_dynamic_29?: boolean };
+    manifest?: {
+      files?: string[];
+      base_url?: string;
+      role_map?: Record<string, string>;
+      supports_dynamic_29?: boolean;
+      supports_morph?: boolean;
+      runtime_format?: string;
+      morph?: Record<string, any>;
+    };
   };
 
   const [avatarState, setAvatarState] = useState<LiveAvatarState>({
@@ -308,7 +495,7 @@ export function AvatarPanel() {
     speaking: false,
     listening: false,
     current_action: "idle",
-    current_image: "sarah-avatar.png",
+    current_image: "sarah_avatar.webp",
     spec: DEFAULT_3D_SPEC,
   });
 
@@ -447,7 +634,10 @@ export function AvatarPanel() {
     const backendUrl = liveAnimationActive ? "" : avatarState.avatar_image_url;
     const raw = backendUrl || `/api/avatar/2d/${localRoleFile}`;
     const absolute = normalizeAvatarUrl(raw);
-    const seq = liveAnimationActive ? frameTick : avatarState.sequence ?? frameTick;
+    if (liveAnimationActive || avatarState.manifest?.supports_morph) {
+      return absolute;
+    }
+    const seq = avatarState.sequence ?? frameTick;
     return `${absolute}${absolute.includes("?") ? "&" : "?"}seq=${seq}`;
   }, [avatarState.avatar_image_url, avatarState.sequence, avatarState.speaking, avatarState.listening, frameTick, imageLoadFailed, localRoleFile]);
 
@@ -673,8 +863,11 @@ export function AvatarPanel() {
             {render3DInline ? (
               <AvatarSurfaceBoundary
                 fallback={
-                  <Avatar2DImageSurface
+                  <Avatar2DMorphSurface
                     src={avatarImageSrc}
+                    speaking={avatarState.speaking}
+                    listening={avatarState.listening}
+                    expression={avatarState.expression}
                     onLoad={() => setImageLoadFailed(false)}
                     onError={() => setImageLoadFailed(true)}
                   />
@@ -694,8 +887,11 @@ export function AvatarPanel() {
                 </Suspense>
               </AvatarSurfaceBoundary>
             ) : (
-              <Avatar2DImageSurface
+              <Avatar2DMorphSurface
                 src={avatarImageSrc}
+                speaking={avatarState.speaking}
+                listening={avatarState.listening}
+                expression={avatarState.expression}
                 onLoad={() => setImageLoadFailed(false)}
                 onError={() => setImageLoadFailed(true)}
               />

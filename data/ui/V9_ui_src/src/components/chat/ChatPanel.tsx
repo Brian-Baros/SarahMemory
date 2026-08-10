@@ -320,6 +320,8 @@ export function ChatPanel() {
   const speakResponse = async (text: string) => {
     try {
       const resp = await api.voice.speak(text, settings.selectedVoice);
+      const sessionDuration = Number(resp?.estimated_duration_ms || resp?.avatar_session?.estimated_duration_ms || 0);
+      const durationMs = Math.max(sessionDuration, estimateSpeakingDuration(text));
 
       if (resp?.success && (resp.audio_url || resp.audio_base64)) {
         const audioSrc =
@@ -335,16 +337,30 @@ export function ChatPanel() {
           setSpeechStartTime(Date.now());
           api.avatar.setSpeaking(true).catch(() => {});
           audio.onended = () => stopAvatarSpeaking();
-          audio.onerror = () => stopAvatarSpeaking();
+          audio.onerror = () => {
+            if (resp?.browser_fallback_allowed !== false) useBrowserTTS(text);
+            else stopAvatarSpeaking();
+          };
           speakingTimeoutRef.current = setTimeout(() => {
             stopAvatarSpeaking();
-          }, estimateSpeakingDuration(text) + 15000);
+          }, durationMs + 15000);
           await audio.play();
           return;
         }
       }
 
-      if (resp?.fallback || !resp?.success) {
+      if (resp?.server_tts_started) {
+        if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+        setAvatarSpeaking(true);
+        setSpeechStartTime(Date.now());
+        api.avatar.setSpeaking(true).catch(() => {});
+        speakingTimeoutRef.current = setTimeout(() => {
+          stopAvatarSpeaking();
+        }, durationMs + 1000);
+        return;
+      }
+
+      if (resp?.browser_fallback_required || resp?.fallback || !resp?.success) {
         useBrowserTTS(text);
       }
     } catch (e) {

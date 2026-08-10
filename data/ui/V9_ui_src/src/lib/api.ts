@@ -38,9 +38,19 @@ export interface MediaResult {
 
 export interface ChatResponse {
   ok?: boolean;
+  blocked?: boolean;
+  reason?: string | null;
   reply?: string;
   content: string;
   source: "sarah_backend" | "lovable_ai";
+  task_id?: string;
+  task_truth_hash?: string;
+  receipt_ids?: string[];
+  agent_status?: Record<string, any>;
+  verified_answer_state?: string | null;
+  transport_status?: string;
+  governance_http_status?: number;
+  semantic_status?: number;
   audio_url?: string | null;
   images?: MediaResult[];
   error?: string;
@@ -94,7 +104,15 @@ export interface TerminalAgentResponse {
   session_id?: string;
   cwd?: string | null;
   mode?: string;
+  task_id?: string;
+  task_truth_hash?: string;
+  receipt_ids?: string[];
   agent_status?: Record<string, any>;
+  adapter_execution?: Record<string, any>;
+  verified_answer_state?: string | null;
+  transport_status?: string;
+  governance_http_status?: number;
+  semantic_status?: number;
   actions?: any[];
   ts?: string;
   error?: string;
@@ -108,14 +126,40 @@ export interface VoiceOption {
   preview_url?: string;
 }
 
+export interface VoiceAvatarSession {
+  schema?: string;
+  session_id?: string;
+  text_hash?: string;
+  text_preview?: string;
+  voice?: string;
+  emotion?: string;
+  speaking?: boolean;
+  started_at?: number;
+  estimated_duration_ms?: number;
+  browser_fallback_allowed?: boolean;
+  browser_fallback_required?: boolean;
+  server_tts_started?: boolean;
+  morph?: Record<string, any>;
+}
+
 export interface VoiceResponse {
   success: boolean;
-  audio_url?: string;
-  audio_base64?: string;
+  ok?: boolean;
+  audio_url?: string | null;
+  audio_base64?: string | null;
   text?: string;
   voices?: VoiceOption[];
   fallback?: boolean;
   error?: string;
+  server_tts_started?: boolean;
+  browser_fallback_required?: boolean;
+  browser_fallback_allowed?: boolean;
+  playback_location?: string;
+  estimated_duration_ms?: number;
+  engine?: string;
+  requested_engine?: string;
+  avatar_session?: VoiceAvatarSession;
+  tts_status?: Record<string, any>;
 }
 
 export interface AvatarState {
@@ -564,6 +608,36 @@ function isTruthySuccess(obj: any): boolean {
   return Boolean(obj.success ?? obj.ok);
 }
 
+function formatGovernanceEvidence(data: any): string {
+  // SARAHMEMORY_PATCH_NOTE 2026-08-04:
+  // Surface backend governance state in Chat UI without letting UI authorize or
+  // launch agents. Backend remains the authority; this is display-only evidence.
+  if (!data || typeof data !== "object") return "";
+  const status = data.agent_status || data.meta?.agent_status || {};
+  const taskId = data.task_id || status.task_id || data.meta?.task_id;
+  const receiptIds = Array.isArray(data.receipt_ids)
+    ? data.receipt_ids
+    : Array.isArray(status.receipt_ids)
+      ? status.receipt_ids
+      : [];
+  const verified = data.verified_answer_state || status.verified_answer_state || data.meta?.verified_answer_state;
+  const blocked = Boolean(data.blocked || data.meta?.blocked);
+  const reason = data.reason || data.meta?.reason;
+  const transport = data.transport_status || data.meta?.transport_status;
+  if (!taskId && !receiptIds.length && !verified && !transport && !blocked) return "";
+  const lines: string[] = ["Governance evidence:"];
+  if (typeof blocked === "boolean") lines.push(`- blocked: ${blocked}`);
+  if (reason) lines.push(`- reason: ${String(reason)}`);
+  if (taskId) lines.push(`- task_id: ${String(taskId)}`);
+  if (verified) lines.push(`- verified_answer_state: ${String(verified)}`);
+  if (transport) lines.push(`- transport_status: ${String(transport)}`);
+  if (data.governance_http_status || data.semantic_status) {
+    lines.push(`- semantic_status: ${String(data.governance_http_status || data.semantic_status)}`);
+  }
+  if (receiptIds.length) lines.push(`- receipt_ids: ${receiptIds.slice(0, 6).join(", ")}`);
+  return lines.join("\n");
+}
+
 // ============================================================================
 // BOOTSTRAP API
 // ============================================================================
@@ -629,23 +703,37 @@ export const chatApi = {
       });
 
       const ok = isTruthySuccess(data) || Boolean(data.ok);
-      const reply = data.reply ?? data.content ?? "";
+      const reply = data.reply ?? data.content ?? data.response ?? "";
+      const governanceEvidence = formatGovernanceEvidence(data);
+      const content = governanceEvidence && typeof reply === "string" && !reply.includes("Governance evidence:")
+        ? `${reply}\n\n${governanceEvidence}`
+        : reply;
 
-      if (ok && typeof reply === "string" && reply.length) {
+      if ((ok || data?.blocked || content) && typeof content === "string" && content.length) {
         return {
-          ok: true,
-          reply,
-          content: reply,
+          ok: Boolean(ok),
+          blocked: Boolean(data?.blocked),
+          reason: data?.reason ?? null,
+          reply: content,
+          content,
           source: "sarah_backend",
           audio_url: data.audio_url ?? null,
           images: data.images,
           sources: data.sources,
           web_augmented: data.web_augmented,
           meta: data.meta,
+          task_id: data.task_id,
+          task_truth_hash: data.task_truth_hash,
+          receipt_ids: Array.isArray(data.receipt_ids) ? data.receipt_ids : [],
+          agent_status: data.agent_status || data.meta?.agent_status,
+          verified_answer_state: data.verified_answer_state || data.meta?.verified_answer_state,
+          transport_status: data.transport_status,
+          governance_http_status: data.governance_http_status,
+          semantic_status: data.semantic_status,
         };
       }
 
-      throw new Error(data?.error || "Invalid response from backend chat");
+      throw new Error(data?.error || data?.reason || "Invalid response from backend chat");
     } catch (error) {
       console.warn("[Chat] Direct local backend call failed; cloud fallback remains governed:", error);
       try {
@@ -814,14 +902,24 @@ export const voiceApi = {
         body: JSON.stringify({ action: "speak", text, voice }),
       });
 
-      const success = isTruthySuccess(data) || Boolean(data.audio_url || data.audio_base64);
+      const success = isTruthySuccess(data) || Boolean(data.audio_url || data.audio_base64 || data.server_tts_started || data.browser_fallback_required);
       return {
         success,
-        audio_url: data.audio_url,
-        audio_base64: data.audio_base64,
+        ok: data.ok,
+        audio_url: data.audio_url ?? null,
+        audio_base64: data.audio_base64 ?? null,
         text: data.text ?? text,
         fallback: false,
         error: data.error,
+        server_tts_started: Boolean(data.server_tts_started),
+        browser_fallback_required: Boolean(data.browser_fallback_required),
+        browser_fallback_allowed: data.browser_fallback_allowed !== false,
+        playback_location: data.playback_location,
+        estimated_duration_ms: Number(data.estimated_duration_ms || data.avatar_session?.estimated_duration_ms || 0) || undefined,
+        engine: data.engine,
+        requested_engine: data.requested_engine,
+        avatar_session: data.avatar_session,
+        tts_status: data.tts_status,
       };
     } catch (err) {
       try {
@@ -1423,23 +1521,17 @@ export const filesApi = {
       reader.readAsDataURL(file);
     });
 
-    const payload = {
-      filename: file.name,
-      content: base64,
-      type: file.type,
-      analyze: options?.analyze ?? true,
-      extract_text: options?.extractText ?? true,
-    };
-
-    try {
-      return await directCall("/api/files/analyze", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-    } catch (error) {
-      console.warn("[Files] Local analyze route failed; governed cloud fallback remains optional:", error);
-      return invokeEdgeFunction("sarah-api", { endpoint: "/api/files/analyze", method: "POST", payload });
-    }
+    return invokeEdgeFunction("sarah-api", {
+      endpoint: "/api/files/analyze",
+      method: "POST",
+      payload: {
+        filename: file.name,
+        content: base64,
+        type: file.type,
+        analyze: options?.analyze ?? true,
+        extract_text: options?.extractText ?? true,
+      },
+    });
   },
 };
 
@@ -1448,48 +1540,31 @@ export const researchApi = {
     query: string,
     options?: { depth?: "shallow" | "deep"; sources?: string[] },
   ): Promise<{ results: any[]; summary?: string; sources?: string[] }> {
-    const payload = { query, depth: options?.depth || "shallow", sources: options?.sources };
-    try {
-      return await directCall("/api/research/search", {
-        method: "POST",
-        body: JSON.stringify(payload),
-      });
-    } catch (error) {
-      console.warn("[Research] Local research route failed; governed cloud fallback remains optional:", error);
-      return invokeEdgeFunction("sarah-api", { endpoint: "/api/research/search", method: "POST", payload });
-    }
+    return invokeEdgeFunction("sarah-api", {
+      endpoint: "/api/research/search",
+      method: "POST",
+      payload: { query, depth: options?.depth || "shallow", sources: options?.sources },
+    });
   },
 };
 
 export const metaApi = {
   async getCapabilities(): Promise<BackendCapabilities> {
     try {
-      const result = await directCall<any>("/api/meta/capabilities", { method: "GET" });
+      const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/meta/capabilities", method: "GET" });
       if (result?.fallback) return getDefaultCapabilities();
       return result as BackendCapabilities;
-    } catch (localError) {
-      console.warn("[Meta] Local capabilities route failed; governed cloud fallback remains optional:", localError);
-      try {
-        const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/meta/capabilities", method: "GET" });
-        if (result?.fallback) return getDefaultCapabilities();
-        return result as BackendCapabilities;
-      } catch {
-        return getDefaultCapabilities();
-      }
+    } catch {
+      return getDefaultCapabilities();
     }
   },
 
   async getVersion(): Promise<{ version: string; updated_at?: string }> {
     try {
-      return await directCall<any>("/api/version", { method: "GET" });
-    } catch (localError) {
-      console.warn("[Meta] Local version route failed; governed cloud fallback remains optional:", localError);
-      try {
-        const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/version", method: "GET" });
-        return result;
-      } catch {
-        return { version: "unknown" };
-      }
+      const result = await invokeEdgeFunction<any>("sarah-api", { endpoint: "/api/version", method: "GET" });
+      return result;
+    } catch {
+      return { version: "unknown" };
     }
   },
 
@@ -1787,6 +1862,176 @@ export const dlengineApi = {
   },
 };
 
+
+// ============================================================================
+// NAILDE API
+// ============================================================================
+
+export interface NaildeApiPacket {
+  ok?: boolean;
+  error?: string;
+  [key: string]: any;
+}
+
+export const naildeApi = {
+  async status(): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/status", { method: "GET" });
+  },
+
+  async sdk(): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/sdk", { method: "GET" });
+  },
+
+  async environment(): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/environment", { method: "GET" });
+  },
+
+  async toolbox(): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/toolbox", { method: "GET" });
+  },
+
+  async filesystemStatus(): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/filesystem/status", { method: "GET" });
+  },
+
+  async filesystemMap(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/filesystem/map", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async createWorkspace(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/workspaces", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async files(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/files", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async codeDraft(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/code/draft", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async editorValidate(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/editor/validate", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async editorCreateApplication(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/editor/create-application", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async settings(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    const action = String(payload?.action || "load");
+    if (action === "load") {
+      return directCall<NaildeApiPacket>("/api/nailde/settings", { method: "GET" });
+    }
+    return directCall<NaildeApiPacket>("/api/nailde/settings", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async githubPlan(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/github/plan", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async layout(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/layout", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async agentMission(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/agent/mission", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async validateText(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/validate/text", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async reconcile(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/reconcile", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async search(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/search", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async command(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/command", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async scaffold(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/scaffold", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async awareness(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/awareness", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async thoughtLoop(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/thought-loop", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async weightLabSimulate(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/weightlab/simulate", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+
+  async avatarMessage(payload: Record<string, unknown> = {}): Promise<NaildeApiPacket> {
+    return directCall<NaildeApiPacket>("/api/nailde/avatar/message", {
+      method: "POST",
+      body: JSON.stringify(payload || {}),
+    });
+  },
+};
+
 // ============================================================================
 // PROXY API (legacy)
 // ============================================================================
@@ -1871,6 +2116,7 @@ export const api = {
   vr: vrApi,
   models: modelsApi,
   dlengine: dlengineApi,
+  nailde: naildeApi,
 };
 
 export default api;
