@@ -3,7 +3,7 @@ import { useSarahStore } from "@/stores/useSarahStore";
 import { ChatMessage } from "./ChatMessage";
 import { ChatComposer } from "./ChatComposer";
 import { TypingIndicator } from "./TypingIndicator";
-import { api, type ChatResponse } from "@/lib/api";
+import { api, speakWithSarahBrowserVoice, type ChatResponse } from "@/lib/api";
 import { apiFetch } from "@/lib/config";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -250,9 +250,7 @@ export function ChatPanel() {
     }, durationMs);
   };
 
-  const useBrowserTTS = (text: string) => {
-    if (!("speechSynthesis" in window)) return;
-
+  const useBrowserTTS = async (text: string) => {
     if (speakingTimeoutRef.current) {
       clearTimeout(speakingTimeoutRef.current);
       speakingTimeoutRef.current = null;
@@ -260,66 +258,17 @@ export function ChatPanel() {
     setAvatarSpeaking(true);
     setSpeechStartTime(Date.now());
     api.avatar.setSpeaking(true).catch(() => {});
-
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    const setVoiceAndSpeak = (voices: SpeechSynthesisVoice[]) => {
-      const femaleKeywords = [
-        "female",
-        "samantha",
-        "victoria",
-        "karen",
-        "zira",
-        "susan",
-        "hazel",
-        "fiona",
-        "moira",
-        "tessa",
-        "kate",
-      ];
-
-      const englishVoices = voices.filter((v) => v.lang?.startsWith("en"));
-
-      let selectedVoice =
-        englishVoices.find((v) => femaleKeywords.some((k) => v.name.toLowerCase().includes(k))) || null;
-
-      if (!selectedVoice) {
-        const maleKeywords = ["male", "david", "daniel", "james", "alex", "tom", "mark", "fred", "ralph"];
-        selectedVoice =
-          englishVoices.find((v) => !maleKeywords.some((k) => v.name.toLowerCase().includes(k))) || null;
-      }
-
-      if (!selectedVoice && englishVoices.length > 0) selectedVoice = englishVoices[0];
-
-      if (selectedVoice) utterance.voice = selectedVoice;
-
-      utterance.pitch = 1.1;
-      utterance.rate = 0.95;
-
-      utterance.onend = () => stopAvatarSpeaking();
-      utterance.onerror = () => stopAvatarSpeaking();
-      speechSynthesis.speak(utterance);
-
-      // Emergency watchdog only; normal completion is utterance.onend.
-      speakingTimeoutRef.current = setTimeout(() => {
-        stopAvatarSpeaking();
-      }, estimateSpeakingDuration(text) + 15000);
-    };
-
-    let voices = speechSynthesis.getVoices();
-    if (!voices || voices.length === 0) {
-      speechSynthesis.onvoiceschanged = () => {
-        voices = speechSynthesis.getVoices();
-        setVoiceAndSpeak(voices);
-      };
-    } else {
-      setVoiceAndSpeak(voices);
-    }
+    const ok = await speakWithSarahBrowserVoice(text, settings.selectedVoice || "sarahvoice", stopAvatarSpeaking);
+    if (!ok) stopAvatarSpeaking();
+    speakingTimeoutRef.current = setTimeout(() => {
+      stopAvatarSpeaking();
+    }, estimateSpeakingDuration(text) + 15000);
   };
+
 
   const speakResponse = async (text: string) => {
     try {
-      const resp = await api.voice.speak(text, settings.selectedVoice);
+      const resp = await api.voice.speak(text, settings.selectedVoice || "sarahvoice");
       const sessionDuration = Number(resp?.estimated_duration_ms || resp?.avatar_session?.estimated_duration_ms || 0);
       const durationMs = Math.max(sessionDuration, estimateSpeakingDuration(text));
 
@@ -338,7 +287,7 @@ export function ChatPanel() {
           api.avatar.setSpeaking(true).catch(() => {});
           audio.onended = () => stopAvatarSpeaking();
           audio.onerror = () => {
-            if (resp?.browser_fallback_allowed !== false) useBrowserTTS(text);
+            if (resp?.browser_fallback_allowed !== false) void useBrowserTTS(text);
             else stopAvatarSpeaking();
           };
           speakingTimeoutRef.current = setTimeout(() => {
@@ -361,11 +310,11 @@ export function ChatPanel() {
       }
 
       if (resp?.browser_fallback_required || resp?.fallback || !resp?.success) {
-        useBrowserTTS(text);
+        await useBrowserTTS(text);
       }
     } catch (e) {
       console.warn("[ChatPanel] TTS failed, using browser fallback:", e);
-      useBrowserTTS(text);
+      await useBrowserTTS(text);
     }
   };
 

@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useNavigationStore } from "@/stores/useNavigationStore";
-import { api } from '@/lib/api';
+import { api, speakWithSarahBrowserVoice } from '@/lib/api';
 import { toast } from 'sonner';
 
 // Mode options for data source - matches app.py api_mode setting
@@ -449,30 +449,12 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
       } else if (response.audio_base64) {
         const audio = new Audio(`data:audio/mp3;base64,${response.audio_base64}`);
         await audio.play();
-      } else if (response.fallback) {
-        // Use browser TTS as fallback for preview
-        if ('speechSynthesis' in window) {
-          const utterance = new SpeechSynthesisUtterance("Hello! This is how I sound. I'm ready to assist you.");
-
-          // Try to find a matching voice in browser
-          const browserVoices = speechSynthesis.getVoices();
-          const selectedVoice = voices.find((v) => v.id === voiceId);
-
-          if (selectedVoice) {
-            const matchingBrowserVoice = browserVoices.find(
-              (v) =>
-                v.name.toLowerCase().includes(selectedVoice.name.toLowerCase()) ||
-                (selectedVoice.gender === 'female' && v.name.toLowerCase().includes('female')) ||
-                (selectedVoice.gender === 'male' && v.name.toLowerCase().includes('male')),
-            );
-            if (matchingBrowserVoice) {
-              utterance.voice = matchingBrowserVoice;
-            }
-          }
-
-          speechSynthesis.speak(utterance);
-          toast.info('Using browser voice preview');
-        }
+      } else if (response.fallback || response.browser_fallback_required) {
+        const ok = await speakWithSarahBrowserVoice(
+          "Hello. This is SarahMemory Voice. The governed audible identity is ready.",
+          voiceId || "sarahvoice",
+        );
+        if (ok) toast.info('Using governed browser fallback for SarahMemory Voice preview');
       }
     } catch (error) {
       console.error('Failed to preview voice:', error);

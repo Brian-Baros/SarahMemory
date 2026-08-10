@@ -11,6 +11,7 @@ import type {
   ThemeOption,
 } from "@/types/sarah";
 import type { BootstrapResponse, AvatarSpeechCue } from "@/lib/api";
+import { speakWithSarahBrowserVoice } from "@/lib/api";
 
 // Avatar pose types
 export type AvatarPose = "stand" | "sit" | "wave" | "walk" | "turn_left" | "turn_right" | "idle";
@@ -345,23 +346,12 @@ function estimateSpeechDurationMs(text: string): number {
   return Math.max(1600, Math.min(180000, Math.round((words / 1.45) * 1000) + 1800));
 }
 
-function useBrowserSpeechFallback(text: string, onDone: () => void): boolean {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return false;
-  try {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.pitch = 1.1;
-    utterance.rate = 0.95;
-    utterance.onend = onDone;
-    utterance.onerror = onDone;
-    window.speechSynthesis.cancel();
-    window.speechSynthesis.speak(utterance);
-    return true;
-  } catch {
-    return false;
-  }
+async function useBrowserSpeechFallback(text: string, onDone: () => void, selectedVoice?: string): Promise<boolean> {
+  return speakWithSarahBrowserVoice(text, selectedVoice || "sarahvoice", onDone);
 }
 
-async function playVoiceResponseAudio(res: any, text: string, onDone: () => void): Promise<"audio" | "server" | "browser" | "none"> {
+
+async function playVoiceResponseAudio(res: any, text: string, onDone: () => void, selectedVoice?: string): Promise<"audio" | "server" | "browser" | "none"> {
   const audioUrl: string | undefined = res?.audio_url || res?.audioUrl;
   const audioBase64: string | undefined = res?.audio_base64 || res?.audioBase64;
 
@@ -382,7 +372,7 @@ async function playVoiceResponseAudio(res: any, text: string, onDone: () => void
   }
 
   if (res?.browser_fallback_required || res?.fallback || !res?.success) {
-    if (useBrowserSpeechFallback(text, onDone)) return "browser";
+    if (await useBrowserSpeechFallback(text, onDone, selectedVoice)) return "browser";
   }
 
   if (res?.server_tts_started) {
@@ -521,7 +511,7 @@ export const useSarahStore = create<SarahState>()(
 
       // Settings
       settings: ensureTaskbarSettings({
-        selectedVoice: "sarah",
+        selectedVoice: "sarahvoice",
         selectedTheme: "default",
         autoSpeak: true,
         soundEffects: true,
@@ -543,7 +533,7 @@ export const useSarahStore = create<SarahState>()(
 
       // Fallback options
       voices: [
-        { id: "sarah", name: "Sarah (Default)", language: "en-US", gender: "female" },
+        { id: "sarahvoice", name: "SarahMemory Voice", language: "en-US", gender: "female" },
         { id: "emma", name: "Emma", language: "en-GB", gender: "female" },
         { id: "alex", name: "Alex", language: "en-US", gender: "male" },
       ],
@@ -636,6 +626,8 @@ export const useSarahStore = create<SarahState>()(
 
         try {
           const { api } = await import("@/lib/api");
+          // VoiceBootstrap v9.3: resolve SarahMemory Voice before first spoken welcome.
+          try { await api.voice.getStatus(); } catch {}
 
           const finish = () => {
             get().setAvatarSpeaking(false);
@@ -645,8 +637,9 @@ export const useSarahStore = create<SarahState>()(
           get().setAvatarSpeaking(true);
           try { api.avatar.setSpeaking(true).catch(() => {}); } catch {}
 
-          const res = await api.voice.speak(greeting, settings.selectedVoice);
-          const mode = await playVoiceResponseAudio(res, greeting, finish);
+          const selectedVoice = settings.selectedVoice || "sarahvoice";
+          const res = await api.voice.speak(greeting, selectedVoice);
+          const mode = await playVoiceResponseAudio(res, greeting, finish, selectedVoice);
           const duration = Number(res?.estimated_duration_ms || res?.avatar_session?.estimated_duration_ms || estimateSpeechDurationMs(greeting));
 
           if (mode === "server") {

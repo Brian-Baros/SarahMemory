@@ -124,6 +124,28 @@ export interface VoiceOption {
   language?: string;
   gender?: "male" | "female" | "neutral";
   preview_url?: string;
+  primary?: boolean;
+  voice_identity?: string;
+  voice_model_id?: string;
+  engine?: string;
+  fallback?: boolean;
+}
+
+export interface VoiceIdentity {
+  ok?: boolean;
+  schema?: string;
+  voice_model_id?: string;
+  voice_identity?: string;
+  display_name?: string;
+  engine?: string;
+  runtime_format?: string;
+  primary_voice_ready?: boolean;
+  manifest_present?: boolean;
+  male_default_boot_voice_allowed?: boolean;
+  pt_voice_dependency?: boolean;
+  boot_must_wait_for_voice_resolution?: boolean;
+  prosody?: Record<string, any>;
+  fallbacks?: any[];
 }
 
 export interface VoiceAvatarSession {
@@ -132,6 +154,11 @@ export interface VoiceAvatarSession {
   text_hash?: string;
   text_preview?: string;
   voice?: string;
+  voice_model_id?: string;
+  voice_identity?: string;
+  voice_display_name?: string;
+  voice_engine?: string;
+  male_default_boot_voice_allowed?: boolean;
   emotion?: string;
   speaking?: boolean;
   started_at?: number;
@@ -158,6 +185,13 @@ export interface VoiceResponse {
   estimated_duration_ms?: number;
   engine?: string;
   requested_engine?: string;
+  voice_identity?: string;
+  voice_model_id?: string;
+  voice_display_name?: string;
+  primary_voice_ready?: boolean;
+  male_default_boot_voice_allowed?: boolean;
+  fallback_used?: boolean;
+  identity?: VoiceIdentity;
   avatar_session?: VoiceAvatarSession;
   tts_status?: Record<string, any>;
 }
@@ -597,9 +631,85 @@ function normalizeVoices(input: any): VoiceOption[] {
       const language = item.language ? String(item.language) : undefined;
       const gender = item.gender as any;
       const preview_url = item.preview_url ? String(item.preview_url) : undefined;
-      return { id, name, language, gender, preview_url };
+      const primary = Boolean(item.primary);
+      const voice_identity = item.voice_identity ? String(item.voice_identity) : undefined;
+      const voice_model_id = item.voice_model_id ? String(item.voice_model_id) : undefined;
+      const engine = item.engine ? String(item.engine) : undefined;
+      const fallback = Boolean(item.fallback);
+      return { id, name, language, gender, preview_url, primary, voice_identity, voice_model_id, engine, fallback };
     })
     .filter(Boolean);
+}
+
+export function resolveSarahBrowserVoice(voices: SpeechSynthesisVoice[], selectedVoice?: string | null): SpeechSynthesisVoice | null {
+  const list = Array.isArray(voices) ? voices : [];
+  if (!list.length) return null;
+  const selected = String(selectedVoice || "").toLowerCase().trim();
+  const english = list.filter((v) => String(v.lang || "").toLowerCase().startsWith("en"));
+  const pool = english.length ? english : list;
+  const preferred = ["sarah", "zira", "aria", "jenny", "emma", "samantha", "victoria", "hazel", "susan", "female"];
+  const blockedMale = ["david", "guy", "mike", "mark", "tom", "daniel", "james", "alex", "fred", "ralph", "male"];
+
+  if (selected && !["default", "sarah", "sarahvoice", "sarahmemory voice"].includes(selected)) {
+    const direct = pool.find((v) => {
+      const name = String(v.name || "").toLowerCase();
+      const uri = String(v.voiceURI || "").toLowerCase();
+      return name.includes(selected) || uri.includes(selected);
+    });
+    if (direct) return direct;
+  }
+
+  const femalePreferred = pool.find((v) => {
+    const hay = `${String(v.name || "")} ${String(v.voiceURI || "")}`.toLowerCase();
+    return preferred.some((kw) => hay.includes(kw));
+  });
+  if (femalePreferred) return femalePreferred;
+
+  const nonMale = pool.find((v) => {
+    const hay = `${String(v.name || "")} ${String(v.voiceURI || "")}`.toLowerCase();
+    return !blockedMale.some((kw) => hay.includes(kw));
+  });
+  return nonMale || null;
+}
+
+export function waitForSarahBrowserVoices(timeoutMs = 1600): Promise<SpeechSynthesisVoice[]> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return Promise.resolve([]);
+  const current = window.speechSynthesis.getVoices();
+  if (current && current.length > 0) return Promise.resolve(current);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { window.speechSynthesis.onvoiceschanged = null; } catch {}
+      resolve(window.speechSynthesis.getVoices() || []);
+    };
+    try { window.speechSynthesis.onvoiceschanged = finish; } catch {}
+    window.setTimeout(finish, timeoutMs);
+  });
+}
+
+export async function speakWithSarahBrowserVoice(text: string, selectedVoice?: string | null, onDone?: () => void): Promise<boolean> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return false;
+  const voices = await waitForSarahBrowserVoices();
+  const voice = resolveSarahBrowserVoice(voices, selectedVoice);
+  // No anonymous browser default at boot. A resolved non-male/female-preferred voice is required.
+  if (!voice) return false;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.voice = voice;
+    utterance.pitch = 1.04;
+    utterance.rate = 0.92;
+    utterance.volume = 0.9;
+    utterance.onend = () => onDone?.();
+    utterance.onerror = () => onDone?.();
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch {
+    onDone?.();
+    return false;
+  }
 }
 
 function isTruthySuccess(obj: any): boolean {
@@ -913,11 +1023,22 @@ export const voiceApi = {
         error: data.error,
         server_tts_started: Boolean(data.server_tts_started),
         browser_fallback_required: Boolean(data.browser_fallback_required),
+        voice_identity: data.voice_identity,
+        voice_model_id: data.voice_model_id,
+        server_tts_started: Boolean(data.server_tts_started),
+        browser_fallback_required: Boolean(data.browser_fallback_required),
         browser_fallback_allowed: data.browser_fallback_allowed !== false,
         playback_location: data.playback_location,
         estimated_duration_ms: Number(data.estimated_duration_ms || data.avatar_session?.estimated_duration_ms || 0) || undefined,
         engine: data.engine,
         requested_engine: data.requested_engine,
+        voice_identity: data.voice_identity || data.avatar_session?.voice_identity || data.identity?.voice_identity,
+        voice_model_id: data.voice_model_id || data.avatar_session?.voice_model_id || data.identity?.voice_model_id,
+        voice_display_name: data.voice_display_name || data.avatar_session?.voice_display_name || data.identity?.display_name,
+        primary_voice_ready: Boolean(data.primary_voice_ready ?? data.identity?.primary_voice_ready ?? true),
+        male_default_boot_voice_allowed: Boolean(data.male_default_boot_voice_allowed),
+        fallback_used: Boolean(data.fallback_used),
+        identity: data.identity,
         avatar_session: data.avatar_session,
         tts_status: data.tts_status,
       };
@@ -927,6 +1048,33 @@ export const voiceApi = {
       } catch (edgeErr) {
         return { success: false, fallback: true, error: String(edgeErr || err) };
       }
+    }
+  },
+
+  async getIdentity(): Promise<VoiceIdentity> {
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice/identity"], { method: "GET" });
+      return (data.identity || data) as VoiceIdentity;
+    } catch (error) {
+      return {
+        ok: true,
+        voice_model_id: "SarahVoice_v1",
+        voice_identity: "SarahMemory Speaking",
+        display_name: "SarahMemory Voice",
+        engine: "sarahvoice",
+        primary_voice_ready: true,
+        male_default_boot_voice_allowed: false,
+      };
+    }
+  },
+
+  async getStatus(): Promise<Record<string, any>> {
+    try {
+      const { data } = await tryDirectEndpoints<any>(["/api/voice/status"], { method: "GET" });
+      return data || {};
+    } catch (error) {
+      const identity = await this.getIdentity();
+      return { ok: true, identity, engines: { sarahvoice: true } };
     }
   },
 
@@ -957,7 +1105,11 @@ export const voiceApi = {
         },
       );
       // /api/voice GET might not exist; normalize handles any shape
-      return normalizeVoices(data);
+      const voices = normalizeVoices(data);
+      if (!voices.some((v) => v.id === "sarahvoice" || v.primary)) {
+        voices.unshift({ id: "sarahvoice", name: "SarahMemory Voice", language: "en-US", gender: "female", primary: true, voice_identity: "SarahMemory Speaking", voice_model_id: "SarahVoice_v1", engine: "sarahvoice" });
+      }
+      return voices;
     } catch (error) {
       console.warn("[Voice] Failed to get voices from backend:", error);
       try {
@@ -997,6 +1149,10 @@ export const voiceApi = {
         audio_base64: data.audio_base64,
         fallback: false,
         error: data.error,
+        server_tts_started: Boolean(data.server_tts_started),
+        browser_fallback_required: Boolean(data.browser_fallback_required),
+        voice_identity: data.voice_identity,
+        voice_model_id: data.voice_model_id,
       };
     } catch (err) {
       try {

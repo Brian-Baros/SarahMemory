@@ -280,15 +280,33 @@ type Avatar2DMorphSurfaceProps = {
 function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, onError }: Avatar2DMorphSurfaceProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const workCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const historyCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cacheRef = useRef<Map<string, MorphImageEntry>>(new Map());
   const currentRef = useRef<MorphImageEntry | null>(null);
   const previousRef = useRef<MorphImageEntry | null>(null);
-  const targetUrlRef = useRef<string>("");
-  const transitionRef = useRef({ started: 0, duration: 420 });
+  const pendingSrcRef = useRef<string>(src);
+  const transitionRef = useRef({ started: 0, duration: 560, lockedUntil: 0 });
   const rafRef = useRef<number | null>(null);
   const lastDrawRef = useRef<number>(0);
   const fallbackSrcRef = useRef<string>(src);
+  const stableFrameReadyRef = useRef(false);
   const [canvasFailed, setCanvasFailed] = useState(false);
+
+  const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  const smootherstep = (t: number) => {
+    const x = clamp(t);
+    return x * x * x * (x * (x * 6 - 15) + 10);
+  };
+
+  const ensureOffscreen = (ref: React.MutableRefObject<HTMLCanvasElement | null>, width: number, height: number) => {
+    if (!ref.current) ref.current = document.createElement("canvas");
+    if (ref.current.width !== width || ref.current.height !== height) {
+      ref.current.width = width;
+      ref.current.height = height;
+    }
+    return ref.current;
+  };
 
   const drawContained = (
     ctx: CanvasRenderingContext2D,
@@ -301,15 +319,45 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
   ) => {
     const iw = img.naturalWidth || img.width || 1;
     const ih = img.naturalHeight || img.height || 1;
-    const scale = Math.min(width / iw, height / ih) * (1 + 0.006 * Math.sin(phase * Math.PI * 2) * emphasis);
+    const bodyStability = speaking ? 0.25 : listening ? 0.42 : 0.55;
+    const scalePulse = 0.0025 * Math.sin(phase * Math.PI * 2) * emphasis * bodyStability;
+    const scale = Math.min(width / iw, height / ih) * (1 + scalePulse);
     const dw = iw * scale;
     const dh = ih * scale;
-    const bob = Math.sin(phase * Math.PI * 2) * 2.0 * emphasis;
+    const bob = Math.sin(phase * Math.PI * 2) * 0.75 * emphasis * bodyStability;
     const x = (width - dw) / 2;
     const y = (height - dh) / 2 + bob;
-    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.globalAlpha = clamp(alpha);
     ctx.drawImage(img, x, y, dw, dh);
     ctx.globalAlpha = 1;
+  };
+
+  const acceptTarget = (entry: MorphImageEntry, cleanSrc: string) => {
+    const now = performance.now();
+    const transition = transitionRef.current;
+    const elapsed = now - transition.started;
+    const progress = transition.started ? elapsed / Math.max(1, transition.duration) : 1;
+    const urgent = speaking || listening;
+
+    if (
+      currentRef.current &&
+      currentRef.current.url !== cleanSrc &&
+      now < transition.lockedUntil &&
+      progress < 0.72 &&
+      !urgent
+    ) {
+      pendingSrcRef.current = cleanSrc;
+      return;
+    }
+
+    previousRef.current = currentRef.current || entry;
+    currentRef.current = entry;
+    const duration = speaking ? 460 : listening ? 540 : 680;
+    transitionRef.current = {
+      started: now,
+      duration,
+      lockedUntil: now + Math.max(320, duration * 0.72),
+    };
   };
 
   useEffect(() => {
@@ -317,13 +365,11 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
     const cleanSrc = String(src || "").trim();
     if (!cleanSrc) return;
     fallbackSrcRef.current = cleanSrc;
-    targetUrlRef.current = cleanSrc;
+    pendingSrcRef.current = cleanSrc;
 
     const cached = cacheRef.current.get(cleanSrc);
     if (cached) {
-      previousRef.current = currentRef.current || cached;
-      currentRef.current = cached;
-      transitionRef.current = { started: performance.now(), duration: speaking ? 220 : listening ? 360 : 520 };
+      acceptTarget(cached, cleanSrc);
       onLoad();
       return;
     }
@@ -335,17 +381,15 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
       if (cancelled) return;
       const entry = { url: cleanSrc, image: img, loadedAt: Date.now() };
       cacheRef.current.set(cleanSrc, entry);
-      // Bounded hot cache. The current avatar pack is small, but this prevents runaway growth with future packs.
-      if (cacheRef.current.size > 16) {
-        const keep = new Set([cleanSrc, currentRef.current?.url, previousRef.current?.url].filter(Boolean));
+      // Bounded hot cache. Keep current/pending states and avoid decode churn.
+      if (cacheRef.current.size > 20) {
+        const keep = new Set([cleanSrc, currentRef.current?.url, previousRef.current?.url, pendingSrcRef.current].filter(Boolean));
         for (const key of Array.from(cacheRef.current.keys())) {
-          if (cacheRef.current.size <= 12) break;
+          if (cacheRef.current.size <= 14) break;
           if (!keep.has(key)) cacheRef.current.delete(key);
         }
       }
-      previousRef.current = currentRef.current || entry;
-      currentRef.current = entry;
-      transitionRef.current = { started: performance.now(), duration: speaking ? 220 : listening ? 360 : 520 };
+      acceptTarget(entry, cleanSrc);
       setCanvasFailed(false);
       onLoad();
     };
@@ -369,7 +413,7 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
 
     const render = (now: number) => {
       rafRef.current = requestAnimationFrame(render);
-      const fps = speaking ? 24 : listening ? 18 : 12;
+      const fps = speaking ? 22 : listening ? 16 : 10;
       if (now - lastDrawRef.current < 1000 / fps) return;
       lastDrawRef.current = now;
 
@@ -384,43 +428,73 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
         canvas.height = h;
         canvas.style.width = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
+        stableFrameReadyRef.current = false;
       }
 
-      const ctx = canvas.getContext("2d", { alpha: true });
+      const ctx = canvas.getContext("2d", { alpha: false });
       if (!ctx) {
         setCanvasFailed(true);
         onError();
         return;
       }
+      const work = ensureOffscreen(workCanvasRef, w, h);
+      const history = ensureOffscreen(historyCanvasRef, w, h);
+      const workCtx = work.getContext("2d", { alpha: false });
+      const historyCtx = history.getContext("2d", { alpha: false });
+      if (!workCtx || !historyCtx) return;
 
       const current = currentRef.current;
       const previous = previousRef.current;
-      ctx.clearRect(0, 0, w, h);
+      workCtx.imageSmoothingEnabled = true;
+      workCtx.imageSmoothingQuality = "high";
+      historyCtx.imageSmoothingEnabled = true;
+      historyCtx.imageSmoothingQuality = "high";
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = "high";
 
+      // Alpha-edge guard: use a stable dark backdrop before blending transparent WebP assets.
+      workCtx.globalAlpha = 1;
+      workCtx.fillStyle = "#020617";
+      workCtx.fillRect(0, 0, w, h);
+
       const transition = transitionRef.current;
-      const t = Math.max(0, Math.min(1, (now - transition.started) / Math.max(1, transition.duration)));
-      const eased = 0.5 - Math.cos(t * Math.PI) / 2;
-      const energy = speaking ? 1 : listening ? 0.55 : String(expression || "").toLowerCase().includes("thinking") ? 0.42 : 0.25;
-      const phase = (now / (speaking ? 780 : 2600)) % 1;
+      const t = clamp((now - transition.started) / Math.max(1, transition.duration));
+      const eased = smootherstep(t);
+      const exp = String(expression || "").toLowerCase();
+      const energy = speaking ? 1 : listening ? 0.55 : exp.includes("thinking") || exp.includes("ponder") ? 0.42 : 0.22;
+      const phase = (now / (speaking ? 840 : 2800)) % 1;
 
       if (previous?.image && current?.image && previous.url !== current.url && t < 1) {
-        drawContained(ctx, previous.image, w, h, 1 - eased, phase, energy);
-        drawContained(ctx, current.image, w, h, eased, phase + 0.08, energy);
+        drawContained(workCtx, previous.image, w, h, 1 - eased, phase, energy);
+        drawContained(workCtx, current.image, w, h, eased, phase + 0.08, energy);
       } else if (current?.image) {
-        drawContained(ctx, current.image, w, h, 1, phase, energy);
+        drawContained(workCtx, current.image, w, h, 1, phase, energy);
       }
 
-      // Lightweight living-loop overlay: subtle speaking/listening pulse without writing frames to disk.
+      // Region-biased speech/life overlay. This avoids hard speaking_soft/open texture thrash.
       if (speaking || listening) {
-        const pulse = 0.08 + 0.06 * Math.sin(now / (speaking ? 90 : 180));
-        const grad = ctx.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.42);
+        const pulse = speaking ? 0.045 + 0.035 * Math.sin(now / 115) : 0.025 + 0.02 * Math.sin(now / 240);
+        const grad = workCtx.createRadialGradient(w * 0.5, h * 0.42, 0, w * 0.5, h * 0.42, Math.max(w, h) * 0.42);
         grad.addColorStop(0, `rgba(34,211,238,${pulse})`);
         grad.addColorStop(1, "rgba(34,211,238,0)");
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, w, h);
+        workCtx.fillStyle = grad;
+        workCtx.fillRect(0, 0, w, h);
       }
+
+      // Temporal anti-flicker stabilizer: blend the new morph frame with the previous stable output.
+      if (!stableFrameReadyRef.current) {
+        historyCtx.drawImage(work, 0, 0);
+        stableFrameReadyRef.current = true;
+      } else {
+        const previousWeight = speaking ? 0.74 : listening ? 0.80 : 0.86;
+        historyCtx.globalAlpha = previousWeight;
+        historyCtx.drawImage(history, 0, 0);
+        historyCtx.globalAlpha = 1 - previousWeight;
+        historyCtx.drawImage(work, 0, 0);
+        historyCtx.globalAlpha = 1;
+      }
+
+      ctx.drawImage(history, 0, 0);
     };
 
     rafRef.current = requestAnimationFrame(render);
@@ -437,9 +511,9 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
 
   return (
     <div ref={wrapRef} className="relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
-      <canvas ref={canvasRef} className="h-full w-full max-h-full max-w-full object-contain" aria-label="Sarah AI Avatar morphic LiveLoop" />
+      <canvas ref={canvasRef} className="h-full w-full max-h-full max-w-full object-contain" aria-label="Sarah AI Avatar MorphShader LiveLoop" />
       <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-cyan-500/20 bg-slate-950/70 px-1.5 py-0.5 text-[10px] text-cyan-100/70">
-        MorphLoop RAM
+        MorphShader RAM
       </div>
     </div>
   );
@@ -593,9 +667,7 @@ export function AvatarPanel() {
   const localRoleFile = useMemo(() => {
     const expression = String(avatarState.expression || avatarState.emotion || "neutral").toLowerCase();
     if (avatarState.speaking) {
-      return frameTick % 2 === 0
-        ? resolveRoleFile("speaking_soft", "07_speaking_soft.png")
-        : resolveRoleFile("speaking_open", "08_speaking_open.png");
+      return resolveRoleFile("speaking_soft", "07_speaking_soft.png");
     }
     if (avatarState.listening) return resolveRoleFile("listening", "09_listening_thinking.png");
     if (expression === "joy" || expression === "happy") return resolveRoleFile("happy", "11_happy_open_smile.png");
@@ -780,7 +852,7 @@ export function AvatarPanel() {
 
   useEffect(() => {
     if (!avatarState.speaking && !avatarState.listening) return;
-    const interval = window.setInterval(() => setFrameTick((v) => v + 1), avatarState.speaking ? 180 : 420);
+    const interval = window.setInterval(() => setFrameTick((v) => v + 1), avatarState.speaking ? 600 : 900);
     return () => window.clearInterval(interval);
   }, [avatarState.speaking, avatarState.listening]);
 

@@ -24,10 +24,9 @@ import { DesktopShell } from "@/components/shell/DesktopShell";
 const Index = () => {
   const {
     mediaState,
-    hasPlayedWelcome,
     backendReady,
-    setHasPlayedWelcome,
     setVoices,
+    playWelcomeIfNeeded,
   } = useSarahStore();
 
   const viewport = useViewportProfile();
@@ -50,20 +49,14 @@ const Index = () => {
     })();
   }, [backendReady, setVoices]);
 
-  // One-time TTS welcome intro when backend is ready and voice is enabled
+  // Welcome speech authority is centralized in useSarahStore.playWelcomeIfNeeded().
+  // Index only triggers the governed bootstrap after backend + voice list loading.
   useEffect(() => {
-    if (!backendReady || !mediaState.voiceEnabled || hasPlayedWelcome) return;
-
-    (async () => {
-      try {
-        await api.voice.speak("SarahMemory is online and ready.");
-      } catch (error) {
-        console.warn("[Index] Welcome TTS failed:", error);
-      } finally {
-        setHasPlayedWelcome(true);
-      }
-    })();
-  }, [backendReady, mediaState.voiceEnabled, hasPlayedWelcome, setHasPlayedWelcome]);
+    if (!backendReady || !mediaState.voiceEnabled) return;
+    playWelcomeIfNeeded().catch((error) => {
+      console.warn("[Index] Governed welcome bootstrap skipped:", error);
+    });
+  }, [backendReady, mediaState.voiceEnabled, playWelcomeIfNeeded]);
 
   return (
     <div

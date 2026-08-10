@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
 
-import { api, type ChatResponse } from "@/lib/api";
+import { api, speakWithSarahBrowserVoice, type ChatResponse } from "@/lib/api";
 import { useSarahStore } from "@/stores/useSarahStore";
 
 type SendOptions = {
@@ -105,67 +105,15 @@ export function useChatSend() {
     }, durationMs + 500);
   }, [setSpeechCues, setAvatarSpeaking, setSpeechStartTime, stopAvatarSpeaking, estimateSpeakingDuration]);
 
-  const useBrowserTTS = useCallback((text: string) => {
-    if (!("speechSynthesis" in window)) return;
+  const useBrowserTTS = useCallback(async (text: string) => {
+    const ok = await speakWithSarahBrowserVoice(text, settings.selectedVoice || "sarahvoice", stopAvatarSpeaking);
+    if (!ok) stopAvatarSpeaking();
+  }, [settings.selectedVoice, stopAvatarSpeaking]);
 
-    try {
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.onvoiceschanged = null;
-    } catch {}
-
-    const utterance = new SpeechSynthesisUtterance(text);
-
-    const speakWithVoices = (voices: SpeechSynthesisVoice[]) => {
-      const femaleKeywords = [
-        "female",
-        "samantha",
-        "victoria",
-        "karen",
-        "zira",
-        "susan",
-        "hazel",
-        "fiona",
-        "moira",
-        "tessa",
-        "kate",
-      ];
-
-      const englishVoices = voices.filter((v) => v.lang?.startsWith("en"));
-
-      let selectedVoice =
-        englishVoices.find((v) => femaleKeywords.some((kw) => v.name.toLowerCase().includes(kw))) || null;
-
-      if (!selectedVoice) {
-        const maleKeywords = ["male", "david", "daniel", "james", "alex", "tom", "mark", "fred", "ralph"];
-        selectedVoice =
-          englishVoices.find((v) => !maleKeywords.some((kw) => v.name.toLowerCase().includes(kw))) || null;
-      }
-
-      if (!selectedVoice && englishVoices.length > 0) selectedVoice = englishVoices[0];
-      if (selectedVoice) utterance.voice = selectedVoice;
-
-      utterance.pitch = 1.1;
-      utterance.rate = 0.95;
-
-      utterance.onend = () => stopAvatarSpeaking();
-      utterance.onerror = () => stopAvatarSpeaking();
-
-      window.speechSynthesis.speak(utterance);
-    };
-
-    const voices = window.speechSynthesis.getVoices();
-    if (!voices || voices.length === 0) {
-      window.speechSynthesis.onvoiceschanged = () => {
-        speakWithVoices(window.speechSynthesis.getVoices());
-      };
-    } else {
-      speakWithVoices(voices);
-    }
-  }, [stopAvatarSpeaking]);
 
   const speakResponse = useCallback(async (text: string) => {
     try {
-      const resp = await api.voice.speak(text, settings.selectedVoice);
+      const resp = await api.voice.speak(text, settings.selectedVoice || "sarahvoice");
 
       if (resp.success && (resp.audio_url || resp.audio_base64)) {
         const audioSrc =
@@ -192,12 +140,22 @@ export function useChatSend() {
         }
       }
 
-      if (resp.fallback || !resp.success) {
-        useBrowserTTS(text);
+      if (resp.server_tts_started) {
+        const durationMs = Number(resp.estimated_duration_ms || resp.avatar_session?.estimated_duration_ms || estimateSpeakingDuration(text));
+        setAvatarSpeaking(true);
+        setSpeechStartTime(Date.now());
+        api.avatar.setSpeaking(true).catch(() => {});
+        if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+        speakingTimeoutRef.current = setTimeout(() => stopAvatarSpeaking(), Math.max(1200, durationMs + 1000));
+        return;
+      }
+
+      if (resp.browser_fallback_required || resp.fallback || !resp.success) {
+        await useBrowserTTS(text);
       }
     } catch (e) {
       console.error("TTS error:", e);
-      useBrowserTTS(text);
+      await useBrowserTTS(text);
     }
   }, [settings.selectedVoice, stopAvatarSpeaking, useBrowserTTS]);
 
