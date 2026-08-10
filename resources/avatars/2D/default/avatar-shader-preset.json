@@ -1,0 +1,61 @@
+{
+  "schema": "SarahMemory.avatar.shader_preset.v1",
+  "name": "morphic_soft_stable_v9_3",
+  "display_name": "SarahMemory MorphShader Stabilizer v9.3",
+  "pipeline": [
+    {
+      "pass": "target_debounce",
+      "min_state_hold_ms": 320,
+      "min_morph_progress_before_nonurgent_switch": 0.72
+    },
+    {
+      "pass": "morph_blend",
+      "easing": "smootherstep",
+      "duration_ms": {
+        "speaking": 460,
+        "listening": 540,
+        "idle": 680
+      }
+    },
+    {
+      "pass": "alpha_edge_guard",
+      "stable_backdrop": "#020617",
+      "premultiplied_alpha_runtime": true
+    },
+    {
+      "pass": "temporal_stabilizer",
+      "previous_weight": {
+        "speaking": 0.74,
+        "listening": 0.8,
+        "idle": 0.86
+      }
+    },
+    {
+      "pass": "region_bias",
+      "body_stability": {
+        "speaking": 0.25,
+        "listening": 0.42,
+        "idle": 0.55
+      },
+      "mouth_motion": "phase_overlay_until_masks"
+    },
+    {
+      "pass": "emotion_light",
+      "cyan_pulse_max": 0.08
+    }
+  ],
+  "runtime": {
+    "store_generated_frames": false,
+    "ram_only": true,
+    "idle_fps": 10,
+    "listening_fps": 16,
+    "speaking_fps": 22,
+    "cache_hot_assets": 14,
+    "cache_max_assets": 20
+  },
+  "fallback": {
+    "canvas_failure": "still_image_surface",
+    "asset_failure": "sarah_avatar.webp",
+    "backend_failure": "last_good_frame_then_neutral"
+  }
+}
