@@ -531,6 +531,11 @@ class UnifiedAvatarController:
         # Ensure avatar_state DB exists
         self._ensure_avatar_state_db()
 
+        # Voice/avatar morph session state. This is coordination metadata only;
+        # SarahMemoryVoice owns audio playback and AvatarPanel owns rendering.
+        self._speech_lock = threading.RLock()
+        self._active_speech_session: Dict[str, Any] = {}
+
         logger.info("[v8.0] UnifiedAvatarController initialized")
 
     def create_avatar(self, design_request: Union[str, Dict]) -> None:
@@ -753,6 +758,119 @@ class UnifiedAvatarController:
 
         except Exception as e:
             logger.error(f"[v8.0] Avatar speak error: {e}")
+
+
+    # -------------------------------------------------------------------------
+    # AVATAR MORPHTOKEN LIVELOOP / VOICE SESSION ORCHESTRATION
+    # -------------------------------------------------------------------------
+    def _estimate_speech_duration_ms(self, text: str) -> int:
+        try:
+            if self.tts and hasattr(self.tts, "estimate_speech_duration_ms"):
+                return int(self.tts.estimate_speech_duration_ms(text))
+        except Exception:
+            pass
+        words = str(text or "").split()
+        return max(1200, min(180000, int((len(words) / 1.45) * 1000) + 1200))
+
+    def build_morph_token(self, from_state: str = "neutral", to_state: str = "speaking_soft", *, duration_ms: int = 420, speech_phase: str = "idle") -> Dict[str, Any]:
+        """Build a RAM-only morph token for the 2D AvatarPanel LiveLoop renderer."""
+        return {
+            "schema": "SarahMemory.avatar.morphtoken.v1",
+            "from_state": str(from_state or "neutral"),
+            "to_state": str(to_state or "speaking_soft"),
+            "duration_ms": max(120, int(duration_ms or 420)),
+            "easing": "breath_sine",
+            "blend_mode": "canvas_2d_crossfade_breath_v1",
+            "affected_regions": ["eyes", "brows", "mouth", "head", "shoulders"],
+            "speech_phase": str(speech_phase or "idle"),
+            "viseme_mode": "approximate_voice_duration",
+            "ram_only": True,
+            "store_generated_frames": False,
+            "fallback": "last_good_frame_then_neutral",
+            "source": "UnifiedAvatarController",
+        }
+
+    def build_voice_avatar_session(self, text: str, voice: str = "default", emotion: Optional[str] = None) -> Dict[str, Any]:
+        """Build the platform-wide voice/avatar session packet without starting audio."""
+        clean_text = str(text or "").strip()
+        current_emotion = str(emotion or self.last_emotion or "neutral").strip().lower() or "neutral"
+        duration_ms = self._estimate_speech_duration_ms(clean_text)
+        session_id = "voice_" + hashlib.sha256(f"{time.time()}::{clean_text[:128]}::{random.random()}".encode("utf-8", "ignore")).hexdigest()[:16]
+        text_hash = hashlib.sha256(clean_text.encode("utf-8", "ignore")).hexdigest() if clean_text else ""
+        return {
+            "schema": "SarahMemory.avatar.voice_session.v1",
+            "session_id": session_id,
+            "text_hash": text_hash,
+            "text_preview": clean_text[:180],
+            "voice": str(voice or "default"),
+            "emotion": current_emotion,
+            "speaking": bool(clean_text),
+            "started_at": time.time(),
+            "estimated_duration_ms": duration_ms,
+            "audio_url": None,
+            "audio_base64": None,
+            "browser_fallback_allowed": True,
+            "browser_fallback_required": False,
+            "server_tts_started": False,
+            "morph": self.build_morph_token("neutral", "speaking_soft", duration_ms=min(520, max(220, duration_ms // 8)), speech_phase="pre_speak"),
+            "ram_only": True,
+            "store_generated_frames": False,
+        }
+
+    def start_avatar_speech_session(self, text: str, voice: str = "default", emotion: Optional[str] = None, *, start_tts: bool = True) -> Dict[str, Any]:
+        """Create a voice-avatar session, set avatar speaking, and optionally queue backend TTS."""
+        session = self.build_voice_avatar_session(text=text, voice=voice, emotion=emotion)
+        tts_status: Dict[str, Any] = {"ok": False, "accepted": False, "skipped": not start_tts}
+        try:
+            if self.avatar and hasattr(self.avatar, "set_avatar_expression"):
+                self.avatar.set_avatar_expression(str(session.get("emotion") or "neutral"))
+            if self.avatar and hasattr(self.avatar, "simulate_lip_sync_async"):
+                self.avatar.simulate_lip_sync_async(float(session.get("estimated_duration_ms") or 1200) / 1000.0)
+        except Exception as exc:
+            logger.debug(f"[AvatarVoice] avatar state prep skipped: {exc}")
+        if start_tts and self.tts:
+            try:
+                if hasattr(self.tts, "speak_text_status"):
+                    tts_status = self.tts.speak_text_status(text, blocking=False, emotion=session.get("emotion"), engine_pref=voice or None)
+                elif hasattr(self.tts, "speak_text"):
+                    accepted = bool(self.tts.speak_text(text, blocking=False, emotion=session.get("emotion"), engine_pref=voice or None))
+                    tts_status = {"ok": accepted, "accepted": accepted, "server_tts_started": accepted, "browser_fallback_required": not accepted}
+            except Exception as exc:
+                tts_status = {"ok": False, "accepted": False, "error": str(exc), "browser_fallback_required": True}
+        session["tts_status"] = tts_status
+        session["server_tts_started"] = bool(tts_status.get("server_tts_started") or tts_status.get("accepted") or tts_status.get("ok"))
+        session["browser_fallback_required"] = bool(tts_status.get("browser_fallback_required") or not session["server_tts_started"])
+        if tts_status.get("estimated_duration_ms"):
+            session["estimated_duration_ms"] = int(tts_status.get("estimated_duration_ms") or session["estimated_duration_ms"])
+        with self._speech_lock:
+            self._active_speech_session = dict(session)
+        self.last_emotion = str(session.get("emotion") or self.last_emotion or "neutral")
+        return {"ok": True, "success": True, "avatar_session": session, "tts_status": tts_status}
+
+    def finish_avatar_speech_session(self, session_id: str = "", reason: str = "ended") -> Dict[str, Any]:
+        with self._speech_lock:
+            active = dict(self._active_speech_session or {})
+            if session_id and active.get("session_id") and str(active.get("session_id")) != str(session_id):
+                return {"ok": False, "finished": False, "reason": "session_id_mismatch", "active": active}
+            active["speaking"] = False
+            active["finished_at"] = time.time()
+            active["finish_reason"] = str(reason or "ended")
+            self._active_speech_session = active
+        try:
+            if self.avatar and hasattr(self.avatar, "set_avatar_expression"):
+                self.avatar.set_avatar_expression("ready")
+        except Exception:
+            pass
+        return {"ok": True, "finished": True, "avatar_session": active}
+
+    def get_avatar_speech_status(self) -> Dict[str, Any]:
+        with self._speech_lock:
+            active = dict(self._active_speech_session or {})
+        if active and active.get("speaking"):
+            elapsed_ms = int(max(0.0, time.time() - float(active.get("started_at") or time.time())) * 1000)
+            active["elapsed_ms"] = elapsed_ms
+            active["expired"] = elapsed_ms > int(active.get("estimated_duration_ms") or 0) + 2500
+        return {"ok": True, "active": active, "source": "UnifiedAvatarController"}
 
 
     # -------------------------------------------------------------------------
@@ -1600,6 +1718,18 @@ def get_rem_report(limit: int = 5) -> Dict[str, Any]:
 
 def mark_user_activity(source: str = "user") -> None:
     get_unified_avatar_controller().mark_user_activity(source=source)
+
+
+def start_avatar_speech_session(text: str, voice: str = "default", emotion: Optional[str] = None, start_tts: bool = True) -> Dict[str, Any]:
+    return get_unified_avatar_controller().start_avatar_speech_session(text=text, voice=voice, emotion=emotion, start_tts=start_tts)
+
+
+def finish_avatar_speech_session(session_id: str = "", reason: str = "ended") -> Dict[str, Any]:
+    return get_unified_avatar_controller().finish_avatar_speech_session(session_id=session_id, reason=reason)
+
+
+def get_avatar_speech_status() -> Dict[str, Any]:
+    return get_unified_avatar_controller().get_avatar_speech_status()
 
 
 def get_panel_api():

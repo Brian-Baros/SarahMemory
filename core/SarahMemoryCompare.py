@@ -1320,6 +1320,105 @@ def compare_interop_envelope(envelope: Optional[Dict[str, Any]] = None, expected
     return review
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 
+
+def compare_agent_adapter_result_contract(
+    prompt: str = "",
+    adapter_result: Optional[Dict[str, Any]] = None,
+    *,
+    task_truth: Optional[Dict[str, Any]] = None,
+    firewall_result: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Verify Terminal Bay read-only adapter results before release to Chat/UI.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    Compare does not authorize execution. It verifies release/presentation only.
+    Accepted adapters are explicitly bounded:
+      - passported_local_get_v1 for api.local.health_check
+      - passported_external_get_v1 for research.public_web / research.approved_api
+    Both lanes remain GET-only, non-mutating, source-scoped, and task-truth bound.
+    """
+    result = adapter_result if isinstance(adapter_result, dict) else {}
+    truth = task_truth if isinstance(task_truth, dict) else {}
+    firewall = firewall_result if isinstance(firewall_result, dict) else {}
+    failures: List[str] = []
+    warnings: List[str] = []
+
+    adapter_name = str(result.get("adapter") or "")
+    skill_id = str(truth.get("skill_id") or "")
+    method = str(result.get("method") or "GET").upper()
+    responses = [x for x in list(result.get("responses") or []) if isinstance(x, dict)]
+
+    if bool(result.get("blocked")) or not bool(result.get("ok")):
+        failures.append("adapter_result_not_ok")
+    if method != "GET":
+        failures.append("adapter_method_not_get")
+    if not responses:
+        failures.append("adapter_response_required")
+
+    mutation_flags = (
+        result.get("mutated"), result.get("write_performed"), result.get("shell_execution"),
+        result.get("file_mutation"), result.get("driver_action"), result.get("devbridge_apply"),
+        result.get("memory_write"),
+    )
+    if any(bool(x) for x in mutation_flags):
+        failures.append("adapter_claims_mutation")
+
+    if adapter_name == "passported_local_get_v1":
+        if skill_id != "api.local.health_check":
+            failures.append("unexpected_skill_id")
+        expected_state = "verified_read_only_adapter_result"
+    elif adapter_name == "passported_external_get_v1":
+        if skill_id not in {"research.public_web", "research.approved_api"}:
+            failures.append("unexpected_skill_id")
+        expected_state = "verified_external_read_only_adapter_result"
+    else:
+        failures.append("unknown_adapter_contract")
+        expected_state = "adapter_result_rejected"
+
+    allowed_sources = set(str(x or "").rstrip("/") for x in list(truth.get("allowed_sources") or []))
+    observed_sources = set(str(x.get("url") or "").rstrip("/") for x in responses if isinstance(x, dict))
+    if allowed_sources and observed_sources and not observed_sources.issubset(allowed_sources):
+        failures.append("observed_source_outside_task_truth")
+    for response in responses:
+        if str(response.get("method") or "GET").upper() != "GET":
+            failures.append("response_method_not_get")
+        if not bool(response.get("ok")):
+            failures.append("response_not_ok")
+        if bool(response.get("mutated") or response.get("file_mutation") or response.get("shell_execution")):
+            failures.append("response_claims_mutation")
+        if adapter_name == "passported_external_get_v1":
+            url = str(response.get("url") or "")
+            if not url.lower().startswith("https://"):
+                failures.append("external_response_not_https")
+
+    if str(firewall.get("verdict") or "ALLOW").upper() == "DENY":
+        failures.append("firewall_denied_result")
+    if not bool(truth.get("compare_required", True)):
+        warnings.append("compare_not_marked_required_in_task_truth")
+
+    failures = sorted(set(failures))
+    warnings = sorted(set(warnings))
+    accepted = not failures
+    return {
+        "ok": accepted,
+        "accepted": accepted,
+        "decision": "PASS" if accepted else "FAIL",
+        "verified_answer_state": expected_state if accepted else "adapter_result_rejected",
+        "failures": failures,
+        "warnings": warnings,
+        "source_count": len(observed_sources),
+        "adapter": adapter_name,
+        "skill_id": skill_id,
+        "execution_authority": False,
+        "presentation_allowed": accepted,
+        "doctrine": {
+            "compare_verifies_release_not_execution": True,
+            "read_only_get_only": True,
+            "task_truth_required": True,
+            "external_get_allowed_only_when_passported_and_scoped": True,
+        },
+    }
+
 # ====================================================================
 # END OF SarahMemoryCompare.py v9.0.0
 # ====================================================================

@@ -1265,47 +1265,147 @@ def stop_speaking(clear_queue: bool = True) -> None:
                 except Exception:
                     pass
 
-def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, engine_pref: Optional[str] = None) -> bool:
-    """Queue one complete utterance and report whether playback completed."""
+def estimate_speech_duration_ms(text: str, *, min_ms: int = 1200, max_ms: int = 180000) -> int:
+    """Deterministic speech-duration estimate for avatar morph timing."""
+    words = re.findall(r"\S+", str(text or ""))
+    # Conservative local TTS pacing: slower voices need the avatar loop alive longer.
+    estimated = int((len(words) / 1.45) * 1000) + 1200
+    return max(int(min_ms), min(int(max_ms), estimated))
+
+
+def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] = None, engine_pref: Optional[str] = None) -> Dict[str, Any]:
+    """Queue one utterance and return a detailed, browser-safe TTS status packet.
+
+    This is intentionally non-breaking: legacy speak_text() remains bool-based,
+    while Flask/React can use this richer packet to keep AvatarPanel morphs and
+    browser fallback behavior synchronized with backend/local TTS.
+    """
     global _TTS_LAST_TEXT_HASH, _TTS_LAST_ACCEPTED_TS
-    if not text or not str(text).strip() or SAFE_MODE or _TTS_SHUTDOWN_FLAG.is_set():
-        return False
+    raw_text = str(text or "").strip()
+    task_id = "tts_" + uuid.uuid4().hex[:16]
+    if not raw_text or SAFE_MODE or _TTS_SHUTDOWN_FLAG.is_set():
+        return {
+            "ok": False,
+            "accepted": False,
+            "task_id": task_id,
+            "reason": "empty_text_or_tts_disabled",
+            "browser_fallback_required": True,
+            "estimated_duration_ms": estimate_speech_duration_ms(raw_text),
+        }
     try:
         from SarahMemoryAPI import _sm_sanitize_llm_text as _san
-        text = _san(text)
+        raw_text = _san(raw_text)
     except Exception:
         pass
-    text = _sm_sanitize_llm_text_local(text)
-    if not text:
-        return False
-    import hashlib
+    clean_text = _sm_sanitize_llm_text_local(raw_text)
+    if not clean_text:
+        return {
+            "ok": False,
+            "accepted": False,
+            "task_id": task_id,
+            "reason": "sanitized_empty_text",
+            "browser_fallback_required": True,
+            "estimated_duration_ms": 1200,
+        }
+
+    text_hash = hashlib.sha256(clean_text.encode("utf-8", "ignore")).hexdigest()
     now = time.time()
-    text_hash = hashlib.sha256(str(text).strip().encode("utf-8", "ignore")).hexdigest()
     dedupe_window = float(getattr(config, "TTS_DEDUPE_WINDOW_SECONDS", 1.25) or 1.25)
     with _TTS_LAST_LOCK:
         if text_hash == _TTS_LAST_TEXT_HASH and (now - _TTS_LAST_ACCEPTED_TS) <= max(0.0, dedupe_window):
-            return True
+            return {
+                "ok": True,
+                "accepted": True,
+                "deduped": True,
+                "task_id": task_id,
+                "text": clean_text,
+                "text_hash": text_hash,
+                "engine": "deduped_previous",
+                "requested_engine": _normalize_tts_engine_name(engine_pref or current_settings.get("tts_engine", "auto")) or "auto",
+                "playback_location": "server_local_audio",
+                "server_tts_started": True,
+                "browser_fallback_required": False,
+                "browser_fallback_allowed": True,
+                "audio_url": None,
+                "audio_base64": None,
+                "estimated_duration_ms": estimate_speech_duration_ms(clean_text),
+            }
         _TTS_LAST_TEXT_HASH = text_hash
         _TTS_LAST_ACCEPTED_TS = now
+
     if not _start_tts_worker():
-        return False
+        return {
+            "ok": False,
+            "accepted": False,
+            "task_id": task_id,
+            "text": clean_text,
+            "text_hash": text_hash,
+            "reason": "tts_worker_unavailable",
+            "browser_fallback_required": True,
+            "browser_fallback_allowed": True,
+            "estimated_duration_ms": estimate_speech_duration_ms(clean_text),
+        }
+
     lang = str(current_settings.get("language", "en") or "en")
-    runtime_plan = _resolve_tts_runtime_plan(text=text, lang=lang, explicit_engine=engine_pref)
+    runtime_plan = _resolve_tts_runtime_plan(text=clean_text, lang=lang, explicit_engine=engine_pref)
     chosen_engine = _normalize_tts_engine_name(runtime_plan.get("engine") or "pyttsx3") or "pyttsx3"
     if chosen_engine not in _SUPPORTED_TTS_ENGINES:
         chosen_engine = "pyttsx3"
     ev: Optional[threading.Event] = threading.Event() if blocking else None
     result: Dict[str, Any] = {"ok": False, "accepted": True}
-    task = _TTSTask(text=str(text).strip(), blocking_event=ev, emotion=(emotion or str(current_settings.get("emotion", "neutral"))), engine_pref=chosen_engine, voice_profile=str(current_settings.get("voice_profile", active_voice_profile or "Female")), lang=lang, selected_repo=runtime_plan.get("selected_repo"), fallback_repos=list(runtime_plan.get("fallback_repos") or []), backend_source=str(runtime_plan.get("backend_source") or "none"), task_id=uuid.uuid4().hex, result=result)
+    task = _TTSTask(
+        text=clean_text,
+        blocking_event=ev,
+        emotion=(emotion or str(current_settings.get("emotion", "neutral"))),
+        engine_pref=chosen_engine,
+        voice_profile=str(current_settings.get("voice_profile", active_voice_profile or "Female")),
+        lang=lang,
+        selected_repo=runtime_plan.get("selected_repo"),
+        fallback_repos=list(runtime_plan.get("fallback_repos") or []),
+        backend_source=str(runtime_plan.get("backend_source") or "none"),
+        task_id=task_id,
+        result=result,
+    )
     _TTS_QUEUE.put(task)
-    if ev is None:
-        return True
-    max_wait = float(getattr(config, "TTS_BLOCKING_MAX_SECONDS", 120.0) or 120.0)
-    completed = ev.wait(timeout=max(1.0, min(600.0, max_wait)))
-    if not completed:
-        logger.warning("[Voice] TTS blocking wait timed out task_id=%s", task.task_id)
-        return False
-    return bool(result.get("ok"))
+    status: Dict[str, Any] = {
+        "ok": True,
+        "accepted": True,
+        "task_id": task_id,
+        "text": clean_text,
+        "text_hash": text_hash,
+        "engine": chosen_engine,
+        "requested_engine": runtime_plan.get("requested_engine") or chosen_engine,
+        "engine_chain": list(runtime_plan.get("engine_chain") or []),
+        "playback_location": "server_local_audio",
+        "server_tts_started": True,
+        "browser_fallback_required": False,
+        "browser_fallback_allowed": True,
+        "audio_url": None,
+        "audio_base64": None,
+        "estimated_duration_ms": estimate_speech_duration_ms(clean_text),
+        "emotion": task.emotion,
+        "voice_profile": task.voice_profile,
+        "language": lang,
+    }
+    if ev is not None:
+        max_wait = float(getattr(config, "TTS_BLOCKING_MAX_SECONDS", 120.0) or 120.0)
+        completed = ev.wait(timeout=max(1.0, min(600.0, max_wait)))
+        if not completed:
+            logger.warning("[Voice] TTS blocking wait timed out task_id=%s", task.task_id)
+            status.update({"ok": False, "accepted": True, "timeout": True, "browser_fallback_required": True})
+        else:
+            status.update(result)
+            status["server_tts_started"] = bool(result.get("ok"))
+            status["browser_fallback_required"] = not bool(result.get("ok"))
+    return status
+
+
+def speak_text(text: str, blocking: bool = True, emotion: Optional[str] = None, engine_pref: Optional[str] = None) -> bool:
+    """Queue one complete utterance and report whether playback completed or was accepted."""
+    status = speak_text_status(text, blocking=blocking, emotion=emotion, engine_pref=engine_pref)
+    if blocking:
+        return bool(status.get("ok"))
+    return bool(status.get("accepted") or status.get("ok"))
 
 def synthesize_voice(text: str, emotion: str = None, engine_pref: str = None) -> None:
     """

@@ -139,11 +139,15 @@ STATUS_REVOKED = "revoked"
 
 PASSPORT_STATUS_ISSUED = "issued"
 PASSPORT_STATUS_DEPARTED = "departed"
+PASSPORT_STATUS_IN_FLIGHT = "in_flight"
+PASSPORT_STATUS_RETURN_SLOT_RESERVED = "return_slot_reserved"
 PASSPORT_STATUS_RETURN_CAPTURED = "return_captured"
 PASSPORT_STATUS_CONSUMED = "consumed"
 PASSPORT_STATUS_EXPIRED = "expired"
 PASSPORT_STATUS_REVOKED = "revoked"
 PASSPORT_STATUS_BLOCKED = "blocked"
+PASSPORT_STATUS_COLLISION_LOCKED = "collision_locked"
+PASSPORT_STATUS_COMPROMISED = "compromised"
 AGENT_PASSPORT_SCHEMA = "SARAHMEMORY_AGENT_PASSPORT_V1"
 
 _DEFAULT_PERMISSION_MAP = {
@@ -457,20 +461,159 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
         return default
 
 
+# ---------------------------------------------------------------------------
+# Enterprise assurance / replay policy helpers
+# ---------------------------------------------------------------------------
+def _config_flag(name: str, default: bool = False) -> bool:
+    try:
+        value = os.getenv(name, None)
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            value = getattr(config, name, default) if config is not None else default
+        except Exception:
+            value = default
+    try:
+        if isinstance(value, bool):
+            return bool(value)
+        return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    except Exception:
+        return bool(default)
+
+
+def _config_int(name: str, default: int, *, minimum: int = 0, maximum: int = 100000) -> int:
+    try:
+        value = os.getenv(name, None)
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            value = getattr(config, name, default) if config is not None else default
+        except Exception:
+            value = default
+    try:
+        out = int(float(value))
+    except Exception:
+        out = int(default)
+    try:
+        return max(int(minimum), min(int(maximum), out))
+    except Exception:
+        return int(default)
+
+
+def _config_choice(name: str, default: str, allowed: Optional[List[str]] = None) -> str:
+    try:
+        value = os.getenv(name, None)
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            value = getattr(config, name, default) if config is not None else default
+        except Exception:
+            value = default
+    text = str(value or default).strip().lower()
+    allowed_set = {str(x).strip().lower() for x in (allowed or [])}
+    if allowed_set and text not in allowed_set:
+        return str(default).strip().lower()
+    return text
+
+
+def _assurance_enabled() -> bool:
+    return _config_flag("SARAH_ASSURANCE_ENABLED", True)
+
+
+def _assurance_tests_enabled() -> bool:
+    return _config_flag("SARAH_ASSURANCE_TESTS_ENABLED", False)
+
+
+def _trust_transition_audit_enabled() -> bool:
+    return _config_flag("SARAH_TRUST_TRANSITION_AUDIT_ENABLED", True)
+
+
+def _agent_max_parallel_returns() -> int:
+    # Enterprise default: a single passport owns exactly one FIFO return slot.
+    return _config_int("SARAH_AGENT_MAX_PARALLEL_RETURNS", 1, minimum=1, maximum=8)
+
+
+def _passport_collision_policy() -> str:
+    return _config_choice("SARAH_AGENT_PASSPORT_COLLISION_POLICY", "reject_all", ["reject_all", "block_new", "review_only"])
+
+
+def _passport_replay_policy() -> str:
+    return _config_choice("SARAH_AGENT_PASSPORT_REPLAY_POLICY", "collision_lock", ["collision_lock", "block", "review_only"])
+
+
+def _record_trust_transition(
+    *,
+    passport_id: str,
+    agent_id: str,
+    old_status: str,
+    new_status: str,
+    event_type: str,
+    reason: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record an auditable trust/passport state transition without granting authority."""
+    if not _trust_transition_audit_enabled():
+        return
+    meta = {
+        "passport_id": str(passport_id or "")[:180],
+        "old_status": str(old_status or "")[:80],
+        "new_status": str(new_status or "")[:80],
+        "execution_authority": False,
+        **(metadata or {}),
+    }
+    try:
+        _log_event("trust_transition_recorded", str(passport_id or agent_id or ""), reason or event_type, severity="WARNING" if str(new_status).lower() in {PASSPORT_STATUS_COLLISION_LOCKED, PASSPORT_STATUS_COMPROMISED, PASSPORT_STATUS_REVOKED, PASSPORT_STATUS_BLOCKED} else "INFO", meta=meta)
+    except Exception:
+        pass
+    try:
+        from SarahMemoryLedger import record_governance_receipt  # type: ignore
+        record_governance_receipt(
+            "agent_passport",
+            "TRUST_TRANSITION_RECORDED",
+            subject_id=str(agent_id or "unknown_agent")[:180],
+            task_id=str((metadata or {}).get("task_id") or "")[:180],
+            lane=str((metadata or {}).get("lane") or "agent_passport")[:96],
+            verdict=str(event_type or "TRANSITION")[:64],
+            risk=str((metadata or {}).get("risk") or "medium")[:32],
+            retention_class="passport",
+            payload_hash=str((metadata or {}).get("payload_hash") or "")[:128],
+            summary=str(reason or event_type or "trust_transition")[:1000],
+            metadata=meta,
+        )
+    except Exception:
+        pass
+
+
 def _safe_list(value: Any) -> List[str]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, tuple):
-        return [str(x).strip() for x in value if str(x).strip()]
-    if isinstance(value, set):
-        return sorted([str(x).strip() for x in value if str(x).strip()])
-    try:
-        txt = str(value).strip()
-        return [txt] if txt else []
-    except Exception:
-        return []
+        raw = value
+    elif isinstance(value, tuple):
+        raw = list(value)
+    elif isinstance(value, set):
+        raw = sorted(list(value))
+    else:
+        try:
+            txt = str(value).strip()
+        except Exception:
+            return []
+        if not txt:
+            return []
+        # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+        # Passport scopes often enter from Terminal key=value strings. Split
+        # comma/semicolon lists here so capability/resource checks do not treat
+        # "a,b,c" as one opaque grant.
+        raw = txt.replace(";", ",").split(",") if ("," in txt or ";" in txt) else [txt]
+    out: List[str] = []
+    for x in raw:
+        text = str(x).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
 
 
 def _subject_id(caller_id: str, caller_kind: str, module_name: str = "") -> str:
@@ -1164,10 +1307,43 @@ def _passport_row_to_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data[key] = bool(data.get(key))
     data["schema"] = AGENT_PASSPORT_SCHEMA
     data["execution_authority"] = False
-    # Hashes prove a credential was registered but are not useful to clients.
+    # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    # Passport lookup/status/scope responses must not re-expose departure or
+    # return credentials.  Departure credentials are returned once only by
+    # issue_agent_passport().  Registry lookup returns identity/scope proof.
+    data.pop("departure_nonce", None)
     data.pop("return_nonce_hash", None)
     data.pop("return_signature_hash", None)
     return data
+
+
+def _agent_passport_auto_issue_enabled(default: bool = False) -> bool:
+    """Read centralized SARAH_AGENT_PASSPORT_ID auto-issue flag.
+
+    This gate applies only to managed/auto passport issuance. Manual
+    user-approved passport issue commands still use issue_agent_passport() when
+    SARAH_AGENT_PASSPORTS_ENABLED is true.
+    """
+    try:
+        value = os.getenv("SARAH_AGENT_PASSPORT_ID", None)
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            value = getattr(config, "SARAH_AGENT_PASSPORT_ID", default) if config is not None else default
+        except Exception:
+            value = default
+    if isinstance(value, bool):
+        return bool(value)
+    try:
+        return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled", "auto")
+    except Exception:
+        return bool(default)
+
+
+def _metadata_requests_managed_auto_passport(metadata: Optional[Dict[str, Any]]) -> bool:
+    meta = metadata if isinstance(metadata, dict) else {}
+    return bool(meta.get("managed_passport") or meta.get("auto_injected") or meta.get("auto_passport"))
 
 
 def issue_agent_passport(
@@ -1201,6 +1377,13 @@ def issue_agent_passport(
     """Issue a bounded identity/scope passport. No execution is launched here."""
     if config is not None and not bool(getattr(config, "SARAH_AGENT_PASSPORTS_ENABLED", True)):
         return {"ok": False, "error": "agent_passports_disabled"}
+    if _metadata_requests_managed_auto_passport(metadata) and not _agent_passport_auto_issue_enabled(False):
+        return {
+            "ok": False,
+            "error": "auto_passport_disabled_by_global_flag",
+            "global_flag": "SARAH_AGENT_PASSPORT_ID",
+            "execution_authority": False,
+        }
     agent_id = re.sub(r"[^A-Za-z0-9._:-]+", "_", _safe_str(agent_id))[:180]
     if not agent_id:
         return {"ok": False, "error": "agent_id_required"}
@@ -1218,6 +1401,8 @@ def issue_agent_passport(
     lanes = sorted(set(_safe_list(allowed_lanes or [origin_lane or "agent"])))
     capabilities = sorted(set(_safe_list(allowed_capabilities or ["inspect", "research", "return_data"])))
     resources = sorted(set(_safe_list(allowed_resources or [])))
+    if "*" in resources:
+        return {"ok": False, "error": "wildcard_resources_not_allowed_for_agent_passport", "execution_authority": False}
     denied = sorted(set(_safe_list(denied_resources or ["core/*", ".env", "credentials", "shell", "device_control"])))
     created = datetime.now().isoformat()
     _ensure_tables()
@@ -1247,6 +1432,15 @@ def issue_agent_passport(
     finally:
         con.close()
     _passport_event(passport_id, agent_id, "PASSPORT_ISSUED", "ISSUED", "Governed AI-agent passport issued.", metadata={"task_id": task_id, "lane": origin_lane, "expires_ts": now + ttl})
+    _record_trust_transition(
+        passport_id=passport_id,
+        agent_id=agent_id,
+        old_status="",
+        new_status=PASSPORT_STATUS_ISSUED,
+        event_type="PASSPORT_ISSUED",
+        reason="Governed AI-agent passport issued.",
+        metadata={"task_id": task_id, "lane": origin_lane, "expires_ts": now + ttl, "risk": maximum_risk_tier},
+    )
     passport = lookup_agent_passport(passport_id=passport_id)
     return {
         "ok": True,
@@ -1326,6 +1520,196 @@ def _risk_rank(value: str) -> int:
     return {"low": 0, "medium": 1, "high": 2, "critical": 3}.get(str(value or "low").lower(), 3)
 
 
+# SARAHMEMORY_PATCH_NOTE 2026-08-04:
+# TrustRegistry must fail closed on placeholder passport identifiers. A syntactic
+# string is not a credential and must never satisfy launch scope verification.
+_PLACEHOLDER_AGENT_PASSPORT_IDS = {
+    "<valid_passport_id>", "valid_passport_id", "<passport_id>", "passport_id",
+    "passport", "test", "demo", "example", "none", "null", "undefined",
+}
+
+
+def _is_placeholder_agent_passport_id(passport_id: str) -> bool:
+    raw = _safe_str(passport_id).strip()
+    low = raw.lower()
+    if not raw:
+        return True
+    if low in _PLACEHOLDER_AGENT_PASSPORT_IDS:
+        return True
+    if raw.startswith("<") and raw.endswith(">"):
+        return True
+    if "valid_passport" in low:
+        return True
+    return False
+
+
+def _passport_id_format_valid(passport_id: str) -> bool:
+    raw = _safe_str(passport_id)
+    return bool(re.fullmatch(r"passport_[0-9a-fA-F]{32}", raw))
+
+
+def verify_agent_passport_scope(
+    *,
+    passport_id: str,
+    task_id: str = "",
+    requested_lane: str = "",
+    requested_capabilities: Optional[List[str]] = None,
+    requested_resources: Optional[List[str]] = None,
+    requested_methods: Optional[List[str]] = None,
+    risk_tier: str = "low",
+    require_user_approved: bool = True,
+) -> Dict[str, Any]:
+    """Verify a passport's launch scope without consuming return credentials.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    Used by Terminal Bay's first read-only adapter. This is not execution
+    authority; it only verifies that a user-approved passport exists, is live,
+    and bounds the requested lane/capabilities/resources/methods before the
+    adapter is allowed to perform local GET reads.
+    """
+    passport_id = _safe_str(passport_id)
+    if _is_placeholder_agent_passport_id(passport_id):
+        return {"ok": False, "reason": "placeholder_passport_id_rejected", "failures": ["placeholder_passport_id_rejected"], "execution_authority": False}
+    if not _passport_id_format_valid(passport_id):
+        return {"ok": False, "reason": "passport_id_format_invalid", "failures": ["passport_id_format_invalid"], "execution_authority": False}
+    passport = lookup_agent_passport(passport_id=passport_id)
+    if not passport:
+        return {"ok": False, "reason": "passport_not_found", "failures": ["passport_not_found"], "execution_authority": False}
+
+    failures: List[str] = []
+    now = time.time()
+    status = str(passport.get("status") or "")
+    if status not in (PASSPORT_STATUS_ISSUED, PASSPORT_STATUS_DEPARTED, PASSPORT_STATUS_IN_FLIGHT):
+        failures.append("passport_status_not_launchable:" + status)
+    if status in (PASSPORT_STATUS_REVOKED, PASSPORT_STATUS_CONSUMED, PASSPORT_STATUS_EXPIRED, PASSPORT_STATUS_BLOCKED, PASSPORT_STATUS_COLLISION_LOCKED, PASSPORT_STATUS_COMPROMISED):
+        failures.append("passport_" + status)
+    if float(passport.get("expires_ts") or 0) <= now:
+        failures.append("passport_expired")
+    if require_user_approved and not bool(passport.get("user_approved")):
+        failures.append("passport_not_user_approved")
+    # Passport issuance has its own task_id; later launch/capture requests may
+    # have child task IDs. Scope is enforced through passport id, lane, resources,
+    # methods, TTL, approval, and capabilities rather than brittle task-id equality.
+    lanes = set(_safe_list(passport.get("allowed_lanes") or []))
+    if requested_lane and lanes and requested_lane not in lanes:
+        failures.append("lane_scope_mismatch")
+
+    allowed_caps = set(_safe_list(passport.get("allowed_capabilities") or []))
+    requested_caps = set(_safe_list(requested_capabilities or []))
+    if requested_caps and allowed_caps and not requested_caps.issubset(allowed_caps):
+        failures.append("capability_scope_mismatch")
+
+    allowed_res = set(_safe_list(passport.get("allowed_resources") or []))
+    denied_res = set(_safe_list(passport.get("denied_resources") or []))
+    requested_res = set(_safe_list(requested_resources or []))
+    if "*" in allowed_res or "*" in requested_res:
+        failures.append("wildcard_resource_scope_rejected")
+    if denied_res.intersection(requested_res):
+        failures.append("denied_resource_requested")
+    if allowed_res and requested_res and not requested_res.issubset(allowed_res):
+        failures.append("resource_scope_mismatch")
+
+    meta = passport.get("metadata") if isinstance(passport.get("metadata"), dict) else {}
+    allowed_methods = {str(m or "").strip().upper() for m in _safe_list(meta.get("allowed_methods") or ["GET"])}
+    requested_methods_set = {str(m or "").strip().upper() for m in _safe_list(requested_methods or [])}
+    if requested_methods_set and allowed_methods and not requested_methods_set.issubset(allowed_methods):
+        failures.append("method_scope_mismatch")
+    if requested_methods_set and requested_methods_set - {"GET"}:
+        failures.append("read_only_adapter_get_only")
+
+    denied_caps = set(_safe_list(meta.get("denied_capabilities") or []))
+    if denied_caps.intersection(requested_caps):
+        failures.append("denied_capability_requested")
+    if _risk_rank(risk_tier) > _risk_rank(str(passport.get("maximum_risk_tier") or "low")):
+        failures.append("risk_tier_exceeded")
+
+    ok = not failures
+    if not ok:
+        _passport_event(str(passport.get("passport_id") or passport_id), str(passport.get("agent_id") or ""), "PASSPORT_SCOPE_DENIED", "DENY", ",".join(failures), metadata={"task_id": task_id, "lane": requested_lane, "risk": risk_tier})
+    else:
+        _passport_event(str(passport.get("passport_id") or passport_id), str(passport.get("agent_id") or ""), "PASSPORT_SCOPE_VERIFIED", "ALLOW", "Passport scope verified for read-only adapter request.", metadata={"task_id": task_id, "lane": requested_lane, "risk": risk_tier, "methods": sorted(requested_methods_set)})
+    return {
+        "ok": ok,
+        "verdict": "ALLOW" if ok else "DENY",
+        "reason": "passport_scope_verified" if ok else ",".join(failures),
+        "failures": failures,
+        "passport": passport,
+        "allowed_methods": sorted(allowed_methods),
+        "execution_authority": False,
+    }
+
+
+
+def _collision_lock_agent_passport_tx(
+    con: sqlite3.Connection,
+    *,
+    passport_id: str,
+    agent_id: str,
+    reason: str,
+    payload_hash: str = "",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Mark a passport compromised inside an existing write transaction.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-06:
+    Duplicate, replayed, mismatched, or conflicting AI-agent returns cannot use
+    a "first return wins" rule.  A copied passport indicates compromise.  The
+    registry therefore collision-locks the passport so every involved return is
+    forced into RoachMotel/user review and no payload can re-enter normally.
+    """
+    now_iso = datetime.now().isoformat()
+    old_status = ""
+    try:
+        row = con.execute("SELECT status FROM agent_passports WHERE passport_id=? LIMIT 1", (passport_id,)).fetchone()
+        old_status = str(row[0] or "") if row else ""
+    except Exception:
+        old_status = ""
+    con.execute(
+        "UPDATE agent_passports SET status=?,revoked_ts=?,revocation_reason=?,updated_ts=? WHERE passport_id=?",
+        (PASSPORT_STATUS_COLLISION_LOCKED, time.time(), str(reason or "passport_collision_locked")[:1000], now_iso, passport_id),
+    )
+    if _trust_transition_audit_enabled():
+        con.execute(
+            "INSERT INTO agent_passport_events(ts,passport_id,agent_id,event_type,verdict,reason,payload_hash,metadata_json) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                time.time(),
+                passport_id,
+                agent_id,
+                "TRUST_TRANSITION_RECORDED",
+                "DENY",
+                f"{old_status}->{PASSPORT_STATUS_COLLISION_LOCKED}: " + str(reason or "passport_collision_locked")[:900],
+                str(payload_hash or "")[:128],
+                json.dumps({"old_status": old_status, "new_status": PASSPORT_STATUS_COLLISION_LOCKED, "execution_authority": False, **(metadata or {})}, ensure_ascii=False, default=str),
+            ),
+        )
+    con.execute(
+        "INSERT INTO agent_passport_events(ts,passport_id,agent_id,event_type,verdict,reason,payload_hash,metadata_json) VALUES(?,?,?,?,?,?,?,?)",
+        (
+            time.time(),
+            passport_id,
+            agent_id,
+            "PASSPORT_COLLISION_LOCKED",
+            "DENY",
+            str(reason or "passport_collision_locked")[:1000],
+            str(payload_hash or "")[:128],
+            json.dumps(metadata or {}, ensure_ascii=False, default=str),
+        ),
+    )
+
+
+def _passport_collision_response(passport: Dict[str, Any], reason: str, failures: List[str], payload_hash: str = "") -> Dict[str, Any]:
+    return {
+        "ok": False,
+        "verdict": "DENY",
+        "reason": reason,
+        "failures": failures,
+        "passport": passport,
+        "containment_state": "QUARANTINED",
+        "collision_locked": True,
+        "requires_user_review": True,
+        "execution_authority": False,
+    }
+
 def verify_agent_return(
     *,
     passport_id: str,
@@ -1339,64 +1723,158 @@ def verify_agent_return(
     risk_tier: str = "low",
     record_return: bool = True,
 ) -> Dict[str, Any]:
-    """Verify identity/scope only. A valid result still requires RoachMotel review."""
+    """Verify identity/scope only. A valid result still requires RoachMotel review.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-06:
+    This is now the FIFO Passport Replay Guard.  A passport id alone is never
+    proof of identity.  The first valid return reserves the only return slot
+    atomically. Any duplicate, replay, consumed reuse, mismatched identity,
+    invalid return secret, or conflicting payload evidence collision-locks the
+    passport and forces all involved payloads into RoachMotel/user review.
+    """
+    passport_id = _safe_str(passport_id)
+    agent_id = _safe_str(agent_id)
+    payload_hash = _safe_str(payload_hash)[:128]
+    if _is_placeholder_agent_passport_id(passport_id):
+        return {"ok": False, "verdict": "DENY", "reason": "placeholder_passport_id_rejected", "failures": ["placeholder_passport_id_rejected"], "containment_state": "BLOCKED", "execution_authority": False}
+    if not _passport_id_format_valid(passport_id):
+        return {"ok": False, "verdict": "DENY", "reason": "passport_id_format_invalid", "failures": ["passport_id_format_invalid"], "containment_state": "BLOCKED", "execution_authority": False}
+
     _ensure_tables()
     con = _connect_db()
     con.row_factory = sqlite3.Row
     try:
+        con.isolation_level = None
+        con.execute("BEGIN IMMEDIATE")
         row = con.execute("SELECT * FROM agent_passports WHERE passport_id=? LIMIT 1", (passport_id,)).fetchone()
         if not row:
-            return {"ok": False, "verdict": "DENY", "reason": "unknown_passport", "containment_state": "QUARANTINED"}
+            con.execute("ROLLBACK")
+            return {"ok": False, "verdict": "DENY", "reason": "unknown_passport", "failures": ["unknown_passport"], "containment_state": "QUARANTINED", "execution_authority": False}
+
         raw = dict(row)
         passport = _passport_row_to_dict(row)
         failures: List[str] = []
+        collision_failures: List[str] = []
         now = time.time()
-        if str(raw.get("agent_id") or "") != str(agent_id or ""):
-            failures.append("agent_id_mismatch")
-        if str(raw.get("status") or "") in (PASSPORT_STATUS_REVOKED, PASSPORT_STATUS_CONSUMED, PASSPORT_STATUS_BLOCKED):
-            failures.append(f"passport_{raw.get('status')}")
+        status = str(raw.get("status") or "")
+        return_count = int(raw.get("return_count") or 0)
+        last_payload_hash = str(raw.get("last_payload_hash") or "")
+        max_parallel_returns = _agent_max_parallel_returns()
+        collision_policy = _passport_collision_policy()
+        replay_policy = _passport_replay_policy()
+
+        if status in (PASSPORT_STATUS_COLLISION_LOCKED, PASSPORT_STATUS_COMPROMISED):
+            failures.append("passport_collision_locked")
+            collision_failures.append("passport_collision_locked")
+        if status in (PASSPORT_STATUS_REVOKED, PASSPORT_STATUS_CONSUMED, PASSPORT_STATUS_BLOCKED, PASSPORT_STATUS_EXPIRED):
+            failures.append(f"passport_{status}")
+            collision_failures.append(f"passport_{status}_reused")
+        if status in (PASSPORT_STATUS_RETURN_SLOT_RESERVED, PASSPORT_STATUS_RETURN_CAPTURED) or return_count >= max_parallel_returns:
+            failures.append("passport_duplicate_presentation")
+            collision_failures.append("passport_duplicate_presentation")
+        if last_payload_hash and payload_hash and last_payload_hash != payload_hash:
+            failures.append("passport_conflicting_payload_hash")
+            collision_failures.append("passport_conflicting_payload_hash")
         if float(raw.get("expires_ts") or 0) <= now:
             failures.append("passport_expired")
-        if int(raw.get("one_time_use") or 0) and int(raw.get("return_count") or 0) > 0:
-            failures.append("passport_replay_detected")
+        if str(raw.get("agent_id") or "") != str(agent_id or ""):
+            failures.append("agent_id_mismatch")
+            collision_failures.append("agent_id_mismatch")
         if not hmac.compare_digest(str(raw.get("return_nonce_hash") or ""), _passport_hash(return_nonce)):
             failures.append("return_nonce_invalid")
+            collision_failures.append("return_nonce_invalid")
         if not hmac.compare_digest(str(raw.get("return_signature_hash") or ""), _passport_hash(return_signature)):
             failures.append("return_signature_invalid")
+            collision_failures.append("return_signature_invalid")
         expected_signature = _passport_signature(passport_id, str(agent_id or ""), str(raw.get("task_id") or ""), return_nonce)
         if not hmac.compare_digest(expected_signature, str(return_signature or "")):
             failures.append("return_signature_binding_invalid")
+            collision_failures.append("return_signature_binding_invalid")
+
         lanes = set(passport.get("allowed_lanes") or [])
         if requested_lane and requested_lane not in lanes:
             failures.append("lane_scope_mismatch")
+            collision_failures.append("lane_scope_mismatch")
         allowed_caps = set(passport.get("allowed_capabilities") or [])
         requested_caps = set(_safe_list(requested_capabilities or []))
         if not requested_caps.issubset(allowed_caps):
             failures.append("capability_scope_mismatch")
+            collision_failures.append("capability_scope_mismatch")
         allowed_res = set(passport.get("allowed_resources") or [])
         denied_res = set(passport.get("denied_resources") or [])
         requested_res = set(_safe_list(requested_resources or []))
         if denied_res.intersection(requested_res):
             failures.append("denied_resource_requested")
+            collision_failures.append("denied_resource_requested")
         if allowed_res and not requested_res.issubset(allowed_res):
             failures.append("resource_scope_mismatch")
+            collision_failures.append("resource_scope_mismatch")
         if _risk_rank(risk_tier) > _risk_rank(str(passport.get("maximum_risk_tier") or "low")):
             failures.append("risk_tier_exceeded")
+            collision_failures.append("risk_tier_exceeded")
 
         if failures:
             reason = ",".join(failures)
-            event = "PASSPORT_REPLAY_DETECTED" if "passport_replay_detected" in failures else "PASSPORT_RETURN_DENIED"
-            _passport_event(passport_id, str(agent_id or ""), event, "DENY", reason, payload_hash=payload_hash, metadata={"task_id": passport.get("task_id"), "lane": requested_lane, "risk": risk_tier})
-            return {"ok": False, "verdict": "DENY", "reason": reason, "failures": failures, "passport": passport, "containment_state": "BLOCKED" if any("signature" in f or "replay" in f or "revoked" in f for f in failures) else "QUARANTINED", "execution_authority": False}
+            event = "PASSPORT_DUPLICATE_PRESENTATION" if any("duplicate" in f or "reused" in f or "collision" in f for f in collision_failures) else "PASSPORT_RETURN_DENIED"
+            should_lock = bool(
+                collision_failures
+                and status not in (PASSPORT_STATUS_COLLISION_LOCKED, PASSPORT_STATUS_COMPROMISED)
+                and collision_policy == "reject_all"
+                and replay_policy == "collision_lock"
+            )
+            if should_lock:
+                _collision_lock_agent_passport_tx(
+                    con,
+                    passport_id=passport_id,
+                    agent_id=str(raw.get("agent_id") or agent_id or ""),
+                    reason="passport_collision_locked:" + reason,
+                    payload_hash=payload_hash,
+                    metadata={"task_id": raw.get("task_id"), "lane": requested_lane, "risk": risk_tier, "failures": failures, "collision_policy": collision_policy, "replay_policy": replay_policy, "max_parallel_returns": max_parallel_returns},
+                )
+            con.execute(
+                "INSERT INTO agent_passport_events(ts,passport_id,agent_id,event_type,verdict,reason,payload_hash,metadata_json) VALUES(?,?,?,?,?,?,?,?)",
+                (time.time(), passport_id, agent_id, event, "DENY", reason[:1000], payload_hash, json.dumps({"task_id": raw.get("task_id"), "lane": requested_lane, "risk": risk_tier, "collision_locked": should_lock, "failures": failures, "collision_policy": collision_policy, "replay_policy": replay_policy, "max_parallel_returns": max_parallel_returns}, ensure_ascii=False, default=str)),
+            )
+            con.execute("COMMIT")
+            if should_lock:
+                _passport_event(passport_id, str(raw.get("agent_id") or agent_id or ""), "ROACHMOTEL_DUAL_QUARANTINE", "DENY", "Duplicate or compromised passport presentation; all related returns require RoachMotel/user review.", payload_hash=payload_hash, metadata={"task_id": raw.get("task_id"), "lane": requested_lane, "risk": "high", "failures": failures})
+                passport = lookup_agent_passport(passport_id=passport_id) or passport
+                return _passport_collision_response(passport, "passport_collision_locked:" + reason, failures, payload_hash)
+            _passport_event(passport_id, str(agent_id or ""), event, "DENY", reason, payload_hash=payload_hash, metadata={"task_id": raw.get("task_id"), "lane": requested_lane, "risk": risk_tier, "failures": failures})
+            return {"ok": False, "verdict": "DENY", "reason": reason, "failures": failures, "passport": lookup_agent_passport(passport_id=passport_id) or passport, "containment_state": "BLOCKED" if any("signature" in f or "nonce" in f or "replay" in f or "duplicate" in f or "mismatch" in f for f in failures) else "QUARANTINED", "execution_authority": False}
 
         if record_return:
-            con.execute(
-                "UPDATE agent_passports SET status=?,return_count=return_count+1,last_return_ts=?,last_payload_hash=?,updated_ts=? WHERE passport_id=?",
-                (PASSPORT_STATUS_RETURN_CAPTURED, now, str(payload_hash or "")[:128], datetime.now().isoformat(), passport_id),
+            cur_update = con.execute(
+                "UPDATE agent_passports SET status=?,return_count=return_count+1,last_return_ts=?,last_payload_hash=?,updated_ts=? WHERE passport_id=? AND return_count<? AND status IN (?,?,?)",
+                (PASSPORT_STATUS_RETURN_CAPTURED, now, payload_hash, datetime.now().isoformat(), passport_id, max_parallel_returns, PASSPORT_STATUS_ISSUED, PASSPORT_STATUS_DEPARTED, PASSPORT_STATUS_IN_FLIGHT),
             )
-            con.commit()
+            if int(getattr(cur_update, "rowcount", 0) or 0) < 1:
+                reason = "passport_return_slot_race_detected"
+                _collision_lock_agent_passport_tx(
+                    con,
+                    passport_id=passport_id,
+                    agent_id=str(raw.get("agent_id") or agent_id or ""),
+                    reason=reason,
+                    payload_hash=payload_hash,
+                    metadata={"task_id": raw.get("task_id"), "lane": requested_lane, "risk": risk_tier},
+                )
+                con.execute("COMMIT")
+                _passport_event(passport_id, str(raw.get("agent_id") or agent_id or ""), "PASSPORT_REPLAY_DETECTED", "DENY", reason, payload_hash=payload_hash, metadata={"task_id": raw.get("task_id"), "lane": requested_lane, "risk": "high"})
+                return _passport_collision_response(lookup_agent_passport(passport_id=passport_id) or passport, reason, [reason], payload_hash)
+            con.execute(
+                "INSERT INTO agent_passport_events(ts,passport_id,agent_id,event_type,verdict,reason,payload_hash,metadata_json) VALUES(?,?,?,?,?,?,?,?)",
+                (time.time(), passport_id, agent_id, "PASSPORT_RETURN_SLOT_RESERVED", "ALLOW", "First valid return slot reserved atomically.", payload_hash, json.dumps({"task_id": raw.get("task_id"), "lane": requested_lane, "risk": risk_tier}, ensure_ascii=False, default=str)),
+            )
+        con.execute("COMMIT")
+
         _passport_event(passport_id, str(agent_id or ""), "AGENT_RETURN_CAPTURED", "REQUIRE_REVIEW", "Passport verified; returning payload captured for governed review.", payload_hash=payload_hash, metadata={"task_id": passport.get("task_id"), "lane": requested_lane or passport.get("origin_lane"), "risk": risk_tier})
-        return {"ok": True, "verdict": "REQUIRE_REVIEW", "reason": "passport_verified_return_requires_review", "passport": lookup_agent_passport(passport_id=passport_id), "containment_state": "CAPTURED_REVIEW", "execution_authority": False}
+        return {"ok": True, "verdict": "REQUIRE_REVIEW", "reason": "passport_verified_return_requires_review", "passport": lookup_agent_passport(passport_id=passport_id), "containment_state": "CAPTURED_REVIEW", "return_slot_reserved": bool(record_return), "execution_authority": False}
+    except Exception:
+        try:
+            con.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
     finally:
         con.close()
 
@@ -1407,6 +1885,10 @@ def consume_agent_passport(passport_id: str, *, user_approved: bool = False, rea
         return {"ok": False, "error": "passport_not_found"}
     if not user_approved:
         return {"ok": False, "error": "explicit_user_approval_required"}
+    status = str(passport.get("status") or "")
+    if status in (PASSPORT_STATUS_COLLISION_LOCKED, PASSPORT_STATUS_COMPROMISED, PASSPORT_STATUS_REVOKED, PASSPORT_STATUS_BLOCKED):
+        _passport_event(passport_id, passport.get("agent_id") or "", "PASSPORT_CONSUME_DENIED", "DENY", "passport_status_not_consumable:" + status, metadata={"task_id": passport.get("task_id"), "lane": passport.get("origin_lane"), "risk": "high"})
+        return {"ok": False, "error": "passport_status_not_consumable:" + status, "passport": passport, "execution_authority": False}
     con = _connect_db()
     try:
         con.execute("UPDATE agent_passports SET status=?,consumed_ts=?,updated_ts=? WHERE passport_id=?", (PASSPORT_STATUS_CONSUMED, time.time(), datetime.now().isoformat(), passport_id))
@@ -1414,6 +1896,15 @@ def consume_agent_passport(passport_id: str, *, user_approved: bool = False, rea
     finally:
         con.close()
     _passport_event(passport_id, passport["agent_id"], "PASSPORT_CLOSED", "CONSUMED", reason, metadata={"task_id": passport.get("task_id"), "lane": passport.get("origin_lane")})
+    _record_trust_transition(
+        passport_id=passport_id,
+        agent_id=str(passport.get("agent_id") or ""),
+        old_status=status,
+        new_status=PASSPORT_STATUS_CONSUMED,
+        event_type="PASSPORT_CLOSED",
+        reason=reason,
+        metadata={"task_id": passport.get("task_id"), "lane": passport.get("origin_lane")},
+    )
     return {"ok": True, "passport": lookup_agent_passport(passport_id=passport_id), "execution_authority": False}
 
 
@@ -1430,7 +1921,139 @@ def revoke_agent_passport(passport_id: str, *, reason: str, user_approved: bool 
     finally:
         con.close()
     _passport_event(passport_id, passport["agent_id"], "PASSPORT_REVOKED", "REVOKED", reason or "user_revoked", metadata={"task_id": passport.get("task_id"), "lane": passport.get("origin_lane"), "risk": "high"})
+    _record_trust_transition(
+        passport_id=passport_id,
+        agent_id=str(passport.get("agent_id") or ""),
+        old_status=str(passport.get("status") or ""),
+        new_status=PASSPORT_STATUS_REVOKED,
+        event_type="PASSPORT_REVOKED",
+        reason=reason or "user_revoked",
+        metadata={"task_id": passport.get("task_id"), "lane": passport.get("origin_lane"), "risk": "high"},
+    )
     return {"ok": True, "passport": lookup_agent_passport(passport_id=passport_id), "execution_authority": False}
+
+
+
+def run_passport_replay_guard_self_test(*, user_approved: bool = False) -> Dict[str, Any]:
+    """Run a bounded passport FIFO/replay assurance test.
+
+    This test is user-approved, local, deterministic, and creates only audited
+    test passport records. It performs no network, shell, filesystem mutation,
+    driver action, DevBridge apply, or memory write.
+    """
+    if not _assurance_enabled():
+        return {"ok": False, "blocked": True, "reason": "assurance_disabled_by_global_flag", "execution_authority": False}
+    if not _assurance_tests_enabled():
+        return {"ok": False, "blocked": True, "reason": "assurance_tests_disabled_by_global_flag", "execution_authority": False}
+    if not user_approved:
+        return {"ok": False, "blocked": True, "reason": "explicit_user_approval_required", "execution_authority": False}
+
+    agent_id = "assurance_replay_guard_" + uuid.uuid4().hex[:10]
+    task_id = "assurance-task-" + uuid.uuid4().hex[:12]
+    issue = issue_agent_passport(
+        agent_id=agent_id,
+        agent_name=agent_id,
+        task_id=task_id,
+        purpose="SarahMemory Assurance FIFO replay guard self-test",
+        origin_lane="research.public_web",
+        allowed_lanes=["research.public_web"],
+        allowed_capabilities=["return_data"],
+        allowed_resources=["https://example.com/"],
+        denied_resources=["core/*", ".env", "credentials", "shell", "device_control"],
+        maximum_risk_tier="low",
+        ttl_seconds=60,
+        one_time_use=True,
+        network_allowed=True,
+        filesystem_allowed=False,
+        shell_allowed=False,
+        device_allowed=False,
+        memory_allowed=False,
+        requires_user_review=True,
+        requires_assurance=True,
+        requires_compare=True,
+        requires_compass=True,
+        user_approved=True,
+        metadata={"assurance_test": True, "test_name": "passport_replay_guard", "execution_authority": False},
+    )
+    if not isinstance(issue, dict) or not issue.get("ok"):
+        return {"ok": False, "blocked": True, "reason": str((issue or {}).get("error") or "passport_issue_failed"), "issue": issue, "execution_authority": False}
+
+    creds = issue.get("departure_credentials") if isinstance(issue.get("departure_credentials"), dict) else {}
+    passport_id = str(creds.get("passport_id") or "")
+    first = verify_agent_return(
+        passport_id=passport_id,
+        agent_id=agent_id,
+        return_nonce=str(creds.get("return_nonce") or ""),
+        return_signature=str(creds.get("return_signature") or ""),
+        payload_hash="assurance_payload_hash_A",
+        requested_lane="research.public_web",
+        requested_capabilities=["return_data"],
+        requested_resources=["https://example.com/"],
+        risk_tier="low",
+        record_return=True,
+    )
+    second = verify_agent_return(
+        passport_id=passport_id,
+        agent_id=agent_id,
+        return_nonce=str(creds.get("return_nonce") or ""),
+        return_signature=str(creds.get("return_signature") or ""),
+        payload_hash="assurance_payload_hash_A",
+        requested_lane="research.public_web",
+        requested_capabilities=["return_data"],
+        requested_resources=["https://example.com/"],
+        risk_tier="low",
+        record_return=True,
+    )
+    final_passport = lookup_agent_passport(passport_id=passport_id, include_events=True) or {}
+    passed = bool(
+        isinstance(first, dict) and first.get("ok")
+        and isinstance(second, dict) and not second.get("ok")
+        and str((final_passport or {}).get("status") or "") == PASSPORT_STATUS_COLLISION_LOCKED
+    )
+    result = {
+        "ok": passed,
+        "blocked": False,
+        "test_name": "passport_replay_guard",
+        "passport_id": passport_id,
+        "first_return_ok": bool(isinstance(first, dict) and first.get("ok")),
+        "duplicate_return_blocked": bool(isinstance(second, dict) and not second.get("ok")),
+        "final_status": str((final_passport or {}).get("status") or ""),
+        "collision_policy": _passport_collision_policy(),
+        "replay_policy": _passport_replay_policy(),
+        "max_parallel_returns": _agent_max_parallel_returns(),
+        "first": _passport_row_to_dict_like(first),
+        "second": _passport_row_to_dict_like(second),
+        "execution_authority": False,
+    }
+    _passport_event(
+        passport_id,
+        agent_id,
+        "ASSURANCE_TEST_PASSED" if passed else "ASSURANCE_TEST_FAILED",
+        "PASS" if passed else "FAIL",
+        "Passport replay guard self-test completed.",
+        metadata={"task_id": task_id, "lane": "assurance", "risk": "medium", "result": {k: v for k, v in result.items() if k not in ("first", "second")}},
+    )
+    return result
+
+
+def _passport_row_to_dict_like(value: Any) -> Dict[str, Any]:
+    """Small redaction helper for assurance-test nested results."""
+    data = value if isinstance(value, dict) else {}
+    out: Dict[str, Any] = {}
+    for key in ("ok", "verdict", "reason", "failures", "containment_state", "collision_locked", "return_slot_reserved", "execution_authority"):
+        if key in data:
+            out[key] = data.get(key)
+    passport = data.get("passport") if isinstance(data.get("passport"), dict) else {}
+    if passport:
+        out["passport"] = {
+            "passport_id": passport.get("passport_id"),
+            "agent_id": passport.get("agent_id"),
+            "status": passport.get("status"),
+            "return_count": passport.get("return_count"),
+            "origin_lane": passport.get("origin_lane"),
+            "execution_authority": False,
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------

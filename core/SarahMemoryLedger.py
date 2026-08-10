@@ -523,6 +523,23 @@ def get_governance_receipts(
     return out
 
 
+def get_governance_receipt_ids_for_task(task_id: str, *, domain: str = "terminal_agent", limit: int = 50) -> List[str]:
+    """Return compact receipt IDs for UI/API response packets.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    Terminal Bay adapter responses need receipt IDs without forcing Chat/UI to
+    fetch the full Ledger payload first. This is read-only and never authorizes
+    execution.
+    """
+    receipts = get_governance_receipts(domain=domain, task_id=str(task_id or ""), limit=limit)
+    out: List[str] = []
+    for item in receipts:
+        rid = str(item.get("receipt_id") or "").strip()
+        if rid and rid not in out:
+            out.append(rid)
+    return out
+
+
 def verify_governance_chain(domain: str = "", limit: int = 5000) -> Dict[str, Any]:
     _ensure_initialized()
     limit = max(1, min(25000, int(limit or 5000)))

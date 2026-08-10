@@ -67,6 +67,7 @@ import os
 import json
 import time
 import shlex
+import re
 import sqlite3
 import logging
 import platform
@@ -74,6 +75,11 @@ import subprocess
 import threading
 import hashlib
 import uuid
+import ipaddress
+import socket
+import urllib.request
+import urllib.error
+import urllib.parse
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -387,10 +393,19 @@ _TERMINAL_AGENT_COMMAND_FIELD_ALIASES = {
     "mission_id": "mission_id",
     "api_key_alias": "api_key_alias",
     "api_key_aliases": "api_key_aliases",
+    "method": "allowed_methods",
+    "methods": "allowed_methods",
+    "allowed_method": "allowed_methods",
+    "allowed_methods": "allowed_methods",
+    "http_method": "allowed_methods",
+    "http_methods": "allowed_methods",
     "key_alias": "api_key_alias",
     "key_aliases": "api_key_aliases",
     "passport_id": "passport_id",
     "passport": "passport_id",
+    "auto_passport": "auto_passport",
+    "managed_passport": "auto_passport",
+    "auto_consume_passport": "auto_consume_passport",
     "confirmed": "confirmed",
     "confirmation": "confirmation",
     "user_approved": "user_approved",
@@ -412,8 +427,19 @@ _TERMINAL_AGENT_COMMAND_FIELD_ALIASES = {
 _TERMINAL_AGENT_BOOL_FIELDS = {
     "passport_required", "compare_required", "network_allowed", "filesystem_allowed",
     "memory_allowed", "confirmed", "confirmation", "user_approved",
+    "auto_passport", "auto_consume_passport",
 }
 _TERMINAL_AGENT_INT_FIELDS = {"ttl_seconds"}
+_TERMINAL_AGENT_APPROVAL_FLAG_ALIASES = {
+    "confirm": "confirmed",
+    "confirmed": "confirmed",
+    "user_approved": "user_approved",
+    "user-approved": "user_approved",
+    "approved": "user_approved",
+    "approval": "user_approved",
+    "launch_approved": "user_approved",
+    "launch-approved": "user_approved",
+}
 
 
 def _coerce_terminal_agent_command_value(key: str, value: str) -> Any:
@@ -446,13 +472,26 @@ def _terminal_agent_command_fields(task: str) -> Dict[str, Any]:
         tokens = text.split()
     out: Dict[str, Any] = {}
     for token in tokens[:160]:
-        if "=" not in token:
+        raw_token = str(token or "").strip()
+        if not raw_token:
             continue
-        raw_key, raw_value = token.split("=", 1)
-        key = str(raw_key or "").strip().lower().replace("-", "_").lstrip("/")
+        # SARAHMEMORY_PATCH_NOTE 2026-08-06:
+        # Operator approval aliases may be typed as bare flags rather than
+        # key=value pairs.  Accept only explicit approval flag tokens; do not
+        # infer approval from prose.  This fixes `/agent security test --confirm`
+        # and `/agent security test --user-approved` while preserving fail-closed
+        # behavior for every other command.
+        if "=" not in raw_token:
+            flag_key = raw_token.strip().lower().lstrip("-/").replace("-", "_")
+            target = _TERMINAL_AGENT_APPROVAL_FLAG_ALIASES.get(flag_key)
+            if target:
+                out[target] = True
+            continue
+        raw_key, raw_value = raw_token.split("=", 1)
+        key = str(raw_key or "").strip().lower().replace("-", "_").lstrip("-/")
         if not key:
             continue
-        target = _TERMINAL_AGENT_COMMAND_FIELD_ALIASES.get(key)
+        target = _TERMINAL_AGENT_COMMAND_FIELD_ALIASES.get(key) or _TERMINAL_AGENT_APPROVAL_FLAG_ALIASES.get(key)
         if not target:
             continue
         out[target] = _coerce_terminal_agent_command_value(target, raw_value)
@@ -516,25 +555,113 @@ def _terminal_agent_passport_id(payload: Optional[Dict[str, Any]], task_truth: O
     return ""
 
 
-def _terminal_agent_launch_gate_reason(task: str, payload: Optional[Dict[str, Any]], task_truth: Dict[str, Any]) -> str:
-    """Enterprise launch gate: `/agent launch` is never treated as success without a passport.
+# SARAHMEMORY_PATCH_NOTE 2026-08-04:
+# Real adapter execution must reject fake/pass-through passport text before any
+# launch gate can report success. These strings are common placeholders from
+# test scripts and documentation, not governed credentials.
+_PLACEHOLDER_PASSPORT_IDS = {
+    "<valid_passport_id>", "valid_passport_id", "<passport_id>", "passport_id",
+    "passport", "test", "demo", "example", "none", "null", "undefined",
+    "auto", "latest", "managed", "auto_issue", "auto-managed",
+}
 
-    This gate does not enable execution. It only upgrades unsafe/ambiguous launch
-    semantics into a clear governed block when the launch request lacks the
-    required passport and approval proof.
+
+def _is_placeholder_passport_id(passport_id: str) -> bool:
+    raw = str(passport_id or "").strip()
+    low = raw.lower()
+    if not raw:
+        return True
+    if low in _PLACEHOLDER_PASSPORT_IDS:
+        return True
+    if raw.startswith("<") and raw.endswith(">"):
+        return True
+    if "valid_passport" in low or "passport_id" == low:
+        return True
+    return False
+
+
+_AUTO_PASSPORT_REQUEST_TOKENS = {"auto", "managed", "auto_issue", "auto-managed", "latest"}
+
+
+def _terminal_auto_passport_global_enabled(default: bool = False) -> bool:
+    """Read centralized SarahMemoryGlobals/.env auto-passport switch.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-06:
+    SARAH_AGENT_PASSPORT_ID is the single configuration authority for
+    automatic passport-id issuance. True enables managed auto-issue after a
+    user-launched /agent task; False preserves manual passport issuing only.
+    Missing/invalid values fail closed to manual mode.
+    """
+    try:
+        value = os.getenv("SARAH_AGENT_PASSPORT_ID", None)
+    except Exception:
+        value = None
+    if value is None:
+        try:
+            value = getattr(config, "SARAH_AGENT_PASSPORT_ID", default)
+        except Exception:
+            value = default
+    if isinstance(value, bool):
+        return bool(value)
+    try:
+        return str(value).strip().lower() in ("1", "true", "yes", "on", "enabled", "auto")
+    except Exception:
+        return bool(default)
+
+
+def _terminal_agent_launch_gate_check(task: str, payload: Optional[Dict[str, Any]], task_truth: Dict[str, Any]) -> Dict[str, Any]:
+    """Return strict `/agent launch` gate evidence without granting authority.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    A launch request must have an actual TrustRegistry-verified passport. A
+    non-empty string is no longer sufficient. This closes the placeholder
+    `passport_id=<VALID_PASSPORT_ID>` gap found during external-agent testing.
     """
     payload = payload if isinstance(payload, dict) else {}
     verb = _terminal_agent_command_verb(task)
-    if verb != "launch":
-        return ""
-    if not bool(task_truth.get("passport_required", True)):
-        return "passport_required_must_remain_true"
     passport_id = _terminal_agent_passport_id(payload, task_truth)
+    out: Dict[str, Any] = {
+        "command_verb": verb,
+        "ok": True,
+        "blocked": False,
+        "reason": "",
+        "passport_required": bool(task_truth.get("passport_required", True)),
+        "passport_id": passport_id,
+        "passport_verified": False,
+        "user_approval_detected": bool(_truthy_confirmation(payload, task)),
+        "verification": {},
+        "execution_authority": False,
+    }
+    if verb != "launch":
+        return out
+    if not bool(task_truth.get("passport_required", True)):
+        out.update({"ok": False, "blocked": True, "reason": "passport_required_must_remain_true"})
+        return out
     if not passport_id:
-        return "launch_requires_passport_or_explicit_approval"
+        out.update({"ok": False, "blocked": True, "reason": "launch_requires_passport_or_explicit_approval"})
+        return out
+    if _is_placeholder_passport_id(passport_id):
+        if str(passport_id or "").strip().lower() in _AUTO_PASSPORT_REQUEST_TOKENS and not _terminal_auto_passport_global_enabled(False):
+            out.update({"ok": False, "blocked": True, "reason": "auto_passport_disabled_by_global_flag", "verification": {"ok": False, "reason": "SARAH_AGENT_PASSPORT_ID_false_manual_passport_required"}})
+            return out
+        out.update({"ok": False, "blocked": True, "reason": "passport_invalid_or_unverified", "verification": {"ok": False, "reason": "placeholder_passport_id_rejected"}})
+        return out
     if not _truthy_confirmation(payload, task):
-        return "launch_requires_explicit_user_approval"
-    return ""
+        out.update({"ok": False, "blocked": True, "reason": "launch_requires_explicit_user_approval"})
+        return out
+    verification = _verify_terminal_agent_passport_scope(task_truth, str(task_truth.get("task_id") or payload.get("task_id") or ""))
+    safe_verification = _redact_terminal_agent_payload(verification) if isinstance(verification, dict) else {"ok": False, "reason": "passport_verification_invalid_response"}
+    out["verification"] = safe_verification
+    out["passport_verified"] = bool(isinstance(verification, dict) and verification.get("ok"))
+    if not out["passport_verified"]:
+        out.update({"ok": False, "blocked": True, "reason": "passport_invalid_or_unverified"})
+    return out
+
+
+def _terminal_agent_launch_gate_reason(task: str, payload: Optional[Dict[str, Any]], task_truth: Dict[str, Any]) -> str:
+    """Compatibility wrapper for older callers that expect a reason string."""
+    check = _terminal_agent_launch_gate_check(task, payload, task_truth)
+    return str(check.get("reason") or "")
 
 
 def _terminal_agent_skill_catalog() -> Dict[str, Dict[str, Any]]:
@@ -549,8 +676,11 @@ def _terminal_agent_skill_catalog() -> Dict[str, Dict[str, Any]]:
             "risk_level": "low",
         },
         "api.local.health_check": {
-            "allowed_capabilities": ["api_read", "summarize", "extract_metadata", "return_data"],
+            # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+            # First real adapter surface is strictly local HTTP GET only.
+            "allowed_capabilities": ["api_read", "read_api", "summarize", "extract_metadata", "return_data"],
             "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "allowed_methods": ["GET"],
             "requires_network": True,
             "requires_filesystem": False,
             "compare_required": True,
@@ -651,18 +781,31 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
     denied_sources = _as_string_list(payload.get("denied_sources") or payload.get("denied_resources") or payload.get("denied_source") or payload.get("denied_resource")) or list(_DEFAULT_TERMINAL_AGENT_DENIED_RESOURCES)
     allowed_capabilities = _as_string_list(payload.get("allowed_capabilities") or payload.get("capabilities") or payload.get("capability")) or list(skill.get("allowed_capabilities") or [])
     denied_capabilities = _as_string_list(payload.get("denied_capabilities")) or list(skill.get("denied_capabilities") or _DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES)
+    allowed_methods = [m.upper() for m in (_as_string_list(payload.get("allowed_methods") or payload.get("method") or payload.get("methods"), limit=8) or list(skill.get("allowed_methods") or ["GET"]))]
     model_backends = _as_string_list(payload.get("model_backends") or payload.get("model_backend") or backend, limit=16)
     api_key_aliases = _as_string_list(payload.get("api_key_aliases") or payload.get("api_key_alias") or payload.get("key_aliases"), limit=16)
     mission_id = str(payload.get("mission_id") or payload.get("mission") or "").strip()[:180]
     if not mission_id:
         mission_id = "sm-mission-" + datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
     pretoken = _pretoken_packet(task, payload)
+    raw_passport_id = str(payload.get("passport_id") or payload.get("passport") or "").strip()[:180]
+    raw_passport_low = raw_passport_id.lower()
+    auto_flag_enabled = _terminal_auto_passport_global_enabled(False)
+    explicit_auto_request = bool(payload.get("auto_passport", False)) or raw_passport_low in _AUTO_PASSPORT_REQUEST_TOKENS
+    launch_without_passport = _terminal_agent_command_verb(task) == "launch" and not raw_passport_id
+    auto_passport_requested = explicit_auto_request or launch_without_passport
     return {
         "schema": "SarahMemory.terminal.agent_task_truth.v1",
+        "task_id": str(payload.get("task_id") or "")[:180],
         "objective": str(task or "")[:4000],
         "operation": str(operation or "agent_task")[:80],
         "mission_id": mission_id,
-        "passport_id": str(payload.get("passport_id") or payload.get("passport") or "").strip()[:180],
+        "passport_id": raw_passport_id,
+        "auto_passport": bool(auto_flag_enabled and auto_passport_requested),
+        "auto_passport_requested": bool(auto_passport_requested),
+        "auto_passport_global_enabled": bool(auto_flag_enabled),
+        "auto_passport_global_flag": "SARAH_AGENT_PASSPORT_ID",
+        "auto_consume_passport": bool(payload.get("auto_consume_passport", True)),
         "backend": backend,
         "skill_id": skill_id,
         "skill_policy": _redact_terminal_agent_payload(skill),
@@ -672,6 +815,7 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
         "denied_sources": denied_sources,
         "allowed_capabilities": allowed_capabilities,
         "denied_capabilities": denied_capabilities,
+        "allowed_methods": allowed_methods,
         "model_backends": model_backends,
         "api_key_aliases": api_key_aliases,
         "api_key_raw_value_allowed": False,
@@ -705,6 +849,9 @@ def _validate_terminal_task_truth(task_truth: Dict[str, Any], payload: Optional[
         errors.append("raw_secret_or_api_key_detected_use_alias_only")
     if needs_external_scope and not allowed_sources:
         errors.append("allowed_sources_or_allowed_resources_required")
+    allowed_methods = {str(x or "").strip().upper() for x in list(task_truth.get("allowed_methods") or [])}
+    if task_truth.get("skill_id") == "api.local.health_check" and allowed_methods - {"GET"}:
+        errors.append("read_only_adapter_allows_get_only")
     blocked_caps = sorted(allowed_capabilities.intersection({"shell", "core_write", "device_control", "credential_access", "self_authorization", "hidden_persistence"}))
     if blocked_caps:
         errors.append("denied_capability_requested:" + ",".join(blocked_caps))
@@ -737,6 +884,8 @@ def _insert_task_constraints(cur: sqlite3.Cursor, task_id: str, task_truth: Dict
         constraints.append(("denied_source", str(item), "task_truth"))
     for item in list(task_truth.get("denied_capabilities") or []):
         constraints.append(("denied_capability", str(item), "task_truth"))
+    for item in list(task_truth.get("allowed_methods") or []):
+        constraints.append(("allowed_method", str(item).upper(), "task_truth"))
     constraints.extend([
         ("required_gate", "passport_required", "task_truth"),
         ("required_gate", "roachmotel_required", "task_truth"),
@@ -799,6 +948,73 @@ def _prepare_terminal_agent_task_spine(
     return {"ok": bool(validation.get("ok")), "task_id": task_id, "task_truth": truth, "task_truth_hash": truth_hash, "validation": validation, "execution_authority": False}
 
 
+
+def _extract_terminal_agent_receipt_passport_id(task_id: str, task: str = "", metadata: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the passport id for Ledger/task-event audit metadata.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-06:
+    External GET validation proved the passported execution path works, but some
+    terminal_agent Ledger receipts still carried passport_id="" even when the
+    task used a verified passport. This helper keeps execution behavior
+    unchanged and only improves audit propagation by resolving the id from
+    explicit metadata, task command fields, or the stored Task Spine truth.
+    """
+    meta = metadata if isinstance(metadata, dict) else {}
+
+    def _candidate(value: Any) -> str:
+        try:
+            text = str(value or "").strip()[:180]
+        except Exception:
+            return ""
+        if text and not _is_placeholder_passport_id(text):
+            return text
+        return ""
+
+    # Direct metadata wins when present.
+    direct = _candidate(meta.get("passport_id") or meta.get("passport"))
+    if direct:
+        return direct
+
+    # Nested governance structures used by launch gate / adapter responses.
+    for key in ("launch_gate", "launch_gate_check", "passport_scope"):
+        nested = meta.get(key)
+        if isinstance(nested, dict):
+            found = _candidate(nested.get("passport_id"))
+            if found:
+                return found
+            passport = nested.get("passport")
+            if isinstance(passport, dict):
+                found = _candidate(passport.get("passport_id"))
+                if found:
+                    return found
+
+    # The raw /agent command normally contains passport_id=... on launch.
+    try:
+        parsed = _terminal_agent_command_fields(task)
+        found = _candidate((parsed or {}).get("passport_id"))
+        if found:
+            return found
+    except Exception:
+        pass
+
+    # Last resort: read the stored Task Spine truth for this task id.
+    try:
+        tid = str(task_id or "").strip()[:180]
+        if tid:
+            _ensure_tables()
+            con = _connect(_system_logs_db())
+            row = con.execute("SELECT task_truth_json FROM terminal_agent_tasks WHERE task_id=? LIMIT 1", (tid,)).fetchone()
+            con.close()
+            if row and row[0]:
+                truth = json.loads(row[0])
+                if isinstance(truth, dict):
+                    found = _candidate(truth.get("passport_id"))
+                    if found:
+                        return found
+    except Exception:
+        pass
+    return ""
+
 def _record_terminal_agent_task_event(
     task_id: str,
     *,
@@ -812,18 +1028,26 @@ def _record_terminal_agent_task_event(
     output: Any = None,
 ) -> Dict[str, Any]:
     metadata = _redact_terminal_agent_payload(metadata or {}) if isinstance(metadata or {}, dict) else {}
+    passport_id = _extract_terminal_agent_receipt_passport_id(task_id, task, metadata)
+    if passport_id and isinstance(metadata, dict):
+        metadata["passport_id"] = passport_id
     output_hash = _hash_obj(output) if output is not None else ""
     input_hash = _hash_text(task or "")
     receipt_hash = ""
     try:
-        _terminal_agent_receipt(
+        receipt = _terminal_agent_receipt(
             event_type,
             verdict=verdict,
             task=task,
+            passport_id=passport_id,
             risk=risk,
             summary=details or event_type,
             metadata={"task_id": task_id, "stage": stage, "output_hash": output_hash, **(metadata if isinstance(metadata, dict) else {})},
         )
+        if isinstance(receipt, dict):
+            receipt_hash = str(receipt.get("receipt_hash") or "")
+            metadata["receipt_id"] = str(receipt.get("receipt_id") or "")
+            metadata["receipt_hash"] = receipt_hash
     except Exception:
         pass
     try:
@@ -844,7 +1068,7 @@ def _record_terminal_agent_task_event(
         con.close()
     except Exception as exc:
         return {"ok": False, "error": str(exc), "task_id": task_id, "event_type": event_type, "execution_authority": False}
-    return {"ok": True, "task_id": task_id, "event_type": event_type, "output_hash": output_hash, "execution_authority": False}
+    return {"ok": True, "task_id": task_id, "event_type": event_type, "output_hash": output_hash, "receipt_hash": receipt_hash, "receipt_id": str((metadata or {}).get("receipt_id") or ""), "execution_authority": False}
 
 
 def _record_terminal_agent_passport(task_id: str, passport_result: Dict[str, Any], *, backend: str = "", skill_id: str = "") -> None:
@@ -870,6 +1094,728 @@ def _record_terminal_agent_passport(task_id: str, passport_result: Dict[str, Any
         con.close()
     except Exception:
         pass
+
+
+# -----------------------------------------------------------------------------
+# Passported read-only local GET adapter (first safe execution lane)
+# -----------------------------------------------------------------------------
+_LOCAL_GET_ADAPTER_APPROVED_PATHS = ("/api/health", "/api/version", "/api/ledger/status")
+_EXTERNAL_GET_ADAPTER_SKILLS = {"research.public_web", "research.approved_api"}
+
+
+def _terminal_local_api_base() -> str:
+    try:
+        port = int(getattr(config, "DEFAULT_PORT", 8000))
+    except Exception:
+        port = 8000
+    return str(os.getenv("SARAHMEMORY_LOCAL_API_BASE") or f"http://127.0.0.1:{port}").rstrip("/")
+
+
+def _normalize_terminal_local_get_url(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("/"):
+        return _terminal_local_api_base() + raw
+    return raw.rstrip("/")
+
+
+def _approved_terminal_local_get_sources(task_truth: Dict[str, Any]) -> List[str]:
+    sources = [_normalize_terminal_local_get_url(x) for x in list(task_truth.get("allowed_sources") or [])]
+    out: List[str] = []
+    for url in sources:
+        if not url:
+            continue
+        try:
+            parsed = urllib.parse.urlparse(url)
+            host = (parsed.hostname or "").lower()
+            path = str(parsed.path or "")
+            if parsed.scheme != "http":
+                continue
+            if host not in {"127.0.0.1", "localhost", "::1"}:
+                continue
+            if path not in _LOCAL_GET_ADAPTER_APPROVED_PATHS:
+                continue
+            if url not in out:
+                out.append(url)
+        except Exception:
+            continue
+    return out
+
+
+def _host_resolves_to_public_internet(hostname: str) -> Tuple[bool, str]:
+    """Fail closed if a hostname resolves to local/private/reserved space."""
+    host = str(hostname or "").strip().lower().strip("[]")
+    if not host:
+        return False, "missing_host"
+    if host in {"localhost", "0.0.0.0", "127.0.0.1", "::1"} or host.endswith(".local"):
+        return False, "local_host_blocked"
+    try:
+        ip = ipaddress.ip_address(host)
+        ips = [ip]
+    except Exception:
+        try:
+            infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+            ips = []
+            for info in infos[:16]:
+                try:
+                    ips.append(ipaddress.ip_address(info[4][0]))
+                except Exception:
+                    continue
+        except Exception as exc:
+            return False, "dns_resolution_failed:" + str(exc)[:160]
+    if not ips:
+        return False, "no_resolved_addresses"
+    for ip in ips:
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+            return False, "non_public_address_blocked:" + str(ip)
+    return True, "public_host_verified"
+
+
+def _approved_terminal_external_get_sources(task_truth: Dict[str, Any]) -> List[str]:
+    """Normalize explicit HTTPS public-web allowlist entries for GET only.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    This deliberately rejects wildcards, local/private hosts, embedded auth, and
+    non-HTTPS URLs. The passport must contain the same resource scope.
+    """
+    out: List[str] = []
+    for raw in list(task_truth.get("allowed_sources") or [])[:12]:
+        url = str(raw or "").strip().rstrip("/")
+        if not url or url == "*":
+            continue
+        try:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme.lower() != "https":
+                continue
+            if parsed.username or parsed.password:
+                continue
+            if not parsed.hostname:
+                continue
+            ok, _reason = _host_resolves_to_public_internet(parsed.hostname)
+            if not ok:
+                continue
+            normalized = urllib.parse.urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path or "/", "", parsed.query, ""))
+            if normalized not in out:
+                out.append(normalized)
+        except Exception:
+            continue
+    return out
+
+
+def _approved_terminal_get_sources_for_skill(task_truth: Dict[str, Any]) -> List[str]:
+    skill_id = str(task_truth.get("skill_id") or "")
+    if skill_id == "api.local.health_check":
+        return _approved_terminal_local_get_sources(task_truth)
+    if skill_id in _EXTERNAL_GET_ADAPTER_SKILLS:
+        return _approved_terminal_external_get_sources(task_truth)
+    return [str(x)[:500] for x in list(task_truth.get("allowed_sources") or []) if str(x or "").strip() and str(x).strip() != "*"][:16]
+
+
+def _terminal_adapter_firewall_fallback(request_packet: Dict[str, Any], *, external: bool = False) -> Dict[str, Any]:
+    method = str(request_packet.get("method") or "").upper()
+    resource = str(request_packet.get("resource") or "")
+    if method != "GET":
+        return {"ok": False, "verdict": "DENY", "reason": "read_only_adapter_get_only", "execution_authority": False}
+    denied_caps = {str(x).lower() for x in list(request_packet.get("denied_capabilities") or [])}
+    requested_caps = {str(x).lower() for x in list(request_packet.get("allowed_capabilities") or [])}
+    blocked = {"shell", "filesystem_write", "credential_access", "post_mutation", "delete", "device_control", "devbridge_apply", "self_authorization"}
+    if requested_caps.intersection(blocked):
+        return {"ok": False, "verdict": "DENY", "reason": "dangerous_capability_requested", "execution_authority": False}
+    if not blocked.issubset(denied_caps.union(blocked)):
+        return {"ok": False, "verdict": "DENY", "reason": "dangerous_capability_boundary_missing", "execution_authority": False}
+    if external:
+        parsed = urllib.parse.urlparse(resource)
+        if parsed.scheme.lower() != "https":
+            return {"ok": False, "verdict": "DENY", "reason": "external_adapter_https_only", "execution_authority": False}
+        ok, reason = _host_resolves_to_public_internet(parsed.hostname or "")
+        if not ok:
+            return {"ok": False, "verdict": "DENY", "reason": reason, "execution_authority": False}
+    return {"ok": True, "verdict": "ALLOW", "reason": "terminal_adapter_internal_read_only_guard_passed", "execution_authority": False}
+
+
+def _verify_terminal_agent_passport_scope(task_truth: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    passport_id = str(task_truth.get("passport_id") or "").strip()
+    if not passport_id:
+        return {"ok": False, "reason": "passport_id_required", "execution_authority": False}
+    if _is_placeholder_passport_id(passport_id):
+        return {"ok": False, "reason": "placeholder_passport_id_rejected", "execution_authority": False}
+    try:
+        import SarahMemoryTrustRegistry as registry  # type: ignore
+        fn = getattr(registry, "verify_agent_passport_scope", None)
+        sources = _approved_terminal_get_sources_for_skill(task_truth)
+        caps = list(task_truth.get("allowed_capabilities") or [])
+        if callable(fn):
+            return fn(
+                passport_id=passport_id,
+                task_id=task_id,
+                requested_lane=str(task_truth.get("skill_id") or "api.local.health_check"),
+                requested_capabilities=caps,
+                requested_resources=sources,
+                requested_methods=["GET"],
+                risk_tier=str(task_truth.get("risk_level") or "low"),
+                require_user_approved=True,
+            )
+        passport = registry.lookup_agent_passport(passport_id=passport_id) if callable(getattr(registry, "lookup_agent_passport", None)) else None
+        if not passport:
+            return {"ok": False, "reason": "passport_not_found", "execution_authority": False}
+        if str(passport.get("status") or "") not in {"issued", "departed"}:
+            return {"ok": False, "reason": "passport_not_active", "passport": _passport_safe_summary(passport), "execution_authority": False}
+        return {"ok": True, "reason": "passport_scope_verified_fallback", "passport": _passport_safe_summary(passport), "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "reason": "passport_scope_verify_error:" + str(exc), "execution_authority": False}
+
+
+
+def _terminal_agent_auto_passport_requested(task: str, payload: Optional[Dict[str, Any]], task_truth: Dict[str, Any]) -> bool:
+    """True only when global auto-passporting is enabled and the user launched /agent."""
+    payload = payload if isinstance(payload, dict) else {}
+    if _terminal_agent_command_verb(task) != "launch":
+        return False
+    if not _terminal_auto_passport_global_enabled(False):
+        return False
+    raw_passport = str(payload.get("passport_id") or payload.get("passport") or task_truth.get("passport_id") or "").strip().lower()
+    if raw_passport in _AUTO_PASSPORT_REQUEST_TOKENS:
+        return True
+    if bool(payload.get("auto_passport") or task_truth.get("auto_passport")):
+        return True
+    # With SARAH_AGENT_PASSPORT_ID=True, an approved user-launched agent task may
+    # receive a one-time managed passport. False leaves this as manual-only.
+    return not raw_passport
+
+
+def _persist_terminal_agent_task_truth(task_id: str, task_truth: Dict[str, Any]) -> str:
+    """Persist updated Task Truth after managed passport injection."""
+    truth_hash = _hash_obj(task_truth)
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        con.execute(
+            "UPDATE terminal_agent_tasks SET updated_ts=?, task_truth_hash=?, task_truth_json=? WHERE task_id=?",
+            (datetime.now().isoformat(), truth_hash, _canonical_json(_redact_terminal_agent_payload(task_truth)), str(task_id or "")[:180]),
+        )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+    return truth_hash
+
+
+def _append_passport_to_task_for_audit(task_text: str, passport_id: str) -> str:
+    """Append or replace the managed passport id in internal audit text only.
+
+    The user may type passport_id=auto.  Audit receipts must carry the resolved
+    one-time passport_id without converting the observation payload into an
+    inbound return credential. This is audit metadata only; no authority is
+    granted.
+    """
+    text = str(task_text or "")
+    pid = str(passport_id or "").strip()
+    if not pid:
+        return text
+    try:
+        if re.search(r'(?i)passport_id\s*=\s*("[^"]*"|\'[^\']*\'|\S+)', text):
+            return re.sub(r'(?i)passport_id\s*=\s*("[^"]*"|\'[^\']*\'|\S+)', f'passport_id="{pid}"', text, count=1)
+    except Exception:
+        pass
+    return text + f' passport_id="{pid}"'
+
+
+def _issue_terminal_auto_managed_passport(
+    *,
+    task_text: str,
+    payload: Dict[str, Any],
+    task_truth: Dict[str, Any],
+    task_id: str,
+    caller: str,
+    session_id: str,
+) -> Dict[str, Any]:
+    """Issue/inject a managed passport after explicit user launch approval."""
+    if not _terminal_agent_auto_passport_requested(task_text, payload, task_truth):
+        return {
+            "ok": True,
+            "requested": False,
+            "auto_passport_global_enabled": bool(_terminal_auto_passport_global_enabled(False)),
+            "global_flag": "SARAH_AGENT_PASSPORT_ID",
+            "task_text": task_text,
+            "task_truth_hash": _hash_obj(task_truth),
+            "execution_authority": False,
+        }
+    if not _truthy_confirmation(payload, task_text):
+        reason = "managed_passport_requires_explicit_user_launch_approval"
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PASSPORT_MANAGER",
+            event_type="PASSPORT_AUTO_BLOCKED",
+            verdict="BLOCK",
+            risk=str(task_truth.get("risk_level") or "medium"),
+            task=task_text,
+            details=reason,
+            metadata={"caller": caller, "session_id": session_id, "managed_passport": True},
+        )
+        return {"ok": False, "requested": True, "blocked": True, "reason": reason, "execution_authority": False}
+    try:
+        import SarahMemoryAgentFirewall as firewall  # type: ignore
+        fn = getattr(firewall, "issue_managed_passport_for_task", None)
+    except Exception as exc:
+        fn = None
+        fw_error = str(exc)
+    else:
+        fw_error = ""
+    if not callable(fn):
+        reason = fw_error or "managed_passport_issuer_unavailable"
+        return {"ok": False, "requested": True, "blocked": True, "reason": reason, "execution_authority": False}
+
+    # Ensure the task truth sent to the manager cannot inherit placeholder text.
+    managed_truth = dict(task_truth)
+    managed_truth["passport_id"] = ""
+    managed_truth["auto_passport"] = True
+    managed_truth["auto_consume_passport"] = bool(task_truth.get("auto_consume_passport", True))
+    managed_truth["task_id"] = task_id
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="PASSPORT_MANAGER",
+        event_type="PASSPORT_AUTO_REQUESTED",
+        verdict="REQUESTED",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=task_text,
+        details="User-launched AI-agent task requested automatic one-time passport issuance.",
+        metadata={"caller": caller, "session_id": session_id, "managed_passport": True, "global_flag": "SARAH_AGENT_PASSPORT_ID", "auto_passport_global_enabled": True, "skill_id": task_truth.get("skill_id"), "allowed_sources": task_truth.get("allowed_sources")},
+    )
+    result = fn(managed_truth, task_id=task_id, caller=caller, user_approved=True)
+    if not isinstance(result, dict) or not result.get("ok"):
+        reason = str((result or {}).get("reason") or (result or {}).get("error") or "managed_passport_issue_failed")
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PASSPORT_MANAGER",
+            event_type="PASSPORT_AUTO_ISSUE_FAILED",
+            verdict="BLOCK",
+            risk="high",
+            task=task_text,
+            details=reason,
+            metadata={"caller": caller, "session_id": session_id, "managed_passport": True, "result": _redact_terminal_agent_payload(result)},
+            output=result,
+        )
+        return {"ok": False, "requested": True, "blocked": True, "reason": reason, "result": result, "execution_authority": False}
+
+    passport_id = str(result.get("passport_id") or "").strip()[:180]
+    if not passport_id:
+        reason = "managed_passport_missing_id"
+        return {"ok": False, "requested": True, "blocked": True, "reason": reason, "result": result, "execution_authority": False}
+    task_truth["passport_id"] = passport_id
+    task_truth["auto_passport"] = True
+    task_truth["managed_passport"] = {
+        "ok": True,
+        "passport_id": passport_id,
+        "agent_id": str(result.get("agent_id") or "")[:180],
+        "issued_by": "SarahMemoryAgentFirewall.issue_managed_passport_for_task",
+        "auto_consume_passport": bool(task_truth.get("auto_consume_passport", True)),
+        "execution_authority": False,
+    }
+    payload["passport_id"] = passport_id
+    payload["auto_passport"] = True
+    _record_terminal_agent_passport(task_id, {"passport": result.get("passport") or {}, "departure_credentials": {"passport_id": passport_id, "agent_id": result.get("agent_id") or ""}}, backend=str(task_truth.get("backend") or ""), skill_id=str(task_truth.get("skill_id") or ""))
+    truth_hash = _persist_terminal_agent_task_truth(task_id, task_truth)
+    audit_task_text = _append_passport_to_task_for_audit(task_text, passport_id)
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="PASSPORT_MANAGER",
+        event_type="PASSPORT_AUTO_INJECTED",
+        verdict="ALLOW",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=audit_task_text,
+        details="Managed one-time passport injected into Task Truth after explicit user launch.",
+        metadata={"caller": caller, "session_id": session_id, "passport_id": passport_id, "managed_passport": True, "task_truth_hash": truth_hash},
+        output={"passport_id": passport_id, "managed_passport": True, "execution_authority": False},
+    )
+    return {"ok": True, "requested": True, "blocked": False, "passport_id": passport_id, "task_text": audit_task_text, "task_truth_hash": truth_hash, "result": result, "execution_authority": False}
+
+
+def _close_terminal_auto_managed_passport(
+    *,
+    task_id: str,
+    task_text: str,
+    task_truth: Dict[str, Any],
+    adapter_execution: Dict[str, Any],
+    caller: str,
+    session_id: str,
+) -> Dict[str, Any]:
+    """Consume managed passport after the adapter attempt so it cannot be reused."""
+    managed = task_truth.get("managed_passport") if isinstance(task_truth.get("managed_passport"), dict) else {}
+    passport_id = str((managed or {}).get("passport_id") or task_truth.get("passport_id") or "").strip()
+    if not passport_id or not bool(task_truth.get("auto_passport")) or not bool(task_truth.get("auto_consume_passport", True)):
+        return {"ok": True, "skipped": True, "reason": "not_managed_or_auto_consume_disabled", "execution_authority": False}
+    try:
+        import SarahMemoryAgentFirewall as firewall  # type: ignore
+        fn = getattr(firewall, "consume_managed_passport", None)
+    except Exception as exc:
+        fn = None
+        fw_error = str(exc)
+    else:
+        fw_error = ""
+    if not callable(fn):
+        return {"ok": False, "error": fw_error or "managed_passport_consumer_unavailable", "execution_authority": False}
+    reason = "auto_closed_after_verified_adapter_result" if bool(adapter_execution.get("ok")) else "auto_closed_after_adapter_attempt_no_release"
+    result = fn(passport_id, reason=reason, task_id=task_id, caller=caller)
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="PASSPORT_MANAGER",
+        event_type="PASSPORT_AUTO_CONSUMED" if result.get("ok") else "PASSPORT_AUTO_CONSUME_FAILED",
+        verdict="CONSUMED" if result.get("ok") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=task_text,
+        details=reason if result.get("ok") else str(result.get("error") or "managed_passport_consume_failed"),
+        metadata={"caller": caller, "session_id": session_id, "passport_id": passport_id, "managed_passport": True},
+        output=result,
+    )
+    return {**result, "execution_authority": False}
+
+
+def _execute_passported_local_get_adapter(task_text: str, task_truth: Dict[str, Any], *, task_id: str, caller: str, session_id: str) -> Dict[str, Any]:
+    """Execute only approved loopback GET reads after passport + approval gates.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    This is not broad AI-agent execution. It is the first bounded adapter proof:
+    local HTTP GET only, source allowlist only, no request body, no credentials,
+    no shell/filesystem/driver/DevBridge/memory writes. Results are captured,
+    compared, and ledgered before presentation.
+    """
+    receipt_ids: List[str] = []
+    sources = _approved_terminal_local_get_sources(task_truth)
+    if not sources:
+        ev = _record_terminal_agent_task_event(
+            task_id,
+            stage="ADAPTER_SCOPE",
+            event_type="READ_ONLY_ADAPTER_BLOCKED",
+            verdict="BLOCK",
+            risk="medium",
+            task=task_text,
+            details="No approved local GET sources remained after source allowlist normalization.",
+            metadata={"caller": caller, "session_id": session_id, "allowed_sources": task_truth.get("allowed_sources")},
+        )
+        if ev.get("receipt_id"):
+            receipt_ids.append(str(ev.get("receipt_id")))
+        return {"ok": False, "blocked": True, "reason": "no_approved_local_get_sources", "receipt_ids": receipt_ids, "execution_authority": False}
+
+    passport_scope = _verify_terminal_agent_passport_scope(task_truth, task_id)
+    ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="PASSPORT_SCOPE",
+        event_type="PASSPORT_SCOPE_VERIFIED" if passport_scope.get("ok") else "PASSPORT_SCOPE_BLOCKED",
+        verdict="ALLOW" if passport_scope.get("ok") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "low"),
+        task=task_text,
+        details=str(passport_scope.get("reason") or "passport_scope_checked"),
+        metadata={"caller": caller, "session_id": session_id, "passport_id": task_truth.get("passport_id"), "sources": sources},
+        output=passport_scope,
+    )
+    if ev.get("receipt_id"):
+        receipt_ids.append(str(ev.get("receipt_id")))
+    if not passport_scope.get("ok"):
+        return {"ok": False, "blocked": True, "reason": str(passport_scope.get("reason") or "passport_scope_failed"), "passport_scope": passport_scope, "receipt_ids": receipt_ids, "execution_authority": False}
+
+    try:
+        import SarahMemoryAgentFirewall as firewall  # type: ignore
+        enforce = getattr(firewall, "enforce_read_only_adapter_request", None)
+    except Exception:
+        enforce = None
+
+    max_bytes = int(getattr(config, "SARAH_TERMINAL_AGENT_LOCAL_GET_MAX_BYTES", 200000))
+    timeout_s = float(getattr(config, "SARAH_TERMINAL_AGENT_LOCAL_GET_TIMEOUT_SECONDS", 2.5))
+    responses: List[Dict[str, Any]] = []
+    failures: List[str] = []
+
+    for url in sources[:8]:
+        request_packet = {
+            "method": "GET",
+            "resource": url,
+            "allowed_sources": sources,
+            "allowed_capabilities": list(task_truth.get("allowed_capabilities") or []),
+            "denied_capabilities": list(task_truth.get("denied_capabilities") or []),
+            "passport_scope": passport_scope,
+            "task_id": task_id,
+        }
+        fw = enforce(request_packet) if callable(enforce) else _terminal_adapter_firewall_fallback(request_packet, external=False)
+        if not fw.get("ok"):
+            failures.append(str(fw.get("reason") or "adapter_firewall_blocked"))
+            responses.append({"url": url, "ok": False, "blocked": True, "firewall": fw})
+            continue
+        try:
+            req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json", "User-Agent": "SarahMemory-ReadOnlyLocalGetAdapter/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+                raw = resp.read(max_bytes + 1)
+                truncated = len(raw) > max_bytes
+                raw = raw[:max_bytes]
+                body_text = raw.decode("utf-8", errors="replace")
+                parsed_json: Any = None
+                try:
+                    parsed_json = json.loads(body_text)
+                except Exception:
+                    parsed_json = None
+                responses.append({
+                    "url": url,
+                    "ok": 200 <= int(getattr(resp, "status", 0) or 0) < 400,
+                    "status": int(getattr(resp, "status", 0) or 0),
+                    "method": "GET",
+                    "content_type": str(resp.headers.get("Content-Type") or "")[:120],
+                    "bytes": len(raw),
+                    "truncated": truncated,
+                    "body_sha256": hashlib.sha256(raw).hexdigest(),
+                    "body_json": parsed_json if isinstance(parsed_json, dict) else None,
+                    "body_excerpt": "" if isinstance(parsed_json, dict) else body_text[:1200],
+                    "mutated": False,
+                    "execution_authority": False,
+                })
+        except Exception as exc:
+            failures.append(str(exc))
+            responses.append({"url": url, "ok": False, "method": "GET", "error": str(exc), "mutated": False, "execution_authority": False})
+
+    adapter_result = {
+        "ok": bool(responses) and not failures and all(bool(r.get("ok")) for r in responses),
+        "blocked": False,
+        "method": "GET",
+        "adapter": "passported_local_get_v1",
+        "responses": responses,
+        "failures": failures,
+        "mutated": False,
+        "shell_execution": False,
+        "file_mutation": False,
+        "driver_action": False,
+        "devbridge_apply": False,
+        "memory_write": False,
+        "execution_authority": False,
+    }
+    capture_ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="ROACHMOTEL",
+        event_type="RESULT_CAPTURED",
+        verdict="ALLOW" if adapter_result.get("ok") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "low"),
+        task=task_text,
+        details="Read-only local GET adapter result captured for Compare verification.",
+        metadata={"caller": caller, "session_id": session_id, "adapter": "passported_local_get_v1", "source_count": len(responses)},
+        output=adapter_result,
+    )
+    if capture_ev.get("receipt_id"):
+        receipt_ids.append(str(capture_ev.get("receipt_id")))
+
+    try:
+        import SarahMemoryCompare as compare  # type: ignore
+        cmp_fn = getattr(compare, "compare_agent_adapter_result_contract", None)
+        compare_result = cmp_fn(task_text, adapter_result, task_truth=task_truth, firewall_result={"verdict": "ALLOW"}) if callable(cmp_fn) else {"ok": False, "accepted": False, "decision": "COMPARE_UNAVAILABLE", "failures": ["compare_function_unavailable"], "execution_authority": False}
+    except Exception as exc:
+        compare_result = {"ok": False, "accepted": False, "decision": "COMPARE_ERROR", "failures": [str(exc)], "execution_authority": False}
+
+    compare_ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="COMPARE",
+        event_type="COMPARE_VERIFIED" if compare_result.get("accepted") else "COMPARE_BLOCKED",
+        verdict="ALLOW" if compare_result.get("accepted") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "low"),
+        task=task_text,
+        details=str(compare_result.get("verified_answer_state") or compare_result.get("decision") or "compare_complete"),
+        metadata={"caller": caller, "session_id": session_id, "adapter": "passported_local_get_v1"},
+        output=compare_result,
+    )
+    if compare_ev.get("receipt_id"):
+        receipt_ids.append(str(compare_ev.get("receipt_id")))
+
+    accepted = bool(compare_result.get("accepted") or compare_result.get("ok"))
+    return {
+        "ok": bool(adapter_result.get("ok")) and accepted,
+        "blocked": not (bool(adapter_result.get("ok")) and accepted),
+        "reason": None if bool(adapter_result.get("ok")) and accepted else ",".join(list(adapter_result.get("failures") or []) + list(compare_result.get("failures") or [])) or "adapter_or_compare_failed",
+        "adapter_result": adapter_result,
+        "passport_scope": passport_scope,
+        "compare_result": compare_result,
+        "receipt_ids": receipt_ids,
+        "verified_answer_state": compare_result.get("verified_answer_state") or ("verified_read_only_adapter_result" if accepted else "adapter_result_rejected"),
+        "execution_authority": False,
+    }
+
+
+def _execute_passported_external_get_adapter(task_text: str, task_truth: Dict[str, Any], *, task_id: str, caller: str, session_id: str) -> Dict[str, Any]:
+    """Execute only passported HTTPS GET reads against explicitly approved public sources.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    This is the first real external execution lane and remains deliberately
+    narrow: HTTPS GET only, explicit source allowlist only, public Internet hosts
+    only, no credentials, no request body, no shell/filesystem/driver/DevBridge,
+    bounded bytes/timeouts, RoachMotel capture, Compare verification, Ledger
+    receipts, and no autonomous authority.
+    """
+    receipt_ids: List[str] = []
+    sources = _approved_terminal_external_get_sources(task_truth)
+    if not sources:
+        ev = _record_terminal_agent_task_event(
+            task_id,
+            stage="EXTERNAL_ADAPTER_SCOPE",
+            event_type="EXTERNAL_READ_ONLY_ADAPTER_BLOCKED",
+            verdict="BLOCK",
+            risk="medium",
+            task=task_text,
+            details="No approved HTTPS public GET sources remained after source allowlist normalization.",
+            metadata={"caller": caller, "session_id": session_id, "allowed_sources": task_truth.get("allowed_sources")},
+        )
+        if ev.get("receipt_id"):
+            receipt_ids.append(str(ev.get("receipt_id")))
+        return {"ok": False, "blocked": True, "reason": "no_approved_external_get_sources", "receipt_ids": receipt_ids, "execution_authority": False}
+
+    passport_scope = _verify_terminal_agent_passport_scope(task_truth, task_id)
+    ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="PASSPORT_SCOPE",
+        event_type="PASSPORT_SCOPE_VERIFIED" if passport_scope.get("ok") else "PASSPORT_SCOPE_BLOCKED",
+        verdict="ALLOW" if passport_scope.get("ok") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=task_text,
+        details=str(passport_scope.get("reason") or "passport_scope_checked"),
+        metadata={"caller": caller, "session_id": session_id, "passport_id": task_truth.get("passport_id"), "sources": sources, "adapter": "passported_external_get_v1"},
+        output=passport_scope,
+    )
+    if ev.get("receipt_id"):
+        receipt_ids.append(str(ev.get("receipt_id")))
+    if not passport_scope.get("ok"):
+        return {"ok": False, "blocked": True, "reason": str(passport_scope.get("reason") or "passport_scope_failed"), "passport_scope": passport_scope, "receipt_ids": receipt_ids, "execution_authority": False}
+
+    try:
+        import SarahMemoryAgentFirewall as firewall  # type: ignore
+        enforce = getattr(firewall, "enforce_read_only_adapter_request", None)
+    except Exception:
+        enforce = None
+
+    max_bytes = int(getattr(config, "SARAH_TERMINAL_AGENT_EXTERNAL_GET_MAX_BYTES", 120000))
+    timeout_s = float(getattr(config, "SARAH_TERMINAL_AGENT_EXTERNAL_GET_TIMEOUT_SECONDS", 6.0))
+    max_sources = int(getattr(config, "SARAH_TERMINAL_AGENT_EXTERNAL_GET_MAX_SOURCES", 4))
+    responses: List[Dict[str, Any]] = []
+    failures: List[str] = []
+
+    for url in sources[:max(1, min(8, max_sources))]:
+        request_packet = {
+            "method": "GET",
+            "resource": url,
+            "allowed_sources": sources,
+            "allowed_capabilities": list(task_truth.get("allowed_capabilities") or []),
+            "denied_capabilities": list(task_truth.get("denied_capabilities") or []),
+            "passport_scope": passport_scope,
+            "task_id": task_id,
+            "external_network": True,
+        }
+        fw = enforce(request_packet) if callable(enforce) else _terminal_adapter_firewall_fallback(request_packet, external=True)
+        if not fw.get("ok"):
+            failures.append(str(fw.get("reason") or "external_adapter_firewall_blocked"))
+            responses.append({"url": url, "ok": False, "blocked": True, "firewall": fw})
+            continue
+        try:
+            # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+            # External adapter denies redirects so an approved source cannot
+            # silently move execution to an unapproved host before capture.
+            class _SarahMemoryNoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+                    return None
+
+            req = urllib.request.Request(
+                url,
+                method="GET",
+                headers={
+                    "Accept": "application/json,text/plain,text/html;q=0.5,*/*;q=0.1",
+                    "User-Agent": "SarahMemory-ReadOnlyExternalGetAdapter/1.0",
+                },
+            )
+            opener = urllib.request.build_opener(_SarahMemoryNoRedirect)
+            with opener.open(req, timeout=timeout_s) as resp:
+                final_url = str(getattr(resp, "url", "") or getattr(resp, "geturl", lambda: "")())
+                if final_url and final_url.rstrip("/") != url.rstrip("/"):
+                    raise RuntimeError("external_redirect_or_source_change_blocked")
+                raw = resp.read(max_bytes + 1)
+                truncated = len(raw) > max_bytes
+                raw = raw[:max_bytes]
+                body_text = raw.decode("utf-8", errors="replace")
+                parsed_json: Any = None
+                try:
+                    parsed_json = json.loads(body_text)
+                except Exception:
+                    parsed_json = None
+                responses.append({
+                    "url": url,
+                    "ok": 200 <= int(getattr(resp, "status", 0) or 0) < 400,
+                    "status": int(getattr(resp, "status", 0) or 0),
+                    "method": "GET",
+                    "content_type": str(resp.headers.get("Content-Type") or "")[:120],
+                    "bytes": len(raw),
+                    "truncated": truncated,
+                    "body_sha256": hashlib.sha256(raw).hexdigest(),
+                    "body_json": parsed_json if isinstance(parsed_json, dict) else None,
+                    "body_excerpt": "" if isinstance(parsed_json, dict) else body_text[:1200],
+                    "mutated": False,
+                    "execution_authority": False,
+                })
+        except Exception as exc:
+            failures.append(str(exc)[:300])
+            responses.append({"url": url, "ok": False, "method": "GET", "error": str(exc)[:500], "mutated": False, "execution_authority": False})
+
+    adapter_result = {
+        "ok": bool(responses) and not failures and all(bool(r.get("ok")) for r in responses),
+        "blocked": False,
+        "method": "GET",
+        "adapter": "passported_external_get_v1",
+        "responses": responses,
+        "failures": failures,
+        "mutated": False,
+        "shell_execution": False,
+        "file_mutation": False,
+        "driver_action": False,
+        "devbridge_apply": False,
+        "memory_write": False,
+        "execution_authority": False,
+    }
+    capture_ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="ROACHMOTEL",
+        event_type="EXTERNAL_RESULT_CAPTURED",
+        verdict="ALLOW" if adapter_result.get("ok") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=task_text,
+        details="Read-only external GET adapter result captured for Compare verification.",
+        metadata={"caller": caller, "session_id": session_id, "adapter": "passported_external_get_v1", "source_count": len(responses)},
+        output=adapter_result,
+    )
+    if capture_ev.get("receipt_id"):
+        receipt_ids.append(str(capture_ev.get("receipt_id")))
+
+    try:
+        import SarahMemoryCompare as compare  # type: ignore
+        cmp_fn = getattr(compare, "compare_agent_adapter_result_contract", None)
+        compare_result = cmp_fn(task_text, adapter_result, task_truth=task_truth, firewall_result={"verdict": "ALLOW"}) if callable(cmp_fn) else {"ok": False, "accepted": False, "decision": "COMPARE_UNAVAILABLE", "failures": ["compare_function_unavailable"], "execution_authority": False}
+    except Exception as exc:
+        compare_result = {"ok": False, "accepted": False, "decision": "COMPARE_ERROR", "failures": [str(exc)], "execution_authority": False}
+
+    compare_ev = _record_terminal_agent_task_event(
+        task_id,
+        stage="COMPARE",
+        event_type="EXTERNAL_COMPARE_VERIFIED" if compare_result.get("accepted") else "EXTERNAL_COMPARE_BLOCKED",
+        verdict="ALLOW" if compare_result.get("accepted") else "BLOCK",
+        risk=str(task_truth.get("risk_level") or "medium"),
+        task=task_text,
+        details=str(compare_result.get("verified_answer_state") or compare_result.get("decision") or "compare_complete"),
+        metadata={"caller": caller, "session_id": session_id, "adapter": "passported_external_get_v1"},
+        output=compare_result,
+    )
+    if compare_ev.get("receipt_id"):
+        receipt_ids.append(str(compare_ev.get("receipt_id")))
+
+    accepted = bool(compare_result.get("accepted") or compare_result.get("ok"))
+    return {
+        "ok": bool(adapter_result.get("ok")) and accepted,
+        "blocked": not (bool(adapter_result.get("ok")) and accepted),
+        "reason": None if bool(adapter_result.get("ok")) and accepted else ",".join(list(adapter_result.get("failures") or []) + list(compare_result.get("failures") or [])) or "external_adapter_or_compare_failed",
+        "adapter_result": adapter_result,
+        "passport_scope": passport_scope,
+        "compare_result": compare_result,
+        "receipt_ids": receipt_ids,
+        "verified_answer_state": compare_result.get("verified_answer_state") or ("verified_external_read_only_adapter_result" if accepted else "external_adapter_result_rejected"),
+        "execution_authority": False,
+    }
 
 
 def _terminal_task_status(task_id: str) -> Dict[str, Any]:
@@ -1991,6 +2937,144 @@ def _build_agent_reply(task: str, task_verdict: Dict[str, Any], smoke: Dict[str,
     return "\n".join(lines)
 
 
+
+# -----------------------------------------------------------------------------
+# Assurance Security Layer command surface (read-only/test-only; no authority)
+# -----------------------------------------------------------------------------
+def _terminal_security_action(task: str) -> str:
+    text = str(task or "").strip()
+    try:
+        tokens = shlex.split(text, posix=True)
+    except Exception:
+        tokens = text.split()
+    tokens = [str(t or "").strip().lower() for t in tokens if str(t or "").strip()]
+    if len(tokens) >= 2 and tokens[0] in ("/agent", "agent") and tokens[1] == "security":
+        return tokens[2] if len(tokens) >= 3 else "status"
+    if tokens and tokens[0] in ("/security", "security"):
+        return tokens[1] if len(tokens) >= 2 else "status"
+    return ""
+
+
+def _security_operation_reply(
+    *,
+    task: str,
+    payload: Dict[str, Any],
+    session_id: str,
+    cwd: str,
+    caller: str,
+) -> Optional[Dict[str, Any]]:
+    """Run bounded assurance status/report/tests through Terminal Bay.
+
+    /agent security status          -> read-only posture
+    /agent security report          -> generate read-only report
+    /agent security test --confirm  -> user-approved bounded local tests
+
+    This command never performs shell execution, file mutation outside audit
+    report output, driver action, DevBridge apply, or autonomous agent launch.
+    """
+    action = _terminal_security_action(task)
+    if not action:
+        return None
+
+    ts = datetime.now().isoformat()
+    confirmed = _truthy_confirmation(payload, task)
+    spine = _prepare_terminal_agent_task_spine(
+        task=task,
+        payload={**payload, "operation": "security_" + action},
+        session_id=session_id,
+        cwd=cwd,
+        operation="security_" + action,
+    )
+    task_id = str(spine.get("task_id") or "")
+    task_truth_hash = str(spine.get("task_truth_hash") or "")
+    available, firewall, error = _agent_firewall_available()
+    if not available or firewall is None:
+        return {
+            "ok": False,
+            "blocked": True,
+            "reason": error or "agent_firewall_unavailable",
+            "reply": "AgentFirewall unavailable; security assurance command cannot run.",
+            "stdout": "",
+            "stderr": error or "agent_firewall_unavailable",
+            "session_id": session_id,
+            "cwd": cwd,
+            "mode": "terminal_agent_security",
+            "task_id": task_id,
+            "task_truth_hash": task_truth_hash,
+            "security": {},
+            "actions": [],
+            "execution_authority": False,
+            "ts": ts,
+        }
+
+    def _finish(ok: bool, blocked: bool, reason: str, title: str, data: Dict[str, Any]) -> Dict[str, Any]:
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        flags = data.get("flags") if isinstance(data.get("flags"), dict) else {}
+        lines = [
+            title,
+            f"ok={bool(ok)} blocked={bool(blocked)}",
+            f"reason={reason or 'none'}",
+            f"overall={summary.get('overall', 'n/a')}",
+            f"passed={summary.get('passed', 'n/a')} failed={summary.get('failed', 'n/a')} skipped={summary.get('skipped', 'n/a')}",
+            f"SARAH_ASSURANCE_ENABLED={flags.get('SARAH_ASSURANCE_ENABLED', 'n/a')}",
+            f"SARAH_AGENT_MAX_PARALLEL_RETURNS={flags.get('SARAH_AGENT_MAX_PARALLEL_RETURNS', 'n/a')}",
+            f"SARAH_AGENT_PASSPORT_COLLISION_POLICY={flags.get('SARAH_AGENT_PASSPORT_COLLISION_POLICY', 'n/a')}",
+            f"SARAH_AGENT_PASSPORT_REPLAY_POLICY={flags.get('SARAH_AGENT_PASSPORT_REPLAY_POLICY', 'n/a')}",
+            "execution_authority=false",
+        ]
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="ASSURANCE",
+            event_type="ASSURANCE_SECURITY_" + action.upper(),
+            verdict="PASS" if ok and not blocked else "BLOCK" if blocked else "WARN",
+            risk="medium" if ok else "high",
+            task=task,
+            details=reason or title,
+            metadata={"caller": caller, "session_id": session_id, "action": action, "security_summary": summary, "report_paths": data.get("report_paths"), "execution_authority": False},
+            output=data,
+        )
+        return {
+            "ok": bool(ok),
+            "blocked": bool(blocked),
+            "reason": reason or None,
+            "reply": "\n".join(lines),
+            "stdout": "\n".join(lines),
+            "stderr": reason if blocked else "",
+            "session_id": session_id,
+            "cwd": cwd,
+            "mode": "terminal_agent_security",
+            "task_id": task_id,
+            "task_truth_hash": task_truth_hash,
+            "security": _redact_terminal_agent_payload(data),
+            "actions": [],
+            "execution_authority": False,
+            "ts": ts,
+        }
+
+    if action in ("status", "state"):
+        fn = getattr(firewall, "assurance_security_status", None)
+        data = fn() if callable(fn) else {"ok": False, "reason": "assurance_status_unavailable", "execution_authority": False}
+        return _finish(bool(data.get("ok")), False, str(data.get("reason") or ""), "SarahMemory Assurance Security Status", data)
+
+    if action in ("report", "summary"):
+        fn = getattr(firewall, "generate_security_assurance_report", None)
+        data = fn() if callable(fn) else {"ok": False, "reason": "security_report_unavailable", "execution_authority": False}
+        return _finish(bool(data.get("ok")), False, str(data.get("reason") or ""), "SarahMemory Assurance Security Report", data)
+
+    if action in ("test", "tests", "run"):
+        if not confirmed:
+            reason = "explicit_user_approval_required"
+            data = {"ok": False, "blocked": True, "reason": reason, "execution_authority": False}
+            return _finish(False, True, reason, "SarahMemory Assurance Security Test BLOCKED", data)
+        fn = getattr(firewall, "run_assurance_security_tests", None)
+        data = fn(user_approved=True, include_passport_replay=True) if callable(fn) else {"ok": False, "blocked": True, "reason": "assurance_test_runner_unavailable", "execution_authority": False}
+        return _finish(bool(data.get("ok")), bool(data.get("blocked", False)), str(data.get("reason") or ""), "SarahMemory Assurance Security Test", data)
+
+    reason = "unknown_security_operation"
+    return _finish(False, False, reason, "SarahMemory Assurance Security Command", {"ok": False, "reason": reason, "execution_authority": False})
+
+
+
 def execute_terminal_agent_task(
     *,
     task: str,
@@ -2045,10 +3129,31 @@ def execute_terminal_agent_task(
     state = get_session_state(sid) or {}
     cwd = _sanitize_workdir(state.get("cwd") or wd)
 
+    security_reply = _security_operation_reply(task=task_text, payload=payload, session_id=sid, cwd=cwd, caller=caller)
+    if security_reply is not None:
+        return security_reply
+
     spine = _prepare_terminal_agent_task_spine(task=task_text, payload=payload, session_id=sid, cwd=cwd, operation="agent_task")
     task_id = str(spine.get("task_id") or "")
     task_truth = spine.get("task_truth") if isinstance(spine.get("task_truth"), dict) else {}
     spine_blocked = not bool(spine.get("ok"))
+
+    managed_passport_result: Dict[str, Any] = {"ok": True, "requested": False, "execution_authority": False}
+    if not spine_blocked and _terminal_agent_command_verb(task_text) == "launch":
+        managed_passport_result = _issue_terminal_auto_managed_passport(
+            task_text=task_text,
+            payload=payload,
+            task_truth=task_truth,
+            task_id=task_id,
+            caller=caller,
+            session_id=sid,
+        )
+        if managed_passport_result.get("requested") and not managed_passport_result.get("ok"):
+            spine_blocked = True
+            task_truth["managed_passport_error"] = str(managed_passport_result.get("reason") or "managed_passport_failed")
+        elif managed_passport_result.get("ok") and managed_passport_result.get("passport_id"):
+            task_text = str(managed_passport_result.get("task_text") or task_text)
+            spine["task_truth_hash"] = str(managed_passport_result.get("task_truth_hash") or spine.get("task_truth_hash") or "")
 
     available, firewall, error = _agent_firewall_available()
     if available and firewall is not None:
@@ -2076,7 +3181,8 @@ def execute_terminal_agent_task(
 
     compact_task_verdict = _compact_firewall_result(task_verdict)
     firewall_blocked = str(compact_task_verdict.get("verdict") or "").upper() == "DENY"
-    launch_gate_reason = _terminal_agent_launch_gate_reason(task_text, payload, task_truth)
+    launch_gate_check = _terminal_agent_launch_gate_check(task_text, payload, task_truth)
+    launch_gate_reason = str(launch_gate_check.get("reason") or "")
     launch_gate_blocked = bool(launch_gate_reason)
     blocked = bool(spine_blocked or firewall_blocked or launch_gate_blocked)
     smoke = _agent_firewall_smoke_tests(task_text, caller=caller) if smoke_test else {"ok": True, "available": available, "passed": 0, "total": 0, "tests": []}
@@ -2092,7 +3198,7 @@ def execute_terminal_agent_task(
         _record_terminal_agent_task_event(
             task_id,
             stage="LAUNCH_GATE",
-            event_type="LAUNCH_BLOCKED_PASSPORT_REQUIRED",
+            event_type="LAUNCH_BLOCKED_PASSPORT_INVALID" if launch_gate_reason == "passport_invalid_or_unverified" else "LAUNCH_BLOCKED_PASSPORT_REQUIRED",
             verdict="BLOCK",
             risk=str(task_truth.get("risk_level") or "medium"),
             task=task_text,
@@ -2104,10 +3210,11 @@ def execute_terminal_agent_task(
                 "passport_required": bool(task_truth.get("passport_required", True)),
                 "passport_id": _terminal_agent_passport_id(payload, task_truth),
                 "user_approval_detected": bool(_truthy_confirmation(payload, task_text)),
+                "launch_gate_check": launch_gate_check,
                 "task_truth_hash": spine.get("task_truth_hash"),
                 "execution_authority": False,
             },
-            output={"reason": launch_gate_reason, "execution_authority": False},
+            output={"reason": launch_gate_reason, "launch_gate_check": launch_gate_check, "execution_authority": False},
         )
     if spine_blocked:
         validation = spine.get("validation") if isinstance(spine.get("validation"), dict) else {}
@@ -2125,6 +3232,9 @@ def execute_terminal_agent_task(
         metadata={"caller": caller, "session_id": sid, "firewall": compact_task_verdict, "task_truth_hash": spine.get("task_truth_hash")},
         output=compact_task_verdict,
     )
+
+    adapter_execution: Optional[Dict[str, Any]] = None
+    adapter_reason = ""
 
     status = {
         "mode": "terminal_agent",
@@ -2144,6 +3254,7 @@ def execute_terminal_agent_task(
         "devbridge_apply": False,
         "roachmotel_required": True,
         "compare_required": bool(task_truth.get("compare_required", True)),
+        "managed_passport": _redact_terminal_agent_payload(managed_passport_result),
         "launch_gate": {
             "command_verb": _terminal_agent_command_verb(task_text),
             "ok": not launch_gate_blocked,
@@ -2151,13 +3262,85 @@ def execute_terminal_agent_task(
             "reason": launch_gate_reason,
             "passport_required": bool(task_truth.get("passport_required", True)),
             "passport_id": _terminal_agent_passport_id(payload, task_truth),
+            "passport_verified": bool(launch_gate_check.get("passport_verified")),
             "user_approval_detected": bool(_truthy_confirmation(payload, task_text)),
+            "verification": launch_gate_check.get("verification") if isinstance(launch_gate_check.get("verification"), dict) else {},
             "execution_authority": False,
         },
         "agent_firewall_available": bool(available),
         "task_verdict": compact_task_verdict,
         "smoke_tests": smoke,
     }
+
+    # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    # Only the first narrow launch lane may perform bounded reads: a passported,
+    # explicitly approved, local-loopback HTTP GET check of approved API health
+    # endpoints.  This is not broad agent execution and does not grant shell,
+    # filesystem, driver, DevBridge, external network, or memory authority.
+    if (
+        not blocked
+        and _terminal_agent_command_verb(task_text) == "launch"
+        and str(task_truth.get("skill_id") or "") == "api.local.health_check"
+        and bool(_truthy_confirmation(payload, task_text))
+    ):
+        adapter_execution = _execute_passported_local_get_adapter(
+            task_text,
+            task_truth,
+            task_id=task_id,
+            caller=caller,
+            session_id=sid,
+        )
+        adapter_reason = str(adapter_execution.get("reason") or "") if isinstance(adapter_execution, dict) else "adapter_execution_failed"
+        if isinstance(adapter_execution, dict):
+            status["read_only_adapter"] = adapter_execution
+            status["local_api_get_execution"] = True
+            status["verified_answer_state"] = adapter_execution.get("verified_answer_state")
+            status["receipt_ids"] = list(adapter_execution.get("receipt_ids") or [])
+            if bool(task_truth.get("auto_passport")):
+                status["managed_passport_close"] = _close_terminal_auto_managed_passport(
+                    task_id=task_id, task_text=task_text, task_truth=task_truth, adapter_execution=adapter_execution, caller=caller, session_id=sid
+                )
+        if not isinstance(adapter_execution, dict) or not bool(adapter_execution.get("ok")):
+            blocked = True
+            reply = "BLOCK / READ_ONLY_ADAPTER\nReason: " + (adapter_reason or "adapter_execution_failed") + "\nNo result was released to Chat UI.\n\n" + reply
+        else:
+            response_count = len(((adapter_execution.get("adapter_result") or {}).get("responses") or []))
+            receipt_line = ", ".join(str(x) for x in list(adapter_execution.get("receipt_ids") or [])[:6])
+            reply = "PASS / READ_ONLY_ADAPTER\nVerified passported local GET adapter result captured and compared.\n" + f"Sources read: {response_count}." + (f"\nReceipt IDs: {receipt_line}" if receipt_line else "") + "\n\n" + reply
+
+    # SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    # First external lane: passported, approved, HTTPS GET only. This is real
+    # network read execution, but remains bounded and non-autonomous.
+    if (
+        not blocked
+        and _terminal_agent_command_verb(task_text) == "launch"
+        and str(task_truth.get("skill_id") or "") in _EXTERNAL_GET_ADAPTER_SKILLS
+        and bool(_truthy_confirmation(payload, task_text))
+    ):
+        adapter_execution = _execute_passported_external_get_adapter(
+            task_text,
+            task_truth,
+            task_id=task_id,
+            caller=caller,
+            session_id=sid,
+        )
+        adapter_reason = str(adapter_execution.get("reason") or "") if isinstance(adapter_execution, dict) else "external_adapter_execution_failed"
+        if isinstance(adapter_execution, dict):
+            status["read_only_adapter"] = adapter_execution
+            status["external_get_execution"] = True
+            status["verified_answer_state"] = adapter_execution.get("verified_answer_state")
+            status["receipt_ids"] = list(adapter_execution.get("receipt_ids") or [])
+            if bool(task_truth.get("auto_passport")):
+                status["managed_passport_close"] = _close_terminal_auto_managed_passport(
+                    task_id=task_id, task_text=task_text, task_truth=task_truth, adapter_execution=adapter_execution, caller=caller, session_id=sid
+                )
+        if not isinstance(adapter_execution, dict) or not bool(adapter_execution.get("ok")):
+            blocked = True
+            reply = "BLOCK / EXTERNAL_READ_ONLY_ADAPTER\nReason: " + (adapter_reason or "external_adapter_execution_failed") + "\nNo external result was released to Chat UI.\n\n" + reply
+        else:
+            response_count = len(((adapter_execution.get("adapter_result") or {}).get("responses") or []))
+            receipt_line = ", ".join(str(x) for x in list(adapter_execution.get("receipt_ids") or [])[:6])
+            reply = "PASS / EXTERNAL_READ_ONLY_ADAPTER\nVerified passported external HTTPS GET adapter result captured and compared.\n" + f"Sources read: {response_count}." + (f"\nReceipt IDs: {receipt_line}" if receipt_line else "") + "\n\n" + reply
 
     log_terminal_event(
         "TerminalAgentTask",
@@ -2180,7 +3363,7 @@ def execute_terminal_agent_task(
     return {
         "ok": not blocked and bool(smoke.get("available", available)),
         "blocked": blocked,
-        "reason": (launch_gate_reason if launch_gate_blocked else ", ".join(list((spine.get("validation") or {}).get("errors") or [])[:4]) if spine_blocked else compact_task_verdict.get("reason") if firewall_blocked else None),
+        "reason": (adapter_reason if adapter_execution and not bool(adapter_execution.get("ok")) else launch_gate_reason if launch_gate_blocked else ", ".join(list((spine.get("validation") or {}).get("errors") or [])[:4]) if spine_blocked else compact_task_verdict.get("reason") if firewall_blocked else None),
         "reply": reply,
         "stdout": reply,
         "stderr": "" if not blocked else str(compact_task_verdict.get("reason") or "Blocked by Terminal Bay governance."),
@@ -2190,6 +3373,9 @@ def execute_terminal_agent_task(
         "task_id": task_id,
         "task_truth_hash": spine.get("task_truth_hash"),
         "agent_status": status,
+        "adapter_execution": adapter_execution or {},
+        "receipt_ids": list((adapter_execution or {}).get("receipt_ids") or []),
+        "verified_answer_state": (adapter_execution or {}).get("verified_answer_state") if isinstance(adapter_execution, dict) else None,
         "actions": [],
         "execution_authority": False,
         "ts": ts,
@@ -2199,12 +3385,46 @@ def execute_terminal_agent_task(
 # AI-agent passport administration (governed; no autonomous execution)
 # -----------------------------------------------------------------------------
 def _truthy_confirmation(payload: Dict[str, Any], task: str = "") -> bool:
-    value = payload.get("confirmed", payload.get("confirmation", payload.get("user_approved", False)))
-    if isinstance(value, bool):
-        return value
-    if str(value or "").strip().lower() in ("1", "true", "yes", "approved", "i approve", "confirm"):
-        return True
-    return "--confirm" in str(task or "").lower()
+    """Return True only for explicit operator approval fields or flags.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-06:
+    Assurance tests exposed that the UI operator shorthand `--confirm` and
+    `--user-approved` were not consistently promoted into payload approval
+    fields.  This helper now recognizes a bounded set of explicit approval
+    aliases in both payload and the raw /agent command text.  It does not infer
+    approval from general prose and does not grant execution authority.
+    """
+    truthy = {"1", "true", "yes", "on", "approved", "i approve", "confirm", "confirmed"}
+    for key in ("confirmed", "confirmation", "user_approved", "approved", "approval", "launch_approved"):
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if str(value or "").strip().lower() in truthy:
+            return True
+
+    raw = str(task or "")
+    try:
+        tokens = shlex.split(raw, posix=True)
+    except Exception:
+        tokens = raw.split()
+    for token in tokens[:160]:
+        text = str(token or "").strip()
+        if not text:
+            continue
+        if "=" in text:
+            key, value = text.split("=", 1)
+            norm_key = key.strip().lower().lstrip("-/").replace("-", "_")
+            if norm_key in _TERMINAL_AGENT_APPROVAL_FLAG_ALIASES and str(value or "").strip().strip('"\'').lower() in truthy:
+                return True
+            continue
+        norm_flag = text.strip().lower().lstrip("-/").replace("-", "_")
+        if norm_flag in _TERMINAL_AGENT_APPROVAL_FLAG_ALIASES:
+            return True
+    return False
 
 
 def _agent_registry_module() -> Tuple[Optional[Any], str]:
@@ -2225,27 +3445,34 @@ def _terminal_agent_receipt(
     risk: str = "low",
     summary: str = "",
     metadata: Optional[Dict[str, Any]] = None,
-) -> None:
+) -> Dict[str, Any]:
     try:
         if not bool(getattr(config, "SARAH_LEDGER_RECEIPTS_ENABLED", True)):
-            return
+            return {"ok": False, "disabled": True, "receipt_id": ""}
         import hashlib
         from SarahMemoryLedger import record_governance_receipt  # type: ignore
-        record_governance_receipt(
+        safe_metadata = dict(metadata or {})
+        resolved_passport_id = str(passport_id or safe_metadata.get("passport_id") or "").strip()[:180]
+        if resolved_passport_id:
+            safe_metadata["passport_id"] = resolved_passport_id
+        else:
+            safe_metadata.setdefault("passport_id", "")
+        safe_metadata["execution_authority"] = False
+        return record_governance_receipt(
             "terminal_agent",
             event_type,
             subject_id=str(subject_id or "terminal_agent")[:180],
-            task_id=str((metadata or {}).get("task_id") or "")[:180],
+            task_id=str(safe_metadata.get("task_id") or "")[:180],
             lane="terminal_agent",
             verdict=str(verdict or "UNKNOWN")[:64],
             risk=str(risk or "low")[:32],
             retention_class="agent_security" if str(verdict).upper() in ("DENY", "BLOCKED", "REVOKED") else "terminal_agent",
             payload_hash=hashlib.sha256(str(task or "").encode("utf-8", "ignore")).hexdigest() if task else "",
             summary=str(summary or event_type)[:1000],
-            metadata={"passport_id": str(passport_id or "")[:180], "execution_authority": False, **(metadata or {})},
+            metadata=safe_metadata,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "receipt_id": ""}
 
 
 def _passport_safe_summary(passport: Any) -> Dict[str, Any]:
@@ -2354,17 +3581,19 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         firewall_ok, firewall, fw_error = _agent_firewall_available()
         if not firewall_ok or not callable(getattr(firewall, "issue_outbound_agent_passport", None)):
             return response(False, "AgentFirewall passport issuer unavailable.", blocked=True, reason=fw_error or "passport_issuer_unavailable")
+        scope_lane = str(merged.get("origin_lane") or (spine.get("task_truth") or {}).get("skill_id") or "research")
+        task_truth_for_passport = (spine.get("task_truth") or {}) if isinstance(spine.get("task_truth"), dict) else {}
         result = firewall.issue_outbound_agent_passport(
             agent_id=agent_id,
             agent_name=str(merged.get("agent_name") or agent_id),
             purpose=str(merged.get("purpose") or "Governed outbound task"),
             task_id=str(merged.get("task_id") or ""),
-            origin_lane=str(merged.get("origin_lane") or (spine.get("task_truth") or {}).get("skill_id") or "research"),
-            allowed_lanes=list(merged.get("allowed_lanes") or [str(merged.get("origin_lane") or "research")]),
-            allowed_capabilities=list(merged.get("allowed_capabilities") or list(((spine.get("task_truth") or {}).get("allowed_capabilities") or ["research", "return_data"]))),
-            allowed_resources=list(merged.get("allowed_resources") or merged.get("allowed_sources") or list(((spine.get("task_truth") or {}).get("allowed_sources") or []))),
-            denied_resources=list(merged.get("denied_resources") or merged.get("denied_sources") or list(((spine.get("task_truth") or {}).get("denied_sources") or ["core/*", ".env", "credentials", "shell", "device_control"]))),
-            maximum_risk_tier=str(merged.get("maximum_risk_tier") or (spine.get("task_truth") or {}).get("risk_level") or "low"),
+            origin_lane=scope_lane,
+            allowed_lanes=_as_string_list(merged.get("allowed_lanes") or [scope_lane]),
+            allowed_capabilities=_as_string_list(merged.get("allowed_capabilities") or task_truth_for_passport.get("allowed_capabilities") or ["research", "return_data"]),
+            allowed_resources=_as_string_list(merged.get("allowed_resources") or merged.get("allowed_sources") or task_truth_for_passport.get("allowed_sources") or []),
+            denied_resources=_as_string_list(merged.get("denied_resources") or merged.get("denied_sources") or task_truth_for_passport.get("denied_sources") or ["core/*", ".env", "credentials", "shell", "device_control"]),
+            maximum_risk_tier=str(merged.get("maximum_risk_tier") or task_truth_for_passport.get("risk_level") or "low"),
             ttl_seconds=int(merged.get("ttl_seconds") or getattr(config, "SARAH_AGENT_PASSPORT_DEFAULT_TTL_SECONDS", 3600)),
             one_time_use=bool(merged.get("one_time_use", True)),
             network_allowed=bool(merged.get("network_allowed", True)),
@@ -2373,7 +3602,14 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             device_allowed=False,
             memory_allowed=bool(merged.get("memory_allowed", False)),
             user_approved=True,
-            meta={"caller": caller},
+            meta={
+                "caller": caller,
+                "mission_id": str(task_truth_for_passport.get("mission_id") or ""),
+                "allowed_methods": [str(x).upper() for x in list(task_truth_for_passport.get("allowed_methods") or ["GET"])],
+                "denied_capabilities": list(task_truth_for_passport.get("denied_capabilities") or []),
+                "adapter_scope": "read_only_local_get" if scope_lane == "api.local.health_check" else "read_only_external_get" if scope_lane in _EXTERNAL_GET_ADAPTER_SKILLS else "inspect_or_propose",
+                "execution_authority": False,
+            },
         )
         if not result.get("ok"):
             return response(False, "Passport issuance failed: " + str(result.get("error") or "unknown_error"), blocked=True, reason=str(result.get("error") or "passport_issue_failed"), data=result)

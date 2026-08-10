@@ -3449,6 +3449,46 @@ def get_sovereign_agent_runtime_contract() -> Dict[str, Any]:
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 
+
+def classify_agent_assist_need(
+    text: str,
+    *,
+    local_answer_available: bool = False,
+    fallback_reason: str = "",
+    governor: Optional[Dict[str, Any]] = None,
+    local_only: bool = True,
+) -> Dict[str, Any]:
+    """Classify whether Chat may stage a governed agent-assist proposal.
+
+    SARAHMEMORY_PATCH_NOTE 2026-08-04:
+    This is classification only. It never launches an agent and never grants
+    execution authority. When local DB/model paths fail, Chat may stage a
+    proposal packet; real adapter reads still require passport, source scope,
+    RoachMotel capture, Ledger receipts, Compare verification, and user approval.
+    """
+    gov = governor if isinstance(governor, dict) else {}
+    decision = str(gov.get("decision") or "ALLOW").upper()
+    action_like = bool(re.search(r"\b(open|launch|run|execute|delete|write|change|install|control|drive|send)\b", str(text or "").lower()))
+    allow_proposal = bool((not local_answer_available) and decision not in {"DENY"})
+    return {
+        "ok": True,
+        "schema": "SarahMemory.chat_agent_assist_classifier.v1",
+        "decision": "PROPOSE_ONLY" if allow_proposal else "LOCAL_OR_DENY",
+        "allow_agent_proposal": allow_proposal,
+        "allow_adapter_execution": False,
+        "requires_passport": True,
+        "requires_user_approval": True,
+        "requires_roachmotel": True,
+        "requires_ledger": True,
+        "requires_compare": True,
+        "fallback_reason": str(fallback_reason or "")[:240],
+        "local_answer_available": bool(local_answer_available),
+        "local_only": bool(local_only),
+        "action_like": action_like,
+        "execution_authority": False,
+        "recommended_skill": "api.local.health_check" if allow_proposal else "chat.local",
+    }
+
 # ====================================================================
 # END OF SarahMemoryCognitiveServices.py v9.0.0
 # ====================================================================
