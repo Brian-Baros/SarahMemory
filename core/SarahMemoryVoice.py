@@ -309,6 +309,10 @@ _ensure_dirs()
 # SETTINGS / PROFILES
 # =============================================================================
 VOICE_PROFILES: Dict[str, str] = {
+    "SarahMemory Voice": "female",
+    "SarahVoice_v1": "female",
+    "sarahvoice": "female",
+    "sarah": "female",
     "Default": "female",
     "Female": "female",
     "Male": "male",
@@ -316,6 +320,9 @@ VOICE_PROFILES: Dict[str, str] = {
 
 # Soft voice preference keywords (from v800 monkey patch; now core)
 PREFERRED_KEYWORDS: Tuple[str, ...] = (
+    "sarah",
+    "sarahmemory",
+    "sarahvoice",
     "zira",
     "aria",
     "jenny",
@@ -351,19 +358,154 @@ custom_audio_settings: Dict[str, float] = {
 
 current_settings: Dict[str, Any] = {
     "speech_rate": "Normal",  # Slow/Normal/Fast
-    "voice_profile": "Female",
+    "voice_profile": "SarahMemory Voice",
     "emotion": "neutral",
-    "tts_engine": "auto",  # pyttsx3|gtts|edge|cosyvoice|auto
+    "tts_engine": "sarahvoice",  # sarahvoice|pyttsx3|gtts|edge|cosyvoice|auto
     "language": "en",
 }
 
-active_voice_profile: str = "Female"
+active_voice_profile: str = "SarahMemory Voice"
+
+SARAHVOICE_MODEL_ID = "SarahVoice_v1"
+SARAHVOICE_DISPLAY_NAME = "SarahMemory Voice"
+SARAHVOICE_IDENTITY_LABEL = "SarahMemory Speaking"
+SARAHVOICE_PROFILE_ENGINE = "sarahvoice"
+
+
+def _sarahvoice_dir() -> Path:
+    return _data_dir() / "models" / "SarahMemory" / "voice" / SARAHVOICE_MODEL_ID
+
+
+def _sarahvoice_manifest_path() -> Path:
+    return _sarahvoice_dir() / "SARAHVOICE_MANIFEST.json"
+
+
+def _sarahvoice_default_profile() -> Dict[str, Any]:
+    return {
+        "schema": "SarahMemory.voice.profile.default.v1",
+        "voice_model_id": SARAHVOICE_MODEL_ID,
+        "display_name": SARAHVOICE_DISPLAY_NAME,
+        "identity_label": SARAHVOICE_IDENTITY_LABEL,
+        "runtime_format": "sarahvoice_profile_v1",
+        "primary": True,
+        "network_required": False,
+        "prosody": {
+            "rate": 0.92,
+            "pitch": 1.04,
+            "volume": 0.90,
+            "warmth": 0.85,
+            "attack": "soft",
+            "release": "soft_decay",
+            "startup_delay_ms": 350,
+        },
+        "fallbacks": [
+            {"engine": "pyttsx3", "local_first": True},
+            {"engine": "browser_speech_synthesis", "allowed_only_after_voice_resolution": True},
+            {"engine": "edge", "allowed_when_network_enabled": True},
+            {"engine": "gtts", "allowed_when_network_enabled": True},
+        ],
+        "governance": {
+            "local_first": True,
+            "clone_of_real_person": False,
+            "public_figure_impersonation": False,
+            "pt_voice_dependency": False,
+            "male_default_boot_voice_allowed": False,
+            "boot_must_wait_for_voice_resolution": True,
+        },
+    }
+
+
+def load_sarahvoice_manifest() -> Dict[str, Any]:
+    """Load SarahMemory's primary audible identity manifest.
+
+    This is an identity/profile bundle, not a raw neural checkpoint. If the
+    manifest asset is missing, return a deterministic default profile so boot
+    speech still has one canonical SarahMemory identity and governed fallbacks.
+    """
+    manifest = _sarahvoice_default_profile()
+    try:
+        path = _sarahvoice_manifest_path()
+        if path.is_file():
+            loaded = json.loads(path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                manifest.update(loaded)
+                manifest["manifest_path"] = str(path)
+                manifest["manifest_present"] = True
+        else:
+            manifest["manifest_path"] = str(path)
+            manifest["manifest_present"] = False
+    except Exception as exc:
+        manifest["manifest_present"] = False
+        manifest["manifest_error"] = str(exc)
+    manifest.setdefault("voice_model_id", SARAHVOICE_MODEL_ID)
+    manifest.setdefault("display_name", SARAHVOICE_DISPLAY_NAME)
+    manifest.setdefault("identity_label", SARAHVOICE_IDENTITY_LABEL)
+    manifest.setdefault("runtime_format", "sarahvoice_profile_v1")
+    manifest.setdefault("network_required", False)
+    manifest.setdefault("hot_swappable", True)
+    manifest.setdefault("fallback_required", True)
+    return manifest
+
+
+def get_primary_voice_identity() -> Dict[str, Any]:
+    manifest = load_sarahvoice_manifest()
+    prosody = manifest.get("prosody") if isinstance(manifest.get("prosody"), dict) else {}
+    governance = manifest.get("governance") if isinstance(manifest.get("governance"), dict) else {}
+    return {
+        "ok": True,
+        "schema": "SarahMemory.voice.identity.v1",
+        "voice_model_id": str(manifest.get("voice_model_id") or SARAHVOICE_MODEL_ID),
+        "voice_identity": str(manifest.get("identity_label") or SARAHVOICE_IDENTITY_LABEL),
+        "display_name": str(manifest.get("display_name") or SARAHVOICE_DISPLAY_NAME),
+        "engine": SARAHVOICE_PROFILE_ENGINE,
+        "runtime_format": str(manifest.get("runtime_format") or "sarahvoice_profile_v1"),
+        "primary_voice_ready": True,
+        "manifest_present": bool(manifest.get("manifest_present", False)),
+        "manifest_path": manifest.get("manifest_path"),
+        "reference_audio": manifest.get("reference_audio"),
+        "prosody": prosody,
+        "fallbacks": manifest.get("fallbacks") or [],
+        "local_first": True,
+        "network_required": bool(manifest.get("network_required", False)),
+        "male_default_boot_voice_allowed": bool(governance.get("male_default_boot_voice_allowed", False)),
+        "pt_voice_dependency": bool(governance.get("pt_voice_dependency", False)),
+        "boot_must_wait_for_voice_resolution": bool(governance.get("boot_must_wait_for_voice_resolution", True)),
+    }
+
+
+def get_voice_status() -> Dict[str, Any]:
+    identity = get_primary_voice_identity()
+    return {
+        "ok": True,
+        "identity": identity,
+        "current_settings": dict(current_settings),
+        "active_voice_profile": active_voice_profile,
+        "engines": {
+            "sarahvoice": True,
+            "pyttsx3": bool(pyttsx3 is not None and not _headless_safe()),
+            "edge": bool(_HAS_EDGE_TTS),
+            "gtts": bool(_HAS_GTTS),
+            "cosyvoice": bool(_HAS_TORCHAUDIO),
+        },
+        "queue": {
+            "worker_started": bool(_TTS_WORKER_STARTED),
+            "pending": int(_TTS_QUEUE.qsize()) if '_TTS_QUEUE' in globals() else 0,
+            "speaking": bool(getattr(config, "AVATAR_IS_SPEAKING", False)),
+        },
+        "fallback_policy": {
+            "browser_default_allowed_as_last_resort": True,
+            "male_default_boot_voice_allowed": False,
+            "browser_voice_requires_resolution": True,
+        },
+    }
 
 # =============================================================================
 # CATEGORY-DRIVEN TTS RESOLUTION
 # =============================================================================
-_SUPPORTED_TTS_ENGINES: Tuple[str, ...] = ("pyttsx3", "gtts", "edge", "cosyvoice", "auto")
+_SUPPORTED_TTS_ENGINES: Tuple[str, ...] = ("sarahvoice", "pyttsx3", "gtts", "edge", "cosyvoice", "auto")
 _TTS_MODEL_BACKEND_MAP: Dict[str, str] = {
+    "SarahMemory/SarahVoice_v1": "sarahvoice",
+    "SarahVoice_v1": "sarahvoice",
     "FunAudioLLM/CosyVoice2-0.5B": "cosyvoice",
 }
 
@@ -391,6 +533,14 @@ def _normalize_tts_engine_name(engine_name: Optional[str]) -> str:
         "edgetts": "edge",
         "cosyvoice": "cosyvoice",
         "cosyvoice2": "cosyvoice",
+        "sarah": "sarahvoice",
+        "sarahmemory": "sarahvoice",
+        "sarahmemory voice": "sarahvoice",
+        "sarah voice": "sarahvoice",
+        "sarahvoice": "sarahvoice",
+        "sarahvoice_v1": "sarahvoice",
+        "sarahvoice-v1": "sarahvoice",
+        "default": "sarahvoice",
         "auto": "auto",
     }
     return aliases.get(val, val)
@@ -403,7 +553,10 @@ def _tts_repo_to_backend(repo: Optional[str]) -> str:
     backend = _TTS_MODEL_BACKEND_MAP.get(repo_val, "")
     if backend:
         return backend
-    if "cosyvoice" in repo_val.lower():
+    low = repo_val.lower()
+    if "sarahvoice" in low or "sarahmemory/sarahvoice" in low:
+        return "sarahvoice"
+    if "cosyvoice" in low:
         return "cosyvoice"
     return ""
 
@@ -434,7 +587,7 @@ def _resolve_tts_model_candidates(text: str = "", lang: str = "en") -> Dict[str,
 
 
 def _build_engine_fallback_chain(primary_engine: str, allow_remote: bool = True) -> List[str]:
-    normalized = _normalize_tts_engine_name(primary_engine)
+    normalized = _normalize_tts_engine_name(primary_engine) or "sarahvoice"
     chain: List[str] = []
 
     def _add(name: Optional[str]) -> None:
@@ -444,20 +597,28 @@ def _build_engine_fallback_chain(primary_engine: str, allow_remote: bool = True)
         if eng not in chain:
             chain.append(eng)
 
-    _add(normalized or "pyttsx3")
-    if allow_remote:
-        _add("edge")
-        _add("gtts")
-    _add("pyttsx3")
-    return chain or ["pyttsx3"]
+    _add(normalized)
+    # SarahVoice is the identity/profile engine. It should try local system TTS
+    # first, then approved fallbacks. Browser speech remains frontend-only.
+    if normalized == "sarahvoice":
+        _add("pyttsx3")
+        if allow_remote:
+            _add("edge")
+            _add("gtts")
+    else:
+        if allow_remote:
+            _add("edge")
+            _add("gtts")
+        _add("pyttsx3")
+    return chain or ["sarahvoice", "pyttsx3"]
 
 
 def _resolve_tts_runtime_plan(text: str = "", lang: str = "en", explicit_engine: Optional[str] = None) -> Dict[str, Any]:
-    requested_engine = _normalize_tts_engine_name(explicit_engine or current_settings.get("tts_engine", "pyttsx3"))
+    requested_engine = _normalize_tts_engine_name(explicit_engine or current_settings.get("tts_engine", "sarahvoice"))
     allow_remote = not bool(getattr(config, "LOCAL_ONLY_MODE", False))
     if requested_engine and requested_engine != "auto":
         return {
-            "engine": requested_engine,
+            "engine": requested_engine or "sarahvoice",
             "engine_chain": _build_engine_fallback_chain(requested_engine, allow_remote=allow_remote),
             "requested_engine": requested_engine,
             "selected_repo": None,
@@ -479,12 +640,7 @@ def _resolve_tts_runtime_plan(text: str = "", lang: str = "en", explicit_engine:
                 break
 
     if not engine:
-        if _HAS_EDGE_TTS:
-            engine = "edge"
-        elif _HAS_GTTS and allow_remote:
-            engine = "gtts"
-        else:
-            engine = "pyttsx3"
+        engine = "sarahvoice"
 
     return {
         "engine": engine,
@@ -678,6 +834,28 @@ def _save_wave_tensor_to_file(audio_obj: Any, sample_rate: int, out_path: Path) 
         return True
     except Exception:
         return False
+
+
+def _speak_with_sarahvoice(text: str, profile: str, emotion: str, lang: str) -> bool:
+    """Primary SarahMemory voice identity runtime.
+
+    This v1 runtime is a governed profile layer over the available local TTS
+    engines. It deliberately does not use raw .pt voice packs. A future neural
+    SarahVoice engine can replace this function without changing callers.
+    """
+    if _TTS_STOP_FLAG.is_set() or _TTS_SHUTDOWN_FLAG.is_set():
+        return False
+    # Force SarahMemory profile identity while using local audio first.
+    profile_name = profile if profile and profile.lower() not in {"default", "sarah"} else SARAHVOICE_DISPLAY_NAME
+    if _speak_with_pyttsx3(text, profile_name, emotion or "calm"):
+        return True
+    # Local-first: only use network fallbacks when explicitly allowed.
+    if not bool(getattr(config, "LOCAL_ONLY_MODE", False)):
+        if _speak_with_edge_tts(text, profile_name):
+            return True
+        if _speak_with_gtts(text, lang=lang or "en"):
+            return True
+    return False
 
 
 def _speak_with_cosyvoice(text: str, profile: str, emotion: str, lang: str, repo: Optional[str]) -> bool:
@@ -1148,7 +1326,7 @@ def _tts_worker_loop() -> None:
                     continue
                 config.AVATAR_IS_SPEAKING = True
                 _TTS_STOP_FLAG.clear()
-                requested_engine = _normalize_tts_engine_name(task.engine_pref or "pyttsx3") or "pyttsx3"
+                requested_engine = _normalize_tts_engine_name(task.engine_pref or "sarahvoice") or "sarahvoice"
                 emotion = (task.emotion or "neutral").strip().lower()
                 profile = (task.voice_profile or "Female").strip()
                 selected_repo = str(task.selected_repo or "").strip() or None
@@ -1162,7 +1340,13 @@ def _tts_worker_loop() -> None:
                     if _TTS_STOP_FLAG.is_set() or _TTS_SHUTDOWN_FLAG.is_set():
                         break
                     try:
-                        if engine == "cosyvoice":
+                        if engine == "sarahvoice":
+                            completed = _speak_with_sarahvoice(task.text, profile, emotion, task.lang or "en")
+                            if completed:
+                                completed_engine = "sarahvoice"
+                                break
+                            failure_notes.append("sarahvoice_profile_unavailable_or_failed")
+                        elif engine == "cosyvoice":
                             repo_candidates: List[str] = []
                             if selected_repo:
                                 repo_candidates.append(selected_repo)
@@ -1283,11 +1467,15 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
     global _TTS_LAST_TEXT_HASH, _TTS_LAST_ACCEPTED_TS
     raw_text = str(text or "").strip()
     task_id = "tts_" + uuid.uuid4().hex[:16]
+    identity = get_primary_voice_identity()
     if not raw_text or SAFE_MODE or _TTS_SHUTDOWN_FLAG.is_set():
         return {
             "ok": False,
             "accepted": False,
             "task_id": task_id,
+            "voice_identity": identity.get("voice_identity"),
+            "voice_model_id": identity.get("voice_model_id"),
+            "voice_display_name": identity.get("display_name"),
             "reason": "empty_text_or_tts_disabled",
             "browser_fallback_required": True,
             "estimated_duration_ms": estimate_speech_duration_ms(raw_text),
@@ -1303,6 +1491,9 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
             "ok": False,
             "accepted": False,
             "task_id": task_id,
+            "voice_identity": identity.get("voice_identity"),
+            "voice_model_id": identity.get("voice_model_id"),
+            "voice_display_name": identity.get("display_name"),
             "reason": "sanitized_empty_text",
             "browser_fallback_required": True,
             "estimated_duration_ms": 1200,
@@ -1318,6 +1509,9 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
                 "accepted": True,
                 "deduped": True,
                 "task_id": task_id,
+                "voice_identity": identity.get("voice_identity"),
+                "voice_model_id": identity.get("voice_model_id"),
+                "voice_display_name": identity.get("display_name"),
                 "text": clean_text,
                 "text_hash": text_hash,
                 "engine": "deduped_previous",
@@ -1338,6 +1532,9 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
             "ok": False,
             "accepted": False,
             "task_id": task_id,
+            "voice_identity": identity.get("voice_identity"),
+            "voice_model_id": identity.get("voice_model_id"),
+            "voice_display_name": identity.get("display_name"),
             "text": clean_text,
             "text_hash": text_hash,
             "reason": "tts_worker_unavailable",
@@ -1348,9 +1545,9 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
 
     lang = str(current_settings.get("language", "en") or "en")
     runtime_plan = _resolve_tts_runtime_plan(text=clean_text, lang=lang, explicit_engine=engine_pref)
-    chosen_engine = _normalize_tts_engine_name(runtime_plan.get("engine") or "pyttsx3") or "pyttsx3"
+    chosen_engine = _normalize_tts_engine_name(runtime_plan.get("engine") or "sarahvoice") or "sarahvoice"
     if chosen_engine not in _SUPPORTED_TTS_ENGINES:
-        chosen_engine = "pyttsx3"
+        chosen_engine = "sarahvoice"
     ev: Optional[threading.Event] = threading.Event() if blocking else None
     result: Dict[str, Any] = {"ok": False, "accepted": True}
     task = _TTSTask(
@@ -1358,7 +1555,7 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
         blocking_event=ev,
         emotion=(emotion or str(current_settings.get("emotion", "neutral"))),
         engine_pref=chosen_engine,
-        voice_profile=str(current_settings.get("voice_profile", active_voice_profile or "Female")),
+        voice_profile=str(current_settings.get("voice_profile", active_voice_profile or SARAHVOICE_DISPLAY_NAME)),
         lang=lang,
         selected_repo=runtime_plan.get("selected_repo"),
         fallback_repos=list(runtime_plan.get("fallback_repos") or []),
@@ -1375,6 +1572,11 @@ def speak_text_status(text: str, blocking: bool = True, emotion: Optional[str] =
         "text_hash": text_hash,
         "engine": chosen_engine,
         "requested_engine": runtime_plan.get("requested_engine") or chosen_engine,
+        "voice_identity": identity.get("voice_identity"),
+        "voice_model_id": identity.get("voice_model_id"),
+        "voice_display_name": identity.get("display_name"),
+        "primary_voice_ready": bool(identity.get("primary_voice_ready")),
+        "male_default_boot_voice_allowed": False,
         "engine_chain": list(runtime_plan.get("engine_chain") or []),
         "playback_location": "server_local_audio",
         "server_tts_started": True,
@@ -1443,7 +1645,7 @@ def save_voice_settings() -> None:
         data["reverb"] = float(custom_audio_settings.get("reverb", 0.0))
         data["speech_rate"] = str(current_settings.get("speech_rate", "Normal"))
         data["emotion"] = str(current_settings.get("emotion", "neutral"))
-        data["tts_engine"] = str(current_settings.get("tts_engine", "pyttsx3"))
+        data["tts_engine"] = str(current_settings.get("tts_engine", "sarahvoice"))
         data["language"] = str(current_settings.get("language", "en"))
 
         settings_path.write_text(json.dumps(data, indent=4), encoding="utf-8")
@@ -1486,8 +1688,8 @@ def load_voice_settings() -> None:
 # SETTERS / GETTERS (WebUI + core)
 # =============================================================================
 def get_voice_profiles() -> List[str]:
-    out = list(VOICE_PROFILES.keys())
-    # Include system voices if pyttsx3 is available
+    out = [SARAHVOICE_DISPLAY_NAME, SARAHVOICE_MODEL_ID, "sarahvoice", "Female", "Male"]
+    # Include system voices if pyttsx3 is available, after SarahMemory identity.
     if _ensure_pyttsx3_engine():
         try:
             for v in _engine_voices:
@@ -1503,6 +1705,13 @@ def set_voice_profile(profile_name: str) -> None:
     global active_voice_profile
     if not profile_name:
         return
+    raw = str(profile_name).strip()
+    normalized_engine = _normalize_tts_engine_name(raw)
+    if normalized_engine == "sarahvoice":
+        profile_name = SARAHVOICE_DISPLAY_NAME
+        current_settings["tts_engine"] = "sarahvoice"
+    else:
+        profile_name = raw
     active_voice_profile = profile_name
     current_settings["voice_profile"] = profile_name
 
@@ -1729,7 +1938,7 @@ if __name__ == "__main__":
     print("edge-tts available:", _HAS_EDGE_TTS)
     print("Profiles:", get_voice_profiles()[:10])
     print("Speaking a test sentence...")
-    speak_text("Hello. This is SarahMemory voice. The cutoff bug should be fixed.", blocking=True)
+    speak_text("Hello. This is SarahMemory Voice. The governed audible identity is ready.", blocking=True)
     print("Done.")
 
 # ====================================================================

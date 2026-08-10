@@ -772,6 +772,23 @@ class UnifiedAvatarController:
         words = str(text or "").split()
         return max(1200, min(180000, int((len(words) / 1.45) * 1000) + 1200))
 
+    def _voice_identity_packet(self) -> Dict[str, Any]:
+        try:
+            if self.tts and hasattr(self.tts, "get_primary_voice_identity"):
+                packet = self.tts.get_primary_voice_identity()
+                if isinstance(packet, dict):
+                    return packet
+        except Exception as exc:
+            logger.debug(f"[AvatarVoice] SarahVoice identity unavailable: {exc}")
+        return {
+            "ok": True,
+            "voice_model_id": "SarahVoice_v1",
+            "voice_identity": "SarahMemory Speaking",
+            "display_name": "SarahMemory Voice",
+            "engine": "sarahvoice",
+            "male_default_boot_voice_allowed": False,
+        }
+
     def build_morph_token(self, from_state: str = "neutral", to_state: str = "speaking_soft", *, duration_ms: int = 420, speech_phase: str = "idle") -> Dict[str, Any]:
         """Build a RAM-only morph token for the 2D AvatarPanel LiveLoop renderer."""
         return {
@@ -790,9 +807,13 @@ class UnifiedAvatarController:
             "source": "UnifiedAvatarController",
         }
 
-    def build_voice_avatar_session(self, text: str, voice: str = "default", emotion: Optional[str] = None) -> Dict[str, Any]:
+    def build_voice_avatar_session(self, text: str, voice: str = "sarahvoice", emotion: Optional[str] = None) -> Dict[str, Any]:
         """Build the platform-wide voice/avatar session packet without starting audio."""
         clean_text = str(text or "").strip()
+        voice_identity = self._voice_identity_packet()
+        requested_voice = str(voice or "sarahvoice").strip() or "sarahvoice"
+        if requested_voice.lower() in {"default", "sarah", "sarahmemory", "sarahmemory voice"}:
+            requested_voice = "sarahvoice"
         current_emotion = str(emotion or self.last_emotion or "neutral").strip().lower() or "neutral"
         duration_ms = self._estimate_speech_duration_ms(clean_text)
         session_id = "voice_" + hashlib.sha256(f"{time.time()}::{clean_text[:128]}::{random.random()}".encode("utf-8", "ignore")).hexdigest()[:16]
@@ -802,7 +823,12 @@ class UnifiedAvatarController:
             "session_id": session_id,
             "text_hash": text_hash,
             "text_preview": clean_text[:180],
-            "voice": str(voice or "default"),
+            "voice": requested_voice,
+            "voice_model_id": voice_identity.get("voice_model_id"),
+            "voice_identity": voice_identity.get("voice_identity"),
+            "voice_display_name": voice_identity.get("display_name"),
+            "voice_engine": voice_identity.get("engine") or "sarahvoice",
+            "male_default_boot_voice_allowed": False,
             "emotion": current_emotion,
             "speaking": bool(clean_text),
             "started_at": time.time(),
@@ -812,12 +838,16 @@ class UnifiedAvatarController:
             "browser_fallback_allowed": True,
             "browser_fallback_required": False,
             "server_tts_started": False,
-            "morph": self.build_morph_token("neutral", "speaking_soft", duration_ms=min(520, max(220, duration_ms // 8)), speech_phase="pre_speak"),
+            "morph": {
+                **self.build_morph_token("neutral", "speaking_soft", duration_ms=min(520, max(220, duration_ms // 8)), speech_phase="pre_speak"),
+                "voice_style": "soft_low_feminine_ai",
+                "mouth_curve": "soft_attack_release",
+            },
             "ram_only": True,
             "store_generated_frames": False,
         }
 
-    def start_avatar_speech_session(self, text: str, voice: str = "default", emotion: Optional[str] = None, *, start_tts: bool = True) -> Dict[str, Any]:
+    def start_avatar_speech_session(self, text: str, voice: str = "sarahvoice", emotion: Optional[str] = None, *, start_tts: bool = True) -> Dict[str, Any]:
         """Create a voice-avatar session, set avatar speaking, and optionally queue backend TTS."""
         session = self.build_voice_avatar_session(text=text, voice=voice, emotion=emotion)
         tts_status: Dict[str, Any] = {"ok": False, "accepted": False, "skipped": not start_tts}
@@ -831,9 +861,9 @@ class UnifiedAvatarController:
         if start_tts and self.tts:
             try:
                 if hasattr(self.tts, "speak_text_status"):
-                    tts_status = self.tts.speak_text_status(text, blocking=False, emotion=session.get("emotion"), engine_pref=voice or None)
+                    tts_status = self.tts.speak_text_status(text, blocking=False, emotion=session.get("emotion"), engine_pref=session.get("voice") or "sarahvoice")
                 elif hasattr(self.tts, "speak_text"):
-                    accepted = bool(self.tts.speak_text(text, blocking=False, emotion=session.get("emotion"), engine_pref=voice or None))
+                    accepted = bool(self.tts.speak_text(text, blocking=False, emotion=session.get("emotion"), engine_pref=session.get("voice") or "sarahvoice"))
                     tts_status = {"ok": accepted, "accepted": accepted, "server_tts_started": accepted, "browser_fallback_required": not accepted}
             except Exception as exc:
                 tts_status = {"ok": False, "accepted": False, "error": str(exc), "browser_fallback_required": True}
@@ -1720,7 +1750,7 @@ def mark_user_activity(source: str = "user") -> None:
     get_unified_avatar_controller().mark_user_activity(source=source)
 
 
-def start_avatar_speech_session(text: str, voice: str = "default", emotion: Optional[str] = None, start_tts: bool = True) -> Dict[str, Any]:
+def start_avatar_speech_session(text: str, voice: str = "sarahvoice", emotion: Optional[str] = None, start_tts: bool = True) -> Dict[str, Any]:
     return get_unified_avatar_controller().start_avatar_speech_session(text=text, voice=voice, emotion=emotion, start_tts=start_tts)
 
 
