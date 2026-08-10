@@ -1,0 +1,70 @@
+{
+  "schema": "SarahMemory.voice.manifest.v1",
+  "voice_model_id": "SarahVoice_v1",
+  "display_name": "SarahMemory Voice",
+  "identity_label": "SarahMemory Speaking",
+  "runtime_format": "sarahvoice_profile_v1",
+  "primary": true,
+  "network_required": false,
+  "boot_required": true,
+  "hot_swappable": true,
+  "fallback_required": true,
+  "reference_audio": {
+    "file": "sarah_reference.wav",
+    "sha256": "d616689bde05842ba3191ffd4f1000fd7aab145fc2a249344ee9db6834aeed4f",
+    "purpose": "acoustic_target_and_calibration",
+    "used_for_live_synthesis": false
+  },
+  "profile": "sarah_voice_profile.json",
+  "prosody": {
+    "rate": 0.92,
+    "pitch": 1.04,
+    "volume": 0.9,
+    "warmth": 0.85,
+    "attack": "soft",
+    "release": "soft_decay",
+    "startup_delay_ms": 350,
+    "boot_voice_allowed_before_resolution": false
+  },
+  "fallbacks": [
+    {
+      "engine": "pyttsx3",
+      "preferred_voice_keywords": [
+        "sarah",
+        "zira",
+        "aria",
+        "jenny",
+        "emma",
+        "samantha",
+        "victoria",
+        "hazel",
+        "susan",
+        "female"
+      ],
+      "local_first": true
+    },
+    {
+      "engine": "browser_speech_synthesis",
+      "allowed_only_after_voice_resolution": true,
+      "male_default_boot_voice_allowed": false
+    },
+    {
+      "engine": "edge",
+      "allowed_when_network_enabled": true
+    },
+    {
+      "engine": "gtts",
+      "allowed_when_network_enabled": true
+    }
+  ],
+  "governance": {
+    "clone_of_real_person": false,
+    "public_figure_impersonation": false,
+    "local_first": true,
+    "browser_default_allowed_as_last_resort": true,
+    "male_default_boot_voice_allowed": false,
+    "pt_voice_dependency": false,
+    "boot_must_wait_for_voice_resolution": true,
+    "created_at": "2026-08-09T18:41:00-05:00"
+  }
+}

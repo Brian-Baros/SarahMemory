@@ -1,0 +1,55 @@
+{
+  "schema": "SarahMemory.voice.profile.v1",
+  "voice_id": "sarahmemory_voice_v1",
+  "display_name": "SarahMemory Voice",
+  "identity_label": "SarahMemory Speaking",
+  "identity_class": "system_voice_not_person",
+  "acoustic_target": {
+    "source": "user_provided_reference_video_audio",
+    "file": "sarah_reference.wav",
+    "sha256": "d616689bde05842ba3191ffd4f1000fd7aab145fc2a249344ee9db6834aeed4f",
+    "duration_seconds": 5.062,
+    "sample_rate": 24000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "description": "calm low soft feminine AI assistant voice target",
+    "pitch_target_hz": 172,
+    "pitch_range_hz": [
+      145,
+      235
+    ]
+  },
+  "prosody": {
+    "rate": 0.92,
+    "pitch": 1.04,
+    "volume": 0.9,
+    "warmth": 0.85,
+    "attack": "soft",
+    "release": "soft_decay",
+    "startup_delay_ms": 350,
+    "boot_voice_allowed_before_resolution": false
+  },
+  "browser_fallback": {
+    "preferred_keywords": [
+      "sarah",
+      "zira",
+      "aria",
+      "jenny",
+      "emma",
+      "samantha",
+      "victoria",
+      "hazel",
+      "susan",
+      "female"
+    ],
+    "blocked_boot_keywords": [
+      "david",
+      "guy",
+      "mike",
+      "mark",
+      "tom",
+      "male"
+    ],
+    "allow_anonymous_default_at_boot": false
+  }
+}
