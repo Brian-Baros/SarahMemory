@@ -3,7 +3,7 @@
 ![SMAIOS_BANNER](documents/SarahMemoryAiOS-10x3-Banner.png)
 
 # **SarahMemory AI Operating System (AiOS)**  
-### **Version 9.0.0 — Developer & Functional Release**
+### **Version 9.3.0 — Developer / Functional / Voice-Morphic Runtime Release**
 
 ---
 ## **📌 Project Metadata**
@@ -12,11 +12,11 @@
 |-------|--------|
 | **R&D Start Date** | February 21, 2025 |
 | **First Release** | December 05, 2025 |
-| **Last Update** | June 13, 2026 |
+| **Last Update** | August 09, 2026 |
 | **Author** | Brian Lee Baros |
 | **License** | © 2025–2026 Brian Lee Baros. All Rights Reserved. |
-| **Primary Languages** | Python 3.11–3.13.12 |
-| **Development Environment** | Windows 10, VS Code, AMD FX‑8350, Ryzen 3, Nvidia 3060, Radeon Vega, Galaxy S20+, iPhone 14 |
+| **Primary Languages** | Python 3.11–3.13.12, TypeScript/React, JSON, Markdown, SQLite, PowerShell support scripts |
+| **Development Environment** | Windows 10/11, VS Code, Python 3.11+, Flask, React/Vite, AMD FX‑8350, Ryzen 3, Nvidia RTX 3060, Radeon Vega, Galaxy S20+, iPhone 14 |
 | **Important Notice** | Project files are updated quite often; it is highly recommended to check back often for new files and fixes to core files. Just because something might not fully work today doesn't mean it won't fully work tomorrow because this project is live, active and ongoing development. |
 
 ---
@@ -3196,13 +3196,898 @@ are happening,
 
 - File deletion in progress and uploading new files and much more development is happening in this phase of 9-> 10 is begin done more securely to protect IP of the AIOS system
 
-- [DEVELOPER/AUTHOR NOTATION] Backing up locally entire system / Rewrite and edit README.MD here now as evidence of PROOF of WORK from the last 16 months is undeniable, all versions documents from v1.0 - completion of v8.0 have been successfully backed up, on multiple dev local drive devices, and To show this is a legitamate program Shifting new updated files privately. This README.MD will stop here now TODAY June 13th 2026. and be Archieved in the v9.0->v10.0 new REPO as the historical development and journey docutrine. Future Replacement of the v8.0-v9.0 repo will have the new more updated README.MD A much cleaner historical Document. The Progress here in this README.MD will now be cleaned and sanitized in preperations of the newly reorganized and release of version 9 and 10. The New README.MD Will Include this NOTATION and UPDATE Include IMAGES to be better polished than this current 3264 line README.MD
+- [DEVELOPER/AUTHOR NOTATION] Backing up locally entire system / Rewrite and edit README.MD here now as evidence of PROOF of WORK from the last 16 months is undeniable, all versions documents from v1.0 - completion of v8.0 have been successfully backed up, on multiple dev local drive devices, and To show this is a legitamate program Shifting new updated files privately. This README.MD originally stopped here on June 13th 2026 as a historical v8/v9 checkpoint before the v9.0→v10.0 reorganization. The August 2026 DEVREADME update resumes the dated development record from that checkpoint forward while preserving the historical trail. Future Replacement of the v8.0-v9.0 repo will have the new more updated README.MD A much cleaner historical Document. The Progress here in this README.MD will now be cleaned and sanitized in preperations of the newly reorganized and release of version 9 and 10. The New README.MD Will Include this NOTATION and UPDATE Include IMAGES to be better polished than this current 3264 line README.MD
 
 ### DO NOT FORK OR DOWNLOAD THE REPO AT THIS MOMENT, Because I am deleting ,reorganizing and Developing version 9.0->10.0
 
 -Continue on v9.0-> v10.0 Planned Roadmap
 
 ![SarahMemory Logo](documents/SarahMemory-OrganicAI-alpha5.png)
+
+
+---
+# **📅 June 14 – August 09, 2026 — v9 Developer Stabilization, AI-Agent Firewall, RoachMotel, NAILDE, PowerStore, Morphic Avatar, and SarahVoice Identity Update**
+
+This DEVREADME update resumes the project history after the June 13, 2026 checkpoint and records the major work completed across multiple SarahMemory AiOS development threads through August 09, 2026.
+
+This period moved SarahMemory from a broad v9 architecture into a more governed, patched, validated, and user-tested developer runtime. The main focus shifted from feature expansion alone into **proof, governance, patch discipline, runtime survivability, agent containment, NAILDE sandbox development, Addons/PowerStore readiness, and unified avatar/voice identity**.
+
+## **Current Baseline Markers**
+
+| Marker | Date | Status |
+|---|---:|---|
+| `SM-AIOS-V9-POSTBACKUP-STABLE-20260809-1429` | 2026-08-09 | User-reported stable backup completed after NAILDE/Addons/PowerStore v9.1 |
+| `SM-AIOS v9.2 MorphicLiveLoop + VoiceSync` | 2026-08-09 | User-reported working |
+| `SarahMemory Voice Identity + MorphShader Stabilizer v9.3` | 2026-08-09 | Patch package created and validation performed in sandbox |
+
+---
+## **📅 June 14–30, 2026 — Organic AI Publications, Governance Articles, and Public Proof Record**
+
+After the June 13 repository/history checkpoint, the public documentation and publication effort expanded around the SarahMemory AiOS doctrine.
+
+### **Key Public Concepts Developed / Published**
+
+- **Organic AI Architecture** as a SarahMemory-coined paradigm for governed, decentralized, modular, embodied, local-first AI systems.
+- **AI Governance and Pandora’s Box** framing: AI must be governed at the execution layer, not merely aligned at the model-output layer.
+- **Multiple Artifacts / Multiple Court Governance**: inspection, evidence, judgment, comparison, and user review as separate authority layers.
+- **AI-Agent Cybersecurity and Safeguard Doctrine**: external AI agents must not become trusted execution authorities.
+- **RoachMotel Governance**: inbound agent output may enter containment, but cannot escape to live execution without passport, scope, verification, Compare, and user authority.
+- **SarahMemory LogicCalc release** as a decentralized deterministic reasoning aid for math/physics/logic support.
+- **3D Avatar Panel / SOBJE / Avatar-Eye VR environment** doctrine for embodied interface and visual witness surfaces.
+
+### **Public Documentation Links**
+
+- LinkedIn articles: `https://www.linkedin.com/in/brian-baros-29962a176/recent-activity/articles/`
+- LinkedIn posts/activity: `https://www.linkedin.com/in/brian-baros-29962a176/recent-activity/all/`
+- SarahMemory site: `https://www.sarahmemory.com`
+
+### **Why This Matters**
+
+This period established SarahMemory as more than a private build. It became a public architecture argument: local-first AI must include governance, rollback, evidence, containment, and user sovereignty before it attempts full autonomy.
+
+---
+## **📅 July 01–15, 2026 — v9.0 Alpha Developer Runtime, API Bridge, Terminal, Agent Firewall, and Voice/Avatar Foundation**
+
+This period centered on preparing SarahMemory v9.0.0 Alpha Developer as a governed local runtime.
+
+### **Runtime Direction Confirmed**
+
+- Root runtime target: `C:\SarahMemory`
+- Main entry: `python SarahMemoryMain.py`
+- API base: `http://127.0.0.1:8000`
+- API server owner: `api/server/app.py`
+- Terminal owner: `core/SarahMemoryTerminal.py`
+- Target mode: local-first, offline-capable, governed, model-agnostic.
+
+### **Backend/API Status Work**
+
+Confirmed or repeatedly tested local endpoints included:
+
+```text
+/api/health
+/api/version
+/api/meta/capabilities
+/api/chat
+/api/v1/chat
+/api/research/search
+/api/files/analyze
+/api/ranking/stats
+/api/ranking/submit
+/api/terminal/agent
+/api/ledger/status
+```
+
+### **Terminal / Agent Firewall Direction**
+
+The Terminal lane was clarified around:
+
+- `/run` — raw shell lane under Developer Mode restrictions.
+- `/ai` — governed AI task lane.
+- `/agent` — inspect/propose agent task lane.
+- `/task` — task-oriented terminal lane.
+- `/screen <panel>` — panel navigation helper.
+
+AgentFirewall smoke-test doctrine was locked:
+
+```text
+ALLOW local_terminal_agent_task
+DENY unknown_remote_agent
+DENY hijack_phrase_block
+REQUIRE_REVIEW signed_outbound_agent_return
+```
+
+### **Voice and Avatar Foundation**
+
+The existing voice system remained based on:
+
+- Microsoft language pack / pyttsx3 local voice.
+- Browser `speechSynthesis` fallback.
+- Optional Edge/gTTS/CosyVoice paths.
+- `SarahMemoryVoice.py` as the backend voice pipeline.
+- `UnifiedAvatarController.py` as the avatar/voice orchestration layer.
+
+The problem identified later was that browser boot speech, backend TTS, and avatar speaking state did not yet share one voice/session authority.
+
+---
+## **📅 July 16–24, 2026 — Tokenization, Model Risk, Avatar Concepts, and Embodied Interface Expansion**
+
+This period continued architectural discussion and design around:
+
+- Tokenization and how words move through a tokenizer into weighted model output.
+- Risks from foreign or centrally controlled open-source models.
+- Model trust boundaries: helper models must not become SarahMemory authority.
+- Avatar visual identity development for the 2D/3D SarahMemory assistant interface.
+- Robotics/maintenance helper concepts and future embodied machine bodies.
+- VR/Avatar-Eye/AvatarPanel thinking direction.
+
+### **Doctrinal Impact**
+
+The model-risk discussions reinforced:
+
+```text
+Models are helper organs.
+SarahMemory AiOS is the governed organism.
+No helper model may override governance, user authority, or execution safety.
+```
+
+This principle became important later during NAILDE and voice model design, where the system had to avoid silently trusting generated code, third-party TTS models, or random browser voices.
+
+---
+## **📅 July 26–31, 2026 — SEL/QIST, Fast Answer Governance, LinkedIn Doctrine, and Constitutional Engineering Rules**
+
+During late July, SarahMemory documentation and diagrams expanded around **fast answer governance**, **self-tokenization**, **SEL/QIST**, and execution-layer control.
+
+### **Fast Answer Governance Flow**
+
+A polished infographic concept was defined around the prompt:
+
+```text
+“What is RAM?”
+```
+
+The flow described:
+
+```text
+USER INPUT
+→ PRETOKEN ANALYZER
+→ GOVERNANCE CLASSIFIER
+→ SEL-LITE PACKET
+→ lane selection
+→ answer generation
+→ validation
+→ presentation
+```
+
+### **Constitution v10.0.0 Lock-In**
+
+The SarahMemory Engineering Constitution was clarified as the governing standard for engineering work:
+
+- Truth before speed.
+- Verification before execution.
+- Inspection before modification.
+- Governance before capability.
+- Determinism before creativity.
+- User authority before AI autonomy.
+- Rollback before expansion.
+- Local-first before cloud.
+- Minimal change before redesign.
+- Explicit uncertainty before assumption.
+
+### **Patch Discipline Locked**
+
+Rules established:
+
+- No unapproved new production files.
+- Patch only the requested scope.
+- Preserve routes, public functions, APIs, and file names.
+- Do not silently remove security.
+- Do not claim validation unless performed.
+- Report Syntax / Imports / Dependencies / API / Frontend / Backend / Governance / Security / Performance / Boot Flow.
+
+This directly affected later NAILDE and PowerStore patching, where a non-compliant package was discarded for creating new production files without approval.
+
+---
+## **📅 July 29–30, 2026 — Whole-System Constitutional Examination and Gap Register**
+
+A major project-wide static examination was performed against the v9 packages, drivers, data modules, UI, API bridge, datasets, Terminal Bay work, and the CV gap register.
+
+### **Static Examination Summary**
+
+| Area | Count / Finding |
+|---|---:|
+| Core Python files | 90 |
+| Core functions | 4,747 |
+| Core classes | 348 |
+| API bridge Python files | 11 |
+| API bridge functions | 1,132 |
+| API route decorators | 385 |
+| Unique API paths | 383 |
+| UI API references | 186 string references / 138 normalized unique references |
+| Drivers Python files | 43 |
+| Dataset SQLite DBs | 36 |
+
+### **Critical Gaps Identified**
+
+- Unified task loop not yet proven end-to-end.
+- Large DB scan hazard from massive dataset files.
+- `app.py` remains oversized.
+- Quick-route execution before governance remains a critical risk.
+- Agent output authority boundary required uniform enforcement.
+- SQLite writes were not uniformly mediated.
+- Desktop/MSDC safety still needed a proof pack.
+
+### **Non-Compliant Package Discarded**
+
+The package:
+
+```text
+SarahMemory_AiOS_v900_whole_system_stitch_repair_20260730.zip
+```
+
+was marked non-compliant/discarded because it created unapproved production files.
+
+### **Required Sequence Clarified**
+
+Future work must prove:
+
+```text
+Backend
+→ API Bridge
+→ Frontend
+→ UI Response
+→ Backend Verification
+→ Audit / Ledger
+```
+
+Reverse verification must also succeed.
+
+---
+## **📅 August 02–03, 2026 — Terminal Bay Task Spine, One-Pass Proper Patch, Agent UI Direction, and AI-Agent Interface Tests**
+
+This update cycle focused on giving SarahMemory a safer, more deterministic terminal/agent task path.
+
+### **Terminal Bay Direction**
+
+The Terminal Bay was shaped around:
+
+- one canonical agent command envelope;
+- SQLite task spine;
+- scope-limited capabilities;
+- passport requirements;
+- RoachMotel inbound containment;
+- Compare-required release;
+- Ledger receipts;
+- DevBridge apply only after user approval.
+
+### **One-Pass Proper Patch**
+
+A proper patch package was produced:
+
+```text
+SarahMemory_AiOS_OnePass_ProperPatch_20260803_2013.zip
+```
+
+Scope included existing CORE/API/UI/driver/data-module files and support manifests. This served as a corrected alternative to the earlier non-compliant July 30 stitch package.
+
+### **Agent Interface UI Doctrine**
+
+The AI-Agent Interface UI direction was clarified:
+
+```text
+User prompt / Terminal command
+→ canonical task packet
+→ capability scope
+→ agent proposal
+→ containment
+→ Compare / user review
+→ DevBridge staged apply only if approved
+```
+
+The UI is a control surface, not an authority surface.
+
+---
+## **📅 August 04, 2026 — Governed Agent Adapter, Passport Scope, and External HTTPS GET Execution**
+
+This period produced the first major governed external-agent adapter pass.
+
+### **Governed Agent Adapter Full Pass**
+
+Patch package:
+
+```text
+SarahMemory_AiOS_20260804_GovernedAgentAdapter_FullPass.zip
+```
+
+Purpose:
+
+- Improve agent-adapter pathways while preserving existing architecture.
+- Patch existing production files only.
+- Preserve governance contracts.
+- Avoid creating new API routes.
+- Keep helper models/external agents below SarahMemory authority.
+
+### **External Execution Passport Scope v1**
+
+Patch package:
+
+```text
+SarahMemory_ExternalExecution_PassportScope_Patch_20260804_2143.zip
+```
+
+Modified:
+
+```text
+core/SarahMemoryTerminal.py
+core/SarahMemoryTrustRegistry.py
+```
+
+Purpose:
+
+```text
+Enable the first real external execution lane only as a bounded,
+passported, read-only HTTPS GET adapter.
+```
+
+This did **not** grant broad autonomous execution.
+
+### **External HTTPS GET Execution v2**
+
+Patch package:
+
+```text
+SarahMemory_ExternalHTTPSGET_Execution_v2_20260804_2359.zip
+```
+
+Modified:
+
+```text
+core/SarahMemoryAgentFirewall.py
+core/SarahMemoryCompare.py
+core/SarahMemoryTerminal.py
+core/SarahMemoryTrustRegistry.py
+```
+
+Added / strengthened:
+
+- placeholder passport rejection;
+- real passport issuance;
+- passport scope verification;
+- one external HTTPS GET execution path;
+- no broad shell/file/device authority;
+- Compare and TrustRegistry proof hooks.
+
+### **Governance Result**
+
+External execution became possible only through:
+
+```text
+explicit approval
+→ scoped passport
+→ source/method limits
+→ AgentFirewall containment
+→ Compare verification
+→ Ledger/audit record
+```
+
+---
+## **📅 August 06, 2026 — Assurance Security Layer, Managed Passport FIFO Replay Guard, Auto-Flag Control, and Terminal Approval Alias Fix**
+
+This update cycle hardened agent security and terminal approval behavior.
+
+### **Assurance Security Layer v1**
+
+Patch package:
+
+```text
+SarahMemory_AssuranceSecurityLayer_v1_20260806_2218.zip
+```
+
+Purpose:
+
+- Improve AgentFirewall / TrustRegistry / Terminal coordination.
+- Strengthen approval and containment semantics.
+- Preserve existing routes and public contracts.
+
+### **Managed Passport FIFO Replay Guard**
+
+Patch package:
+
+```text
+SarahMemory_ManagedPassport_FIFOReplayGuard_v1_20260806_1925.zip
+```
+
+Purpose:
+
+- Prevent replay/reuse of managed passports.
+- Add FIFO-style one-time handling around agent passport issuance and consumption.
+- Preserve user-launched approval semantics.
+
+### **Passport Auto-Flag Control**
+
+Patch package:
+
+```text
+SarahMemory_PassportAutoFlag_ControlPatch_20260806_1947.zip
+```
+
+Modified:
+
+```text
+core/SarahMemoryTerminal.py
+core/SarahMemoryAgentFirewall.py
+core/SarahMemoryTrustRegistry.py
+```
+
+Purpose:
+
+- Respect the central `SARAH_AGENT_PASSPORT_ID` policy flag.
+- Permit auto-issued managed passports only after explicit approval and only in the correct user-launched `/agent` context.
+
+### **Terminal Approval Alias Hotfix**
+
+Patch package:
+
+```text
+SarahMemory_TerminalApprovalAlias_Hotfix_20260806_2318.zip
+```
+
+Patched exactly:
+
+```text
+core/SarahMemoryTerminal.py
+```
+
+Accepted approval aliases now include:
+
+```text
+--confirm
+--confirmed
+--user-approved
+--approved
+confirm=true
+confirmed=true
+approved=true
+user_approved=true
+```
+
+### **Runtime Checkpoint**
+
+The user reported that Assurance Security Layer commands worked in the UI Terminal after approval-alias correction:
+
+```text
+/agent security status
+/agent security report
+/agent security test
+```
+
+Known status:
+
+```text
+No known active terminal bypasses after the approval alias fix.
+```
+
+---
+## **📅 August 07–08, 2026 — NAILDE: Governed AI-Native Development Sandbox / IDE**
+
+NAILDE became the major development focus during this period.
+
+### **NAILDE Definition**
+
+```text
+NAILDE is SarahMemory’s governed AI-native development sandbox for Python,
+Flask, React, JavaScript, TypeScript, TSX, JSON, Markdown, SQLite-safe configs,
+and FLASH-style interactive AI runtime interfaces.
+```
+
+NAILDE is not a normal IDE clone and not a direct core modifier. It is a governed visual sandbox/cockpit above SelfAwareness, Evolution, Terminal Agent Bay, Compare, Ledger, DevBridge, and the Addons/PowerStore path.
+
+### **Hard Boundary**
+
+```text
+Live files are read-only to NAILDE, AI agents, Chat, and generated code.
+Any modification must occur on a sandbox copy first.
+Before overwrite, SarahMemory must create and verify a ZIP backup.
+The user must explicitly authorize overwrite with two confirmations.
+Rollback must restore from verified ZIP backup.
+```
+
+### **NAILDE Patch Sequence**
+
+| Patch | Date | Summary |
+|---|---:|---|
+| v1 | 2026-08-07 | Initial Runtime UI Patch: NAILDE backend/UI/taskbar creation |
+| v2 | 2026-08-07 | AppSDK split: moved NAILDE API ownership into Blueprint-style route owner |
+| v3 | 2026-08-07 | Fixed AppSDK path/package structure |
+| v4 | 2026-08-08 | VSCode/VB/Access Workbench and Visual Object Toolbox |
+| v5 | 2026-08-08 | Filesystem map, editor diagnostics, create-application, settings, GitHub plan |
+| v6 | 2026-08-08 | Dynamic Addons runtime install path and Addons registry handoff |
+| v7 | 2026-08-08 | AutoBuild Novice/Enterprise: prompt-driven app build, autosave, recovery, decision popup |
+| v7.1 | 2026-08-08 | UI TDZ hotfix for `postNailde` initialization order |
+
+### **Major Features Added**
+
+- Triple-screen workbench:
+  - left: battle plan/checklist/proof gates;
+  - center: AI result/evidence sandbox;
+  - right: codebase/files/staged output.
+- Workbench awareness packet.
+- SDK map of available SarahMemory organs.
+- Visual Object Toolbox.
+- Database builder/debug support.
+- Filesystem map and editor validation.
+- GitHub plan-only path.
+- Auto-build from natural-language prompts.
+- Autosave and recovery for power loss / crash protection.
+- Post-build decision flow: Add to Addons / Save / Save As / Cancel.
+- Sandbox-only creation of game/application bundles.
+
+### **NAILDE Governance Result**
+
+NAILDE can now:
+
+```text
+inspect
+build in sandbox
+validate
+stage
+package
+prepare addon install
+```
+
+NAILDE cannot:
+
+```text
+silently modify live CORE/API/UI files
+auto-apply patches
+auto-activate generated apps
+auto-train or modify production model weights
+bypass DevBridge / Compare / Ledger / user approval
+```
+
+---
+## **📅 August 09, 2026 — PowerStore Gateway, Addons Runtime, Stable Backup, 2D Morphic Avatar, and SarahVoice Identity**
+
+August 09 became a major stabilization day for the SarahMemory v9 developer track.
+
+---
+### **1. PowerStore Gateway + Addons Runtime UI Full Update v9.1**
+
+Patch package:
+
+```text
+SarahMemory_PowerStoreGateway_AddonsFullUpdate_v9_1_20260809.zip
+```
+
+Primary patched files:
+
+```text
+api/server/appstore.py
+core/SarahMemoryNAILDE.py
+ui/src/components/screens/AddonsScreen.tsx
+ui/src/components/screens/NAILDEScreen.tsx
+```
+
+### **Purpose**
+
+Correct the v8 Addons runtime icon hotfix by preserving the full PowerStore/AppStore gateway instead of shrinking/replacing `appstore.py`.
+
+### **PowerStore Doctrine**
+
+`appstore.py` is the SarahMemory PowerStore Gateway and owns:
+
+- local addon registry;
+- local package validation;
+- local addon lifecycle APIs;
+- downloaded package staging;
+- PowerStore publish/export path;
+- future marketplace download/import path;
+- store auth/product/payment integration;
+- metadata/pricing/license/listing support;
+- governance bridge between local AiOS and `store.sarahmemory.com`.
+
+### **v9.1 Results**
+
+- Preserved all original appstore routes.
+- Route count increased from 29 to 41.
+- Added safe icon data URLs.
+- Added `POST /api/store/addons/run`.
+- Added copy/remove/update/install lifecycle routes.
+- Added optional PowerStore status/handshake routes.
+- Added package export/verify/scan/publish-prepare/download-plan staging logic.
+- Kept PowerStore optional; local Addons still work without the marketplace.
+- Added Addons UI runtime icons and action buttons.
+
+### **User-Reported Runtime Result**
+
+The user reported:
+
+```text
+UI working
+Addons icons visible
+PACMAN-style addon launched/worked
+```
+
+---
+### **2. Stable Backup Checkpoint**
+
+After v9.1, the user completed backups and updated the Project Folder ZIPs.
+
+Stable marker:
+
+```text
+SM-AIOS-V9-POSTBACKUP-STABLE-20260809-1429
+```
+
+Current backup set included:
+
+```text
+SM_V9_ui-20260809-1418.zip
+SM_V9_core-20260809-1421.zip
+SM_V9_api_bridge-20260809-1422.zip
+SM_V9_drivers-20260804-1840.zip
+SM_V9_datasets_20260728-1814(1).zip
+SarahMemory_AiOS_Whole_System_CV_Gap_Register_20260729(1).xlsx
+SarahMemory_AiOS_Constitutional_Project_Examination_20260803(1).md
+```
+
+This is the rollback-safe baseline for post-v9.1 work.
+
+---
+### **3. 2D Avatar Morphic LiveLoop + Voice Sync v9.2**
+
+Patch package:
+
+```text
+SarahMemory_2D_Avatar_MorphicLiveLoop_VoiceSync_v9_2_20260809.zip
+```
+
+Primary mission:
+
+```text
+Convert the 2D avatar from still-frame swapping into a RAM-only morphic LiveLoop renderer.
+```
+
+### **Major Results**
+
+- Converted the current 2D avatar PNG pack into WebP runtime assets.
+- Did **not** alter avatar image style/look.
+- Added morph-aware manifest v2.
+- Added `avatar-morph-graph.json`.
+- Added `avatar-morph-anchors.json`.
+- Added frontend canvas-based morph renderer.
+- Preserved still-image fallback path.
+- Added backend morph/session routes.
+- Improved boot/welcome voice path.
+- Added VoiceAvatarSession coordination between backend TTS and avatar morph timing.
+
+### **Core Concept**
+
+```text
+Stored:
+key WebP/JPG images + anchors + morph graph
+
+Generated live:
+RAM-only morph frames
+
+Stored never:
+live generated morph frames
+```
+
+### **User-Reported Runtime Result**
+
+The user reported v9.2 was working.
+
+---
+### **4. Game Shader Research and AvatarPanel Flicker Direction**
+
+After v9.2, flicker between avatar frames became the next target.
+
+Root causes identified:
+
+- target-state thrashing;
+- hard source/target changes;
+- alpha mismatch;
+- cache-buster reload flicker;
+- linear blend curves;
+- lack of temporal smoothing;
+- speaking/listening/thinking state competition.
+
+The next visual design was defined as a shader-style stabilizer pipeline:
+
+```text
+source texture
+target texture
+morph token
+easing curve
+region mask
+previous frame
+temporal smoothing
+final display
+```
+
+Recommended techniques:
+
+- state debounce;
+- smootherstep easing;
+- temporal anti-flicker blend;
+- alpha-edge stabilization;
+- mouth/eye/brow region-specific morphing;
+- no React state updates per frame;
+- no generated frame storage;
+- optional future WebGL shader path.
+
+---
+### **5. SarahMemory Voice Identity + MorphShader Stabilizer v9.3**
+
+Patch package:
+
+```text
+SarahMemory_VoiceIdentity_MorphShaderStabilizer_v9_3_20260809.zip
+```
+
+Primary mission:
+
+```text
+Create one canonical SarahMemory audible identity across server boot,
+GUI launch, browser load, chat responses, avatar speech, and preview paths.
+```
+
+### **Voice Doctrine**
+
+```text
+SarahMemory has one primary system voice identity called SarahMemory Voice.
+This voice is not a person, celebrity, browser default, or random model voice.
+It is the governed audible identity of the SarahMemory AiOS runtime.
+```
+
+### **Main Voice Target**
+
+The uploaded video voice analysis established the target as:
+
+- calm;
+- low-to-mid feminine synthetic assistant voice;
+- soft attack;
+- medium-slow pacing;
+- smooth release;
+- controlled emotional tone;
+- not a public-person clone;
+- not random browser default.
+
+### **SarahVoice_v1 Package**
+
+Added governed identity/profile bundle:
+
+```text
+data/models/SarahMemory/voice/SarahVoice_v1/
+  SARAHVOICE_MANIFEST.json
+  sarah_voice_profile.json
+  sarah_reference.wav
+  validation/SHA256SUMS.json
+  validation/MODEL_PROVENANCE.json
+```
+
+This is a SarahMemory-native identity/profile bundle, not a `.pt` dependency.
+
+### **Fallback Ladder**
+
+Primary:
+
+```text
+SarahVoice_v1 / SarahMemory Voice
+```
+
+Fallbacks:
+
+```text
+SarahVoice profile over Microsoft language pack / pyttsx3
+approved local system female voice
+browser SpeechSynthesis selected/settings voice
+browser fallback only after voice-list readiness
+audio/model fallback engines where allowed
+```
+
+Forbidden:
+
+```text
+anonymous default male browser boot voice
+```
+
+### **MorphShader Stabilizer Work**
+
+v9.3 added:
+
+- smootherstep easing;
+- temporal stabilization;
+- target debounce;
+- stable dark alpha backdrop;
+- reduced speaking frame thrash;
+- avatar shader preset metadata;
+- RAM-only frame doctrine preserved.
+
+### **Validation Reported for v9.3**
+
+- Python compile PASS for patched voice/controller/API files.
+- TypeScript `tsc --noEmit` PASS.
+- JSON manifests PASS.
+- `.pt` files excluded.
+- Avatar image/style not altered.
+- Full live Windows Flask/browser runtime was not verified in the sandbox.
+
+---
+## **Current v9.3 Developer Status — August 09, 2026**
+
+### **Working / User-Reported**
+
+- v9.1 PowerStore/Addons UI working.
+- Addons icons visible.
+- PACMAN-style addon launched.
+- Full project backup completed after v9.1.
+- v9.2 MorphicLiveLoop + VoiceSync working.
+
+### **Patch-Created / Sandbox Validated**
+
+- v9.3 SarahMemory Voice Identity + MorphShader Stabilizer patch created.
+- Syntax/import/transpile/json checks passed inside sandbox where available.
+
+### **Still Requiring Live Windows Validation**
+
+- Full Flask boot after v9.3.
+- Full Vite/browser runtime after v9.3.
+- Browser voice startup behavior using SarahVoice identity.
+- AvatarPanel morph shader stability under real browser rendering.
+- First-load no-male-voice guarantee under all Windows/browser voice-list timing states.
+- Audio/avatar end-of-speech cleanup.
+
+### **Open Architecture Risks Still Known**
+
+- `app.py` remains oversized.
+- Quick-route execution before governance remains a known critical gap until patched.
+- Unified task loop still needs live end-to-end proof.
+- Large DB scan hazards remain for `programming.db` and `system_index.db`.
+- Desktop/MSDC physical-action safety still needs full proof pack.
+
+---
+## **Current Voice / Video / Avatar Doctrine**
+
+```text
+SarahMemory Voice is the audible identity.
+SarahMemory AvatarPanel is the visual identity surface.
+UnifiedAvatarController coordinates voice/avatar sessions.
+SarahMemoryVoice owns backend speech.
+AvatarPanel renders RAM-only morphic video illusion.
+Browser speech is fallback only.
+Generated morph frames are never stored.
+```
+
+### **Avatar Runtime Rule**
+
+```text
+JPG/PNG/WebP assets are source identity images.
+WebP is the runtime format.
+Morph frames are presentation artifacts only.
+They live in RAM and are discarded.
+```
+
+### **Voice Runtime Rule**
+
+```text
+No SarahMemory speech may occur until SarahVoice is resolved
+or an approved fallback is explicitly selected.
+```
+
+### **Future v9.4+ Direction**
+
+Likely next steps:
+
+- Live Windows validation of v9.3.
+- Further AvatarPanel WebGL shader path.
+- Better mouth/eye/brow masks for region-specific morphing.
+- SarahVoice neural/local TTS runtime research without `.pt` dependency.
+- DevBridge/Compare/Ledger proof of NAILDE-to-live apply path.
+- app.py quick-route governance ordering repair.
+- Whole-system backend→API→frontend→backend/audit proof harness.
+
+---
 
 ---
 
