@@ -9828,9 +9828,11 @@ def api_ui_bootstrap():
     except Exception:
         avatar_ok = False
 
+    voice_identity = _sm_voice_identity_packet() if '_sm_voice_identity_packet' in globals() else {"voice_identity": "SarahMemory Speaking", "voice_model_id": "SarahVoice_v1"}
     return jsonify({
         "ok": True,
         "settings": meta,
+        "voice_identity": voice_identity,
         "capabilities": {
             "tts_server": bool(tts_ok),
             "avatar": bool(avatar_ok),
@@ -9847,6 +9849,8 @@ def api_ui_bootstrap():
 
 core_speak_text = None
 core_speak_text_status = None
+core_voice_identity = None
+core_voice_status = None
 try:
     from SarahMemoryVoice import speak_text as core_speak_text_func
     core_speak_text = core_speak_text_func
@@ -9855,10 +9859,90 @@ try:
         core_speak_text_status = core_speak_text_status_func
     except Exception:
         core_speak_text_status = None
+    try:
+        from SarahMemoryVoice import get_primary_voice_identity as core_voice_identity_func, get_voice_status as core_voice_status_func
+        core_voice_identity = core_voice_identity_func
+        core_voice_status = core_voice_status_func
+    except Exception:
+        core_voice_identity = None
+        core_voice_status = None
 except ImportError:
     app_logger.info("SarahMemoryVoice module not found for TTS.")
 except Exception as e:
     app_logger.error(f"Error importing SarahMemoryVoice.speak_text: {e}", exc_info=True)
+
+
+def _sm_voice_identity_packet() -> dict:
+    try:
+        if callable(core_voice_identity):
+            packet = core_voice_identity()
+            if isinstance(packet, dict):
+                return packet
+    except Exception as exc:
+        app_logger.debug(f"SarahVoice identity unavailable: {exc}")
+    return {
+        "ok": True,
+        "schema": "SarahMemory.voice.identity.v1",
+        "voice_model_id": "SarahVoice_v1",
+        "voice_identity": "SarahMemory Speaking",
+        "display_name": "SarahMemory Voice",
+        "engine": "sarahvoice",
+        "primary_voice_ready": True,
+        "male_default_boot_voice_allowed": False,
+        "pt_voice_dependency": False,
+    }
+
+
+def _sm_normalize_voice_request(voice: str) -> str:
+    v = str(voice or "").strip()
+    if not v or v.lower() in {"default", "sarah", "sarahmemory", "sarahmemory voice", "sarah voice"}:
+        return "sarahvoice"
+    return v
+
+
+@app.route("/api/voice/identity", methods=["GET"])
+def api_voice_identity():
+    identity = _sm_voice_identity_packet()
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "identity": identity,
+        "voice_identity": identity.get("voice_identity"),
+        "voice_model_id": identity.get("voice_model_id"),
+        "display_name": identity.get("display_name"),
+        "engine": identity.get("engine"),
+        "primary_voice_ready": bool(identity.get("primary_voice_ready", True)),
+        "male_default_boot_voice_allowed": False,
+        "schema": "SarahMemory.voice.identity.response.v1",
+        "ts": time.time(),
+    }), 200
+
+
+@app.route("/api/voice/status", methods=["GET"])
+def api_voice_status():
+    try:
+        if callable(core_voice_status):
+            status = core_voice_status()
+            if isinstance(status, dict):
+                status.setdefault("ok", True)
+                status.setdefault("success", True)
+                status.setdefault("ts", time.time())
+                return jsonify(status), 200
+    except Exception as exc:
+        app_logger.debug(f"SarahVoice status unavailable: {exc}")
+    identity = _sm_voice_identity_packet()
+    return jsonify({
+        "ok": True,
+        "success": True,
+        "identity": identity,
+        "engines": {"sarahvoice": True},
+        "fallback_policy": {
+            "browser_default_allowed_as_last_resort": True,
+            "male_default_boot_voice_allowed": False,
+            "browser_voice_requires_resolution": True,
+        },
+        "ts": time.time(),
+    }), 200
 
 
 @app.route("/api/tts/speak", methods=['POST'])
@@ -9870,7 +9954,7 @@ def api_tts_speak():
     """
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
-    voice = (data.get("voice") or "default").strip()
+    voice = _sm_normalize_voice_request(data.get("voice") or "sarahvoice")
     rate_str = data.get("rate") # Keep as string/int for initial parsing
 
     if not text:
@@ -9884,9 +9968,14 @@ def api_tts_speak():
         return jsonify({"ok": False, "error": "Invalid speech rate format."}), 400
 
 
+    identity = _sm_voice_identity_packet()
+
     if core_speak_text is None and core_speak_text_status is None:
         return jsonify({
             "ok": False,
+            "voice_identity": identity.get("voice_identity"),
+            "voice_model_id": identity.get("voice_model_id"),
+            "voice_display_name": identity.get("display_name"),
             "success": False,
             "server_tts_started": False,
             "browser_fallback_required": True,
@@ -9936,6 +10025,12 @@ def api_tts_speak():
             "success": bool(server_started or browser_required),
             "text": text,
             "voice": voice,
+            "voice_identity": tts_status.get("voice_identity") or session.get("voice_identity") or identity.get("voice_identity"),
+            "voice_model_id": tts_status.get("voice_model_id") or session.get("voice_model_id") or identity.get("voice_model_id"),
+            "voice_display_name": tts_status.get("voice_display_name") or session.get("voice_display_name") or identity.get("display_name"),
+            "primary_voice_ready": bool(tts_status.get("primary_voice_ready", identity.get("primary_voice_ready", True))),
+            "male_default_boot_voice_allowed": False,
+            "fallback_used": bool((tts_status.get("engine") or "") not in {"sarahvoice", ""}),
             "rate": rate,
             "audio_url": tts_status.get("audio_url"),
             "audio_base64": tts_status.get("audio_base64"),
@@ -9951,7 +10046,8 @@ def api_tts_speak():
         }), 200
     except Exception as e:
         app_logger.exception(f"Error during TTS speak request for text: '{text}...'")
-        return jsonify({"ok": False, "success": False, "server_tts_started": False, "browser_fallback_required": True, "error": f"Failed to speak text: {e}"}), 500
+        ident = _sm_voice_identity_packet()
+        return jsonify({"ok": False, "success": False, "voice_identity": ident.get("voice_identity"), "voice_model_id": ident.get("voice_model_id"), "server_tts_started": False, "browser_fallback_required": True, "male_default_boot_voice_allowed": False, "error": f"Failed to speak text: {e}"}), 500
 
 # =============================================================================
 # PHASE1_BRIDGE_UI_CONTRACT_STABILIZATION
@@ -9996,36 +10092,53 @@ def _sm_phase1_route_available(path: str) -> bool:
 
 
 def _sm_phase1_voice_options() -> list[dict]:
-    voices: list[dict] = []
+    identity = _sm_voice_identity_packet() if '_sm_voice_identity_packet' in globals() else {}
+    voices: list[dict] = [{
+        "id": "sarahvoice",
+        "name": identity.get("display_name") or "SarahMemory Voice",
+        "language": "en-US",
+        "gender": "female",
+        "primary": True,
+        "voice_identity": identity.get("voice_identity") or "SarahMemory Speaking",
+        "voice_model_id": identity.get("voice_model_id") or "SarahVoice_v1",
+        "engine": "sarahvoice",
+    }]
     try:
         from SarahMemoryVoice import list_voices as _list_voices  # type: ignore
         raw = _list_voices() if callable(_list_voices) else []
         if isinstance(raw, list):
             for idx, item in enumerate(raw):
                 if isinstance(item, str):
-                    voices.append({"id": item, "name": item})
+                    vid = item
+                    name = item
+                    extra = {}
                 elif isinstance(item, dict):
                     vid = str(item.get("id") or item.get("name") or idx)
                     name = str(item.get("name") or item.get("id") or f"Voice {idx + 1}")
-                    voices.append({"id": vid, "name": name, **{k: v for k, v in item.items() if k not in {"id", "name"}}})
+                    extra = {k: v for k, v in item.items() if k not in {"id", "name"}}
+                else:
+                    continue
+                if vid.lower() in {"sarahvoice", "sarahmemory voice", "sarahvoice_v1"} or name.lower() == "sarahmemory voice":
+                    continue
+                voices.append({"id": vid, "name": name, **extra})
     except Exception:
         pass
-    if voices:
-        return voices
     try:
         import pyttsx3  # type: ignore
         engine = pyttsx3.init()
         for idx, voice in enumerate(engine.getProperty("voices") or []):
+            vid = str(getattr(voice, "id", "") or idx)
+            if any(v.get("id") == vid for v in voices):
+                continue
             voices.append({
-                "id": str(getattr(voice, "id", "") or idx),
+                "id": vid,
                 "name": str(getattr(voice, "name", "") or getattr(voice, "id", "") or f"Voice {idx + 1}"),
                 "language": str(getattr(voice, "languages", "") or ""),
                 "gender": "neutral",
+                "fallback": True,
             })
     except Exception:
         pass
-    if not voices:
-        voices = [{"id": "default", "name": "SarahMemory Default", "language": "en-US", "gender": "neutral"}]
     return voices
 
 
@@ -10114,10 +10227,12 @@ def api_voice_phase1_contract():
         return api_voices_phase1_contract()
     data = request.get_json(silent=True) or {}
     action = str(data.get("action") or "").strip().lower()
+    if action in {"identity", "voice_identity", "status"}:
+        return api_voice_status() if action == "status" else api_voice_identity()
     if action in {"list", "list_voices", "voices", "get_voices"}:
         return api_voices_phase1_contract()
     if action in {"set", "set_voice", "active_voice"}:
-        voice = str(data.get("voice") or data.get("voice_id") or data.get("value") or "default").strip() or "default"
+        voice = _sm_normalize_voice_request(data.get("voice") or data.get("voice_id") or data.get("value") or "sarahvoice")
         try:
             state = load_state() or {}
             if isinstance(state, dict):
@@ -10129,13 +10244,20 @@ def api_voice_phase1_contract():
         return jsonify({"ok": True, "success": True, "voice": voice, "active_voice": voice, "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
     if action in {"preview", "speak"}:
         preview_text = str(data.get("text") or "SarahMemory voice preview is ready.")
-        voice = str(data.get("voice") or data.get("voice_id") or "default")
-        if core_speak_text is not None:
+        voice = _sm_normalize_voice_request(data.get("voice") or data.get("voice_id") or "sarahvoice")
+        tts_status = {}
+        if core_speak_text_status is not None:
             try:
-                core_speak_text(preview_text, blocking=False, engine_pref=voice or None)
+                tts_status = core_speak_text_status(preview_text, blocking=False, engine_pref=voice or "sarahvoice")
+            except Exception:
+                tts_status = {}
+        elif core_speak_text is not None:
+            try:
+                core_speak_text(preview_text, blocking=False, engine_pref=voice or "sarahvoice")
             except Exception:
                 pass
-        return jsonify({"ok": True, "success": True, "text": preview_text, "voice": voice, "fallback": core_speak_text is None, "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
+        ident = _sm_voice_identity_packet()
+        return jsonify({"ok": True, "success": True, "text": preview_text, "voice": voice, "voice_identity": ident.get("voice_identity"), "voice_model_id": ident.get("voice_model_id"), "fallback": core_speak_text is None and core_speak_text_status is None, "server_tts_started": bool(tts_status.get("server_tts_started") or tts_status.get("accepted") or tts_status.get("ok")), "browser_fallback_required": bool(tts_status.get("browser_fallback_required", False)), "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
     if action in {"transcribe", "stt"}:
         try:
             from SarahMemoryVoice import transcribe_once as _sm_transcribe_once  # type: ignore
@@ -10152,7 +10274,7 @@ def api_voice_set_phase1_contract():
     data = request.get_json(silent=True) or {}
     data["action"] = data.get("action") or "set_voice"
     # Reuse the same implementation without mutating Flask's request object.
-    voice = str(data.get("voice") or data.get("voice_id") or data.get("value") or "default").strip() or "default"
+    voice = _sm_normalize_voice_request(data.get("voice") or data.get("voice_id") or data.get("value") or "sarahvoice")
     try:
         state = load_state() or {}
         if isinstance(state, dict):
@@ -10168,13 +10290,20 @@ def api_voice_set_phase1_contract():
 def api_voice_preview_phase1_contract():
     data = request.get_json(silent=True) or {}
     text = str(data.get("text") or "SarahMemory voice preview is ready.")
-    voice = str(data.get("voice") or data.get("voice_id") or "default")
-    if core_speak_text is not None:
+    voice = _sm_normalize_voice_request(data.get("voice") or data.get("voice_id") or "sarahvoice")
+    tts_status = {}
+    if core_speak_text_status is not None:
         try:
-            core_speak_text(text, blocking=False, engine_pref=voice or None)
+            tts_status = core_speak_text_status(text, blocking=False, engine_pref=voice or "sarahvoice")
+        except Exception:
+            tts_status = {}
+    elif core_speak_text is not None:
+        try:
+            core_speak_text(text, blocking=False, engine_pref=voice or "sarahvoice")
         except Exception:
             pass
-    return jsonify({"ok": True, "success": True, "text": text, "voice": voice, "fallback": core_speak_text is None, "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
+    ident = _sm_voice_identity_packet()
+    return jsonify({"ok": True, "success": True, "text": text, "voice": voice, "voice_identity": ident.get("voice_identity"), "voice_model_id": ident.get("voice_model_id"), "fallback": core_speak_text is None and core_speak_text_status is None, "server_tts_started": bool(tts_status.get("server_tts_started") or tts_status.get("accepted") or tts_status.get("ok")), "browser_fallback_required": bool(tts_status.get("browser_fallback_required", False)), "schema": _SM_PHASE1_CONTRACT_SCHEMA, "ts": time.time()}), 200
 
 
 @app.route("/api/voice/transcribe", methods=["POST"])
