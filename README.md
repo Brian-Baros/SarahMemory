@@ -518,7 +518,7 @@ Keep the user as final authority.
 ```
 
 ---
-# ONGOING DEVELOPMENT will be DETAILED Documented in the ![DEVREADME.md](/DEVREADME.md)
+## ONGOING DEVELOPMENT will be DETAILED Documented in the ![DEVREADME.md](/DEVREADME.md)
 
 ## Final Statement
 
