@@ -2354,3 +2354,33 @@ def api_store_kittl_create_design():
 # ====================================================================
 # END OF appstore.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing API bridge adapter.
+SML_ORGAN_METADATA = {
+    "name": 'appstore',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": "Input",
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
+    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
+    "required_authority": ['Read'],
+    "priority": 58,
+    "trust_level": "api_bridge_integrated",
+    "internal_only": False,
+    "metadata": {"sml_adapter": "api_bridge_non_executing", "source_file": 'appstore.py'},
+}
+
+def sml_get_metadata():
+    return dict(SML_ORGAN_METADATA)
+
+def sml_health():
+    return {"status": "Healthy", "availability": 1.0, "integrity": 1.0, "performance": 1.0, "reliability": 1.0, "confidence": 0.75, "latency_ms": 0.0, "stability": 1.0, "compatibility": 1.0, "notes": ["SML API adapter present"]}
+
+def sml_diagnostics():
+    return {"status": "OK", "component": 'appstore', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
+# --- SML ORGAN ADAPTER END ---
+

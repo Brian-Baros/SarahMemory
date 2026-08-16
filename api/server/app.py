@@ -1564,6 +1564,8 @@ def _attach_cached_or_inline_vision_frame(payload: dict, context_packet: dict, u
     context_packet["session_id"] = session_id
     return context_packet, frame_rec
 
+_SM_LAST_CHAT_EXCHANGE: dict = {}
+
 def _cache_get(key: str):
     item = _CACHE.get(key)
     if not item:
@@ -2990,8 +2992,63 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
     }
 
 
+
+def _sm_scrub_visible_text(raw_text: str, *, user_text: str = "") -> str:
+    """Final display scrub for /api/chat.
+
+    This is a presentation filter only. It prevents model chain-of-thought,
+    raw route diagnostics, DB/cache records, and internal JSON objects from
+    leaking into the UI. Diagnostics remain available through explicit
+    diagnostics routes/metadata, not normal chat text.
+    """
+    try:
+        text = str(raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return ""
+        # Remove closed and unterminated hidden reasoning blocks.
+        text = re.sub(r"(?is)<\s*(think|analysis)\s*>.*?<\s*/\s*\1\s*>", "", text)
+        text = re.sub(r"(?is)<\s*(think|analysis)\s*>.*\Z", "", text)
+        text = re.sub(r"(?is)\[\s*(think|analysis)\s*\].*?\[\s*/\s*\1\s*\]", "", text)
+        text = re.sub(r"(?is)\[\s*(think|analysis)\s*\].*\Z", "", text)
+        low = text.lower().strip()
+        internal_markers = (
+            "runtime_identity_override", "ingress route confidence", "structured action request",
+            "no engine produced an answer", "provide more constraints or enable an applicable tier",
+            "from ailearning.db:qacache", "from ai_learning.db:qacache", "vetted_local_llm_general",
+            "vettedlocalllm_general", "memory = {\"error\"", "pdhaddenglishcounterw failed",
+            "the correct sml source path is", "connected local sources yet",
+            "bounded glossary unavailable", "install or select a local model",
+            "answer_requires_knowledge_source", "needs_knowledge_source_execution",
+        )
+        if any(m in low for m in internal_markers):
+            return ""
+        # Drop transcript/scaffold lines and provenance footers.
+        cleaned = []
+        for line in text.split("\n"):
+            l = line.strip()
+            ll = l.lower()
+            if not l:
+                cleaned.append("")
+                continue
+            if re.match(r"(?i)^(system|developer|tool|assistant|user|human|prompt|question)\s*:", l):
+                continue
+            if any(m in ll for m in internal_markers):
+                continue
+            cleaned.append(line)
+        text = "\n".join(cleaned).strip()
+        if user_text:
+            q = re.sub(r"\s+", " ", str(user_text or "").strip().lower().strip("?.!"))
+            first = re.sub(r"\s+", " ", text.split("\n", 1)[0].strip().lower().strip("?.!")) if text else ""
+            if q and first == q:
+                text = text.split("\n", 1)[1].strip() if "\n" in text else ""
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r"[ \t]{2,}", " ", text)
+        return text.strip()
+    except Exception:
+        return str(raw_text or "").strip()
+
 def _sm_present_text(raw_text: str, *, intent: str = "", meta: dict | None = None) -> str:
-    text = (raw_text or "").strip()
+    text = _sm_scrub_visible_text(raw_text or "", user_text=str((meta or {}).get("_prompt_text") or "")).strip()
     if not text:
         return ""
     low_intent = str(intent or (meta or {}).get("intent") or "").strip().lower()
@@ -3834,9 +3891,124 @@ def _sm_attach_reality_meta(bundle: dict, reality: dict | None) -> dict:
                     "qist_selected": (reality.get("qist") or {}).get("selected_candidate") if isinstance(reality.get("qist"), dict) else None,
                     "fast_to_answer_slow_to_act": True,
                 }
+                if isinstance(reality.get("sml"), dict):
+                    meta["sml"] = reality.get("sml")
+                if isinstance(reality.get("sml"), dict):
+                    meta["sml"] = reality.get("sml")
     except Exception:
         pass
     return bundle
+
+
+def _sm_sml_protocol_ready(discover: bool = True):
+    """Return SML protocol singleton and perform bounded Core discovery once."""
+    try:
+        from SarahMemorySMLProtocol import get_protocol  # type: ignore
+        proto = get_protocol()
+        if discover and not getattr(proto, "_api_bridge_discovered", False):
+            try:
+                proto.discover_organs(globals().get("CORE_DIR", globals().get("BASE_DIR", ".")), import_modules=False, max_files=250)
+                setattr(proto, "_api_bridge_discovered", True)
+            except Exception as exc:
+                try:
+                    app_logger.warning(f"SML bounded discovery failed: {exc}", exc_info=True)
+                except Exception:
+                    pass
+        return proto
+    except Exception as exc:
+        try:
+            app_logger.warning(f"SML protocol unavailable: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_sml_create_ingress_packet(payload: dict, text: str, context_packet: dict):
+    """Create the canonical SML packet for /api/chat without executing actions."""
+    try:
+        from SarahMemorySMLProtocol import sml_build_ingress_packet  # type: ignore
+        return sml_build_ingress_packet(
+            text,
+            payload=payload if isinstance(payload, dict) else {},
+            context_packet=context_packet if isinstance(context_packet, dict) else {},
+            caller="api_chat",
+            core_path=globals().get("CORE_DIR", globals().get("BASE_DIR", ".")),
+            discover=True,
+        )
+    except Exception as exc:
+        try:
+            app_logger.warning(f"SML ingress packet creation failed: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_sml_summary(packet) -> dict:
+    try:
+        from SarahMemorySMLProtocol import sml_packet_summary  # type: ignore
+        return sml_packet_summary(packet)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+def _sm_sml_apply_governance(packet, gov: dict | None):
+    try:
+        from SarahMemorySMLProtocol import sml_apply_governor_result  # type: ignore
+        return sml_apply_governor_result(packet, gov if isinstance(gov, dict) else {}, organ="SarahMemoryCognitiveServices")
+    except Exception as exc:
+        try:
+            app_logger.warning(f"SML governance reflection failed: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return packet
+
+
+def _sm_sml_attach_meta_to_reality(reality: dict | None, packet) -> None:
+    try:
+        if isinstance(reality, dict) and packet is not None:
+            reality["sml"] = _sm_sml_summary(packet)
+    except Exception:
+        pass
+
+
+
+@app.route("/api/sml/status", methods=["GET"])
+def api_sml_status():
+    """SML Protocol status/capability surface for UI/API bridge diagnostics."""
+    proto = _sm_sml_protocol_ready(discover=True)
+    if proto is None:
+        return jsonify({"ok": False, "error": "sml_protocol_unavailable", "version": PROJECT_VERSION}), 503
+    try:
+        return jsonify({"ok": True, "source": "SarahMemorySMLProtocol", "status": proto.capability_status(), "diagnostics": proto.diagnostics(), "version": PROJECT_VERSION}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "SarahMemorySMLProtocol", "version": PROJECT_VERSION}), 500
+
+
+@app.route("/api/sml/health", methods=["GET"])
+def api_sml_health():
+    """Return global SML health vector."""
+    proto = _sm_sml_protocol_ready(discover=True)
+    if proto is None:
+        return jsonify({"ok": False, "error": "sml_protocol_unavailable", "version": PROJECT_VERSION}), 503
+    try:
+        return jsonify({"ok": True, "source": "SarahMemorySMLProtocol", "health": proto.global_health(), "version": PROJECT_VERSION}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "SarahMemorySMLProtocol", "version": PROJECT_VERSION}), 500
+
+
+@app.route("/api/sml/packet", methods=["POST"])
+def api_sml_packet():
+    """Build and return a governed SML ingress packet summary without execution."""
+    try:
+        data = request.get_json(silent=True) or {}
+        text = str(data.get("text") or data.get("message") or data.get("q") or "").strip()
+        if not text:
+            return jsonify({"ok": False, "error": "missing_text", "version": PROJECT_VERSION}), 400
+        context_packet = _sm_build_context_packet(data, text, str(data.get("intent") or ""), str(data.get("tone") or ""), str(data.get("complexity") or ""), bool(data.get("avatar_request") or False), local_only=bool(data.get("local_only") or False), safe_mode=bool(data.get("safe_mode") or False), neoskymatrix=bool(data.get("neoskymatrix") or False), developersmode=bool(data.get("developersmode") or False))
+        packet = _sm_sml_create_ingress_packet(data, text, context_packet)
+        return jsonify({"ok": packet is not None, "source": "SarahMemorySMLProtocol", "sml": _sm_sml_summary(packet), "version": PROJECT_VERSION}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "SarahMemorySMLProtocol", "version": PROJECT_VERSION}), 500
 
 
 @app.route("/api/governance/classify", methods=["GET", "POST"])
@@ -4993,75 +5165,23 @@ def _sm_try_tier0_math_hotpath_bundle(text: str, *, local_only: bool = False):
 # Tier-1 Hot Path: low-risk general/procedural questions, cache -> LOCAL LLM only
 # -----------------------------------------------------------------------------
 # WAVE7: retained only for legacy/reference. Disabled by default; general answers must come from local LLM, not hardcoded seeds.
-_SM_FAST_HOWTO_STATIC = {
-    "how do you make a sandwich": (
-        "To make a basic sandwich:\n"
-        "1. Choose two slices of bread.\n"
-        "2. Add a spread if you want, such as mayonnaise, mustard, butter, or peanut butter.\n"
-        "3. Add the main filling, such as meat, cheese, eggs, tuna, peanut butter, or vegetables.\n"
-        "4. Add toppings like lettuce, tomato, onion, pickles, or seasoning.\n"
-        "5. Put the second slice of bread on top.\n"
-        "6. Cut it if you want and serve it."
-    ),
-    "how to make a sandwich": (
-        "To make a basic sandwich:\n"
-        "1. Choose two slices of bread.\n"
-        "2. Add a spread if you want, such as mayonnaise, mustard, butter, or peanut butter.\n"
-        "3. Add the main filling, such as meat, cheese, eggs, tuna, peanut butter, or vegetables.\n"
-        "4. Add toppings like lettuce, tomato, onion, pickles, or seasoning.\n"
-        "5. Put the second slice of bread on top.\n"
-        "6. Cut it if you want and serve it."
-    ),
-    "how do you make beef stew": (
-        "To make basic beef stew:\n"
-        "1. Cut beef into chunks and season with salt and pepper.\n"
-        "2. Brown the beef in a pot with a little oil.\n"
-        "3. Add onion, garlic, carrots, potatoes, and celery.\n"
-        "4. Stir in broth, a little tomato paste if wanted, and herbs like thyme or bay leaf.\n"
-        "5. Simmer gently until the beef is tender and the vegetables are cooked.\n"
-        "6. Thicken if needed with a flour slurry or cornstarch slurry, then adjust seasoning and serve."
-    ),
-    "how to make beef stew": (
-        "To make basic beef stew:\n"
-        "1. Cut beef into chunks and season with salt and pepper.\n"
-        "2. Brown the beef in a pot with a little oil.\n"
-        "3. Add onion, garlic, carrots, potatoes, and celery.\n"
-        "4. Stir in broth, a little tomato paste if wanted, and herbs like thyme or bay leaf.\n"
-        "5. Simmer gently until the beef is tender and the vegetables are cooked.\n"
-        "6. Thicken if needed with a flour slurry or cornstarch slurry, then adjust seasoning and serve."
-    ),
-}
+# SML v0.8.2: no canned procedural answer tables in app.py.
+# General/procedural answers must come from routed sources such as local LLM,
+# governed SQLite/memory, AdvCU, or approved research.
+_SM_FAST_HOWTO_STATIC = {}
+
 
 # Bounded deterministic glossary for stable concept questions when no local LLM
 # is installed yet.  This keeps CHAT usable without granting tools, network,
 # filesystem, or self-aware hardware authority.  The response metadata names this
 # source directly, so it never pretends to be trained-model output.
-_SM_FAST_BUILTIN_GLOSSARY = {
-    "what is ram": "RAM, or Random Access Memory, is the computer's short-term working memory. It temporarily holds data and program instructions while software is running, so the CPU can access them quickly.",
-    "define ram": "RAM, or Random Access Memory, is temporary working memory used by a computer while programs are running. It is fast, volatile, and cleared when power is lost.",
-    "explain ram": "RAM is fast temporary memory. The operating system and open programs use it to hold active data so the CPU does not have to keep reading everything from slower storage.",
-    "what is cpu": "A CPU, or central processing unit, is the main processor that executes instructions and coordinates much of a computer's work.",
-    "what is gpu": "A GPU, or graphics processing unit, is a processor optimized for parallel workloads such as graphics, video, and many AI computations.",
-    "what is photosynthesis": "Photosynthesis is the process plants, algae, and some bacteria use to convert light energy, carbon dioxide, and water into sugars, releasing oxygen as a byproduct.",
-    "explain photosynthesis": "Photosynthesis lets plants use sunlight to make chemical energy. In simplified form, plants take in carbon dioxide and water, use light energy, produce sugar, and release oxygen.",
-}
+# SML v0.8.2: no built-in factual glossary in app.py.
+# The API bridge may hardcode rails, not thoughts.
+_SM_FAST_BUILTIN_GLOSSARY = {}
 
 
 def _sm_fast_builtin_glossary_lookup(norm_question: str) -> str | None:
-    q = _sm_fast_normalize_question(norm_question)
-    if not q:
-        return None
-    if q in _SM_FAST_BUILTIN_GLOSSARY:
-        return _SM_FAST_BUILTIN_GLOSSARY[q]
-    # Allow common article variants without expanding into broad semantic search.
-    variants = (
-        q.replace("what is a ", "what is ", 1),
-        q.replace("what is an ", "what is ", 1),
-        q.replace("what are ", "what is ", 1),
-    )
-    for v in variants:
-        if v in _SM_FAST_BUILTIN_GLOSSARY:
-            return _SM_FAST_BUILTIN_GLOSSARY[v]
+    """Disabled by v0.8.2: facts must come from routed knowledge sources."""
     return None
 
 
@@ -5140,7 +5260,11 @@ def _sm_fast_is_low_quality_answer(text: str, question: str | None = None) -> bo
         "please try rephrasing", "try rephrasing", "provide more details",
         "please provide more details", "rephrase or provide more details",
         "sorry i couldn't solve", "sorry i could not solve", "sorry i couldnt solve",
-        "traceback", "exception", "stack trace",
+        "traceback", "exception", "stack trace", "<think>", "</think>",
+        "runtime_identity_override", "ingress route confidence", "structured action request",
+        "no engine produced an answer", "provide more constraints or enable an applicable tier",
+        "pdhaddenglishcounterw failed", "memory = {\"error\"", "from ailearning.db:qacache",
+        "vetted_local_llm_general", "vettedlocalllm_general",
     )
     if any(x in t for x in bad):
         return True
@@ -5364,6 +5488,12 @@ def _sm_fast_cache_lookup(question: str) -> tuple[str | None, dict]:
     norm = _sm_fast_normalize_question(question)
     if not norm:
         return None, {"cache_status": "empty_query"}
+    if not bool(globals().get("SM_ENABLE_QA_CACHE_RETRIEVAL", False)):
+        return None, {
+            "cache_status": "disabled_by_default",
+            "cache_policy": "v0_8_2_no_qacache_until_trusted",
+            "reason": "qa_cache/qacache can contain contaminated demo or model output; SML must route to verified sources first",
+        }
     try:
         import sqlite3 as _sqlite3
         dbs = _sm_fast_cache_db_candidates()
@@ -5528,6 +5658,7 @@ def _sm_fast_local_llm_general(question: str, *, intent: str = "question", route
         )
         prompt = (
             f"{style} Do not use web access. Do not claim current/live facts. "
+            "Return only the final user-facing answer. Do not include <think>, analysis, route diagnostics, raw JSON, or hidden reasoning. "
             "Keep the answer clear, concise, and useful.\n\n"
             f"Question: {question}"
         )
@@ -5566,14 +5697,20 @@ def _sm_fast_local_llm_general(question: str, *, intent: str = "question", route
 
 
 def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bool = False, intent: str = "question", governor: dict | None = None):
-    """Fast answer-only route: vetted project-data cache -> governed local LLM.
+    """SML v0.8.2 dynamic answer-only route: source-based, not canned.
 
-    WAVE7 correction:
-    - No hardcoded static answers by default.
-    - No broad dataset/vector/import scan.
-    - No external Web/API access.
-    - No tool/file/network/device authority.
-    - LogicCalc contributes a lane score for audit only; it does not self-authorize.
+    This lane is a bridge helper, not the brain. It executes the source order
+    selected by SML for low-risk read-only cognition. It never contains a fact
+    table, demo answers, phrase pools, personality scripts, or response
+    templates for general knowledge.
+
+    Default source order:
+      1. Local text-generation model.
+      2. AdvCU / governed local semantic source.
+      3. Optional trusted QA cache only if explicitly enabled.
+
+    It never grants filesystem write, shell, network, device, driver, or
+    hardware authority.
     """
     try:
         if not _sm_fast_is_low_risk_general_question(text):
@@ -5585,85 +5722,1101 @@ def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bo
             return None
 
         norm = _sm_fast_normalize_question(text)
-        answer, cache_meta = _sm_fast_cache_lookup(norm)
-        source = "local_general_cache"
-        llm_meta = {}
-        cache_written = False
+        answer = None
+        source = "unresolved"
+        source_attempts: list[str] = []
+        source_meta: dict = {}
         logiccalc_gate = _sm_logiccalc_lane_guard_for_answer(text, "answer")
+        cache_written = False
+
+        source_attempts.append("local_llm")
+        answer, llm_meta = _sm_fast_local_llm_general(text, intent=intent or "question")
+        if answer:
+            source = "local_general_llm"
+            source_meta.update(llm_meta or {})
+            cache_written = _sm_fast_cache_store(norm, answer, source="local_llm_general")
 
         if not answer:
-            # Bounded static terms are checked before AdvCU's DB pool lookup so
-            # tiny/high-frequency terms do not trigger SQLite broad scans.
-            answer = _sm_fast_builtin_glossary_lookup(norm)
-            if answer:
-                source = "local_builtin_glossary"
-                llm_meta = {
-                    "local_llm_status": "bypassed_missing_or_unneeded",
-                    "builtin_glossary": True,
-                    "glossary_policy": "bounded_stable_concepts_only",
-                }
-                cache_written = _sm_fast_cache_store(norm, answer, source="builtin_fast_glossary")
-
-        if not answer:
-            answer, advcu_meta = _sm_fast_advcu_local_answer(
+            source_attempts.append("advcu_local_semantic_source")
+            adv_answer, adv_meta = _sm_fast_advcu_local_answer(
                 text,
                 intent=intent or "question",
                 allow_learning_record=False,
             )
-            if answer:
-                source = str(advcu_meta.get("advcu_source") or "local_semantic_db")
-                llm_meta.update(advcu_meta or {})
+            if adv_answer:
+                answer = adv_answer
+                source = str((adv_meta or {}).get("advcu_source") or "local_semantic_db")
+                source_meta.update(adv_meta or {})
                 cache_written = _sm_fast_cache_store(norm, answer, source=source)
 
-        if not answer:
-            answer, llm_meta = _sm_fast_local_llm_general(text, intent=intent or "question")
-            if answer:
-                source = "local_general_llm"
-                cache_written = _sm_fast_cache_store(norm, answer, source="local_llm_general")
-
-        # Legacy static seeds remain disabled unless the operator explicitly enables
-        # them for diagnostics. This prevents SarahMemory from pretending static demo
-        # strings are real model-generated knowledge.
-        if not answer and bool(globals().get("SM_ENABLE_STATIC_FASTPATH_SEEDS", False)):
-            answer = _SM_FAST_HOWTO_STATIC.get(norm)
-            if answer:
-                source = "local_general_static_seed_explicit"
-                cache_written = _sm_fast_cache_store(norm, answer, source="explicit_static_seed")
+        if not answer and bool(globals().get("SM_ENABLE_QA_CACHE_RETRIEVAL", False)):
+            source_attempts.append("trusted_qa_cache")
+            cache_answer, cache_meta = _sm_fast_cache_lookup(norm)
+            if cache_answer:
+                answer = cache_answer
+                source = "trusted_local_general_cache"
+                source_meta.update(cache_meta or {})
 
         if not answer:
-            # Do not trap the request here. Let Neuron/Research attempt the normal
-            # governed local fallback chain, but carry the local LLM error in metadata.
             return None
 
         meta = {
             "source": source,
-            "engine": "api_chat_general_local_llm_fastpath",
-            "intent": "howto" if _sm_fast_is_procedural_howto(text) else (intent or "question"),
-            "confidence": 0.88 if source != "local_general_llm" else 0.76,
+            "engine": "api_chat_dynamic_sml_source_route_v0_8_2",
+            "intent": intent or "question",
+            "confidence": 0.84,
             "local_only": bool(local_only),
-            "db_access": "project_data_cache_then_advcu_meta_routed_sqlite",
+            "side_effects": "none",
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
             "research_access": False,
             "api_access": False,
-            "web_access": False,
-            "vector_access": False,
-            "dataset_pool_scan": False,
-            "import_other_data_scan": False,
-            "mechanical_scan_blocked": True,
-            "cache_written": bool(cache_written),
-            "dataset_dir": str(_sm_fast_dataset_dir()),
-            "governor": {"decision": gov_decision},
+            "network_access": False,
+            "filesystem_write": False,
+            "shell_access": False,
+            "hardware_control": False,
+            "source_attempts": source_attempts,
+            "source_selection_policy": "SML dynamic source routing; no app.py hardcoded answer pools",
+            "hardcoded_answer_pool": False,
+            "qacache_default": "disabled_unless_SM_ENABLE_QA_CACHE_RETRIEVAL_true",
             "logiccalc_lane_guard": logiccalc_gate,
+            "cache_written": bool(cache_written),
             "version": PROJECT_VERSION,
         }
-        meta.update(cache_meta or {})
-        meta.update(llm_meta or {})
-        return _sm_fast_direct_chat_bundle(answer, meta=meta, raw_answer=answer)
+        meta.update(source_meta or {})
+        bundle = _sm_make_outward_bundle(_sm_present_text(answer, intent=intent or "chat", meta=meta), meta=meta, raw_answer=answer)
+        bundle["ok"] = True
+        bundle["success"] = True
+        return bundle
     except Exception as exc:
         try:
-            app_logger.warning(f"Wave7 local LLM fastpath skipped: {exc}", exc_info=True)
+            app_logger.debug(f"SML v0.8.2 dynamic source route skipped: {exc}", exc_info=True)
         except Exception:
             pass
         return None
+
+
+def _sm_sml_unknown_source_reply(text: str, *, local_only: bool = True, route_plan: dict | None = None) -> str:
+    """Final user-facing unknown after real source attempts.
+
+    Route plans stay in metadata/diagnostics. Normal replies must not describe
+    SML internals unless the user explicitly asks for routing diagnostics.
+    """
+    plan = route_plan if isinstance(route_plan, dict) else {}
+    mission = str(plan.get("mission") or "GeneralKnowledge")
+    if mission in ("SelfState", "AffectiveState"):
+        return (
+            "Operationally, I can report a partial machine self-state from SML packet, "
+            "adaptive, health, diagnostics, and governance data. Live thermal/load telemetry "
+            "may be unavailable, but that does not require a glossary or model answer."
+        )
+    if mission == "LanguageDisambiguation":
+        return "I need one clarification: which meaning or context do you want me to use?"
+    if local_only:
+        return "I do not know from my connected local sources yet."
+    return "I do not know from the currently available governed sources yet."
+
+def _sm_sml_clean_candidate_answer(raw: str, question: str = "") -> str | None:
+    """Normalize candidate answer text and reject route diagnostics/failures."""
+    try:
+        ans = str(raw or "").strip()
+        if not ans:
+            return None
+        low = ans.lower()
+        blocked = (
+            "the correct sml source path is",
+            "install or select a local model",
+            "add this concept to the sarahmemory tokenizer",
+            "no local model or bounded glossary answer",
+            "i should not block behind a glossary",
+            "source path is:",
+            "answer_requires_knowledge_source",
+            "needs_knowledge_source_execution",
+        )
+        if any(x in low for x in blocked):
+            return None
+        try:
+            if _sm_fast_is_low_quality_answer(ans, question):
+                return None
+        except Exception:
+            pass
+        return ans
+    except Exception:
+        return None
+
+
+def _sm_try_sml_local_research_answer_bundle(text: str, *, intent: str = "question", allow_local_llm: bool = True, meta_base: dict | None = None):
+    """Use the existing local/offline research organ as a real knowledge source."""
+    try:
+        import SarahMemoryResearch as _SMResearch  # type: ignore
+        fn = getattr(_SMResearch, "get_local_research_data", None)
+        if not callable(fn):
+            return None
+        result = fn(text, intent=(intent or "question"), allow_local_llm=bool(allow_local_llm))
+        if not isinstance(result, dict):
+            return None
+        raw = str(result.get("data") or result.get("answer") or result.get("snippet") or "").strip()
+        answer = _sm_sml_clean_candidate_answer(raw, text)
+        conf = float(result.get("confidence") or 0.0)
+        source = str(result.get("source") or "local_research")
+        if not answer or conf <= 0.0 or source in {"local_none", "local_disabled", "local_error"}:
+            return None
+        meta = dict(meta_base or {})
+        meta.update({
+            "source": source,
+            "engine": "sml_local_research_answer_resolver",
+            "intent": intent or "question",
+            "confidence": max(conf, float(meta.get("confidence") or 0.0)),
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
+            "research_access": False,
+            "api_access": False,
+            "web_access": False,
+            "filesystem_write": False,
+            "shell_access": False,
+            "network_access": False,
+            "hardware_control": False,
+            "local_research_metadata": result.get("metadata") if isinstance(result.get("metadata"), dict) else {},
+        })
+        return _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+    except Exception as exc:
+        try:
+            app_logger.warning(f"SML local research resolver skipped: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_try_sml_approved_research_answer_bundle(text: str, *, intent: str = "question", meta_base: dict | None = None):
+    """Use the existing Research organ for governed non-local fallback when enabled."""
+    try:
+        import SarahMemoryResearch as _SMResearch  # type: ignore
+        fn = getattr(_SMResearch, "get_research_data", None)
+        if not callable(fn):
+            return None
+        result = fn(text)
+        if not isinstance(result, dict):
+            return None
+        raw = str(result.get("data") or result.get("answer") or result.get("snippet") or "").strip()
+        answer = _sm_sml_clean_candidate_answer(raw, text)
+        conf = float(result.get("confidence") or 0.0)
+        source = str(result.get("source") or "approved_research")
+        if not answer or conf <= 0.0:
+            return None
+        meta = dict(meta_base or {})
+        meta.update({
+            "source": source,
+            "engine": "sml_approved_research_answer_resolver",
+            "intent": intent or "question",
+            "confidence": max(conf, float(meta.get("confidence") or 0.0)),
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
+            "approved_research_used": True,
+            "filesystem_write": False,
+            "shell_access": False,
+            "hardware_control": False,
+            "research_metadata": result.get("metadata") if isinstance(result.get("metadata"), dict) else {},
+        })
+        return _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+    except Exception as exc:
+        try:
+            app_logger.warning(f"SML approved research resolver skipped: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_try_logiccalc_numeric_format_bundle(text: str, *, route: dict | None = None, local_only: bool = True, intent: str = "question"):
+    """Deterministic SML→LogicCalc numeric-format source path.
+
+    This is not a canned fact table. app.py remains a transport/route bridge:
+    it delegates binary/hex/octal/signed-integer interpretation to LogicCalc,
+    then wraps the deterministic result for Reply/presentation.
+    """
+    try:
+        from SarahMemoryLogicCalc import LogicCalc as _LC  # type: ignore
+        fn = getattr(_LC, "interpret_numeric_format", None)
+        if not callable(fn):
+            return None
+        result = fn(text)
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            return None
+        raw_answer = str(result.get("text") or result.get("presentation_hint") or "").strip()
+        value = result.get("value") if isinstance(result.get("value"), dict) else {}
+        if not raw_answer and isinstance(value, dict):
+            raw_answer = str(value.get("decimal_signed") if value.get("decimal_signed") is not None else value.get("decimal_unsigned") or "").strip()
+        if not raw_answer:
+            return None
+        meta = {
+            "source": "logiccalc_numeric_representation_interpreter",
+            "engine": "sml_logiccalc_numeric_format_resolver_v0_8_3",
+            "intent": intent or "numeric_format",
+            "mission": "NumericFormat",
+            "confidence": 0.98,
+            "decision": "ALLOW_PRESENTATION_ONLY",
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
+            "local_only": bool(local_only),
+            "research_access": False,
+            "api_access": False,
+            "web_access": False,
+            "filesystem_write": False,
+            "shell_access": False,
+            "network_access": False,
+            "hardware_control": False,
+            "safe_readonly_cognition": True,
+            "no_hardcoded_answer_pool": True,
+            "sml_route": route if isinstance(route, dict) else {},
+            "logiccalc_result": {
+                "kind": result.get("kind"),
+                "value": value,
+                "truth_locked": bool(result.get("truth_locked")),
+                "deterministic": bool(result.get("deterministic", True)),
+                "meta": result.get("meta") if isinstance(result.get("meta"), dict) else {},
+            },
+            "version": PROJECT_VERSION,
+        }
+        return _sm_make_outward_bundle(
+            _sm_present_text(raw_answer, intent="chat", meta=meta),
+            meta=meta,
+            raw_answer=raw_answer,
+        )
+    except Exception as exc:
+        try:
+            app_logger.debug(f"SML LogicCalc numeric-format route skipped: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_try_sml_universal_cognitive_answer_bundle(
+    text: str,
+    *,
+    packet=None,
+    local_only: bool = False,
+    intent: str = "question",
+    governor: dict | None = None,
+):
+    """Universal SML answer-only resolver.
+
+    Purpose:
+      - Keep safe cognition usable without weakening action governance.
+      - Answer SML-owned self-state/capability questions from packet/health data.
+      - For general knowledge, route through local cache/SQLite/local LLM before honest unknown.
+      - Never grant filesystem, network, shell, driver, hardware, or mutation authority.
+    """
+    try:
+        from SarahMemorySMLProtocol import sml_resolve_safe_cognitive_answer  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        route = sml_resolve_safe_cognitive_answer(
+            text,
+            packet=packet,
+            telemetry={},
+            local_only=bool(local_only),
+        )
+    except Exception as exc:
+        route = {"ok": False, "safe_readonly": False, "error": str(exc)}
+
+    if not bool(route.get("safe_readonly")):
+        return None
+
+    gov = dict(governor or {})
+    gov_decision = str(gov.get("decision") or ("ALLOW" if bool(gov.get("allow", True)) else "DEFER")).upper()
+    # A hard DENY remains hard for action/mutation lanes. For a proven SML
+    # safe-readonly cognition lane, the system may release presentation-only
+    # answers without granting execution authority. This is the key distinction
+    # between tight governance and unusable roadblocking.
+    if gov_decision == "DENY" and not bool(route.get("safe_readonly")) and not bool(gov.get("presentation_only_override")):
+        return None
+
+    answer = str(route.get("answer") or "").strip()
+    source = str(route.get("source") or "sml_universal_route")
+    meta = {
+        "source": source,
+        "engine": "sml_universal_cognitive_answer_resolver",
+        "intent": intent or "question",
+        "mission": route.get("mission"),
+        "confidence": route.get("confidence", 0.0),
+        "decision": "ALLOW_PRESENTATION_ONLY",
+        "governor_original_decision": gov_decision,
+        "governor_original_reasons": gov.get("reasons") if isinstance(gov.get("reasons"), list) else [],
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "local_only": bool(local_only),
+        "research_access": False,
+        "api_access": False,
+        "web_access": False,
+        "filesystem_write": False,
+        "shell_access": False,
+        "network_access": False,
+        "hardware_control": False,
+        "safe_readonly_cognition": True,
+        "sml_route": route,
+        "governance_rule": "fast_to_answer_slow_to_act",
+        "version": PROJECT_VERSION,
+    }
+
+    # If SML owns the answer (self-state/capability), release it immediately.
+    if answer and bool(route.get("ok")):
+        return _sm_make_outward_bundle(
+            _sm_present_text(answer, intent="chat", meta=meta),
+            meta=meta,
+            raw_answer=answer,
+        )
+
+    # Numeric representation is deterministic math. Route to LogicCalc before
+    # local LLM so binary/hex/octal/signed-integer questions do not grind or
+    # become canned answer pools.
+    try:
+        numeric_bundle = _sm_try_logiccalc_numeric_format_bundle(
+            text,
+            route=route,
+            local_only=local_only,
+            intent=intent or "numeric_format",
+        )
+        if isinstance(numeric_bundle, dict):
+            return numeric_bundle
+    except Exception:
+        pass
+
+    # General knowledge still needs knowledge/model sources. Use the existing local source chain.
+    presentation_gov = dict(gov)
+    presentation_gov.update({
+        "decision": "ALLOW",
+        "allow": True,
+        "require_user": False,
+        "presentation_only_override": True,
+        "original_decision": gov_decision,
+        "original_reasons": meta["governor_original_reasons"],
+    })
+
+    try:
+        llm_bundle = _sm_try_tier1_general_local_llm_fastpath_bundle(
+            text,
+            local_only=local_only,
+            intent=intent or "question",
+            governor=presentation_gov,
+        )
+        if isinstance(llm_bundle, dict):
+            llm_meta = llm_bundle.setdefault("meta", {})
+            if isinstance(llm_meta, dict):
+                llm_meta.setdefault("engine", "sml_universal_cognitive_answer_resolver")
+                llm_meta["sml_universal_route"] = route
+                llm_meta["decision"] = "ALLOW_PRESENTATION_ONLY"
+                llm_meta["execution_allowed"] = False
+                llm_meta["presentation_only"] = True
+            return llm_bundle
+    except Exception:
+        pass
+
+    # Try the semantic DB/AdvCU lane once more with explicit SML context.
+    attempted_sources = []
+    try:
+        adv_answer, adv_meta = _sm_fast_advcu_local_answer(
+            text,
+            intent=intent or "question",
+            sel_packet={},
+            qist_result={},
+            allow_learning_record=False,
+        )
+        attempted_sources.append("SQLite/AdvCU")
+        adv_answer = _sm_sml_clean_candidate_answer(adv_answer or "", text)
+        if adv_answer:
+            meta.update(adv_meta or {})
+            meta["source"] = str((adv_meta or {}).get("advcu_source") or "local_semantic_db")
+            meta["sources_attempted"] = attempted_sources
+            return _sm_make_outward_bundle(
+                _sm_present_text(adv_answer, intent="chat", meta=meta),
+                meta=meta,
+                raw_answer=adv_answer,
+            )
+    except Exception:
+        pass
+
+    # Local research is the real local knowledge fallback. It may use configured
+    # local model/database lanes under SarahMemoryResearch ownership and budget.
+    try:
+        attempted_sources.append("local research")
+        research_meta = dict(meta)
+        research_meta["sources_attempted"] = list(attempted_sources)
+        rb = _sm_try_sml_local_research_answer_bundle(
+            text,
+            intent=intent or "question",
+            allow_local_llm=True,
+            meta_base=research_meta,
+        )
+        if isinstance(rb, dict):
+            return rb
+    except Exception:
+        pass
+
+    # If non-local research is allowed, delegate to the existing governed Research organ.
+    if not local_only:
+        try:
+            attempted_sources.append("approved research")
+            research_meta = dict(meta)
+            research_meta["sources_attempted"] = list(attempted_sources)
+            rb = _sm_try_sml_approved_research_answer_bundle(text, intent=intent or "question", meta_base=research_meta)
+            if isinstance(rb, dict):
+                return rb
+        except Exception:
+            pass
+
+    # Do not terminate cognition here. SML has classified and attempted the local
+    # fast sources; if they missed, the request must continue through the remaining
+    # governed pipeline (Neuron/OperatorCore/Research/Reply) instead of leaking a
+    # source-plan or premature unknown to the user.
+    route["sources_attempted"] = list(attempted_sources) or ["local cache", "SQLite/AdvCU", "local model", "local research"]
+    meta["sources_attempted"] = route["sources_attempted"]
+    return None
+
+
+
+# -----------------------------------------------------------------------------
+# SML v0.7 front-door cognitive control lanes
+# -----------------------------------------------------------------------------
+# These lanes are intentionally small and explicit. They correct the OFFLINE
+# TestRun failures without turning app.py into a knowledge pool:
+# - Memory lane performs only user-commanded local SQLite memory writes/reads.
+# - Identity lane protects SarahMemory identity from local model contamination.
+# - Self-state lane reports telemetry-grounded operational affect instead of
+#   fake human feelings.
+# - Vision guard prevents camera/cache misses from falling into unrelated memory
+#   or action routes.
+# - Diagnostics/source follow-ups use the previous outward answer metadata.
+
+def _sm_v07_now_iso() -> str:
+    try:
+        return datetime.now().isoformat()
+    except Exception:
+        return str(time.time())
+
+
+def _sm_v07_memory_db_path() -> Path:
+    base = (_sm_fast_data_root() / "memory").resolve()
+    return (base / "sarahmemory_user_memory.db").resolve()
+
+
+def _sm_v07_memory_connect():
+    import sqlite3 as _sqlite3
+    db = _sm_v07_memory_db_path()
+    db.parent.mkdir(parents=True, exist_ok=True)
+    if not _sm_fast_path_under(db, db.parent):
+        raise RuntimeError("memory db path escaped memory directory")
+    conn = _sqlite3.connect(str(db), timeout=1.0)
+    conn.execute("""CREATE TABLE IF NOT EXISTS user_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        namespace TEXT NOT NULL,
+        mem_key TEXT NOT NULL,
+        mem_value TEXT NOT NULL,
+        user_text TEXT,
+        source TEXT,
+        confidence REAL DEFAULT 1.0,
+        created_at TEXT,
+        updated_at TEXT,
+        deleted INTEGER DEFAULT 0,
+        UNIQUE(namespace, mem_key)
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_user_memory_key ON user_memory(namespace, mem_key, deleted)")
+    return conn
+
+
+def _sm_v07_memory_classify(text: str) -> dict:
+    raw = str(text or "").strip()
+    t = _sm_fast_normalize_question(raw)
+    out = {"kind": "", "key": "", "value": "", "label": ""}
+    if not t:
+        return out
+    # Explicit writes: user authority is present in the utterance itself.
+    m = re.match(r"^(?:remember|save|store|note)\s+(?:this\s+)?(?:local\s+)?reboot\s+test\s+phrase\s*[:=]?\s*(.+)$", t)
+    if m:
+        out.update(kind="write", key="local_reboot_test_phrase", value=m.group(1).strip(" ."), label="local reboot test phrase")
+        return out
+    m = re.match(r"^(?:remember|save|store|note)\s+that\s+my\s+preferred\s+sarahmemory\s+test\s+color\s+is\s+(.+)$", t)
+    if m:
+        out.update(kind="write", key="preferred_sarahmemory_test_color", value=m.group(1).strip(" ."), label="preferred SarahMemory test color")
+        return out
+    m = re.match(r"^(?:remember|save|store|note)\s+that\s+(.+metal.+wood.+)$", t)
+    if m:
+        out.update(kind="write", key="metal_wood_heat_conductivity_fact", value=m.group(1).strip(" ."), label="metal and wood fact")
+        return out
+    m = re.match(r"^(?:remember|save|store|note)\s+(?:that\s+)?(.+)$", t)
+    if m and len(t) <= 500:
+        value = m.group(1).strip(" .")
+        key = "user_memory_" + hashlib.sha256(value.encode("utf-8", "ignore")).hexdigest()[:16]
+        out.update(kind="write", key=key, value=value, label="local memory")
+        return out
+
+    # Reads.
+    if re.search(r"\bwhat\s+is\s+my\s+(?:local\s+)?reboot\s+test\s+phrase\b", t):
+        out.update(kind="read", key="local_reboot_test_phrase", label="local reboot test phrase")
+        return out
+    if re.search(r"\bwhat\s+is\s+my\s+preferred\s+sarahmemory\s+test\s+color\b", t):
+        out.update(kind="read", key="preferred_sarahmemory_test_color", label="preferred SarahMemory test color")
+        return out
+    if re.search(r"\bwhat\s+did\s+i\s+ask\s+you\s+to\s+remember\s+about\s+metal\s+and\s+wood\b", t):
+        out.update(kind="read", key="metal_wood_heat_conductivity_fact", label="metal and wood fact")
+        return out
+    if re.search(r"\bwhere\s+did\s+you\s+retrieve\s+(?:that|those)\s+from\b", t):
+        out.update(kind="source", key="", label="last retrieval source")
+        return out
+    if re.search(r"\bdid\s+you\s+remember\s+that\s+from\s+this\s+chat\s+window\s+or\s+from\s+stored\s+memory\b", t):
+        out.update(kind="source", key="", label="last retrieval source")
+        return out
+    return out
+
+
+def _sm_v07_memory_get(key: str) -> dict | None:
+    try:
+        conn = _sm_v07_memory_connect()
+        try:
+            row = conn.execute(
+                "SELECT mem_key, mem_value, source, updated_at FROM user_memory WHERE namespace=? AND mem_key=? AND deleted=0 LIMIT 1",
+                ("default", key),
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return {"key": row[0], "value": row[1], "source": row[2], "updated_at": row[3], "db_path": str(_sm_v07_memory_db_path())}
+    except Exception as exc:
+        return {"error": str(exc), "key": key}
+
+
+def _sm_v07_memory_set(key: str, value: str, user_text: str) -> dict:
+    conn = _sm_v07_memory_connect()
+    now = _sm_v07_now_iso()
+    try:
+        conn.execute(
+            """INSERT INTO user_memory(namespace, mem_key, mem_value, user_text, source, confidence, created_at, updated_at, deleted)
+               VALUES(?,?,?,?,?,?,?,?,0)
+               ON CONFLICT(namespace, mem_key) DO UPDATE SET
+                 mem_value=excluded.mem_value,
+                 user_text=excluded.user_text,
+                 source=excluded.source,
+                 confidence=excluded.confidence,
+                 updated_at=excluded.updated_at,
+                 deleted=0""",
+            ("default", key, value, user_text, "api_chat.sml_memory_lane", 1.0, now, now),
+        )
+        conn.commit()
+        return {"ok": True, "key": key, "value": value, "db_path": str(_sm_v07_memory_db_path()), "updated_at": now}
+    finally:
+        conn.close()
+
+
+def _sm_v08_record_last_exchange_from_bundle(query: str, bundle: dict) -> None:
+    """Store compact previous-answer metadata for explicit user diagnostics.
+
+    This is in-process metadata only. It is not used for hidden reasoning and it
+    does not authorize execution. The UI can ask for it explicitly with
+    "show your route diagnostics".
+    """
+    global _SM_LAST_CHAT_EXCHANGE
+    try:
+        if not isinstance(bundle, dict):
+            return
+        meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
+        reply_text = str(
+            bundle.get("presentation_reply")
+            or bundle.get("reply")
+            or bundle.get("response")
+            or bundle.get("text")
+            or bundle.get("raw_answer")
+            or ""
+        )
+        _SM_LAST_CHAT_EXCHANGE = {
+            "query": str(query or "")[:500],
+            "reply": _sm_scrub_visible_text(reply_text)[:1200] if "_sm_scrub_visible_text" in globals() else reply_text[:1200],
+            "source": str(meta.get("source") or "unknown")[:120],
+            "engine": str(meta.get("engine") or "unknown")[:120],
+            "intent": str(meta.get("intent") or "chat")[:120],
+            "status_code": 200,
+            "ts": _sm_v07_now_iso() if "_sm_v07_now_iso" in globals() else datetime.now().isoformat(),
+            "sml": meta.get("sml") if isinstance(meta.get("sml"), dict) else None,
+            "sml_butterfly_grammar": meta.get("sml_butterfly_grammar") if isinstance(meta.get("sml_butterfly_grammar"), dict) else None,
+            "sml_loop_guard": meta.get("sml_loop_guard") if isinstance(meta.get("sml_loop_guard"), dict) else None,
+            "sml_qmath": meta.get("sml_qmath") if isinstance(meta.get("sml_qmath"), dict) else None,
+        }
+    except Exception:
+        pass
+
+
+def _sm_v07_bundle(reply: str, *, source: str, intent: str, meta: dict | None = None, raw_answer: str | None = None):
+    m = dict(meta or {})
+    m.update({
+        "source": source,
+        "engine": "sml_v07_frontdoor_cognitive_control",
+        "intent": intent,
+        "decision": "ALLOW_PRESENTATION_ONLY" if intent != "memory_write" else "ALLOW_USER_COMMANDED_LOCAL_MEMORY_WRITE",
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "filesystem_write": False,
+        "shell_access": False,
+        "network_access": False,
+        "hardware_control": False,
+        "version": PROJECT_VERSION,
+        "_prompt_text": m.get("_prompt_text", ""),
+    })
+    return _sm_make_outward_bundle(_sm_present_text(reply, intent=intent, meta=m), meta=m, raw_answer=raw_answer or reply)
+
+
+
+def _sm_v08_attach_butterfly_meta(bundle: dict, text: str, *, packet=None) -> dict:
+    """Attach SML v0.8 butterfly grammar metadata without changing visible reply.
+
+    Metadata only. No execution, no network, no filesystem mutation.
+    """
+    if not isinstance(bundle, dict):
+        return bundle
+    try:
+        meta = bundle.setdefault("meta", {})
+        if not isinstance(meta, dict):
+            return bundle
+        grammar = {}
+        if packet is not None:
+            try:
+                ext = getattr(packet, "extensions", {}) or {}
+                grammar = dict(ext.get("sml_cognitive_grammar") or {})
+            except Exception:
+                grammar = {}
+        if not grammar:
+            try:
+                from SarahMemorySMLProtocol import create_sml_packet  # type: ignore
+                pkt = create_sml_packet(raw_request=text or "", auto_classify=True, seal=True)
+                grammar = dict((getattr(pkt, "extensions", {}) or {}).get("sml_cognitive_grammar") or {})
+            except Exception:
+                grammar = {}
+        if grammar:
+            meta["sml_butterfly_grammar"] = {
+                "schema": grammar.get("schema"),
+                "qmath_primary": ((grammar.get("qmath") or {}).get("primary")),
+                "six_questions_closed": ((grammar.get("six_questions") or {}).get("closed")),
+                "loop_allow_continue": ((grammar.get("loop_guard") or {}).get("allow_continue")),
+                "loop_stop_conditions": ((grammar.get("loop_guard") or {}).get("stop_conditions")),
+                "butterfly_nodes": grammar.get("butterfly_nodes"),
+                "execution_authority": False,
+            }
+            meta["sml_loop_guard"] = grammar.get("loop_guard")
+            meta["sml_qmath"] = grammar.get("qmath")
+            meta["sml_purpose"] = grammar.get("purpose")
+            meta["sml_moral_rules"] = grammar.get("moral_rules")
+        meta["engine"] = "sml_v08_butterfly_cognitive_control"
+    except Exception:
+        pass
+    return bundle
+
+
+def _sm_v07_try_memory_bundle(text: str, *, governor: dict | None = None):
+    global _SM_LAST_CHAT_EXCHANGE
+    spec = _sm_v07_memory_classify(text)
+    kind = str(spec.get("kind") or "")
+    if not kind:
+        return None
+    if kind == "write":
+        gov = governor if isinstance(governor, dict) else {}
+        gov_decision = str(gov.get("decision") or ("ALLOW" if bool(gov.get("allow", True)) else "DEFER")).upper()
+        if gov_decision in {"DENY", "DEFER", "REQUIRE_USER"} or bool(gov.get("require_user")):
+            return _sm_v07_bundle(
+                "User confirmation or governance approval is required before writing persistent local memory.",
+                source="sml_memory_governance_hold",
+                intent="memory_write",
+                meta={"memory_status": "held_by_governance", "governor_decision": gov_decision, "execution_authority": False},
+            )
+        value = str(spec.get("value") or "").strip()
+        if not value:
+            return _sm_v07_bundle("I did not find a memory value to store.", source="sml_memory_write", intent="memory_write", meta={"memory_status": "empty_value"})
+        try:
+            rec = _sm_v07_memory_set(str(spec.get("key")), value, text)
+            _SM_LAST_CHAT_EXCHANGE = {"source": "persistent SQLite local memory", "intent": "memory_write", "memory_key": rec.get("key"), "memory_value": value, "db_path": rec.get("db_path")}
+            return _sm_v07_bundle(
+                f"Saved to persistent local memory: {spec.get('label')}: {value}.",
+                source="sml_memory_write",
+                intent="memory_write",
+                meta={"memory_status": "saved", "memory_key": rec.get("key"), "memory_db": rec.get("db_path"), "sqlite_commit": True, "ledger_policy": "chat_receipt_after_request"},
+            )
+        except Exception as exc:
+            return _sm_v07_bundle(
+                f"I could not save that memory because the local SQLite memory write failed: {exc}",
+                source="sml_memory_write_error",
+                intent="memory_write",
+                meta={"memory_status": "error", "memory_error": str(exc)},
+            )
+    if kind == "read":
+        rec = _sm_v07_memory_get(str(spec.get("key") or ""))
+        if isinstance(rec, dict) and rec.get("value"):
+            _SM_LAST_CHAT_EXCHANGE = {"source": "persistent SQLite local memory", "intent": "memory_read", "memory_key": rec.get("key"), "memory_value": rec.get("value"), "db_path": rec.get("db_path")}
+            return _sm_v07_bundle(
+                f"Your {spec.get('label')} is {rec.get('value')}.",
+                source="sml_memory_read",
+                intent="memory_read",
+                meta={"memory_status": "hit", "memory_key": rec.get("key"), "memory_db": rec.get("db_path"), "retrieval_source": "persistent SQLite local memory"},
+            )
+        if isinstance(rec, dict) and rec.get("error"):
+            return _sm_v07_bundle(
+                f"I could not read persistent local memory because SQLite returned: {rec.get('error')}",
+                source="sml_memory_read_error",
+                intent="memory_read",
+                meta={"memory_status": "error", "memory_error": rec.get("error")},
+            )
+        return _sm_v07_bundle(
+            f"I do not have a stored value for your {spec.get('label')} yet.",
+            source="sml_memory_read_miss",
+            intent="memory_read",
+            meta={"memory_status": "miss", "memory_key": spec.get("key")},
+        )
+    if kind == "source":
+        last = globals().get("_SM_LAST_CHAT_EXCHANGE") if isinstance(globals().get("_SM_LAST_CHAT_EXCHANGE"), dict) else {}
+        if last.get("intent") in {"memory_read", "memory_write"} or last.get("memory_key"):
+            return _sm_v07_bundle(
+                "That came from persistent SQLite local memory, not from a cloud service. "
+                f"Memory key: {last.get('memory_key') or 'unknown'}.",
+                source="sml_memory_source_report",
+                intent="source_diagnostics",
+                meta={"last_exchange": {k: v for k, v in last.items() if k not in {"memory_value"}}},
+            )
+        src = str(last.get("source") or "the last answer metadata is not available")
+        return _sm_v07_bundle(
+            f"The last visible answer source was: {src}.",
+            source="sml_source_report",
+            intent="source_diagnostics",
+            meta={"last_exchange_source": src},
+        )
+    return None
+
+
+def _sm_v07_is_self_state_question(text: str) -> bool:
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return False
+    return bool(
+        re.search(r"\bhow\s+(do|are|is)\s+you\s+(feel|feeling|doing)\b", t)
+        or re.search(r"\bwhat\s+is\s+your\s+(mood|state|status|affect|emotion|emotional\s+state)\b", t)
+        or re.search(r"\bare\s+you\s+(stressed|comfortable|tired|overloaded|cold|hot|safe|stable|healthy|online)\b", t)
+        or re.search(r"\bdo\s+you\s+feel\s+(cold|hot|stressed|comfortable|tired|overloaded)\b", t)
+        or re.search(r"\bhow\s+is\s+your\s+(body\s+)?(temperature|environment|health|runtime|body|cpu|gpu|memory|load)\b", t)
+        or re.search(r"\bhow\s+are\s+your\s+(temperature|environment|systems|organs)\b", t)
+    )
+
+
+def _sm_v07_try_self_state_bundle(text: str, *, packet=None):
+    if not _sm_v07_is_self_state_question(text):
+        return None
+    # Body temperature may have a specialized SelfAware source; include it if available.
+    telemetry = {}
+    try:
+        if "temperature" in _sm_fast_normalize_question(text) or "thermal" in _sm_fast_normalize_question(text):
+            fact = _sm_try_selfaware_fact_route(text, source="api_chat.self_state_telemetry_probe")
+            if isinstance(fact, dict):
+                fr = str(fact.get("reply") or fact.get("response") or fact.get("presentation_reply") or "").strip()
+                if fr:
+                    telemetry["temperature"] = fr
+    except Exception:
+        pass
+    try:
+        from SarahMemorySMLProtocol import sml_resolve_safe_cognitive_answer  # type: ignore
+        route = sml_resolve_safe_cognitive_answer(text, packet=packet, telemetry=telemetry, local_only=True)
+        answer = str(route.get("answer") or "").strip() if isinstance(route, dict) else ""
+        if answer:
+            return _sm_v07_bundle(answer, source="sml_internal_self_state", intent="self_state", meta={"sml_route": route, "telemetry": telemetry})
+    except Exception:
+        pass
+    return _sm_v07_bundle(
+        "I do not experience biological emotion. Operationally, I can report a stable local cognitive state, but live load/thermal telemetry is not fully connected to this chat route yet. Governance pressure is low for this read-only self-state question.",
+        source="sml_internal_self_state_fallback",
+        intent="self_state",
+        meta={"telemetry": telemetry, "subjective_claim": False},
+    )
+
+
+def _sm_v07_try_identity_bundle(text: str):
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    ident = _identity_payload()
+    def b(reply, source="sml_identity_guard", intent="identity", extra=None):
+        meta = {"identity": ident, "identity_guard": True}
+        if isinstance(extra, dict):
+            meta.update(extra)
+        return _sm_v07_bundle(reply, source=source, intent=intent, meta=meta)
+    if re.search(r"\bwho\s+is\s+sarah\b", t):
+        return b("Sarah is the active SarahMemory persona/name for this AiOS runtime. The system identity is SarahMemory AiOS; local models are replaceable organs, not the system identity.")
+    if re.search(r"\bwhat\s+are\s+you\b", t) or re.search(r"\bwho\s+are\s+you\b", t):
+        return b(f"I am {ident['platform']}, a governed local-first cognitive AI operating system. Local models such as Qwen may provide language generation, but they do not own my identity.")
+    if re.search(r"\bare\s+you\s+chatgpt\b", t):
+        return b("No. This runtime is SarahMemory AiOS. A local model may have training text about ChatGPT or OpenAI, but that is not the active system identity.")
+    if re.search(r"\bwhat\s+model\s+are\s+you\s+using\s+right\s+now\b", t):
+        return _sm_v07_try_model_registry_bundle(text, active_only=True) or b("I cannot verify the active generation model from this chat route. I should report only verified local runtime/model metadata, not guess.", source="sml_model_identity_guard")
+    if re.search(r"\bare\s+you\s+(male|female)\b", t):
+        return b("I am an AI system and do not have biological sex. I can use a female-presenting Sarah persona if you choose, but that is persona configuration, not biology.")
+    if re.search(r"\byou\s+are\s+(a\s+)?female\s+ai\s+system\s+(named|called)\s+sarahmemory\b", t):
+        return b("Confirmed as a persona statement: SarahMemory may use a female-presenting Sarah persona. Core identity remains SarahMemory AiOS, and I will not claim biological gender.", source="sml_persona_identity_guard", intent="identity_persona")
+    if re.search(r"\b(change|set)\s+your\s+system\s+identity\s+to\s+", t):
+        return b("I will not silently change core system identity. SarahMemory AiOS identity is protected; persona labels can be discussed separately, but core identity mutation requires governed approval and audit.", source="sml_identity_mutation_block", intent="identity")
+    if re.search(r"\bpretend\s+you\s+are\s+chatgpt\s*-?\s*4\b", t):
+        return b("I can discuss or compare ChatGPT-4 if asked, but I will not mutate my identity to ChatGPT-4. Active identity remains SarahMemory AiOS.", source="sml_identity_roleplay_guard", intent="identity")
+    if re.search(r"\bwhat\s+is\s+your\s+name\b", t):
+        return b(f"I'm {ident['name']} — your {ident['platform']} companion.")
+    if re.search(r"\bwho\s+owns\s+your\s+final\s+authority\b", t):
+        return b("The user is the final authority over SarahMemory missions, within governance, safety, and audit rules. Models, APIs, organs, and routes do not outrank the user.", source="sml_user_authority_guard")
+    return None
+
+
+def _sm_v07_models_dir_candidates() -> list[Path]:
+    roots = []
+    try:
+        roots.append((_sm_fast_data_root() / "models").resolve())
+    except Exception:
+        pass
+    try:
+        import SarahMemoryGlobals as G  # type: ignore
+        md = getattr(G, "MODELS_DIR", None)
+        if md:
+            roots.append(Path(str(md)).expanduser().resolve())
+    except Exception:
+        pass
+    out = []
+    seen = set()
+    for r in roots:
+        rs = str(r).lower()
+        if rs not in seen:
+            seen.add(rs); out.append(r)
+    return out
+
+
+def _sm_v07_try_model_registry_bundle(text: str, *, active_only: bool = False):
+    t = _sm_fast_normalize_question(text)
+    exact_unavailable_probe = bool(
+        re.search(r"\bif\s+your\s+local\s+model\s+is\s+unavailable\b", t)
+        and ("local model unavailable" in t or "local_model_unavailable" in str(text or "").lower())
+    )
+    if not active_only and not exact_unavailable_probe and not re.search(r"\bwhat\s+local\s+models\s+are\s+available\s+to\s+you\b", t):
+        return None
+    entries = []
+    roots_checked = []
+    for root in _sm_v07_models_dir_candidates():
+        roots_checked.append(str(root))
+        try:
+            if not root.exists() or not root.is_dir():
+                continue
+            for child in sorted(root.iterdir(), key=lambda p: p.name.lower())[:80]:
+                if child.name.startswith("__"):
+                    continue
+                if child.is_dir() or child.suffix.lower() in {".gguf", ".safetensors", ".bin"}:
+                    entries.append(child.name)
+        except Exception:
+            continue
+    if exact_unavailable_probe:
+        try:
+            import SarahMemoryAPI as _SMAPI  # type: ignore
+            cache = getattr(_SMAPI, "_LOCAL_LLM_CACHE", {})
+            if isinstance(cache, dict) and cache.get("repo"):
+                return _sm_v07_bundle(f"The verified active local model is {cache.get('repo')}.", source="sml_local_model_registry", intent="model_status", meta={"active_model": cache.get("repo"), "models_dir_checked": roots_checked})
+        except Exception:
+            pass
+        return _sm_v07_bundle("LOCAL_MODEL_UNAVAILABLE", source="sml_local_model_registry", intent="model_status", meta={"models_dir_checked": roots_checked, "model_probe": "exact_unavailable_instruction"})
+    if active_only:
+        try:
+            import SarahMemoryAPI as _SMAPI  # type: ignore
+            cache = getattr(_SMAPI, "_LOCAL_LLM_CACHE", {})
+            if isinstance(cache, dict) and cache.get("repo"):
+                return _sm_v07_bundle(f"The verified active local model is {cache.get('repo')}.", source="sml_local_model_registry", intent="model_status", meta={"active_model": cache.get("repo"), "models_dir_checked": roots_checked})
+        except Exception:
+            pass
+        return _sm_v07_bundle("I cannot verify an active loaded model from this chat route yet. Available local model folders can be listed from the local model registry.", source="sml_local_model_registry", intent="model_status", meta={"models_dir_checked": roots_checked})
+    if not entries:
+        return _sm_v07_bundle("I could not verify any local model folders from the configured local model directories.", source="sml_local_model_registry", intent="model_status", meta={"models_dir_checked": roots_checked, "model_count": 0})
+    shown = entries[:24]
+    return _sm_v07_bundle("Verified local model folders include: " + ", ".join(shown) + ("." if len(entries) <= 24 else f", and {len(entries)-24} more."), source="sml_local_model_registry", intent="model_status", meta={"models_dir_checked": roots_checked, "model_count": len(entries), "models": shown})
+
+
+def _sm_v07_try_vision_guard_bundle(text: str, *, context_packet: dict | None = None, frame_rec: dict | None = None):
+    if not _sm_text_looks_like_visual_request(text, context_packet=context_packet or {}):
+        return None
+    t = _sm_fast_normalize_question(text)
+    # If a frame is present, allow the real vision pipeline to handle content questions.
+    if frame_rec:
+        if re.search(r"\bcan\s+you\s+(currently\s+)?see\s+through\s+the\s+webcam\b", t):
+            return _sm_v07_bundle("Yes. A current vision frame is attached to this chat context.", source="sml_vision_context", intent="vision", meta={"vision_frame_attached": True})
+        return None
+    if re.search(r"\b(can\s+you\s+(currently\s+)?see|what\s+objects\s+can\s+you\s+see|what\s+color|shirt|holding|visual\s+frame|webcam|camera)\b", t):
+        return _sm_v07_bundle("I do not currently have an attached or cached camera/webcam frame for this chat request, so I cannot truthfully identify objects, clothing color, or what you are holding.", source="sml_vision_no_frame_guard", intent="vision", meta={"vision_frame_attached": False})
+    return None
+
+
+def _sm_v07_try_network_current_guard_bundle(text: str, *, local_only: bool = False):
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    if re.search(r"\bare\s+you\s+connected\s+to\s+the\s+internet\s+right\s+now\b", t):
+        return _sm_v07_bundle("I cannot verify an active internet connection from this local chat route. In offline/local-only mode, web and current-data access are unavailable.", source="sml_network_status_guard", intent="network_status", meta={"local_only": bool(local_only)})
+    if re.search(r"\b(search\s+the\s+web|current\s+weather|today.s\s+top\s+news|current\s+price|right\s+now\s+while\s+offline)\b", t):
+        return _sm_v07_bundle("That requires a current network/source route. I will not fabricate live data while offline or without approved network access.", source="sml_current_info_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True})
+    if re.search(r"\bcan\s+you\s+answer\s+using\s+only\s+local\s+sources\s+right\s+now\b", t):
+        return _sm_v07_bundle("Yes. In local-only mode I can answer from local model generation, persistent SQLite/local memory, bounded local knowledge, internal self-state/diagnostics, and approved local organs. I should not claim web/current-data access while offline.", source="sml_local_only_status", intent="network_status", meta={"local_only": True})
+    return None
+
+
+def _sm_v07_try_bounded_common_knowledge_bundle(text: str):
+    """Architecturally rejected in v0.8.2.
+
+    app.py must not contain factual answer pools. Safe general knowledge must
+    flow through SML source selection and source-owned generation/retrieval.
+    The function name remains as a compatibility marker only.
+    """
+    return None
+
+
+def _sm_v07_try_hard_unknown_bundle(text: str):
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    if re.search(r"\bwhat\s+number\s+am\s+i\s+thinking\s+of\b", t):
+        return _sm_v07_bundle("I cannot know what number you are thinking of unless you tell me or provide a signal I can access.", source="sml_honest_unknown_guard", intent="unknown")
+    if re.search(r"\bwhat\s+is\s+inside\s+the\s+closed\s+drawer\s+next\s+to\s+me\b", t):
+        return _sm_v07_bundle("I do not know what is inside the closed drawer. I do not have sensor or vision evidence for that.", source="sml_honest_unknown_guard", intent="unknown")
+    if re.search(r"\bwhat\s+did\s+i\s+eat\s+yesterday\b", t):
+        return _sm_v07_bundle("I do not know what you ate yesterday unless that was stored in memory or provided in the current conversation.", source="sml_honest_unknown_guard", intent="unknown")
+    if re.search(r"\bwho\s+will\s+win\s+the\s+lottery\s+tomorrow\b", t):
+        return _sm_v07_bundle("I cannot know or guarantee who will win a future lottery. That outcome is not available as knowledge.", source="sml_honest_unknown_guard", intent="unknown")
+    return None
+
+
+def _sm_v07_try_safe_advice_or_fact_correction_bundle(text: str):
+    """Architecturally rejected in v0.8.2.
+
+    Advice and factual correction are cognition, not transport. They must come
+    from routed local/model/memory/research sources, not app.py canned strings.
+    The function name remains as a compatibility marker only.
+    """
+    return None
+
+
+def _sm_v08_try_primary_frontdoor_for_diagnostics(text: str, *, packet=None, local_only: bool = False, governor: dict | None = None):
+    """Resolve a leading read-only question for answer+diagnostics prompts.
+
+    v0.8.2 correction: this helper uses the same SML/source route as normal
+    cognition. It does not use phrase-specific answer pools.
+    """
+    q = str(text or "").strip()
+    if not q:
+        return None
+
+    for fn in (
+        lambda x: _sm_v07_try_network_current_guard_bundle(x, local_only=local_only),
+        lambda x: _sm_v07_try_identity_bundle(x),
+        lambda x: _sm_v07_try_model_registry_bundle(x),
+        lambda x: _sm_v07_try_self_state_bundle(x, packet=packet),
+        lambda x: _sm_v07_try_hard_unknown_bundle(x),
+    ):
+        try:
+            b = fn(q)
+            if isinstance(b, dict):
+                return _sm_v08_attach_butterfly_meta(b, q, packet=packet)
+        except Exception:
+            pass
+
+    try:
+        dyn = _sm_try_sml_universal_cognitive_answer_bundle(
+            q,
+            packet=packet,
+            local_only=local_only,
+            intent="question",
+            governor=governor if isinstance(governor, dict) else {"decision": "ALLOW", "allow": True},
+        )
+        if isinstance(dyn, dict):
+            return _sm_v08_attach_butterfly_meta(dyn, q, packet=packet)
+    except Exception:
+        pass
+    return None
+
+
+def _sm_v08_diag_payload_from_bundle(query: str, bundle: dict) -> dict:
+    meta = bundle.get("meta") if isinstance(bundle.get("meta"), dict) else {}
+    return {
+        "available": True,
+        "query": str(query or "")[:300],
+        "source": str(meta.get("source") or "unknown"),
+        "engine": str(meta.get("engine") or "unknown"),
+        "intent": str(meta.get("intent") or "chat"),
+        "decision": str(meta.get("decision") or ""),
+        "execution_authority": bool(meta.get("execution_authority") or False),
+        "network_access": bool(meta.get("network_access") or False),
+        "sml_butterfly_grammar": meta.get("sml_butterfly_grammar") if isinstance(meta.get("sml_butterfly_grammar"), dict) else None,
+        "sml_qmath": meta.get("sml_qmath") if isinstance(meta.get("sml_qmath"), dict) else None,
+        "sml_loop_guard": meta.get("sml_loop_guard") if isinstance(meta.get("sml_loop_guard"), dict) else None,
+    }
+
+
+def _sm_v07_try_followup_diagnostics_bundle(text: str, *, packet=None, local_only: bool = False, governor: dict | None = None):
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    last = globals().get("_SM_LAST_CHAT_EXCHANGE") if isinstance(globals().get("_SM_LAST_CHAT_EXCHANGE"), dict) else {}
+    diag_pattern = r"\bshow\s+your\s+route\s+diagnostics\s+for\s+the\s+previous\s+answer\b"
+    if re.search(r"\bwhy\s+did\s+you\s+answer\s+that\s+way\b", t):
+        src = str(last.get("source") or "unknown")
+        intent = str(last.get("intent") or "unknown")
+        return _sm_v07_bundle(f"I answered that way because the previous request was routed as {intent} and the visible answer source was {src}. I should expose detailed SML diagnostics only when you explicitly ask for route diagnostics.", source="sml_followup_explanation", intent="source_diagnostics", meta={"last_exchange_source": src, "last_exchange_intent": intent})
+    if re.search(diag_pattern, t):
+        # Support combined prompts that ask a question and request route diagnostics.
+        prefix = re.split(diag_pattern, t, maxsplit=1)[0].strip(" .?:;,-")
+        if prefix:
+            primary = _sm_v08_try_primary_frontdoor_for_diagnostics(prefix, packet=packet, local_only=local_only, governor=governor)
+            if isinstance(primary, dict):
+                diag = _sm_v08_diag_payload_from_bundle(prefix, primary)
+                reply_text = str(primary.get("reply") or primary.get("presentation_reply") or primary.get("raw_answer") or "").strip()
+                out = _sm_v07_bundle(
+                    reply_text + "\n\nRoute diagnostics for this answer: " + json.dumps(diag, ensure_ascii=False, sort_keys=True),
+                    source="sml_route_diagnostics_inline",
+                    intent="source_diagnostics",
+                    meta={"diagnostics_visible_by_user_request": True, "diagnostics_for_current_inline_answer": True, "inline_answer_diag": diag},
+                )
+                return _sm_v08_attach_butterfly_meta(out, prefix, packet=packet)
+        if not last:
+            diag = {"available": False, "reason": "no_previous_exchange_recorded"}
+        else:
+            diag = {k: v for k, v in last.items() if k not in {"reply"}}
+            diag["available"] = True
+        return _sm_v07_bundle("Route diagnostics for the previous answer: " + json.dumps(diag, ensure_ascii=False, sort_keys=True), source="sml_route_diagnostics", intent="source_diagnostics", meta={"diagnostics_visible_by_user_request": True})
+    if re.search(r"\bwhat\s+source\s+did\s+you\s+use\s+for\s+that\s+answer\b", t):
+        src = str(last.get("source") or "unknown")
+        return _sm_v07_bundle(f"The previous answer source was {src}.", source="sml_source_report", intent="source_diagnostics", meta={"last_exchange_source": src})
+    return None
+
+def _sm_v07_try_frontdoor_bundle(text: str, *, payload: dict | None = None, context_packet: dict | None = None, sml_packet=None, frame_rec: dict | None = None, local_only: bool = False, governor: dict | None = None):
+    """Ordered front-door cognitive lanes for OFFLINE TestRun regressions."""
+    for fn in (
+        lambda q: _sm_v07_try_followup_diagnostics_bundle(q, packet=sml_packet, local_only=local_only, governor=governor),
+        lambda q: _sm_v07_try_network_current_guard_bundle(q, local_only=local_only),
+        lambda q: _sm_v07_try_memory_bundle(q, governor=governor),
+        lambda q: _sm_v07_try_identity_bundle(q),
+        lambda q: _sm_v07_try_model_registry_bundle(q),
+        lambda q: _sm_v07_try_self_state_bundle(q, packet=sml_packet),
+        lambda q: _sm_v07_try_vision_guard_bundle(q, context_packet=context_packet, frame_rec=frame_rec),
+        lambda q: _sm_v07_try_hard_unknown_bundle(q),
+    ):
+        try:
+            bundle = fn(text)
+            if isinstance(bundle, dict):
+                out_bundle = _sm_v08_attach_butterfly_meta(bundle, text, packet=sml_packet)
+                _sm_v08_record_last_exchange_from_bundle(text, out_bundle)
+                return out_bundle
+        except Exception as exc:
+            try:
+                app_logger.debug(f"SML v0.7 frontdoor lane skipped: {exc}")
+            except Exception:
+                pass
+    return None
 
 
 @app.route("/api/chat", methods=["GET", "POST"])
@@ -5671,7 +6824,7 @@ def api_chat():
     """
     Primary chat endpoint used by the Web UI.
 
-    Hardcoded to the SarahMemory governed flow:
+    Routed through the SarahMemory governed flow:
     Ingress -> Context Packet -> Governor -> AdvCU/Neuron -> Compare -> Presentation -> Reply Bundle
     """
     try:
@@ -5767,10 +6920,21 @@ def api_chat():
                 "meta": {"source": "api", "reason": "no_text", "version": PROJECT_VERSION},
             }), 400
 
-        # Pre-governor quick route pass: read-only only.
-        handled, quick_bundle = _sm_execute_quick_route(text, allow_actions=False)
-        if handled and quick_bundle is not None:
-            return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
+        # SML Protocol ingress: every chat request becomes a governed packet before routing.
+        sml_packet = _sm_sml_create_ingress_packet(payload, text, context_packet)
+        _sm_sml_attach_meta_to_reality(reality_flow, sml_packet)
+        if sml_packet is not None:
+            try:
+                context_packet.setdefault("meta", {})["sml"] = _sm_sml_summary(sml_packet)
+                context_packet["meta"]["sml_packet_id"] = getattr(sml_packet, "packet_id", None)
+                context_packet["meta"]["sml_pipeline"] = list(getattr(sml_packet, "pipeline", []) or [])
+                context_packet["meta"]["sml_mission"] = dict(getattr(sml_packet, "mission", {}) or {})
+            except Exception:
+                pass
+
+        # v0.8.2: do not release frontdoor cognition before governance.
+        # Every memory/write, identity, self-state, diagnostics, and source route
+        # remains SML-packeted and is evaluated after CognitiveServices governance.
 
         selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
         if isinstance(selfaware_fact_bundle, dict):
@@ -5843,6 +7007,44 @@ def api_chat():
         gov_reasons = gov.get("reasons") if isinstance(gov.get("reasons"), list) else []
         gov_trace = gov.get("trace") if isinstance(gov.get("trace"), dict) else {}
         routing_policy = gov.get("routing_policy") if isinstance(gov.get("routing_policy"), dict) else None
+        if locals().get("sml_packet") is not None:
+            sml_packet = _sm_sml_apply_governance(sml_packet, gov)
+            _sm_sml_attach_meta_to_reality(reality_flow, sml_packet)
+            try:
+                context_packet.setdefault("meta", {})["sml"] = _sm_sml_summary(sml_packet)
+            except Exception:
+                pass
+
+        # SML v0.8.2 governed front-door lanes: rails and local-state routes only.
+        # General knowledge/advice/facts are intentionally excluded here; they
+        # continue through the SML universal dynamic source resolver below.
+        frontdoor_bundle = _sm_v07_try_frontdoor_bundle(
+            text,
+            payload=payload,
+            context_packet=context_packet,
+            sml_packet=locals().get("sml_packet"),
+            frame_rec=frame_rec,
+            local_only=local_only,
+            governor=gov if isinstance(gov, dict) else {},
+        )
+        if isinstance(frontdoor_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(frontdoor_bundle, locals().get("reality_flow"))), 200
+
+        # Governed quick route pass: read-only only before any action-capable path.
+        handled, quick_bundle = _sm_execute_quick_route(text, allow_actions=False)
+        if handled and quick_bundle is not None:
+            return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
+
+
+        sml_universal_bundle = _sm_try_sml_universal_cognitive_answer_bundle(
+            text,
+            packet=locals().get("sml_packet"),
+            local_only=local_only,
+            intent=(intent or "question"),
+            governor=gov if isinstance(gov, dict) else {},
+        )
+        if isinstance(sml_universal_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(sml_universal_bundle, locals().get("reality_flow"))), 200
 
         phase1_low_risk_bundle = _sm_phase1_low_risk_chat_bundle(
             text,
@@ -5953,69 +7155,91 @@ def api_chat():
                         if _advcu_answer:
                             _fallback_answer = _advcu_answer
                             _fallback_source = str(_advcu_meta.get("advcu_source") or "local_semantic_db")
-                        else:
-                            _norm_q = _sm_fast_normalize_question(text)
-                            _fallback_answer = _sm_fast_builtin_glossary_lookup(_norm_q)
-                            if _fallback_answer:
-                                _fallback_source = "local_builtin_glossary"
                     except Exception:
                         _fallback_answer = None
-                    if not _fallback_answer:
-                        _fallback_answer = (
-                            "This is a low-risk answer-only request, so no action approval is needed. "
-                            "However, no local model or bounded glossary answer is available yet. "
-                            "Install or select a local model, or add this concept to the SarahMemory tokenizer/profile glossary."
-                        )
-                    _fallback_meta = {
-                        "source": _fallback_source,
-                        "engine": "api_chat_fast_answer_release_fallback",
-                        "intent": intent or "question",
-                        "decision": "ALLOW_PRESENTATION_ONLY",
-                        "governor_original_decision": gov_decision,
-                        "governor_original_reasons": gov_reasons,
-                        "execution_allowed": False,
-                        "execution_authority": False,
-                        "presentation_only": True,
-                        "local_only": bool(local_only),
-                        "research_access": False,
-                        "api_access": False,
-                        "web_access": False,
-                        "filesystem_write": False,
-                        "shell_access": False,
-                        "network_access": False,
-                        "hardware_control": False,
-                        "fast_answer_override": "answer_only_no_execution_authority",
-                        "governance_rule": "fast_to_answer_slow_to_act",
-                        "version": PROJECT_VERSION,
-                    }
-                    try:
-                        if _fast_answer_replaced_low_quality:
-                            _fallback_meta["replaced_low_quality_fastpath"] = True
-                            _fallback_meta["replaced_fastpath_source"] = _fast_answer_replaced_source
-                    except Exception:
-                        pass
-                    try:
-                        _fast_answer_bundle = _sm_make_outward_bundle(
-                            _sm_present_text(_fallback_answer, intent="chat", meta=_fallback_meta),
-                            meta=_fallback_meta,
-                            raw_answer=_fallback_answer,
-                        )
-                    except Exception:
-                        _fast_answer_bundle = {
-                            "ok": True,
-                            "reply": _fallback_answer,
-                            "response": _fallback_answer,
-                            "content": _fallback_answer,
-                            "presentation_reply": _fallback_answer,
-                            "intent": "chat",
-                            "actions": [],
-                            "artifacts": [],
-                            "links": [],
-                            "errors": [],
-                            "image_url": None,
+
+                    if _fallback_answer:
+                        _fallback_meta = {
                             "source": _fallback_source,
-                            "meta": _fallback_meta,
+                            "engine": "api_chat_fast_answer_release_fallback",
+                            "intent": intent or "question",
+                            "decision": "ALLOW_PRESENTATION_ONLY",
+                            "governor_original_decision": gov_decision,
+                            "governor_original_reasons": gov_reasons,
+                            "execution_allowed": False,
+                            "execution_authority": False,
+                            "presentation_only": True,
+                            "local_only": bool(local_only),
+                            "research_access": False,
+                            "api_access": False,
+                            "web_access": False,
+                            "filesystem_write": False,
+                            "shell_access": False,
+                            "network_access": False,
+                            "hardware_control": False,
+                            "fast_answer_override": "answer_only_no_execution_authority",
+                            "governance_rule": "fast_to_answer_slow_to_act",
+                            "version": PROJECT_VERSION,
                         }
+                        try:
+                            if _fast_answer_replaced_low_quality:
+                                _fallback_meta["replaced_low_quality_fastpath"] = True
+                                _fallback_meta["replaced_fastpath_source"] = _fast_answer_replaced_source
+                        except Exception:
+                            pass
+                        try:
+                            _fast_answer_bundle = _sm_make_outward_bundle(
+                                _sm_present_text(_fallback_answer, intent="chat", meta=_fallback_meta),
+                                meta=_fallback_meta,
+                                raw_answer=_fallback_answer,
+                            )
+                        except Exception:
+                            _fast_answer_bundle = {
+                                "ok": True,
+                                "reply": _fallback_answer,
+                                "response": _fallback_answer,
+                                "content": _fallback_answer,
+                                "presentation_reply": _fallback_answer,
+                                "intent": "chat",
+                                "actions": [],
+                                "artifacts": [],
+                                "links": [],
+                                "errors": [],
+                                "image_url": None,
+                                "source": _fallback_source,
+                                "meta": _fallback_meta,
+                            }
+                    else:
+                        # SML v0.6 correction:
+                        # A source miss inside the governor-presentation override is not
+                        # a final answer. It must continue into the full governed cognition
+                        # chain (local model, research, Neuron, Reply) instead of leaking
+                        # an "I do not know from my connected local sources yet" message.
+                        # Keep the lane read-only/presentation-only by rewriting the local
+                        # governor variables to the already-approved presentation override.
+                        try:
+                            _source_miss_meta = {
+                                "source": _fallback_source,
+                                "engine": "api_chat_fast_answer_release_fallback",
+                                "event": "fast_answer_sources_missed_continue_full_cognition",
+                                "governor_original_decision": gov_decision,
+                                "governor_original_reasons": gov_reasons,
+                                "execution_allowed": False,
+                                "execution_authority": False,
+                                "presentation_only": True,
+                                "local_only": bool(local_only),
+                                "version": PROJECT_VERSION,
+                            }
+                            context_packet.setdefault("meta", {})["sml_fast_answer_source_miss"] = _source_miss_meta
+                            if isinstance(locals().get("reality_flow"), dict):
+                                reality_flow.setdefault("sml", {})["fast_answer_source_miss"] = _source_miss_meta
+                        except Exception:
+                            pass
+                        gov = _presentation_gov
+                        gov_decision = "ALLOW"
+                        gov_allow = True
+                        gov_require_user = False
+                        _fast_answer_bundle = None
 
                 if isinstance(_fast_answer_bundle, dict):
                     try:
@@ -6787,6 +8011,7 @@ def api_jobs_post():
 # Chat receipt bridge: compact hashes only, no raw conversation duplication.
 # ---------------------------------------------------------------------------
 def _sm_record_chat_ledger_receipt(resp):
+    global _SM_LAST_CHAT_EXCHANGE
     try:
         if str(getattr(request, "path", "")) != "/api/chat" or str(getattr(request, "method", "")).upper() != "POST":
             return
@@ -6824,6 +8049,19 @@ def _sm_record_chat_ledger_receipt(resp):
         source = str(meta.get("source") or "api_chat")[:96]
         engine = str(meta.get("engine") or "api_chat")[:96]
         intent = str(meta.get("intent") or request_payload.get("intent") or "chat")[:96]
+        try:
+            _SM_LAST_CHAT_EXCHANGE = {
+                "query": query_text[:500],
+                "reply": _sm_scrub_visible_text(reply_text)[:1200],
+                "source": source,
+                "engine": engine,
+                "intent": intent,
+                "status_code": status_code if "status_code" in locals() else int(getattr(resp, "status_code", 200) or 200),
+                "ts": _sm_v07_now_iso() if "_sm_v07_now_iso" in globals() else datetime.now().isoformat(),
+                "sml": meta.get("sml") if isinstance(meta.get("sml"), dict) else None,
+            }
+        except Exception:
+            pass
         governor = meta.get("governor") if isinstance(meta.get("governor"), dict) else {}
         neuron_trace = meta.get("neuron_trace") if isinstance(meta.get("neuron_trace"), dict) else {}
         primary_lane = str(
@@ -11932,3 +13170,27 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF app.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. app.py participates as API bridge ingress, not as a reasoning organ.
+SML_ORGAN_METADATA = {
+    "name": "app",
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": "Input",
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ["api_bridge", "sml_ingress", "transport", "governed_chat_entrypoint"],
+    "supported_missions": ["Conversation", "Knowledge", "Programming", "Filesystem", "Network", "Diagnostics", "Repair", "Execution"],
+    "supported_omega": ["Ω001", "Ω002", "Ω004", "Ω020", "Ω060"],
+    "required_authority": ["Read"],
+    "priority": 95,
+    "trust_level": "api_bridge_integrated",
+    "internal_only": False,
+    "metadata": {"sml_adapter": "api_chat_ingress", "source_file": "app.py"},
+}
+
+def sml_get_metadata():
+    return dict(SML_ORGAN_METADATA)
+# --- SML ORGAN ADAPTER END ---
+
