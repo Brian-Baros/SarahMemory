@@ -1339,7 +1339,9 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False, user_text: Optional
     # Strip hidden reasoning blocks (common tags)
     try:
         t = re.sub(r"(?is)<\s*(think|analysis)\s*>.*?<\s*/\s*\1\s*>", "", t)
+        t = re.sub(r"(?is)<\s*(think|analysis)\s*>.*\Z", "", t)
         t = re.sub(r"(?is)\[\s*(think|analysis)\s*\].*?\[\s*/\s*\1\s*\]", "", t)
+        t = re.sub(r"(?is)\[\s*(think|analysis)\s*\].*\Z", "", t)
     except Exception:
         pass
 
@@ -1363,6 +1365,12 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False, user_text: Optional
             r"(?i)^\s*(role|intent|tone|complexity|mood(?:\s*profile)?|context|query|parameters?|"
             r"temp(?:erature)?|top[_\s]?p|max[_\s]?tokens?|model(?:_used)?|provider|source)\s*[:=].*$"
         )
+        internal_pat = re.compile(
+            r"(?i)(runtime_identity_override|ingress route confidence|structured action request|"
+            r"no engine produced an answer|provide more constraints or enable an applicable tier|"
+            r"from ailearning\.db:qacache|from ai_learning\.db:qacache|vetted_local_llm_general|"
+            r"vettedlocalllm_general|pdhaddenglishcounterw failed|memory\s*=\s*\{)"
+        )
         cleaned = []
         for line in t.split("\n"):
             if drop_pat.match(line or ""):
@@ -1372,6 +1380,8 @@ def _sm_sanitize_user_text(text: str, for_tts: bool = False, user_text: Optional
             if re.match(r"(?i)^\s*\(\s*intent\s*:[^\)]*\)\s*$", line or ""):
                 continue
             if (line or "").strip() in ("[]", "[ ]"):
+                continue
+            if internal_pat.search(line or ""):
                 continue
             cleaned.append(line)
         t = "\n".join(cleaned).strip()
@@ -2128,3 +2138,75 @@ def get_identity_response(user_input: Optional[str] = None) -> str:  # type: ign
 # ====================================================================
 # END OF SarahMemoryReply.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryReply',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Unknown',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['presentation_reply'],
+    "supported_missions": ['Conversation'],
+    "supported_omega": ['Ω001'],
+    "required_authority": ['Read'],
+    "priority": 40,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryReply.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryReply',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryReply', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+
+# --- SML REPLY SPECIALIZATION START ---
+def sml_attach_reply_meta(bundle, packet):
+    """Attach compact SML packet metadata to a reply bundle."""
+    from SarahMemorySMLProtocol import sml_attach_bundle_meta
+    if not isinstance(bundle, dict):
+        return bundle
+    return sml_attach_bundle_meta(bundle, packet)
+# --- SML REPLY SPECIALIZATION END ---
+

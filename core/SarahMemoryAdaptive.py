@@ -1904,3 +1904,74 @@ def build_emotion_affect_packet(user_input: str, context_packet: Optional[Dict[s
 # ====================================================================
 # END OF SarahMemoryAdaptive.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryAdaptive',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Reasoning',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['adaptive_state', 'reasoning'],
+    "supported_missions": ['Conversation', 'Knowledge', 'Planning', 'Programming'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω005', 'Ω010', 'Ω020', 'Ω030', 'Ω040'],
+    "required_authority": ['Read'],
+    "priority": 70,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryAdaptive.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryAdaptive',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryAdaptive', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+
+# --- SML ADAPTIVE SPECIALIZATION START ---
+def sml_update_adaptive_packet(packet, vector=None):
+    """Update only the SML adaptive section; this does not alter facts/truth."""
+    from SarahMemorySMLProtocol import get_protocol, SMLPacket
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    return get_protocol().update_adaptive(pkt, vector=vector or None)
+# --- SML ADAPTIVE SPECIALIZATION END ---
+

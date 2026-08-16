@@ -1014,16 +1014,124 @@ def _provider_flag_attr(provider: str) -> Optional[str]:
         "mesh": "MESH_API",
     }.get(p)
 
+def _sm_local_llm_auto_available() -> bool:
+    """Bounded local model presence check.
+
+    This prevents SarahMemory from roadblocking safe general questions merely
+    because a boolean flag was not toggled while local models are physically
+    present. It only inspects project-approved model roots and never downloads.
+    """
+    try:
+        if str(os.getenv("SARAH_DISABLE_LOCAL_LLM_AUTO", "0")).strip().lower() in ("1", "true", "yes", "on"):
+            return False
+        roots = []
+        try:
+            root = _sm_project_root_from_this_file()
+            roots.extend([
+                os.path.join(root, "data", "models"),
+                os.path.join(root, "resources", "models"),
+            ])
+        except Exception:
+            pass
+        try:
+            cfg_models = os.fspath(getattr(config, "MODELS_DIR", "") or "")
+            if cfg_models:
+                roots.append(cfg_models)
+        except Exception:
+            pass
+        markers = {"config.json", "tokenizer.json", "tokenizer.model", "generation_config.json", "pytorch_model.bin", "model.safetensors"}
+        checked = 0
+        for root in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            try:
+                for base, dirs, files in os.walk(root):
+                    checked += 1
+                    if checked > 1000:
+                        break
+                    if markers.intersection(set(files)) or any(str(f).lower().endswith(".gguf") for f in files):
+                        return True
+                    # keep bounded and ignore hidden/cache churn
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in {'__pycache__', '.git'}][:16]
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def _sm_local_llm_registry_available() -> bool:
+    """Return True when SarahMemoryLLM has a user-selected local generation model.
+
+    This is intentionally metadata-only. It does not load the model and it does
+    not scan arbitrary drives. The model registry already records approved
+    external roots selected by the user in the model manager.
+    """
+    try:
+        import SarahMemoryLLM as _SMLLM  # type: ignore
+        for category in ("reasoning", "coder"):
+            try:
+                active = getattr(_SMLLM, "get_active_model_for_api", lambda _c: {}) (category) or {}
+            except Exception:
+                active = {}
+            if isinstance(active, dict):
+                local_dir = os.path.abspath(os.path.expanduser(str(active.get("local_dir") or "").strip()))
+                adapter = str(((active.get("record") or {}) if isinstance(active.get("record"), dict) else {}).get("adapter_type") or "transformers").lower()
+                if local_dir and os.path.isdir(local_dir) and adapter in ("transformers", "pytorch", "safetensors", "custom", "gguf"):
+                    return True
+        # Last metadata-only fallback: inspect the persisted registry for any ready
+        # reasoning/coder transformers model, without loading it.
+        try:
+            registry = getattr(_SMLLM, "scan_model_registry", lambda persist=False: {}) (persist=False) or {}
+        except Exception:
+            registry = {}
+        models = registry.get("models") if isinstance(registry, dict) else {}
+        if isinstance(models, dict):
+            for rec in models.values():
+                if not isinstance(rec, dict):
+                    continue
+                cat = str(rec.get("category") or rec.get("detected_category") or "").lower()
+                adapter = str(rec.get("adapter_type") or "").lower()
+                path = os.path.abspath(os.path.expanduser(str(rec.get("path") or "")))
+                if cat in ("reasoning", "coder") and adapter in ("transformers", "pytorch", "safetensors", "custom", "gguf") and bool(rec.get("installed")) and not bool(rec.get("missing")) and path and os.path.isdir(path):
+                    return True
+    except Exception:
+        return False
+    return False
+
+
+def _sm_ollama_local_available(timeout: float = 0.35) -> bool:
+    """Return True when a local Ollama daemon is reachable.
+
+    This is a bounded localhost-only probe. Ollama is treated as local model
+    infrastructure, not external web/API research.
+    """
+    try:
+        url = str(API_URLS.get("ollama") or "http://127.0.0.1:11434/api/chat")
+        base = url.rsplit("/api/", 1)[0]
+        r = requests.get(base + "/api/tags", timeout=max(0.1, float(timeout)))
+        return bool(r.status_code == 200)
+    except Exception:
+        return False
+
+
 def _provider_is_enabled(provider: str) -> bool:
     p = (provider or "").strip().lower()
     if p == "anthropic":
         return bool(getattr(config, "ANTHROPIC_API", False) or getattr(config, "CLAUDE_API", False))
     attr = _provider_flag_attr(p)
-    return bool(getattr(config, attr, False)) if attr else False
+    flagged = bool(getattr(config, attr, False)) if attr else False
+    if p == "local_llm":
+        return bool(flagged or _sm_local_llm_auto_available() or _sm_local_llm_registry_available())
+    if p == "ollama":
+        return bool(flagged or os.getenv("OLLAMA_MODEL") or os.getenv("SARAH_OLLAMA_MODEL") or _sm_ollama_local_available())
+    if p == "local":
+        return bool(flagged)
+    return flagged
 
 def _provider_requires_key(provider: str) -> bool:
     p = (provider or "").strip().lower()
-    return p not in {"local", "local_llm", "mesh"}
+    return p not in {"local", "local_llm", "ollama", "mesh"}
 
 def _provider_has_credentials(provider: str) -> bool:
     p = (provider or "").strip().lower()
@@ -1695,45 +1803,92 @@ def _call_cohere(
     except Exception as e:
         return None, str(e)
 
+def _sm_resolve_ollama_model(requested_model: str = "") -> str:
+    requested = str(os.getenv("SARAH_OLLAMA_MODEL") or os.getenv("OLLAMA_MODEL") or requested_model or "").strip()
+    if requested and requested.lower() not in ("auto", "default"):
+        return requested
+    try:
+        url = str(API_URLS.get("ollama") or "http://127.0.0.1:11434/api/chat")
+        base = url.rsplit("/api/", 1)[0]
+        r = requests.get(base + "/api/tags", timeout=0.75)
+        if r.status_code == 200:
+            data = r.json() if r.content else {}
+            models = data.get("models") if isinstance(data, dict) else []
+            names = []
+            if isinstance(models, list):
+                for rec in models:
+                    if isinstance(rec, dict) and rec.get("name"):
+                        names.append(str(rec.get("name")))
+            preferred_terms = ("qwen", "llama", "mistral", "phi", "gemma")
+            for term in preferred_terms:
+                for name in names:
+                    if term in name.lower():
+                        return name
+            if names:
+                return names[0]
+    except Exception:
+        pass
+    return requested or str(DEFAULT_MODELS.get("ollama") or "qwen3:6b")
+
+
 def _call_ollama(
     prompt: str,
     model: str,
     key: str
 ) -> Tuple[Optional[str], Optional[str]]:
+    """Call the local Ollama runtime.
+
+    Ollama is a localhost model runtime. It does not require an API key and must
+    not be blocked by external API-research policy. Prefer /api/chat and parse
+    message.content; fall back to /api/generate and parse response.
     """
-    Call ollama API.
+    url = API_URLS.get("ollama") or "http://127.0.0.1:11434/api/chat"
+    model = _sm_resolve_ollama_model(model)
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
 
-    Returns:
-        Tuple of (content, error)
-    """
-    url = API_URLS["ollama"]
-
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-    }
-
-    payload = {
+    chat_payload = {
         "model": model,
-        "message": prompt,
+        "messages": [
+            {"role": "system", "content": "You are SarahMemory. Answer clearly and helpfully."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
     }
 
     try:
         response = requests.post(
             url,
             headers=headers,
-            json=payload,
+            json=chat_payload,
             timeout=getattr(config, 'API_TIMEOUT', 30)
         )
+        if response.status_code == 200:
+            data = response.json() if response.content else {}
+            content = ""
+            if isinstance(data, dict):
+                msg = data.get("message")
+                if isinstance(msg, dict):
+                    content = str(msg.get("content") or "").strip()
+                if not content:
+                    content = str(data.get("response") or data.get("text") or data.get("content") or "").strip()
+            if content:
+                return content, None
 
-        if response.status_code != 200:
-            return None, f"HTTP {response.status_code}: {response.text[:200]}"
-
-        data = response.json()
-
-        content = data.get("text", "").strip()
-        return content, None
-
+        # Fallback to /api/generate; some local runtimes expose only this path.
+        try:
+            base = str(url).rsplit("/api/", 1)[0]
+            gen_payload = {"model": model, "prompt": prompt, "stream": False}
+            gen = requests.post(base + "/api/generate", headers=headers, json=gen_payload, timeout=getattr(config, 'API_TIMEOUT', 30))
+            if gen.status_code == 200:
+                data = gen.json() if gen.content else {}
+                content = str((data or {}).get("response") or (data or {}).get("text") or "").strip()
+                if content:
+                    return content, None
+            return None, f"Ollama HTTP {response.status_code}: {response.text[:200]} | generate HTTP {gen.status_code}: {gen.text[:200]}"
+        except Exception as gen_exc:
+            return None, f"Ollama chat HTTP {response.status_code}: {response.text[:200]} | generate failed: {gen_exc}"
     except Exception as e:
         return None, str(e)
     
@@ -1912,6 +2067,14 @@ def _resolve_local_llm_repo(intent: str, user_text: str, meta: Optional[dict] = 
                         _LOCAL_LLM_PATH_OVERRIDES[repo] = local_dir
                         return repo, [], "model_registry"
                     if repo and local_dir and os.path.isdir(local_dir):
+                        # The active SarahMemoryLLM registry is an explicit user/runtime
+                        # model selection. Treat that as a governed local-model source
+                        # unless the operator explicitly disables user-selected external
+                        # model paths. This prevents safe answer-only cognition from
+                        # roadblocking when Qwen/Phi/Mistral are installed outside ./data/models.
+                        if str(os.getenv("SARAH_DISABLE_USER_SELECTED_LOCAL_MODEL_PATHS", "0")).strip().lower() not in ("1", "true", "yes", "on"):
+                            _LOCAL_LLM_PATH_OVERRIDES[repo] = local_dir
+                            return repo, [], "model_registry_user_selected_external"
                         logger.warning("[LOCAL_LLM][PATH_GUARD] Ignoring external model path outside project models: %s", local_dir)
         except Exception:
             pass
@@ -1973,7 +2136,12 @@ def _load_local_llm(repo: str, local_dir_override: Optional[str] = None) -> Tupl
     except Exception:
         pass
 
-    if not _sm_local_model_path_allowed(local_dir):
+    _user_selected_override = bool(
+        repo in _LOCAL_LLM_PATH_OVERRIDES
+        and os.path.abspath(os.path.expanduser(str(_LOCAL_LLM_PATH_OVERRIDES.get(repo) or ""))) == local_dir
+        and str(os.getenv("SARAH_DISABLE_USER_SELECTED_LOCAL_MODEL_PATHS", "0")).strip().lower() not in ("1", "true", "yes", "on")
+    )
+    if (not _sm_local_model_path_allowed(local_dir)) and (not _user_selected_override):
         err = (
             "Local model path blocked by storage governor because it is outside the active project data/resources model roots: "
             f"{local_dir}. Move/select the model under ./data/models or set SARAH_ALLOW_EXTERNAL_LOCAL_MODEL_PATHS=1 explicitly."
@@ -2105,6 +2273,72 @@ def _load_local_llm(repo: str, local_dir_override: Optional[str] = None) -> Tupl
             pass
         return None, None, err
 
+def _sm_local_dir_has_gguf(local_dir: str) -> bool:
+    try:
+        if not local_dir or not os.path.isdir(local_dir):
+            return False
+        for name in os.listdir(local_dir):
+            if str(name).lower().endswith(".gguf"):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _sm_first_gguf_file(local_dir: str) -> Optional[str]:
+    try:
+        if not local_dir or not os.path.isdir(local_dir):
+            return None
+        files = sorted([os.path.join(local_dir, f) for f in os.listdir(local_dir) if str(f).lower().endswith(".gguf")])
+        return files[0] if files else None
+    except Exception:
+        return None
+
+
+_LOCAL_GGUF_CACHE: Dict[str, Any] = {}
+
+
+def _call_local_llm_gguf(prompt: str, local_dir: str, *, repo: str, max_tokens: int = 512, temperature: float = 0.7) -> Tuple[Optional[str], Optional[str]]:
+    """Execute a local GGUF model through llama-cpp-python when available.
+
+    This avoids routing selected Qwen/Mistral/Phi GGUF models through the HF
+    Transformers loader, which cannot load GGUF files.
+    """
+    gguf = _sm_first_gguf_file(local_dir)
+    if not gguf:
+        return None, f"No GGUF file found under {local_dir}"
+    try:
+        from llama_cpp import Llama  # type: ignore
+    except Exception as exc:
+        return None, f"GGUF runtime unavailable: install llama-cpp-python or expose the model through local Ollama. {exc}"
+    try:
+        cache_key = os.path.abspath(gguf)
+        llm = _LOCAL_GGUF_CACHE.get(cache_key)
+        if llm is None:
+            n_ctx = int(os.getenv("SARAH_GGUF_N_CTX", "4096") or "4096")
+            n_gpu_layers = int(os.getenv("SARAH_GGUF_N_GPU_LAYERS", "0") or "0")
+            llm = Llama(model_path=gguf, n_ctx=n_ctx, n_gpu_layers=n_gpu_layers, verbose=False)
+            _LOCAL_GGUF_CACHE[cache_key] = llm
+        text_in = (
+            "System: You are SarahMemory. Answer clearly and helpfully.\n"
+            f"User: {prompt}\nAssistant:"
+        )
+        out = llm(text_in, max_tokens=int(max_tokens), temperature=float(max(0.0, temperature)), stop=["User:", "System:"])
+        content = ""
+        if isinstance(out, dict):
+            choices = out.get("choices")
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict):
+                    content = str(first.get("text") or first.get("message", {}).get("content") or "").strip()
+        content = _sm_sanitize_llm_text(content)
+        if content:
+            return content, None
+        return None, f"GGUF model returned empty output for {repo}"
+    except Exception as exc:
+        return None, f"GGUF inference failed for {repo}: {exc}"
+
+
 def _call_local_llm(
     prompt: str,
     model: Optional[str] = None,
@@ -2154,6 +2388,20 @@ def _call_local_llm(
         if not repo:
             continue
         tried.append(str(repo))
+
+        local_dir_for_repo = os.path.abspath(os.path.expanduser(str(_LOCAL_LLM_PATH_OVERRIDES.get(str(repo)) or "")))
+        if local_dir_for_repo and _sm_local_dir_has_gguf(local_dir_for_repo):
+            content, gguf_err = _call_local_llm_gguf(
+                prompt,
+                local_dir_for_repo,
+                repo=str(repo),
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            if content:
+                return content, None
+            last_err = gguf_err
+            continue
 
         llm, tok, err = _load_local_llm(str(repo))
         if err:
@@ -2381,7 +2629,7 @@ def send_to_api(
                 }
         else:
             # If caller explicitly asked for an external provider, force-reroute to local.
-            if requested not in ("local", "local_llm"):
+            if requested not in ("local", "local_llm", "ollama"):
                 if _provider_is_enabled("local_llm"):
                     provider = "local_llm"
                 elif _provider_is_enabled("local"):
@@ -2403,7 +2651,7 @@ def send_to_api(
     # NOTE: This flag is intended to gate *external* research/API calls. Local lanes are always allowed.
     if not getattr(config, 'API_RESEARCH_ENABLED', True):
         req = (provider or "").strip().lower()
-        if req in ("openai","claude","anthropic","mistral","gemini","huggingface","deepseek","groq","cohere","ollama","mesh"):
+        if req in ("openai","claude","anthropic","mistral","gemini","huggingface","deepseek","groq","cohere","mesh"):
             logger.warning("[BLOCKED] API research disabled in Globals (external provider blocked).")
             return {
                 "source": req,
@@ -2434,7 +2682,7 @@ def send_to_api(
         provider = "claude"
 
     # Normalize legacy/local provider aliases
-    if provider in ("ollama", "local_llm", "model_catalog"):
+    if provider in ("local_llm", "model_catalog"):
         provider = "local_llm"
 
     if provider in visited:
@@ -2490,8 +2738,14 @@ def send_to_api(
         # else: keep as openai, but it will fail the enabled check below
 
     # If chosen provider is disabled, pick best enabled provider for intent.
+    # Exception: an explicit local_llm request is the governed local model lane;
+    # do not silently reroute it to cloud/external providers. Return the local
+    # provider's own diagnostic if no local runtime/model is actually available.
     if not _provider_is_enabled(provider):
-        provider = get_best_provider_for_intent(intent)
+        if provider in ("local_llm", "localmodels", "local_llm_api"):
+            pass
+        else:
+            provider = get_best_provider_for_intent(intent)
 
     # Get API key
     key = API_KEYS.get(provider)
@@ -3101,7 +3355,9 @@ __all__ = [
 # -----------------------------------------------------------------------------
 _SANITIZE_RE_BLOCKS = [
     re.compile(r"(?is)<think>.*?</think>"),
+    re.compile(r"(?is)<think>.*\Z"),
     re.compile(r"(?is)<analysis>.*?</analysis>"),
+    re.compile(r"(?is)<analysis>.*\Z"),
     re.compile(r"(?is)<system>.*?</system>"),
 ]
 _SANITIZE_RE_LINES = [
@@ -3131,6 +3387,18 @@ def _sm_sanitize_llm_text(text: str) -> str:
     # Remove fenced "system/user/assistant" transcript lines anywhere
     for rx in _SANITIZE_RE_LINES:
         t = rx.sub("", t)
+    internal_pat = re.compile(
+        r"(?i)(runtime_identity_override|ingress route confidence|structured action request|"
+        r"no engine produced an answer|provide more constraints or enable an applicable tier|"
+        r"from ailearning\.db:qacache|from ai_learning\.db:qacache|vetted_local_llm_general|"
+        r"vettedlocalllm_general|pdhaddenglishcounterw failed|memory = \{\"error\")"
+    )
+    kept = []
+    for line in t.split("\n"):
+        if internal_pat.search(line or ""):
+            continue
+        kept.append(line)
+    t = "\n".join(kept)
     # Remove common token markers
     t = re.sub(r"(?im)^\s*<\|?(system|user|assistant)\|?>\s*$", "", t)
     # Collapse excessive blank lines
@@ -3143,3 +3411,66 @@ def _sm_sanitize_llm_text(text: str) -> str:
 # ====================================================================
 # END OF SarahMemoryAPI.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryAPI',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Input',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['api_bridge', 'input'],
+    "supported_missions": ['Conversation'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω004'],
+    "required_authority": ['Read'],
+    "priority": 60,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryAPI.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryAPI',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryAPI', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+

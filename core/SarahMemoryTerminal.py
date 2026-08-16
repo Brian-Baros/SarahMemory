@@ -3758,3 +3758,73 @@ def terminal_api_agent(payload: Dict[str, Any], *, caller: str = "api") -> Dict[
 # ====================================================================
 # END OF SarahMemoryTerminal.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryTerminal',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Input',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['developer_terminal', 'input'],
+    "supported_missions": ['Conversation'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω004'],
+    "required_authority": ['Read'],
+    "priority": 60,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryTerminal.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryTerminal',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryTerminal', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+
+# --- SML TERMINAL SPECIALIZATION START ---
+def sml_terminal_packet(command_text, payload=None, context_packet=None):
+    """Create a governed SML packet for Terminal commands without executing them."""
+    from SarahMemorySMLProtocol import sml_build_ingress_packet
+    return sml_build_ingress_packet(str(command_text or ""), payload=payload or {}, context_packet=context_packet or {}, caller="SarahMemoryTerminal")
+# --- SML TERMINAL SPECIALIZATION END ---
+

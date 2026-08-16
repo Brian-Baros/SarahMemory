@@ -1088,3 +1088,74 @@ def _ensure_response_table(db_path: Optional[str] = None) -> None:
 # END OF SarahMemoryLedger.py v9.0.0
 # ====================================================================
 # END OF LINE
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryLedger',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Memory',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['ledger', 'memory'],
+    "supported_missions": ['Conversation'],
+    "supported_omega": ['Ω001', 'Ω010', 'Ω080', 'Ω090'],
+    "required_authority": ['Read'],
+    "priority": 75,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryLedger.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryLedger',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryLedger', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+
+# --- SML LEDGER SPECIALIZATION START ---
+def sml_record_packet(packet, note="Ledger observed SML packet"):
+    """Append an in-packet immutable-style ledger entry without touching external databases."""
+    from SarahMemorySMLProtocol import SMLPacket, sml_touch_packet
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    return sml_touch_packet(pkt, organ="SarahMemoryLedger", action="ledger_observe", omega="Ω090", note=note)
+# --- SML LEDGER SPECIALIZATION END ---
+

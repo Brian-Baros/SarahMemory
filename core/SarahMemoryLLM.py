@@ -1021,10 +1021,11 @@ def get_active_model_for_api(category: str) -> Dict[str, Any]:
         rec = get_active_model_record(cat, refresh=True)
     if not rec:
         return {}
-    # SarahMemoryAPI.py currently runs local text-generation through HF Transformers.
-    # Other adapters remain selectable/classifiable in Settings but are not handed to
-    # the in-process Local LLM runner until a matching runtime adapter exists.
-    if str(rec.get("adapter_type") or "").lower() not in ("transformers",):
+    # SarahMemoryAPI.py supports HF Transformers and, through a separate adapter,
+    # local GGUF models via llama-cpp-python/Ollama fallback. Do not hide a selected
+    # Qwen/Phi/Mistral GGUF model from the cognitive answer lane.
+    adapter = str(rec.get("adapter_type") or "").lower()
+    if adapter not in ("transformers", "gguf"):
         return {}
     return {
         "ok": True,
@@ -1032,6 +1033,7 @@ def get_active_model_for_api(category: str) -> Dict[str, Any]:
         "model_id": rec.get("id"),
         "repo": rec.get("repo") or rec.get("display_name") or rec.get("id"),
         "local_dir": rec.get("path"),
+        "adapter_type": adapter,
         "source": "model_registry",
         "record": rec,
     }
@@ -2467,3 +2469,66 @@ if __name__ == "__main__":
 # ====================================================================
 # END OF SarahMemoryLLM.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryLLM',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Unknown',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": [],
+    "supported_missions": ['Conversation'],
+    "supported_omega": ['Ω001'],
+    "required_authority": ['Read'],
+    "priority": 40,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryLLM.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryLLM',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryLLM', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+

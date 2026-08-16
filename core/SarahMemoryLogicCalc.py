@@ -1538,6 +1538,223 @@ class SolveResult:
     meta: Dict[str, Any] = field(default_factory=dict)
     meaning: Optional[MeaningGraph] = None
 
+
+# =============================================================================
+# NUMERIC REPRESENTATION INTERPRETER (BINARY / HEX / OCTAL / SIGNED INTEGERS)
+# =============================================================================
+# This is deterministic math, not a canned answer pool. SML may route numeric
+# representation missions here; LogicCalc owns the parse/interpret/convert work.
+
+_NUMERIC_MAX_BITS = 256
+
+
+def _strip_numeric_separators(token: str) -> str:
+    return re.sub(r"[_\s]", "", str(token or "").strip())
+
+
+def _numeric_bit_width_from_token(digits: str, base: int, value: int, explicit_width: Optional[int]) -> int:
+    if explicit_width is not None:
+        return int(explicit_width)
+    cleaned = _strip_numeric_separators(digits).lstrip("+-")
+    if base == 2:
+        return max(1, len(cleaned))
+    if base == 8:
+        return max(1, len(cleaned) * 3)
+    if base == 16:
+        return max(1, len(cleaned) * 4)
+    return max(1, int(value).bit_length())
+
+
+def _format_twos_complement(value: int, width: int) -> str:
+    mask = (1 << width) - 1
+    return format(value & mask, f"0{width}b")
+
+
+def _numeric_signed_value(unsigned_value: int, width: int) -> int:
+    sign_bit = 1 << (width - 1)
+    modulus = 1 << width
+    return int(unsigned_value - modulus) if unsigned_value & sign_bit else int(unsigned_value)
+
+
+def _extract_numeric_width(text: str) -> Optional[int]:
+    t = str(text or "").lower()
+    patterns = (
+        r"\b(?:signed|unsigned)?\s*(\d{1,3})\s*[- ]?bit\b",
+        r"\b(?:int|uint)(8|16|32|64|128|256)\b",
+        r"\bwidth\s*[:=]?\s*(\d{1,3})\b",
+    )
+    for pattern in patterns:
+        m = re.search(pattern, t)
+        if not m:
+            continue
+        try:
+            width = int(m.group(1))
+            if 1 <= width <= _NUMERIC_MAX_BITS:
+                return width
+        except Exception:
+            continue
+    return None
+
+
+def _numeric_base_hint(text: str) -> Optional[int]:
+    t = str(text or "").lower()
+    if re.search(r"\b(binary|bin|base\s*2|radix\s*2)\b", t):
+        return 2
+    if re.search(r"\b(octal|oct|base\s*8|radix\s*8)\b", t):
+        return 8
+    if re.search(r"\b(hex|hexadecimal|base\s*16|radix\s*16)\b", t):
+        return 16
+    if re.search(r"\b(decimal|base\s*10|radix\s*10)\b", t):
+        return 10
+    return None
+
+
+def _looks_like_numeric_representation_text(text: str) -> bool:
+    t = str(text or "")
+    tl = t.lower()
+    if re.search(r"\b0[bB][01_]+\b|\b0[xX][0-9A-Fa-f_]+\b|\b0[oO][0-7_]+\b", t):
+        return True
+    if re.search(r"\b(binary|bin|hex|hexadecimal|octal|oct|radix|base\s*(?:2|8|10|16)|two'?s complement|signed|unsigned|int(?:8|16|32|64|128|256)|uint(?:8|16|32|64|128|256))\b", tl):
+        return bool(re.search(r"[0-9]", tl))
+    if re.search(r"\b(?:format of a number|as a number|as number|in decimal|to decimal|convert)\b", tl):
+        return bool(re.search(r"\b[01][01_]{3,}\b", tl))
+    return False
+
+
+def _numeric_candidate_from_text(text: str) -> Optional[Dict[str, Any]]:
+    raw = str(text or "")
+    t = raw.lower()
+    explicit_base = _numeric_base_hint(raw)
+
+    # Explicit prefixes are highest-confidence and are never ambiguous.
+    m = re.search(r"(?<![A-Za-z0-9_])([+-]?0[bB][01_]+)(?![A-Za-z0-9_])", raw)
+    if m:
+        return {"token": m.group(1), "digits": m.group(1).replace("+", "").replace("-", "")[2:], "base": 2, "base_source": "prefix_0b", "signed_literal": m.group(1).startswith("-")}
+    m = re.search(r"(?<![A-Za-z0-9_])([+-]?0[xX][0-9A-Fa-f_]+)(?![A-Za-z0-9_])", raw)
+    if m:
+        return {"token": m.group(1), "digits": m.group(1).replace("+", "").replace("-", "")[2:], "base": 16, "base_source": "prefix_0x", "signed_literal": m.group(1).startswith("-")}
+    m = re.search(r"(?<![A-Za-z0-9_])([+-]?0[oO][0-7_]+)(?![A-Za-z0-9_])", raw)
+    if m:
+        return {"token": m.group(1), "digits": m.group(1).replace("+", "").replace("-", "")[2:], "base": 8, "base_source": "prefix_0o", "signed_literal": m.group(1).startswith("-")}
+
+    # Explicit base words allow a bare candidate token. Choose the first valid
+    # token for the declared base and reject invalid digits deterministically.
+    tokens = re.findall(r"(?<![A-Za-z0-9_])([+-]?[0-9A-Fa-f][0-9A-Fa-f_]*)(?![A-Za-z0-9_])", raw)
+    if explicit_base is not None:
+        for tok in tokens:
+            body = _strip_numeric_separators(tok).lstrip("+-")
+            if not body:
+                continue
+            allowed = {2: r"^[01]+$", 8: r"^[0-7]+$", 10: r"^[0-9]+$", 16: r"^[0-9A-Fa-f]+$"}[explicit_base]
+            if re.match(allowed, body):
+                return {"token": tok, "digits": body, "base": explicit_base, "base_source": "explicit_base_word", "signed_literal": tok.startswith("-")}
+        return {"error": "invalid_digits_for_declared_base", "base": explicit_base, "token": tokens[0] if tokens else ""}
+
+    # Suffix forms: 1010b, 77o, FFh. Require suffix to avoid word collisions.
+    m = re.search(r"(?<![A-Za-z0-9_])([01][01_]*)[bB](?![A-Za-z0-9_])", raw)
+    if m and len(_strip_numeric_separators(m.group(1))) >= 2:
+        return {"token": m.group(0), "digits": m.group(1), "base": 2, "base_source": "suffix_b", "signed_literal": False}
+    m = re.search(r"(?<![A-Za-z0-9_])([0-7][0-7_]*)[oO](?![A-Za-z0-9_])", raw)
+    if m:
+        return {"token": m.group(0), "digits": m.group(1), "base": 8, "base_source": "suffix_o", "signed_literal": False}
+    m = re.search(r"(?<![A-Za-z0-9_])([0-9A-Fa-f][0-9A-Fa-f_]*)[hH](?![A-Za-z0-9_])", raw)
+    if m:
+        return {"token": m.group(0), "digits": m.group(1), "base": 16, "base_source": "suffix_h", "signed_literal": False}
+
+    # Inferred binary: an unprefixed 0/1-only token with enough digits and a
+    # numeric-format context. This fixes questions like: "what is 011000111001
+    # in the format of a number" without hardcoding the answer.
+    if re.search(r"\b(format of a number|as a number|as number|in decimal|to decimal|convert|binary-looking|bit pattern)\b", t):
+        candidates = re.findall(r"(?<![A-Za-z0-9_])([01][01_]{3,})(?![A-Za-z0-9_])", raw)
+        if candidates:
+            # Prefer leading-zero binary-looking values because they are commonly
+            # representation strings rather than decimal quantities.
+            candidates.sort(key=lambda x: (0 if _strip_numeric_separators(x).startswith("0") else 1, -len(_strip_numeric_separators(x))))
+            return {"token": candidates[0], "digits": candidates[0], "base": 2, "base_source": "inferred_binary_from_01_digits_and_numeric_context", "signed_literal": False, "ambiguous_without_context": True}
+    return None
+
+
+def interpret_numeric_representation(query: str) -> SolveResult:
+    """Interpret binary/hex/octal/decimal integer representations up to 256 bits.
+
+    This is a deterministic LogicCalc source path. It never calls LLMs, web,
+    files, shell, devices, drivers, or governance authority. It converts and
+    explains numeric representation only.
+    """
+    q = _norm_space(query)
+    mg = MeaningGraph(meta={"intent": "numeric_representation", "max_bits": _NUMERIC_MAX_BITS})
+    if not _looks_like_numeric_representation_text(q):
+        mg.add("numeric_representation_not_detected", [Term("raw", "concept", q)])
+        return SolveResult(ok=False, kind="numeric_format", text="No numeric representation pattern was detected.", meaning=mg, meta={"detected": False})
+
+    width = _extract_numeric_width(q)
+    signed_requested = bool(re.search(r"\b(signed|two'?s complement|twos complement|int(?:8|16|32|64|128|256)?)\b", q.lower())) and not bool(re.search(r"\bunsigned\b", q.lower()))
+    unsigned_requested = bool(re.search(r"\b(unsigned|uint(?:8|16|32|64|128|256)?)\b", q.lower()))
+    cand = _numeric_candidate_from_text(q)
+    if not cand:
+        mg.add("numeric_representation_missing_token", [Term("raw", "concept", q)])
+        return SolveResult(ok=False, kind="numeric_format", text="I detected a numeric-format request, but no valid integer token was found.", meaning=mg, meta={"detected": True, "error": "missing_numeric_token"})
+    if cand.get("error"):
+        mg.add("numeric_representation_invalid_digits", [Term("raw", "concept", q)], base=cand.get("base"), token=cand.get("token"))
+        return SolveResult(ok=False, kind="numeric_format", text=f"The token {cand.get('token')!r} is invalid for base {cand.get('base')}.", meaning=mg, meta={"detected": True, "error": cand.get("error"), "base": cand.get("base"), "token": cand.get("token")})
+
+    token = str(cand.get("token") or "")
+    digits = _strip_numeric_separators(str(cand.get("digits") or ""))
+    base = int(cand.get("base") or 10)
+    negative_literal = bool(cand.get("signed_literal"))
+    try:
+        magnitude = int(digits, base)
+    except Exception as exc:
+        return SolveResult(ok=False, kind="numeric_format", text=f"Numeric parse failed: {exc}", meaning=mg, meta={"detected": True, "error": str(exc), "token": token, "base": base})
+    unsigned_value = -magnitude if negative_literal and base == 10 else magnitude
+
+    inferred_width = _numeric_bit_width_from_token(digits, base, abs(unsigned_value), width)
+    if inferred_width < 1 or inferred_width > _NUMERIC_MAX_BITS:
+        return SolveResult(ok=False, kind="numeric_format", text=f"Bit width {inferred_width} is outside the supported 1–{_NUMERIC_MAX_BITS} bit range.", meaning=mg, meta={"error": "bit_width_out_of_range", "bit_width": inferred_width, "max_bits": _NUMERIC_MAX_BITS})
+    if abs(unsigned_value).bit_length() > _NUMERIC_MAX_BITS:
+        return SolveResult(ok=False, kind="numeric_format", text=f"The value exceeds the supported {_NUMERIC_MAX_BITS}-bit interpretation limit.", meaning=mg, meta={"error": "value_exceeds_256_bits", "bit_length": abs(unsigned_value).bit_length()})
+    if width is not None and unsigned_value >= 0 and unsigned_value >= (1 << inferred_width):
+        return SolveResult(ok=False, kind="numeric_format", text=f"The value {unsigned_value} does not fit in {inferred_width} bits.", meaning=mg, meta={"error": "value_does_not_fit_width", "value": unsigned_value, "bit_width": inferred_width})
+
+    mask = (1 << inferred_width) - 1
+    unsigned_masked = unsigned_value & mask if unsigned_value < 0 else unsigned_value
+    if unsigned_masked.bit_length() > inferred_width:
+        return SolveResult(ok=False, kind="numeric_format", text=f"The value {unsigned_masked} does not fit in {inferred_width} bits.", meaning=mg, meta={"error": "value_does_not_fit_width", "value": unsigned_masked, "bit_width": inferred_width})
+
+    signed_value = _numeric_signed_value(unsigned_masked, inferred_width) if (signed_requested or (width is not None and not unsigned_requested)) else None
+    binary_digits = format(unsigned_masked, f"0{inferred_width}b") if inferred_width <= _NUMERIC_MAX_BITS else format(unsigned_masked, "b")
+    hex_digits = format(unsigned_masked, "X")
+    oct_digits = format(unsigned_masked, "o")
+    base_name = {2: "binary", 8: "octal", 10: "decimal", 16: "hexadecimal"}.get(base, f"base-{base}")
+
+    result = {
+        "input": token,
+        "digits": digits,
+        "interpreted_base": base,
+        "interpreted_base_name": base_name,
+        "base_source": cand.get("base_source"),
+        "decimal_unsigned": unsigned_masked,
+        "decimal_signed": signed_value,
+        "bit_width": inferred_width,
+        "binary": "0b" + binary_digits,
+        "hex": "0x" + hex_digits,
+        "octal": "0o" + oct_digits,
+        "signed_requested": bool(signed_requested),
+        "unsigned_requested": bool(unsigned_requested),
+        "two_complement": _format_twos_complement(unsigned_masked, inferred_width),
+        "ambiguous_without_context": bool(cand.get("ambiguous_without_context", False)),
+        "max_supported_bits": _NUMERIC_MAX_BITS,
+    }
+    mg.add("numeric_representation", [Term("input", "number", token), Term("base", "number", base), Term("decimal_unsigned", "number", unsigned_masked)], bit_width=inferred_width, base_source=cand.get("base_source"))
+    if signed_value is not None:
+        mg.add("signed_interpretation", [Term("signed_value", "number", signed_value)], bit_width=inferred_width, method="twos_complement")
+        text = f"Interpreting {token} as signed {inferred_width}-bit {base_name} gives {signed_value}. Unsigned value: {unsigned_masked}."
+    else:
+        text = f"Interpreting {token} as {base_name} gives decimal {unsigned_masked}. Hex: 0x{hex_digits}. Octal: 0o{oct_digits}."
+        if bool(cand.get("ambiguous_without_context")):
+            text += " Base was inferred as binary from the 0/1-only numeric-format pattern."
+    return SolveResult(ok=True, kind="numeric_format", value=result, text=text, meaning=mg, meta={"deterministic": True, "max_bits": _NUMERIC_MAX_BITS, "source": "logiccalc_numeric_representation_interpreter", "network_used": False, "execution_authority": False})
+
 class ReasoningEngine:
     """
     The executive layer:
@@ -1557,6 +1774,12 @@ class ReasoningEngine:
     def route(self, query: str) -> SolveResult:
         q = _norm_space(query)
         ql = _lower(q)
+
+        # 0.5) Numeric representations / radix / signed-integer interpretation
+        # Deterministic math source path. This prevents binary/hex/octal questions
+        # from falling into local-LLM grinding or canned answer pools.
+        if self._looks_like_numeric_format(ql):
+            return self.numeric_format(q)
 
         # 1) Translation
         if self._looks_like_translation(ql):
@@ -1637,6 +1860,12 @@ class ReasoningEngine:
 
     def _looks_like_math(self, ql: str) -> bool:
         return bool(re.search(r"[\d\+\-\*/\^\(\)]", ql))
+
+    def _looks_like_numeric_format(self, ql: str) -> bool:
+        return _looks_like_numeric_representation_text(ql)
+
+    def numeric_format(self, query: str) -> SolveResult:
+        return interpret_numeric_representation(query)
 
 
     def _looks_like_vector_math(self, ql: str) -> bool:
@@ -3460,6 +3689,12 @@ def logiccalc_enterprise_self_test() -> Dict[str, Any]:
     )
     _record("neuron_axis_legacy_keyword_compatibility", bool(compat_gate.get("ok") and "governance_modifier->governance_score" in compat_gate.get("compatibility_aliases", [])), compat_gate)
 
+    nr = interpret_numeric_representation("what is 011000111001 in the format of a number")
+    _record("numeric_binary_inferred_to_decimal", bool(nr.ok and isinstance(nr.value, dict) and nr.value.get("decimal_unsigned") == 1593), nr.value if isinstance(nr.value, dict) else nr.text)
+
+    nr_hex = interpret_numeric_representation("interpret 0xFF as signed 8-bit integer")
+    _record("numeric_signed_8bit_hex", bool(nr_hex.ok and isinstance(nr_hex.value, dict) and nr_hex.value.get("decimal_signed") == -1), nr_hex.value if isinstance(nr_hex.value, dict) else nr_hex.text)
+
     passed = sum(1 for item in tests if item["passed"])
     return {
         "ok": passed == len(tests),
@@ -3500,7 +3735,7 @@ class SarahMemoryLogicCalc:
             canonical_answer = raw_value[0]
 
         presentation_hint = None
-        if res.ok and res.kind in {"calc", "convert", "solve", "vector", "tensor", "calculus", "chemistry", "nuclear", "constants"}:
+        if res.ok and res.kind in {"calc", "convert", "solve", "vector", "tensor", "calculus", "chemistry", "nuclear", "constants", "numeric_format"}:
             if isinstance(canonical_answer, (int, float, str)):
                 presentation_hint = f"The answer is {canonical_answer}."
             elif isinstance(canonical_answer, dict):
@@ -3577,6 +3812,13 @@ class SarahMemoryLogicCalc:
                 "truth_engine": "SarahMemoryLogicCalc",
             }
 
+
+    def interpret_numeric_format(self, query: str) -> Dict[str, Any]:
+        """Public deterministic binary/hex/octal/signed-integer interpreter."""
+        start = _now_ms()
+        res = interpret_numeric_representation(query)
+        dur = _now_ms() - start
+        return self._build_canonical_payload(query, res, dur)
 
     def governed_binary_collapse(
         self,
@@ -3741,3 +3983,66 @@ def quantum_safe_rank_options(options: List[Dict[str, Any]]) -> Dict[str, Any]:
 # ====================================================================
 # END OF SarahMemoryLogicCalc.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryLogicCalc',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Reasoning',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['deterministic_reasoning', 'mathematics', 'reasoning'],
+    "supported_missions": ['Conversation', 'Knowledge', 'Planning', 'Programming'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω005', 'Ω010', 'Ω020', 'Ω030', 'Ω040'],
+    "required_authority": ['Read'],
+    "priority": 70,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryLogicCalc.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryLogicCalc',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryLogicCalc', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+

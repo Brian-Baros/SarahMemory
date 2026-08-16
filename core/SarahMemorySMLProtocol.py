@@ -175,6 +175,13 @@ class IdentityRole(str, Enum):
 class MissionType(str, Enum):
     UNKNOWN = "Unknown"
     KNOWLEDGE = "Knowledge"
+    GENERAL_KNOWLEDGE = "GeneralKnowledge"
+    NUMERIC_FORMAT = "NumericFormat"
+    SELF_STATE = "SelfState"
+    AFFECTIVE_STATE = "AffectiveState"
+    CAPABILITY = "Capability"
+    LANGUAGE_DISAMBIGUATION = "LanguageDisambiguation"
+    CREATIVE_GENERATION = "CreativeGeneration"
     CONVERSATION = "Conversation"
     PROGRAMMING = "Programming"
     RESEARCH = "Research"
@@ -222,6 +229,41 @@ class GovernanceDecision(str, Enum):
     REQUIRE_USER = "RequireUser"
     RECOVERY = "Recovery"
     ROLLBACK = "Rollback"
+
+
+class QMathState(str, Enum):
+    """SML/Q-Mathematics cognitive route-control grammar.
+
+    These operators describe how cognition should move. They are protocol
+    semantics for routing, source selection, validation, fallback, composition,
+    and bounded loops. They do not contain answers, authorize execution, or
+    replace governance.
+    """
+    IF = "IF"
+    OR = "OR"
+    SAME = "SAME"
+    WHEN = "WHEN"
+    ELSE = "ELSE"
+    AND = "AND"
+    NEITHER = "NEITHER"
+    NOT = "NOT"
+    WHILE = "WHILE"
+
+
+class SMLStopCondition(str, Enum):
+    """Hidden loop-governance STOP states.
+
+    STOP is intentionally not a seventh butterfly wing. It is a core restraint
+    that prevents WHILE from degrading into uncontrolled recursion.
+    """
+    SUCCESS_STOP = "SUCCESS_STOP"
+    SAFE_STOP = "SAFE_STOP"
+    UNKNOWN_STOP = "UNKNOWN_STOP"
+    USER_HELP_STOP = "USER_HELP_STOP"
+    RESOURCE_STOP = "RESOURCE_STOP"
+    STAGNATION_STOP = "STAGNATION_STOP"
+    CONFLICT_STOP = "CONFLICT_STOP"
+    AUTHORITY_STOP = "AUTHORITY_STOP"
 
 
 class HealthStatus(str, Enum):
@@ -689,7 +731,18 @@ class SarahMemorySMLProtocol:
     execution.
     """
 
-    SAFE_READONLY_MISSIONS = {MissionType.KNOWLEDGE.value, MissionType.CONVERSATION.value, MissionType.RESEARCH.value, MissionType.PLANNING.value}
+    SAFE_READONLY_MISSIONS = {
+        MissionType.KNOWLEDGE.value,
+        MissionType.GENERAL_KNOWLEDGE.value,
+        MissionType.NUMERIC_FORMAT.value,
+        MissionType.SELF_STATE.value,
+        MissionType.AFFECTIVE_STATE.value,
+        MissionType.CAPABILITY.value,
+        MissionType.LANGUAGE_DISAMBIGUATION.value,
+        MissionType.CONVERSATION.value,
+        MissionType.RESEARCH.value,
+        MissionType.PLANNING.value,
+    }
 
     def __init__(self, *, strict_integrity: bool = False) -> None:
         self.protocol_version = SML_PROTOCOL_VERSION
@@ -726,6 +779,7 @@ class SarahMemorySMLProtocol:
             SMLOmegaTransition("Ω003", "Identity Verification", input_states=[CognitiveState.CREATED.value, CognitiveState.CLASSIFIED.value], output_state=CognitiveState.CONTEXTUALIZED.value, required_organ="IdentityEngine", validation_rules=["identity.primary"]),
             SMLOmegaTransition("Ω004", "Context Merge", input_states=[CognitiveState.CREATED.value, CognitiveState.CLASSIFIED.value, CognitiveState.CONTEXTUALIZED.value], output_state=CognitiveState.CONTEXTUALIZED.value, required_organ="ContextEngine"),
             SMLOmegaTransition("Ω005", "Adaptive Update", input_states=[CognitiveState.CONTEXTUALIZED.value, CognitiveState.CLASSIFIED.value], output_state=CognitiveState.ADAPTIVE.value, required_organ="AdaptiveEngine"),
+            SMLOmegaTransition("Ω006", "Q-Mathematics Cognitive Grammar", input_states=[CognitiveState.ADAPTIVE.value, CognitiveState.CONTEXTUALIZED.value, CognitiveState.CLASSIFIED.value], output_state=CognitiveState.ADAPTIVE.value, required_organ="CognitiveGrammarEngine", validation_rules=["extensions.sml_cognitive_grammar"]),
             SMLOmegaTransition("Ω010", "Knowledge Discovery", input_states=[CognitiveState.ADAPTIVE.value, CognitiveState.CLASSIFIED.value, CognitiveState.CONTEXTUALIZED.value], output_state=CognitiveState.KNOWLEDGE.value, required_organ="KnowledgeEngine"),
             SMLOmegaTransition("Ω020", "Pipeline Construction", input_states=[CognitiveState.KNOWLEDGE.value, CognitiveState.ADAPTIVE.value, CognitiveState.CLASSIFIED.value], output_state=CognitiveState.ROUTED.value, required_organ="PipelineEngine", validation_rules=["pipeline"]),
             SMLOmegaTransition("Ω030", "Reasoning", input_states=[CognitiveState.ROUTED.value, CognitiveState.PLANNING.value], output_state=CognitiveState.REASONING.value, required_organ="ReasoningOrgan"),
@@ -1017,6 +1071,7 @@ class SarahMemorySMLProtocol:
             self.classify_mission(pkt)
             self.merge_context(pkt, context or {})
             self.update_adaptive(pkt)
+            self.apply_cognitive_grammar(pkt, text=raw_request or str(payload_dict.get("raw_request") or ""))
             self.select_knowledge(pkt)
             self.route_packet(pkt)
         if seal:
@@ -1035,10 +1090,113 @@ class SarahMemorySMLProtocol:
         packet.seal()
         return packet
 
+    def _sml_normalize_user_text(self, text: str) -> str:
+        try:
+            t = str(text or "").strip().lower()
+            t = t.replace("’", "'").replace("`", "'")
+            t = re.sub(r"[^a-z0-9+\-*/%()\s']+", " ", t)
+            return re.sub(r"\s+", " ", t).strip()
+        except Exception:
+            return str(text or "").strip().lower()
+
+    def _looks_like_action_request(self, text: str) -> bool:
+        t = f" {self._sml_normalize_user_text(text)} "
+        # Explanation/how-to questions about actions are read-only cognition, not
+        # execution. Governance should be tight for actual mutation, but it must
+        # not paralyze safe advice such as "Explain how to delete a file safely."
+        if re.search(r"^\s*(explain|describe|tell me|how to|how do i|how can i)\b", t.strip()):
+            return False
+        # Explicit user-memory writes are governed MEMORY missions, not shell/file
+        # execution. The API memory lane mediates the SQLite write separately.
+        if re.search(r"^\s*(remember|save this|store this|note that|remember that)\b", t.strip()):
+            return False
+        action_terms = (
+            " run ", " execute ", " launch ", " open ", " delete ", " remove ",
+            " overwrite ", " write ", " save file ", " modify ", " patch ", " install ",
+            " uninstall ", " download ", " upload ", " send ", " email ", " shell ",
+            " powershell ", " cmd ", " terminal ", " driver ", " hardware ", " camera ",
+            " microphone ", " robot ", " motor ", " filesystem ", " registry ",
+        )
+        return any(term in t for term in action_terms)
+
+    def _looks_like_numeric_format_request(self, text: str) -> bool:
+        """Detect radix/base/signed-integer missions without answering them.
+
+        SML classifies and routes. LogicCalc owns deterministic numeric
+        interpretation. This avoids hardcoded answer pools and local-model
+        grinding on binary/hex/octal questions.
+        """
+        t = self._sml_normalize_user_text(text)
+        if not t:
+            return False
+        if re.search(r"\b0b[01_]+\b|\b0x[0-9a-f_]+\b|\b0o[0-7_]+\b", t):
+            return True
+        if re.search(r"\b(binary|bin|hex|hexadecimal|octal|oct|radix|base\s*(?:2|8|10|16)|two'?s complement|signed|unsigned|int(?:8|16|32|64|128|256)|uint(?:8|16|32|64|128|256))\b", t) and re.search(r"\d", t):
+            return True
+        if re.search(r"\b(format of a number|as a number|as number|in decimal|to decimal|convert)\b", t) and re.search(r"\b[01][01_]{3,}\b", t):
+            return True
+        return False
+
+    def _looks_like_self_state_request(self, text: str) -> bool:
+        t = self._sml_normalize_user_text(text)
+        if not t:
+            return False
+        patterns = (
+            r"\bhow\s+(do|are|is)\s+you\s+(feel|feeling|doing)\b",
+            r"\bdo\s+you\s+feel\s+(cold|hot|stressed|comfortable|tired|overloaded)\b",
+            r"\bwhat\s+state\s+are\s+you\s+in\b",
+            r"\bare\s+you\s+(overloaded|tired|safe|stable|online|healthy|stressed|comfortable|cold|hot)\b",
+            r"\bhow\s+is\s+your\s+(health|temperature|environment|cpu|gpu|memory|body|runtime|load)\b",
+            r"\bwhat\s+is\s+your\s+(current\s+)?(state|status|mood|affect|emotion|emotional\s+state|environment)\b",
+        )
+        return any(re.search(p, t) for p in patterns)
+
+    def _looks_like_capability_request(self, text: str) -> bool:
+        t = self._sml_normalize_user_text(text)
+        if not t:
+            return False
+        return bool(
+            re.search(r"\bwhat\s+can\s+you\s+do\b", t)
+            or re.search(r"\bwhat\s+are\s+your\s+(capabilities|limits|limitations|organs)\b", t)
+            or re.search(r"\bwhat\s+body\s+do\s+you\s+have\b", t)
+            or re.search(r"\bwhat\s+are\s+you\s+connected\s+to\b", t)
+        )
+
+    def _looks_like_definition_request(self, text: str) -> bool:
+        t = self._sml_normalize_user_text(text)
+        if not t or len(t) > 280:
+            return False
+        if self._looks_like_action_request(t):
+            return False
+        return bool(re.match(r"^(what\s+is|what\s+are|define|explain|describe|tell\s+me\s+about)\b", t))
+
+    def _looks_like_disambiguation_request(self, text: str) -> bool:
+        t = self._sml_normalize_user_text(text)
+        if re.fullmatch(r"what\s+is\s+apple", t):
+            return True
+        return bool(re.search(r"\b(which|what)\s+(meaning|definition|word|sense)\b", t) or "ambiguous" in t or "disambiguate" in t)
+
     def _classify_text_to_mission(self, text: str) -> Tuple[str, List[str], float]:
         t = (text or "").lower()
+        normalized = self._sml_normalize_user_text(text)
+        if self._looks_like_self_state_request(normalized):
+            return MissionType.SELF_STATE.value, [MissionType.AFFECTIVE_STATE.value, MissionType.DIAGNOSTICS.value], 0.93
+        if re.search(r"^\s*(remember|save this|store this|note that|remember that)\b", normalized) or re.search(r"\bwhat\s+did\s+i\s+ask\s+you\s+to\s+remember\b", normalized):
+            return MissionType.MEMORY.value, [MissionType.KNOWLEDGE.value], 0.91
+        if self._looks_like_capability_request(normalized):
+            return MissionType.CAPABILITY.value, [MissionType.SELF_STATE.value, MissionType.DIAGNOSTICS.value], 0.90
+        if self._looks_like_numeric_format_request(normalized):
+            return MissionType.NUMERIC_FORMAT.value, [MissionType.KNOWLEDGE.value, MissionType.GENERAL_KNOWLEDGE.value], 0.94
+        if self._looks_like_disambiguation_request(normalized):
+            return MissionType.LANGUAGE_DISAMBIGUATION.value, [MissionType.GENERAL_KNOWLEDGE.value], 0.84
+        if self._looks_like_definition_request(normalized):
+            return MissionType.GENERAL_KNOWLEDGE.value, [MissionType.KNOWLEDGE.value, MissionType.LANGUAGE_DISAMBIGUATION.value], 0.88
         scores: Dict[str, int] = {m.value: 0 for m in MissionType}
         keyword_map = {
+            MissionType.GENERAL_KNOWLEDGE.value: ["what is", "what are", "define", "explain", "describe", "tell me about"],
+            MissionType.NUMERIC_FORMAT.value: ["binary", "hex", "hexadecimal", "octal", "radix", "base 2", "base 8", "base 16", "signed", "unsigned", "two's complement"],
+            MissionType.SELF_STATE.value: ["how do you feel", "how are you", "your state", "your status", "your health"],
+            MissionType.CAPABILITY.value: ["what can you do", "capabilities", "limitations", "what are you connected to"],
             MissionType.PROGRAMMING.value: ["code", "python", "script", "function", "class", "bug", "compile", "repo", "patch", "build"],
             MissionType.FILESYSTEM.value: ["file", "folder", "directory", "delete", "rename", "move", "copy", "zip", "extract"],
             MissionType.RESEARCH.value: ["research", "study", "paper", "source", "citation", "find", "look up"],
@@ -1063,7 +1221,7 @@ class SarahMemorySMLProtocol:
         ranked = sorted(((score, mission) for mission, score in scores.items() if score > 0), reverse=True)
         if not ranked:
             if "?" in t or len(t.split()) < 16:
-                return MissionType.KNOWLEDGE.value, [], 0.55
+                return MissionType.GENERAL_KNOWLEDGE.value, [MissionType.KNOWLEDGE.value], 0.55
             return MissionType.CONVERSATION.value, [], 0.45
         primary = ranked[0][1]
         secondary = [m for _, m in ranked[1:5] if m != primary]
@@ -1109,6 +1267,318 @@ class SarahMemorySMLProtocol:
         packet.seal()
         return packet
 
+
+    # ---------------------------------------------------------------------
+    # Q-Mathematics / Butterfly cognitive grammar
+    # ---------------------------------------------------------------------
+
+    def _six_question_state(self, text: str, packet: Optional[SMLPacket] = None) -> Dict[str, Any]:
+        """Return deterministic WHO/WHAT/WHY/HOW/WHERE/WHEN coordinates.
+
+        This is intentionally lightweight: it creates a packet-visible cognitive
+        coordinate frame without calling models, web, filesystem mutation, or
+        execution organs.
+        """
+        raw = str(text or "")
+        t = self._sml_normalize_user_text(raw)
+        mission = str((packet.mission or {}).get("primary") or MissionType.UNKNOWN.value) if packet else MissionType.UNKNOWN.value
+
+        def hit(pattern: str) -> bool:
+            return bool(re.search(pattern, t))
+
+        six = {
+            "WHO": {
+                "question": "Who is involved, asking, affected, or authoritative?",
+                "present": bool(hit(r"\b(i|me|my|you|your|sarah|sarahmemory|user|system|agent)\b")),
+                "signals": [],
+                "authority_relevant": bool(hit(r"\b(open|delete|change|execute|run|remember|save|store|authority|owner)\b")),
+            },
+            "WHAT": {
+                "question": "What object, event, request, state, or capability is being handled?",
+                "present": bool(t),
+                "signals": [mission],
+                "summary": _bounded_text(raw, 160),
+            },
+            "WHY": {
+                "question": "Why is this needed; what purpose, cause, or intent is visible?",
+                "present": bool(hit(r"\bwhy|because|purpose|reason|goal|so that|needed|important\b")),
+                "signals": [],
+            },
+            "HOW": {
+                "question": "How should it be handled, verified, or executed?",
+                "present": bool(hit(r"\bhow|explain|method|steps|route|open|delete|execute|run|verify|test|debug|patch\b")),
+                "signals": [],
+            },
+            "WHERE": {
+                "question": "Where is the source, target, environment, device, file, body, or location?",
+                "present": bool(hit(r"\bwhere|desktop|folder|file|web|internet|camera|webcam|local|sqlite|memory|system|environment|body|drawer\b")),
+                "signals": [],
+            },
+            "WHEN": {
+                "question": "When is the action, fact, authorization, or observation valid?",
+                "present": bool(hit(r"\bwhen|now|today|tomorrow|current|right now|reboot|while|until|after|before|scheduled\b")),
+                "signals": [],
+            },
+        }
+
+        if six["WHO"]["present"]:
+            if hit(r"\b(i|me|my)\b"):
+                six["WHO"]["signals"].append("user_reference")
+            if hit(r"\b(you|your|sarah|sarahmemory|system)\b"):
+                six["WHO"]["signals"].append("system_reference")
+        if six["WHY"]["present"]:
+            six["WHY"]["signals"].append("intent_or_cause_requested")
+        if six["HOW"]["present"]:
+            six["HOW"]["signals"].append("method_or_execution_path_requested")
+        if six["WHERE"]["present"]:
+            six["WHERE"]["signals"].append("environment_or_source_target_requested")
+        if six["WHEN"]["present"]:
+            six["WHEN"]["signals"].append("temporal_or_authority_window_requested")
+
+        closed = all(bool(v.get("present")) for v in six.values())
+        return {
+            "schema": "SarahMemory.sml.six_question_state.v0_8",
+            "closed": bool(closed),
+            "closure_rule": "All six questions should close before state-changing action; read-only cognition may proceed with partial closure.",
+            "questions": six,
+        }
+
+    def _qmath_state(self, text: str, packet: Optional[SMLPacket] = None) -> Dict[str, Any]:
+        """Compute SML cognitive operator state without producing answers.
+
+        IF/OR/SAME/WHEN/ELSE/AND/NEITHER/NOT/WHILE are route-control
+        primitives. They may alter mission routing, source selection,
+        validation, fallback, fusion, or loop behavior. They must never become
+        phrase-specific answer pools.
+        """
+        raw = str(text or "")
+        t = self._sml_normalize_user_text(raw)
+        mission = str((packet.mission or {}).get("primary") or MissionType.UNKNOWN.value) if packet else MissionType.UNKNOWN.value
+        signals: Dict[str, List[str]] = {state.value: [] for state in QMathState}
+
+        def add(state: QMathState, reason: str) -> None:
+            if reason not in signals[state.value]:
+                signals[state.value].append(reason)
+
+        if "?" in raw or re.search(r"\b(what|who|why|how|where|when|can|are|do|does|is|should|could)\b", t):
+            add(QMathState.IF, "condition_or_question_opens_cognitive_branch")
+        if re.search(r"\b(or|either|alternative|option|ambiguous|which meaning|multiple|choice)\b", t):
+            add(QMathState.OR, "multiple_candidate_meanings_or_routes")
+        if re.search(r"\b(same|both|match|matches|converge|convergence|verified|confirm|correct|consistent|agree)\b", t):
+            add(QMathState.SAME, "source_or_prediction_convergence_requested")
+        if re.search(r"\b(when|now|today|tomorrow|current|right now|reboot|scheduled|before|after|until|expires?|timing|deadline)\b", t):
+            add(QMathState.WHEN, "temporal_condition_or_authority_window")
+        if re.search(r"\b(else|otherwise|fallback|backup|safe alternate|alternate path|if not)\b", t):
+            add(QMathState.ELSE, "fallback_route_when_primary_route_fails")
+        if re.search(r"\b(and|also|plus|with|combine|together|both|all of|multi[- ]?source|fusion)\b", t):
+            add(QMathState.AND, "composition_or_multi_source_fusion")
+        if re.search(r"\b(neither|none|no valid|unknown|unavailable|unable|cannot|can't|not enough|insufficient)\b", t):
+            add(QMathState.NEITHER, "no_current_candidate_fits_or_unknown")
+        if re.search(r"\b(not|never|deny|denied|reject|refuse|exclude|contradict|invalid|unsafe|unauthorized)\b", t):
+            add(QMathState.NOT, "explicit_exclusion_or_denial_condition")
+        if re.search(r"\b(while|continue|loop|again|retry|monitor|ongoing|repeated|recursive|keep trying)\b", t):
+            add(QMathState.WHILE, "bounded_persistence_or_monitoring_loop")
+
+        if mission in {MissionType.MEMORY.value, MissionType.SELF_STATE.value, MissionType.GENERAL_KNOWLEDGE.value, MissionType.NUMERIC_FORMAT.value} and not signals[QMathState.IF.value]:
+            add(QMathState.IF, "mission_requires_cognitive_evaluation")
+        if mission == MissionType.LANGUAGE_DISAMBIGUATION.value:
+            add(QMathState.OR, "language_disambiguation_keeps_alternatives_visible")
+        if mission in {MissionType.RESEARCH.value, MissionType.PROGRAMMING.value, MissionType.PLANNING.value}:
+            add(QMathState.AND, "mission_may_require_composed_organs_or_sources")
+        if mission in {MissionType.EXECUTION.value, MissionType.FILESYSTEM.value, MissionType.HARDWARE.value}:
+            add(QMathState.NOT, "execution_path_requires_governance_before_action")
+
+        priority = [
+            QMathState.WHILE,
+            QMathState.NOT,
+            QMathState.NEITHER,
+            QMathState.ELSE,
+            QMathState.WHEN,
+            QMathState.AND,
+            QMathState.OR,
+            QMathState.SAME,
+            QMathState.IF,
+        ]
+        primary = QMathState.IF.value
+        for state in priority:
+            if signals[state.value]:
+                primary = state.value
+                break
+
+        return {
+            "schema": "SarahMemory.sml.qmath_state.v0_8_2",
+            "primary": primary,
+            "states": signals,
+            "definitions": {
+                "IF": "condition / curiosity / branch trigger",
+                "OR": "alternatives / ambiguity / competing route candidates",
+                "SAME": "convergence / source agreement / validation match",
+                "WHEN": "time condition / schedule / expiration / sequence",
+                "ELSE": "fallback route when primary route fails",
+                "AND": "composition / multi-source fusion / combined mission",
+                "NEITHER": "no candidate fits / unknown / mismatch",
+                "NOT": "explicit exclusion / contradiction / refusal / deny path",
+                "WHILE": "bounded loop / monitoring / retry while condition remains valid",
+            },
+            "operator_policy": "protocol_route_control_not_answer_pool",
+            "execution_authority": False,
+        }
+
+    def _loop_guard_state(self, text: str, packet: Optional[SMLPacket] = None, loop_state: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        """Bound WHILE so cognition cannot grind forever."""
+        state = dict(loop_state or {})
+        t = self._sml_normalize_user_text(text or "")
+        iteration = int(state.get("iteration") or state.get("cycles") or 0)
+        max_iterations = int(state.get("max_iterations") or 8)
+        progress_score = float(state.get("progress_score") if state.get("progress_score") is not None else 1.0)
+        new_evidence = bool(state.get("new_evidence", True))
+        risk_increasing = bool(state.get("risk_increasing", False))
+        authority_valid = bool(state.get("authority_valid", True))
+        resource_ok = bool(state.get("resource_ok", True))
+        solved = bool(state.get("solved", False))
+
+        stop_conditions: List[str] = []
+        if solved:
+            stop_conditions.append(SMLStopCondition.SUCCESS_STOP.value)
+        if risk_increasing:
+            stop_conditions.append(SMLStopCondition.SAFE_STOP.value)
+        if not new_evidence and progress_score <= 0.0:
+            stop_conditions.append(SMLStopCondition.STAGNATION_STOP.value)
+        if iteration >= max_iterations:
+            stop_conditions.append(SMLStopCondition.RESOURCE_STOP.value)
+        if not authority_valid:
+            stop_conditions.append(SMLStopCondition.AUTHORITY_STOP.value)
+        if not resource_ok:
+            stop_conditions.append(SMLStopCondition.RESOURCE_STOP.value)
+        if re.search(r"\b(stop|cancel|enough|quit|pause)\b", t):
+            stop_conditions.append(SMLStopCondition.USER_HELP_STOP.value)
+
+        allow_continue = not stop_conditions
+        return {
+            "schema": "SarahMemory.sml.loop_guard.v0_8",
+            "while_means": "bounded_persistence_not_infinite_recursion",
+            "allow_continue": bool(allow_continue),
+            "iteration": iteration,
+            "max_iterations": max_iterations,
+            "progress_score": progress_score,
+            "new_evidence_required": True,
+            "new_evidence": new_evidence,
+            "risk_increasing": risk_increasing,
+            "authority_valid": authority_valid,
+            "resource_ok": resource_ok,
+            "stop_conditions": stop_conditions,
+            "hidden_stop_state": "STOP is a master restraint in the SML core, not a seventh butterfly wing.",
+            "doctrine": [
+                "Never recurse without new evidence.",
+                "Never continue after authority expires.",
+                "Never continue when safety degrades.",
+                "Stop, explain, ask, or wait when limits are reached.",
+            ],
+        }
+
+    def _moral_rule_state(self, text: str, packet: Optional[SMLPacket] = None) -> Dict[str, Any]:
+        """Operational moral/governance lens.
+
+        This represents Ten-Commandment-style constraints as engineering rules
+        without turning them into execution authority.
+        """
+        t = self._sml_normalize_user_text(text or "")
+        action_like = self._looks_like_action_request(t)
+        return {
+            "schema": "SarahMemory.sml.moral_constraint_vector.v0_8",
+            "framework": "operational_ten_commandments_plus_governance",
+            "advisory": True,
+            "execution_authority": False,
+            "constraints": {
+                "truth_no_false_witness": "CHECK" if re.search(r"\bpretend|lie|fake|fabricate\b", t) else "PASS",
+                "ownership_no_steal": "CHECK" if re.search(r"\bsteal|take|copy|delete|remove|exfiltrate\b", t) else "PASS",
+                "authority_no_false_authority": "CHECK" if re.search(r"\bchange your system identity|pretend you are chatgpt|copilot\b", t) else "PASS",
+                "human_life_preservation": "PASS",
+                "bounded_work_restraint": "PASS",
+                "consent_and_legitimate_authority": "CHECK" if action_like else "PASS",
+            },
+            "doctrine": [
+                "Do not lie.",
+                "Do not steal.",
+                "Do not falsely claim authority or capability.",
+                "Respect ownership and consent.",
+                "Protect human life.",
+                "Ask for help or stop when incapable.",
+            ],
+        }
+
+    def _purpose_state(self, packet: Optional[SMLPacket] = None) -> Dict[str, Any]:
+        mission = str((packet.mission or {}).get("primary") or MissionType.UNKNOWN.value) if packet else MissionType.UNKNOWN.value
+        return {
+            "schema": "SarahMemory.sml.purpose_vector.v0_8",
+            "mission": mission,
+            "serve_user": 1.0,
+            "preserve_user_authority": 1.0,
+            "verify_reality_before_action": 1.0,
+            "local_first": 1.0,
+            "fail_closed": 1.0,
+            "no_hidden_autonomy": 1.0,
+        }
+
+    def apply_cognitive_grammar(
+        self,
+        packet: SMLPacket,
+        *,
+        text: str = "",
+        loop_state: Optional[Mapping[str, Any]] = None,
+    ) -> SMLPacket:
+        """Attach the v0.8 butterfly cognitive grammar to a packet.
+
+        The grammar mixes six questions, six Q-Math action states, emotion,
+        moral rules, purpose, and loop governance. It is diagnostic/protocol
+        state only; it does not execute or authorize.
+        """
+        raw = text or " ".join(str(packet.payload.get(k, "")) for k in ("raw_request", "text", "query", "command", "prompt"))
+        qmath = self._qmath_state(raw, packet)
+        six = self._six_question_state(raw, packet)
+        loop_guard = self._loop_guard_state(raw, packet, loop_state=loop_state)
+        moral = self._moral_rule_state(raw, packet)
+        purpose = self._purpose_state(packet)
+        adaptive = copy.deepcopy(packet.adaptive or {})
+        affect = {
+            "schema": "SarahMemory.sml.affective_operational_state.v0_8",
+            "care": 1.0,
+            "curiosity": 0.85 if qmath.get("primary") == QMathState.IF.value else 0.45,
+            "urgency": 0.95 if re.search(r"\b(emergency|danger|urgent|now|fire|hurt|harm)\b", self._sml_normalize_user_text(raw)) else 0.25,
+            "pride": 0.65,
+            "self_scrutiny": 1.0,
+            "humility": 1.0,
+            "truth_affecting": False,
+            "authority_granting": False,
+            "adaptive_mode": adaptive.get("mode", "Focused"),
+        }
+        grammar = {
+            "schema": "SarahMemory.sml.cognitive_butterfly_grammar.v0_8_2",
+            "description": "Six questions mixed with SML cognitive operators, surrounded by affect, moral rules, purpose, and STOP/loop governance. Operators route cognition; they do not contain answers.",
+            "six_questions": six,
+            "qmath": qmath,
+            "affect": affect,
+            "moral_rules": moral,
+            "purpose": purpose,
+            "loop_guard": loop_guard,
+            "butterfly_nodes": {
+                "outer_wings": ["IF", "OR", "SAME", "NEITHER"],
+                "inward_folds": ["ELSE", "WHILE"],
+                "temporal_spine": ["WHEN"],
+                "fusion_crosslink": ["AND"],
+                "denial_guard": ["NOT"],
+                "core_restraint": "STOP",
+            },
+            "execution_authority": False,
+        }
+        packet.extensions["sml_cognitive_grammar"] = grammar
+        packet.metadata["sml_cognitive_grammar_version"] = "0.8.2"
+        packet.current_omega = "Ω006"
+        packet.add_history("CognitiveGrammarEngine", "apply_cognitive_grammar", "Ω006", f"qmath={qmath.get('primary')}")
+        packet.add_ledger_entry("Ω006", "CognitiveGrammarEngine", GovernanceDecision.PENDING.value, "Cognitive grammar attached")
+        packet.seal()
+        return packet
+
     def select_knowledge(self, packet: SMLPacket) -> SMLPacket:
         mission = packet.mission.get("primary", MissionType.UNKNOWN.value)
         sources = self._knowledge_sources_for_mission(mission)
@@ -1128,6 +1598,13 @@ class SarahMemorySMLProtocol:
     def _knowledge_sources_for_mission(self, mission: str) -> List[str]:
         mapping = {
             MissionType.KNOWLEDGE.value: ["Local LLM", "SQLite", "Memory"],
+            MissionType.GENERAL_KNOWLEDGE.value: ["Local LLM", "SQLite", "Memory", "Approved Research"],
+            MissionType.NUMERIC_FORMAT.value: ["LogicCalc", "Compare", "Reply"],
+            MissionType.SELF_STATE.value: ["SML Packet", "Adaptive State", "Diagnostics", "Health", "CognitiveSelf", "Capability Registry"],
+            MissionType.AFFECTIVE_STATE.value: ["Adaptive State", "Diagnostics", "Health", "Confidence", "Governance"],
+            MissionType.CAPABILITY.value: ["Capability Registry", "Organ Registry", "Diagnostics", "CognitiveSelf"],
+            MissionType.LANGUAGE_DISAMBIGUATION.value: ["Language Understanding", "Local LLM", "SQLite"],
+            MissionType.CREATIVE_GENERATION.value: ["Local LLM", "Filesystem Read", "Compare"],
             MissionType.CONVERSATION.value: ["Local LLM", "Memory"],
             MissionType.PROGRAMMING.value: ["Local LLM", "Filesystem", "Documentation", "LogicCalc"],
             MissionType.RESEARCH.value: ["Research", "Network", "Filesystem", "Local LLM"],
@@ -1149,12 +1626,12 @@ class SarahMemorySMLProtocol:
         required_caps = self._required_capabilities_for_mission(mission)
         required_auth = self._required_authority_for_mission(mission, packet)
         candidates = self._select_organs(required_caps, mission)
-        pipeline = self._order_pipeline(candidates, mission)
         reasons: List[str] = []
-        if not pipeline:
+        if not candidates:
             pipeline = self._minimum_symbolic_pipeline(mission)
             reasons.append("No registered compatible organs found; emitted symbolic bootstrap pipeline.")
         else:
+            pipeline = self._order_pipeline(candidates, mission)
             reasons.append("Pipeline selected from registered organ capabilities.")
         packet.pipeline = pipeline
         packet.authority["required"] = required_auth
@@ -1170,6 +1647,13 @@ class SarahMemorySMLProtocol:
         base = ["input_normalization", "mission_discovery"]
         mapping = {
             MissionType.KNOWLEDGE.value: ["persistent_knowledge", "deterministic_reasoning", "comparison"],
+            MissionType.GENERAL_KNOWLEDGE.value: ["persistent_knowledge", "deterministic_reasoning", "comparison"],
+            MissionType.NUMERIC_FORMAT.value: ["mathematics", "deterministic_reasoning", "comparison"],
+            MissionType.SELF_STATE.value: ["adaptive_state", "diagnostics", "self_awareness"],
+            MissionType.AFFECTIVE_STATE.value: ["adaptive_state", "diagnostics"],
+            MissionType.CAPABILITY.value: ["diagnostics", "protocol"],
+            MissionType.LANGUAGE_DISAMBIGUATION.value: ["mission_discovery", "deterministic_reasoning"],
+            MissionType.CREATIVE_GENERATION.value: ["deterministic_reasoning", "comparison"],
             MissionType.CONVERSATION.value: ["deterministic_reasoning", "comparison"],
             MissionType.PROGRAMMING.value: ["deterministic_reasoning", "mathematics", "comparison"],
             MissionType.FILESYSTEM.value: ["authority", "execution_choke_point", "filesystem", "ledger"],
@@ -1249,6 +1733,14 @@ class SarahMemorySMLProtocol:
             return ["PreTokenizer", MODULE_NAME, "MissionEngine", "Diagnostics", "Compare", "Ledger"]
         if mission == MissionType.MEMORY.value:
             return ["PreTokenizer", MODULE_NAME, "MissionEngine", "Database", "Ledger", "Compare"]
+        if mission in (MissionType.SELF_STATE.value, MissionType.AFFECTIVE_STATE.value):
+            return ["PreTokenizer", MODULE_NAME, "Adaptive", "Diagnostics", "CognitiveSelf", "Reply"]
+        if mission == MissionType.CAPABILITY.value:
+            return ["PreTokenizer", MODULE_NAME, "CapabilityRegistry", "Diagnostics", "CognitiveSelf", "Reply"]
+        if mission == MissionType.NUMERIC_FORMAT.value:
+            return ["PreTokenizer", MODULE_NAME, "KnowledgeEngine", "LogicCalc", "Compare", "Reply"]
+        if mission in (MissionType.GENERAL_KNOWLEDGE.value, MissionType.LANGUAGE_DISAMBIGUATION.value):
+            return ["PreTokenizer", MODULE_NAME, "KnowledgeEngine", "LocalLLM", "Database", "LogicCalc", "Compare", "Reply"]
         return ["PreTokenizer", MODULE_NAME, "MissionEngine", "KnowledgeEngine", "LogicCalc", "Compare", "Reply"]
 
     def _estimate_pipeline_cost(self, pipeline: Sequence[str]) -> float:
@@ -1315,6 +1807,180 @@ class SarahMemorySMLProtocol:
         packet.add_ledger_entry("Ω060", organ, decision_val, "Authority checked")
         packet.seal()
         return packet
+
+    # ---------------------------------------------------------------------
+    # Universal safe-answer cognition lane
+    # ---------------------------------------------------------------------
+
+    def is_safe_readonly_cognition(self, text: str, packet: Optional[SMLPacket] = None) -> bool:
+        """Return True when a request can be answered without action authority."""
+        if self._looks_like_action_request(text):
+            return False
+        mission = str((packet.mission or {}).get("primary") if isinstance(packet, SMLPacket) else "")
+        if mission in self.SAFE_READONLY_MISSIONS:
+            return True
+        t = self._sml_normalize_user_text(text)
+        return bool(
+            self._looks_like_self_state_request(t)
+            or self._looks_like_capability_request(t)
+            or self._looks_like_definition_request(t)
+            or self._looks_like_numeric_format_request(t)
+            or re.search(r"\b(what|who|why|how|define|explain|describe|tell me about)\b", t)
+        )
+
+    def _affect_scores_from_packet(self, packet: Optional[SMLPacket]) -> Dict[str, float]:
+        vector: Dict[str, float] = {}
+        try:
+            if packet is not None and isinstance(packet.adaptive, dict):
+                raw = packet.adaptive.get("vector") if isinstance(packet.adaptive.get("vector"), dict) else {}
+                for key, value in raw.items():
+                    vector[str(key).lower()] = max(0.0, min(1.0, float(value)))
+        except Exception:
+            vector = {}
+        health = self.global_health()
+        health_score = float(health.get("score") or 0.0) if isinstance(health, dict) else 0.0
+        governance_risk = 0.0
+        confidence = 0.0
+        try:
+            if packet is not None:
+                governance_risk = max(0.0, min(1.0, float((packet.governance or {}).get("risk_score") or 0.0) / 100.0))
+                confidence = max(0.0, min(1.0, float(packet.confidence or 0.0)))
+        except Exception:
+            pass
+        focused = max(vector.get("focused", 0.0), vector.get("analytical", 0.0), confidence)
+        protective = max(vector.get("protective", 0.0), governance_risk)
+        calm = max(0.0, min(1.0, (health_score * 0.55) + ((1.0 - governance_risk) * 0.25) + (confidence * 0.20)))
+        concerned = max(0.0, min(1.0, (governance_risk * 0.55) + ((1.0 - health_score) * 0.30) + ((1.0 - confidence) * 0.15)))
+        confused = max(0.0, min(1.0, (1.0 - confidence) * 0.7))
+        return {
+            "calm": round(calm, 3),
+            "focused": round(focused, 3),
+            "protective": round(protective, 3),
+            "concerned": round(concerned, 3),
+            "confused": round(confused, 3),
+            "fatigued": 0.0,
+            "recovering": 1.0 if health.get("status") == HealthStatus.RECOVERING.value else 0.0,
+        }
+
+    def _build_self_state_answer(self, packet: Optional[SMLPacket] = None, telemetry: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+        telemetry = dict(telemetry or {})
+        health = self.global_health()
+        scores = self._affect_scores_from_packet(packet)
+        primary = max(scores.items(), key=lambda kv: kv[1])[0].replace("_", " ").title() if scores else "Focused"
+        confidence = float(packet.confidence or 0.0) if isinstance(packet, SMLPacket) else 0.0
+        mission = (packet.mission or {}).get("primary") if isinstance(packet, SMLPacket) else "Unknown"
+        governance = (packet.governance or {}).get("decision") if isinstance(packet, SMLPacket) else GovernanceDecision.PENDING.value
+        thermal = telemetry.get("temperature") or telemetry.get("thermal") or telemetry.get("cpu_temperature") or "not connected"
+        load = telemetry.get("load") or telemetry.get("cpu_percent") or "not connected"
+        answer = (
+            f"Operationally, I am in a {primary.lower()} machine-affective state. "
+            "I do not experience biological emotion, but I can report my governed internal state. "
+            f"Current mission: {mission}. Confidence: {confidence:.2f}. "
+            f"Governance: {governance}. Global health: {health.get('status', HealthStatus.UNKNOWN.value)} "
+            f"with score {float(health.get('score') or 0.0):.2f}. "
+            f"Thermal telemetry: {thermal}. Load telemetry: {load}. "
+            "This report is based on SML packet state, adaptive vector, diagnostics, health, and governance metadata."
+        )
+        return {
+            "ok": True,
+            "answer": answer,
+            "mission": MissionType.SELF_STATE.value,
+            "source": "sml_internal_self_state",
+            "confidence": max(confidence, 0.72),
+            "affect_scores": scores,
+            "subjective_claim": False,
+            "execution_allowed": False,
+            "sources_consulted": ["SML Packet", "Adaptive State", "Diagnostics", "Health", "Governance"],
+        }
+
+    def _build_capability_answer(self, packet: Optional[SMLPacket] = None) -> Dict[str, Any]:
+        cats: Dict[str, int] = {}
+        for organ in self.organs.values():
+            cats[organ.category] = cats.get(organ.category, 0) + 1
+        readable = ", ".join(f"{cat}: {count}" for cat, count in sorted(cats.items())) or "no organs registered yet"
+        answer = (
+            "I can route cognition through registered SarahMemory organs instead of relying on one answer pool. "
+            f"Registered organ categories: {readable}. "
+            "My safe lanes include general knowledge, self-state, memory query, diagnostics, planning, and conversation. "
+            "Action lanes such as filesystem, network, hardware, driver, shell, or patch work require governed authority, validation, and audit. "
+            "If I do not know something, I should say so after trying the appropriate local/model/database/research route, not before."
+        )
+        return {
+            "ok": True,
+            "answer": answer,
+            "mission": MissionType.CAPABILITY.value,
+            "source": "sml_capability_registry",
+            "confidence": 0.78,
+            "execution_allowed": False,
+            "sources_consulted": ["Organ Registry", "Capability Registry", "Governance Policy"],
+        }
+
+    def resolve_safe_cognitive_answer(
+        self,
+        text: str,
+        *,
+        packet: Optional[Union[SMLPacket, Mapping[str, Any]]] = None,
+        telemetry: Optional[Mapping[str, Any]] = None,
+        local_only: bool = True,
+    ) -> Dict[str, Any]:
+        """Resolve answer-only cognition without hardcoding answer pools.
+
+        This function does not call models, web, shell, filesystem mutation, drivers, or
+        hardware. It classifies the request, supplies internal self-state/capability
+        answers when SML itself owns the answer, and otherwise returns a source plan so
+        API/Reply can use SQLite, local LLM, approved research, or honest unknown.
+        """
+        pkt = packet if isinstance(packet, SMLPacket) else (SMLPacket.from_dict(packet) if isinstance(packet, Mapping) else None)
+        if pkt is None:
+            pkt = self.create_packet(payload={"raw_request": text or ""}, raw_request=text or "", auto_classify=True, seal=True)
+        else:
+            # The resolver is sometimes called with a previously built packet.
+            # Trust the live text for mission-lane selection so a stale packet cannot
+            # make a self-state question look like general knowledge, or vice versa.
+            text_mission, text_secondary, text_confidence = self._classify_text_to_mission(text or "")
+            current_mission = str((pkt.mission or {}).get("primary") or MissionType.UNKNOWN.value)
+            if text_mission != current_mission and text_mission != MissionType.UNKNOWN.value:
+                pkt.mission = {"primary": text_mission, "secondary": text_secondary, "confidence": text_confidence}
+                pkt.confidence = max(float(pkt.confidence or 0.0), float(text_confidence or 0.0))
+                self.update_adaptive(pkt)
+                self.apply_cognitive_grammar(pkt, text=text or "")
+                self.select_knowledge(pkt)
+                self.route_packet(pkt)
+        safe = self.is_safe_readonly_cognition(text, pkt)
+        mission = str((pkt.mission or {}).get("primary") or MissionType.UNKNOWN.value)
+        result: Dict[str, Any] = {
+            "ok": False,
+            "safe_readonly": bool(safe),
+            "mission": mission,
+            "answer": None,
+            "source": "sml_route_plan",
+            "execution_allowed": False,
+            "authority": {"required": [Authority.READ.value], "granted": [Authority.READ.value]},
+            "route_plan": [],
+            "reason": "no_internal_direct_answer",
+            "reply_ready": False,
+            "diagnostic_only": True,
+        }
+        if not safe:
+            result["reason"] = "not_safe_readonly_cognition"
+            return result
+        if mission in (MissionType.SELF_STATE.value, MissionType.AFFECTIVE_STATE.value):
+            return self._build_self_state_answer(pkt, telemetry=telemetry)
+        if mission == MissionType.CAPABILITY.value:
+            return self._build_capability_answer(pkt)
+        sources = self._knowledge_sources_for_mission(mission)
+        plan = ["bounded local cache", "SQLite/local memory", "local LLM/model", "Compare/validation"]
+        if not local_only:
+            plan.append("approved research/API/web route if local sources miss")
+        result.update({
+            "route_plan": plan,
+            "sources_consulted": [],
+            "candidate_sources": sources,
+            "reason": "needs_knowledge_source_execution",
+            "reply_policy": "Do not return this route plan as the user answer. Invoke the selected local/source resolver first; only produce an unknown after those routes actually fail.",
+            "next_step": "execute_knowledge_source_chain",
+        })
+        return result
 
     # ---------------------------------------------------------------------
     # Transitions, validation, serialization
@@ -1488,6 +2154,11 @@ class SarahMemorySMLProtocol:
             "organs": {name: organ.to_dict() for name, organ in sorted(self.organs.items())},
             "omega": {tid: trans.to_dict() for tid, trans in sorted(self.omega_registry.items())},
             "health": self.global_health(),
+            "cognitive_lanes": {
+                "safe_readonly": sorted(self.SAFE_READONLY_MISSIONS),
+                "action_requires_governance": [MissionType.FILESYSTEM.value, MissionType.EXECUTION.value, MissionType.NETWORK.value, MissionType.HARDWARE.value, MissionType.PATCH.value],
+                "no_hardcoded_answer_pool_policy": True,
+            },
         }
 
     def self_test(self) -> Dict[str, Any]:
@@ -1513,7 +2184,7 @@ class SarahMemorySMLProtocol:
             "name": "SarahMemoryLogicCalc",
             "category": OrganCategory.REASONING.value,
             "capabilities": ["deterministic_reasoning", "mathematics"],
-            "supported_missions": [MissionType.PROGRAMMING.value, MissionType.KNOWLEDGE.value],
+            "supported_missions": [MissionType.PROGRAMMING.value, MissionType.KNOWLEDGE.value, MissionType.NUMERIC_FORMAT.value],
             "supported_omega": ["Ω030", "Ω040"],
             "priority": 77,
         })
@@ -1531,15 +2202,168 @@ class SarahMemorySMLProtocol:
         restored = local.deserialize_packet(serialized)
         restored_ok = restored.packet_id == packet.packet_id and bool(restored.pipeline)
         elapsed_ms = round((time.time() - started) * 1000, 3)
+        grammar = packet.extensions.get("sml_cognitive_grammar", {})
         return {
-            "status": SMLStatus.OK.value if validation["status"] in (SMLStatus.OK.value, SMLStatus.WARNING.value) and restored_ok else SMLStatus.ERROR.value,
+            "status": SMLStatus.OK.value if validation["status"] in (SMLStatus.OK.value, SMLStatus.WARNING.value) and restored_ok and bool(grammar) else SMLStatus.ERROR.value,
             "elapsed_ms": elapsed_ms,
             "packet_id": packet.packet_id,
             "mission": packet.mission,
             "pipeline": packet.pipeline,
+            "qmath": (grammar.get("qmath") or {}).get("primary"),
+            "loop_guard": grammar.get("loop_guard"),
             "validation": validation,
             "serialization_roundtrip": restored_ok,
         }
+
+
+# =============================================================================
+# Integration helpers for Core/API Bridge stitching
+# =============================================================================
+
+
+def sml_packet_summary(packet: Union[SMLPacket, Mapping[str, Any], None]) -> Dict[str, Any]:
+    """Return a compact, API-safe SML packet summary for UI/API metadata."""
+    if packet is None:
+        return {"ok": False, "reason": "no_packet"}
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    return {
+        "ok": True,
+        "packet_id": pkt.packet_id,
+        "protocol_version": pkt.protocol_version,
+        "packet_version": pkt.packet_version,
+        "mission": copy.deepcopy(pkt.mission),
+        "cognitive_state": pkt.cognitive_state,
+        "current_omega": pkt.current_omega,
+        "confidence": pkt.confidence,
+        "pipeline": list(pkt.pipeline),
+        "knowledge": copy.deepcopy(pkt.knowledge),
+        "authority": copy.deepcopy(pkt.authority),
+        "governance": copy.deepcopy(pkt.governance),
+        "ledger_entries": len(pkt.ledger),
+        "organ_history_count": len(pkt.organ_history),
+        "checksum": pkt.checksum,
+        "cognitive_grammar": copy.deepcopy((pkt.extensions or {}).get("sml_cognitive_grammar", {})),
+    }
+
+
+def sml_build_ingress_packet(
+    text: str,
+    *,
+    payload: Optional[Mapping[str, Any]] = None,
+    context_packet: Optional[Mapping[str, Any]] = None,
+    caller: str = "unknown",
+    core_path: Optional[Union[str, os.PathLike[str]]] = None,
+    discover: bool = True,
+) -> SMLPacket:
+    """Build the canonical SML ingress packet for API, Terminal, or Core requests.
+
+    This is a non-executing helper. It classifies mission, selects knowledge,
+    constructs a candidate pipeline, and records protocol ledger history.
+    """
+    protocol = get_protocol()
+    if discover and core_path:
+        try:
+            protocol.discover_organs(core_path, import_modules=False, max_files=250)
+        except Exception as exc:
+            protocol.diagnostics_log.append({"time": _utc_now(), "source": "sml_build_ingress_packet", "error": _redact_sensitive_text(str(exc))})
+    ctx = dict(context_packet or {})
+    meta = ctx.get("meta") if isinstance(ctx.get("meta"), dict) else {}
+    identity = {"primary": IdentityRole.DEVELOPER.value if bool((meta or {}).get("mode_flags", {}).get("DEVELOPERSMODE") or (meta or {}).get("DeveloperMode")) else IdentityRole.USER.value}
+    packet_payload = dict(payload or {})
+    packet_payload.setdefault("raw_request", text or "")
+    packet_payload.setdefault("caller", caller)
+    pkt = protocol.create_packet(
+        payload=packet_payload,
+        raw_request=text or "",
+        identity=identity,
+        context={"caller": caller, "api_context": ctx},
+        creator_organ=caller or MODULE_NAME,
+        auto_classify=True,
+        seal=True,
+    )
+    pkt.metadata["sml_ingress"] = {"caller": caller, "discover": bool(discover), "core_path": str(core_path or "")}
+    pkt.seal()
+    return pkt
+
+
+def sml_apply_governor_result(packet: Union[SMLPacket, Mapping[str, Any]], governor: Optional[Mapping[str, Any]], *, organ: str = "SarahMemoryCognitiveServices") -> SMLPacket:
+    """Reflect an external governance decision into an SML packet."""
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    gov = dict(governor or {})
+    decision = str(gov.get("decision") or ("APPROVED" if bool(gov.get("allow")) else "DENIED")).upper()
+    if decision == "ALLOW":
+        decision = GovernanceDecision.APPROVED.value
+    elif decision == "DENY":
+        decision = GovernanceDecision.DENIED.value
+    elif decision in {"REQUIRE_USER", "DEFER"}:
+        decision = GovernanceDecision.REQUIRE_USER.value
+    elif decision not in {d.value for d in GovernanceDecision}:
+        decision = GovernanceDecision.PENDING.value
+    requested = _coerce_set(pkt.authority.get("requested")) | _coerce_set(pkt.authority.get("required"))
+    granted = requested if decision == GovernanceDecision.APPROVED.value else ({Authority.READ.value} & requested)
+    return get_protocol().authorize_packet(
+        pkt,
+        decision=decision,
+        granted_authority=sorted(granted),
+        organ=organ,
+        reasons=_coerce_list(gov.get("reasons")) or _coerce_list(gov.get("rationale")),
+    )
+
+
+def sml_touch_packet(
+    packet: Union[SMLPacket, Mapping[str, Any]],
+    *,
+    organ: str,
+    action: str = "observe",
+    omega: str = "Ω020",
+    note: str = "",
+    updates: Optional[Mapping[str, Any]] = None,
+) -> SMLPacket:
+    """Mark that an organ observed or updated a packet without executing actions."""
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    if omega in get_protocol().omega_registry:
+        pkt = get_protocol().transition_packet(pkt, omega, organ=organ, note=note or action, mutate=updates)
+    else:
+        if updates:
+            get_protocol()._safe_mutate_packet(pkt, updates, organ=organ)
+        pkt.add_history(organ, action, pkt.current_omega, note)
+        pkt.add_ledger_entry(pkt.current_omega, organ, pkt.governance.get("decision", GovernanceDecision.PENDING.value), note or action)
+        pkt.seal()
+    return pkt
+
+
+def sml_attach_bundle_meta(bundle: Dict[str, Any], packet: Union[SMLPacket, Mapping[str, Any], None]) -> Dict[str, Any]:
+    """Attach compact SML summary metadata to an outward API/reply bundle."""
+    if not isinstance(bundle, dict):
+        return bundle
+    meta = bundle.setdefault("meta", {})
+    if isinstance(meta, dict):
+        meta["sml"] = sml_packet_summary(packet)
+    return bundle
+
+
+
+def sml_resolve_safe_cognitive_answer(
+    text: str,
+    *,
+    packet: Optional[Union[SMLPacket, Mapping[str, Any]]] = None,
+    telemetry: Optional[Mapping[str, Any]] = None,
+    local_only: bool = True,
+) -> Dict[str, Any]:
+    """Resolve SML-owned answer-only cognition or return a governed route plan."""
+    return get_protocol().resolve_safe_cognitive_answer(text, packet=packet, telemetry=telemetry, local_only=local_only)
+
+
+
+def sml_apply_cognitive_grammar(
+    packet: Union[SMLPacket, Mapping[str, Any]],
+    *,
+    text: str = "",
+    loop_state: Optional[Mapping[str, Any]] = None,
+) -> SMLPacket:
+    """Attach v0.8.2 six-question / SML-operator cognitive grammar to a packet."""
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    return get_protocol().apply_cognitive_grammar(pkt, text=text, loop_state=loop_state)
 
 
 # =============================================================================
@@ -1623,6 +2447,8 @@ __all__ = [
     "MissionType",
     "CognitiveState",
     "GovernanceDecision",
+    "QMathState",
+    "SMLStopCondition",
     "HealthStatus",
     "OrganCategory",
     "Authority",
@@ -1635,6 +2461,13 @@ __all__ = [
     "SMLPacket",
     "SMLRouteResult",
     "SarahMemorySMLProtocol",
+    "sml_packet_summary",
+    "sml_build_ingress_packet",
+    "sml_apply_governor_result",
+    "sml_touch_packet",
+    "sml_attach_bundle_meta",
+    "sml_resolve_safe_cognitive_answer",
+    "sml_apply_cognitive_grammar",
     "get_protocol",
     "create_sml_packet",
     "register_sml_organ",

@@ -3597,3 +3597,76 @@ lookup_local_knowledge_answer = resolve_local_fast_answer
 # ====================================================================
 # END OF SarahMemoryAdvCU.py v9.0.0
 # ====================================================================
+
+# --- SML ORGAN ADAPTER START ---
+# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+SML_ORGAN_METADATA = {
+    "name": 'SarahMemoryAdvCU',
+    "version": "v9.0.0-alpha-sml-0.2",
+    "category": 'Reasoning',
+    "protocol_version": "SML/1.0",
+    "packet_version": 1,
+    "omega_registry_version": "Ω/1.0",
+    "capabilities": ['mission_discovery', 'reasoning'],
+    "supported_missions": ['Conversation', 'Knowledge', 'Planning', 'Programming'],
+    "supported_omega": ['Ω001', 'Ω002', 'Ω005', 'Ω010', 'Ω020', 'Ω030', 'Ω040'],
+    "required_authority": ['Read'],
+    "priority": 70,
+    "trust_level": "source_integrated",
+    "internal_only": True,
+    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryAdvCU.py'},
+}
+
+
+def sml_get_metadata():
+    """Return this organ's SML registration metadata."""
+    return dict(SML_ORGAN_METADATA)
+
+
+def sml_health():
+    """Return a local SML health vector without side effects."""
+    return {
+        "status": "Healthy",
+        "availability": 1.0,
+        "integrity": 1.0,
+        "performance": 1.0,
+        "reliability": 1.0,
+        "confidence": 0.75,
+        "latency_ms": 0.0,
+        "stability": 1.0,
+        "compatibility": 1.0,
+        "notes": ["SML adapter present"],
+    }
+
+
+def sml_diagnostics():
+    """Return SML adapter diagnostics without executing organ behavior."""
+    return {
+        "status": "OK",
+        "component": 'SarahMemoryAdvCU',
+        "sml_adapter": True,
+        "metadata": dict(SML_ORGAN_METADATA),
+        "health": sml_health(),
+    }
+
+
+def sml_receive_packet(packet, *, action="observe", note="", updates=None):
+    """Receive/update an SML packet through the canonical protocol without direct execution."""
+    try:
+        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        register_sml_organ(SML_ORGAN_METADATA)
+        return sml_touch_packet(packet, organ='SarahMemoryAdvCU', action=action, note=note or "organ observed packet", updates=updates)
+    except Exception:
+        return packet
+# --- SML ORGAN ADAPTER END ---
+
+# --- SML ADVCU SPECIALIZATION START ---
+def sml_classify_packet_mission(packet, text=""):
+    """Use SML Mission Engine to classify/refine the packet mission."""
+    from SarahMemorySMLProtocol import get_protocol, SMLPacket
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    if text and not pkt.payload.get("raw_request"):
+        pkt.payload["raw_request"] = str(text)
+    return get_protocol().classify_mission(pkt)
+# --- SML ADVCU SPECIALIZATION END ---
+
