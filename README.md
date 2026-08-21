@@ -548,18 +548,17 @@ Govern it.
 — Brian Lee Baros
 
 ---
----
-
 ## SarahMemory AD Video (HD)
 
 ### Click-to-Play Thumbnail
-[![SarahMemory AD Video](documents/SM_AD_VID_IMG.jpg)](documents/SM_AD_VID_HD.mp4)
+[![SarahMemory AD Video](documents/SM_AD_VID_IMG.jpg)](https://raw.githubusercontent.com/brian-baros/sarahmemory/main/documents/SM_AD_VID_HD.mp4)
 
 ### Inline Video Player
 <video width="100%" controls>
-  <source src="documents/SM_AD_VID_HD.mp4" type="video/mp4">
+  <source src="https://raw.githubusercontent.com/brian-baros/sarahmemory/main/documents/SM_AD_VID_HD.mp4" type="video/mp4">
   Your browser does not support the video tag.
 </video>
+
 
 ---
 
