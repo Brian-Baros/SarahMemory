@@ -1045,6 +1045,108 @@ SML_ORGAN_METADATA = {
 }
 
 
+
+# -----------------------------------------------------------------------------
+# Persistent Live Avatar rhythm contract
+# -----------------------------------------------------------------------------
+def build_avatar_rhythm_state(
+    context: Optional[Dict[str, Any]] = None,
+    *,
+    avatar_state: Optional[Dict[str, Any]] = None,
+    now_monotonic: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Produce timing channels for the live avatar renderer.
+
+    RhythmCognition owns cadence/timing.  All oscillator/envelope mathematics is
+    delegated to LogicCalc; this organ never manipulates pixels.
+    """
+    ctx = dict(context or {})
+    state = dict(avatar_state or {})
+    t = float(now_monotonic if now_monotonic is not None else time.monotonic())
+    cadence = build_rhythm_cadence_packet(ctx)
+    try:
+        import SarahMemoryLogicCalc as _LC  # type: ignore
+        harmonic = _LC.sml_harmonic_oscillator
+        oscillator = _LC.sml_oscillator
+        pulse = _LC.sml_gaussian_pulse
+        blink_env = _LC.sml_blink_envelope
+        ahr = _LC.sml_attack_hold_release
+        clamp = _LC.sml_clamp
+    except Exception as exc:
+        return {
+            "ok": False,
+            "schema": "SarahMemory.avatar.rhythm.v1",
+            "error": f"LogicCalc unavailable: {exc}",
+            "execution_authority": False,
+        }
+
+    mode = str(cadence.get("rhythm_mode") or RHYTHM_FOCUSED)
+    urgency = float(cadence.get("urgency_score") or 0.0)
+    fatigue = float(state.get("fatigue") or 0.0)
+    speaking_energy = float(state.get("speaking_energy") or cadence.get("speech_pressure") or 0.0)
+    # Frequency/strength selection is a timing policy.  The waveform mathematics
+    # itself remains in LogicCalc.
+    breath_hz = 0.24
+    if mode in {RHYTHM_CALM, RHYTHM_REM, RHYTHM_STILL, RHYTHM_SAFE}:
+        breath_hz = 0.20
+    elif mode in {RHYTHM_URGENT_ASSIST, RHYTHM_EMERGENCY}:
+        breath_hz = 0.30
+    breath_envelope = clamp(1.0 - (speaking_energy * 0.30) + (fatigue * 0.10), 0.55, 1.15)
+    breath = harmonic(t, breath_hz, envelope=breath_envelope)
+    idle_sway = oscillator(t, 0.075, amplitude=0.25, phase_radians=0.5)
+    head_micro = oscillator(t, 0.11, amplitude=0.18, phase_radians=1.1)
+    neon = oscillator(t, 0.35 + (urgency * 0.25), amplitude=0.5, phase_radians=0.0)
+
+    events = state.get("active_events") if isinstance(state.get("active_events"), dict) else {}
+    event_channels: Dict[str, Any] = {}
+    for name, evt in list(events.items())[:16]:
+        if not isinstance(evt, dict):
+            continue
+        start = float(evt.get("started_monotonic") or t)
+        elapsed = max(0.0, t - start)
+        intensity = clamp(evt.get("intensity", 1.0), 0.0, 1.0)
+        duration = max(0.05, float(evt.get("duration_seconds") or 1.0))
+        key = str(name or "event").lower()
+        if key == "blink":
+            value = blink_env(elapsed, duration_seconds=duration)
+        elif key == "sigh":
+            value = pulse(t, start + (duration * 0.45), amplitude=intensity, sigma_seconds=max(0.08, duration * 0.22))
+        elif key == "yawn":
+            value = ahr(elapsed, duration * 0.25, duration * 0.30, duration * 0.45) * intensity
+        else:
+            value = ahr(elapsed, duration * 0.20, duration * 0.20, duration * 0.60) * intensity
+        event_channels[key] = clamp(value, 0.0, 1.0)
+
+    return {
+        "ok": True,
+        "schema": "SarahMemory.avatar.rhythm.v1",
+        "monotonic_time": t,
+        "rhythm_mode": mode,
+        "breath_frequency_hz": breath_hz,
+        "breath": float(breath),
+        "idle_sway": float(idle_sway),
+        "head_micro_motion": float(head_micro),
+        "neon_wave": float(neon),
+        "speech_pressure": float(cadence.get("speech_pressure") or 0.0),
+        "urgency": urgency,
+        "event_channels": event_channels,
+        "cadence": cadence,
+        "execution_authority": False,
+        "pixel_authority": False,
+        "owner": "SarahMemoryRhythmCognition",
+    }
+
+
+def avatar_rhythm_self_test() -> Dict[str, Any]:
+    sample = build_avatar_rhythm_state({"text": "hello"}, avatar_state={"fatigue": 0.1, "speaking_energy": 0.2, "active_events": {}} , now_monotonic=10.0)
+    checks = [
+        {"name": "logiccalc_backed", "passed": bool(sample.get("ok"))},
+        {"name": "no_pixel_authority", "passed": sample.get("pixel_authority") is False},
+        {"name": "no_execution_authority", "passed": sample.get("execution_authority") is False},
+    ]
+    return {"ok": all(c["passed"] for c in checks), "checks": checks, "sample": sample}
+
+
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
     return dict(SML_ORGAN_METADATA)

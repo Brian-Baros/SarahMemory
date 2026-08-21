@@ -1742,6 +1742,200 @@ SML_ORGAN_METADATA = {
 }
 
 
+
+# -----------------------------------------------------------------------------
+# GCOP identity/runtime question ownership
+# -----------------------------------------------------------------------------
+def answer_identity_question(question: str = "") -> Dict[str, Any]:
+    """Answer identity/creator/version questions from CognitiveSelf-owned state.
+
+    This keeps identity interpretation out of routing glue.  The response is
+    presentation text derived from the governed identity contract/runtime state,
+    not a factual answer pool.
+    """
+    raw = str(question or "").strip()
+    low = raw.lower()
+    ident = resolve_active_identity({})
+    summary = get_self_summary(context={"request_text": raw})
+    active_name = str(ident.get("active_name") or summary.get("name") or "SarahMemory")
+    platform_name = str(ident.get("platform_name") or "SarahMemory AiOS")
+    creator = str(summary.get("creator") or (_IDENTITY_CONTRACT or {}).get("creator") or "unknown")
+    organization = str(summary.get("organization") or (_IDENTITY_CONTRACT or {}).get("organization") or "unknown")
+    try:
+        version = str(getattr(config, "PROJECT_VERSION", "9.0.0") or "9.0.0")
+    except Exception:
+        version = "9.0.0"
+
+    if "version" in low:
+        reply = f"I am {active_name}, running {platform_name} version {version}."
+        kind = "version"
+    elif any(k in low for k in ("who made you", "who created you", "creator", "who built you", "who designed you", "designer", "engineer", "who engineered you")):
+        reply = f"{platform_name} identifies its creator as {creator}" + (f" / {organization}" if organization and organization.lower() != "unknown" else "") + "."
+        kind = "creator"
+    else:
+        reply = get_identity_response(raw)
+        kind = "identity"
+    return {
+        "ok": True,
+        "schema": "SarahMemory.cognitive_self.identity_answer.v1",
+        "kind": kind,
+        "reply": reply,
+        "identity": ident,
+        "creator": creator,
+        "organization": organization,
+        "version": version,
+        "source": "SarahMemoryCognitiveSelf",
+        "confidence": 0.99,
+        "execution_authority": False,
+    }
+
+
+def classify_runtime_system_question(question: str = "", intent: str = "") -> str:
+    """Classify read-only self/runtime body questions owned by CognitiveSelf."""
+    t = str(question or "").strip().lower()
+    i = str(intent or "").strip().lower()
+    if i in {"diagnostics", "diagnostic"} or any(k in t for k in ("diagnos", "self-test", "self test", "health check")):
+        return "diagnostics"
+    if any(k in t for k in ("gpu", "vram", "cuda", "graphics", "nvidia-smi")):
+        return "gpu"
+    if any(k in t for k in ("cpu", "processor", "what processor")):
+        return "cpu"
+    if any(k in t for k in ("motherboard", "mainboard", "baseboard")):
+        return "motherboard"
+    if any(k in t for k in ("ram", "memory usage", "system memory", "how much memory")):
+        return "ram"
+    if any(k in t for k in ("network adapter", "network adapters", "ethernet", "wi-fi", "wifi", "bluetooth network")):
+        return "network"
+    if any(k in t for k in ("disk space", "free disk", "free space", "storage", "drive space")):
+        return "disk"
+    if any(k in t for k in ("system stats", "system status", "hardware stats", "environment", "where are you running", "what are you running on")):
+        return "system_stats"
+    return ""
+
+
+def answer_runtime_system_question(kind: str, question: str = "", context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return read-only verified runtime/body evidence and concise presentation.
+
+    Hardware discovery remains owned by SarahMemoryHi/MSDC/Diagnostics. CognitiveSelf
+    owns the self-referential interpretation of that observed body state.
+    """
+    k = str(kind or "").strip().lower()
+    model = get_latest_cognitive_self_model(context={**dict(context or {}), "request_text": str(question or "")}, refresh_if_stale=True, max_age_sec=30)
+    body_map = model.get("body_map") if isinstance(model.get("body_map"), dict) else {}
+    env = body_map.get("runtime_environment") if isinstance(body_map.get("runtime_environment"), dict) else {}
+    body = env.get("body") if isinstance(env.get("body"), dict) else {}
+    grade = env.get("hardware_grade") if isinstance(env.get("hardware_grade"), dict) else {}
+    result: Dict[str, Any] = {
+        "ok": False,
+        "schema": "SarahMemory.cognitive_self.runtime_answer.v1",
+        "kind": k,
+        "reply": "Runtime body evidence is not currently available.",
+        "evidence": {},
+        "source": "SarahMemoryCognitiveSelf.runtime_environment",
+        "confidence": 0.25,
+        "execution_authority": False,
+    }
+    if k == "ram":
+        return answer_ram_question(question)
+    if k == "gpu":
+        g = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+        ok = bool(g)
+        name = str(g.get("name") or "GPU")
+        total = g.get("vram_total_mb")
+        free = g.get("vram_free_mb")
+        reply = (f"My GPU is {name}, with {free if free is not None else 'unknown'} MB free / {total} MB total VRAM." if total else f"My GPU is {name}.") if ok else "GPU details are not verified in the current runtime body."
+        result.update(ok=ok, reply=reply, evidence=g, confidence=0.9 if ok else 0.25)
+        return result
+    if k == "cpu":
+        c = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+        ok = bool(c)
+        if ok:
+            parts = [f"My CPU is {c.get('name') or 'Unknown CPU'}"]
+            if c.get("physical_cores") is not None or c.get("logical_threads") is not None:
+                parts.append(f"with {c.get('physical_cores', '?')} physical cores and {c.get('logical_threads', '?')} logical threads")
+            clock = c.get("max_clock_mhz") or c.get("current_clock_mhz")
+            if clock is not None:
+                parts.append(f"at up to {clock} MHz")
+            reply = " ".join(parts) + "."
+        else:
+            reply = "CPU details are not verified in the current runtime body."
+        result.update(ok=ok, reply=reply, evidence=c, confidence=0.92 if ok else 0.25)
+        return result
+    if k == "motherboard":
+        value = str(body.get("motherboard") or "").strip()
+        ok = bool(value and value.lower() != "unknown motherboard")
+        result.update(ok=ok, reply=(f"My motherboard is {value}." if ok else "Motherboard details are not verified in the current runtime body."), evidence={"motherboard": value}, confidence=0.9 if ok else 0.25)
+        return result
+    if k == "network":
+        adapters = body.get("network_adapters") if isinstance(body.get("network_adapters"), list) else []
+        names = [str(a.get("name") or "") for a in adapters if isinstance(a, dict) and a.get("name")]
+        ok = bool(names)
+        result.update(ok=ok, reply=(f"I can verify {len(names)} network adapters: {', '.join(names[:12])}." if ok else "Network adapter details are not verified in the current runtime body."), evidence={"network_adapters": adapters}, confidence=0.9 if ok else 0.25)
+        return result
+    if k == "disk":
+        storage = body.get("storage") if isinstance(body.get("storage"), list) else []
+        ok = bool(storage)
+        if ok:
+            first = storage[0] if isinstance(storage[0], dict) else {}
+            label = first.get("mount") or first.get("device") or first.get("path") or "primary storage"
+            reply = f"Storage {label}: {first.get('free_gb', 'unknown')} GB free / {first.get('total_gb', 'unknown')} GB total."
+        else:
+            reply = "Storage details are not verified in the current runtime body."
+        result.update(ok=ok, reply=reply, evidence={"storage": storage}, confidence=0.88 if ok else 0.25)
+        return result
+    if k == "system_stats":
+        evidence = {"body": body, "hardware_grade": grade, "environment": {key: env.get(key) for key in ("ok", "timestamp", "source") if key in env}}
+        ok = bool(env.get("ok", bool(body)))
+        parts = []
+        cpu = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
+        gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
+        ram = body.get("ram") if isinstance(body.get("ram"), dict) else {}
+        if cpu.get("name"): parts.append(f"CPU: {cpu.get('name')}")
+        if gpu.get("name"): parts.append(f"GPU: {gpu.get('name')}")
+        if ram.get("total_gb"): parts.append(f"RAM: {ram.get('available_gb', 'unknown')} GB free / {ram.get('total_gb')} GB total")
+        if grade.get("tier_rating"): parts.append(f"Tier: {grade.get('tier_rating')} ({grade.get('score')})")
+        result.update(ok=ok, reply=(" | ".join(parts) if parts else "Runtime environment evidence captured."), evidence=evidence, confidence=0.9 if ok else 0.25)
+        return result
+    return result
+
+
+# -----------------------------------------------------------------------------
+# GCOP self/runtime continuity contract
+# -----------------------------------------------------------------------------
+def gcop_self_state(packet=None, event=None, continuity_state=None, runtime_context=None):
+    """Return bounded self/body/capability evidence for GCOP coordination."""
+    ctx = dict(runtime_context or {}) if isinstance(runtime_context, dict) else {}
+    try:
+        summary = get_self_summary()
+    except Exception as exc:
+        summary = {"ok": False, "error": str(exc)}
+    try:
+        capabilities = get_capability_summary()
+    except Exception as exc:
+        capabilities = {"ok": False, "error": str(exc)}
+    status = summary.get("status") if isinstance(summary, dict) and isinstance(summary.get("status"), dict) else {}
+    resources = {
+        "capabilities": capabilities,
+        "runtime_health": summary.get("health") if isinstance(summary, dict) else {},
+        "body": summary.get("body") if isinstance(summary, dict) else {},
+        "environment": summary.get("environment") if isinstance(summary, dict) else {},
+    }
+    continuity = {
+        "operational_state": status.get("continuity_state") or summary.get("continuity_state") if isinstance(summary, dict) else "unknown",
+        "boot_id": status.get("boot_id"),
+        "runtime_context": ctx,
+    }
+    return {
+        "schema": "SarahMemory.gcop.self_state.v1",
+        "identity": {"resolved_identity": resolve_active_identity() if callable(resolve_active_identity) else "SarahMemory"},
+        "resources": resources,
+        "continuity": continuity,
+        "self_summary": summary,
+        "execution_authority": False,
+        "owner": "SarahMemoryCognitiveSelf",
+    }
+
+
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
     return dict(SML_ORGAN_METADATA)

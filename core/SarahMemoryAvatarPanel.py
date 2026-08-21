@@ -349,6 +349,63 @@ class AvatarPanelState:
         with self._lock:
             return self._current_emotion
     
+    def _ensure_live_renderer(self) -> bool:
+        """Lazily connect the presentation surface to the persistent avatar pipeline.
+
+        AvatarPanel owns presentation only.  Persistent semantic state remains in
+        SarahMemoryAvatar, physical orchestration in UnifiedAvatarController, and
+        pixels in CanvasStudio.  Failure here falls back to the legacy local visual
+        renderer without granting execution authority.
+        """
+        if self._live_controller is not None and self._live_canvas is not None:
+            return True
+        if self._live_init_attempted:
+            return False
+        self._live_init_attempted = True
+        try:
+            from UnifiedAvatarController import UnifiedAvatarController  # type: ignore
+            from SarahMemoryCanvasStudio import CanvasStudio  # type: ignore
+            self._live_controller = UnifiedAvatarController()
+            self._live_canvas = CanvasStudio()
+            return True
+        except Exception as exc:
+            logger.debug(f"Persistent live avatar renderer unavailable; compatibility fallback retained: {exc}")
+            self._live_controller = None
+            self._live_canvas = None
+            return False
+
+    def _render_persistent_live_frame(self, width: int, height: int) -> Optional[Any]:
+        if not HAVE_PIL or not self._ensure_live_renderer():
+            return None
+        try:
+            controller = self._live_controller
+            canvas = self._live_canvas
+            avatar = getattr(controller, "avatar", None)
+            if avatar is not None and hasattr(avatar, "update_live_avatar_state"):
+                avatar.update_live_avatar_state({
+                    "expression": self._current_emotion,
+                    "speaking": bool(self._lip_sync_active),
+                    "speaking_energy": 0.45 if self._lip_sync_active else 0.0,
+                    "mouth_shape": "speech" if self._lip_sync_active else "neutral",
+                })
+            packet = controller.build_live_avatar_state_packet(now_monotonic=time.monotonic())
+            if not isinstance(packet, dict) or not packet.get("ok"):
+                return None
+            rendered = canvas.render_live_avatar_frame(
+                packet, width=max(64, int(width)), height=max(64, int(height)), use_temporal_history=True
+            )
+            if not isinstance(rendered, dict) or not rendered.get("ok"):
+                return None
+            rgba = rendered.get("frame_rgba")
+            if rgba is None:
+                return None
+            self._live_last_health = dict(rendered.get("render_health") or {})
+            self._frame_index = int(rendered.get("frame_id") or (self._frame_index + 1))
+            return Image.fromarray(rgba, mode="RGBA")
+        except Exception as exc:
+            logger.debug(f"Persistent live avatar frame failed; using compatibility fallback: {exc}")
+            return None
+
     def set_emotion(self, emotion: str) -> None:
         """Set avatar emotion."""
         with self._lock:
@@ -848,6 +905,10 @@ class AvatarAnimationEngine:
         self._animation_speed = 1.0
         self._loaded_sprites: Dict[str, Any] = {}
         self._animation_timer: Optional[threading.Timer] = None
+        self._live_controller: Optional[Any] = None
+        self._live_canvas: Optional[Any] = None
+        self._live_last_health: Dict[str, Any] = {}
+        self._live_init_attempted = False
         
         logger.info("AvatarAnimationEngine initialized")
     
@@ -912,8 +973,15 @@ class AvatarAnimationEngine:
         """
         if not HAVE_PIL:
             return None
+
+        # Primary path: persistent AvatarState -> Rhythm -> Controller -> CanvasStudio.
+        # Legacy drawing below is compatibility-only if the live renderer cannot initialize.
+        live_frame = self._render_persistent_live_frame(width, height)
+        if live_frame is not None:
+            return live_frame
         
         try:
+            # Compatibility fallback only; not the authoritative avatar state engine.
             # Create base image
             img = Image.new('RGBA', (width, height), (20, 26, 33, 255))
             draw = ImageDraw.Draw(img)
@@ -1011,7 +1079,10 @@ class AvatarAnimationEngine:
             "expression_data": self.get_expression_data(),
             "lip_sync": self._lip_sync_active,
             "frame_index": self._frame_index,
-            "animation_speed": self._animation_speed
+            "animation_speed": self._animation_speed,
+            "persistent_live_renderer": bool(self._live_controller is not None and self._live_canvas is not None),
+            "render_health": dict(self._live_last_health),
+            "execution_authority": False,
         }
 
 

@@ -183,6 +183,8 @@ _local_arile_sentinel = LocalARILESentinel()
 
 import json
 import logging
+import time
+import threading
 import traceback
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any, Union
@@ -867,9 +869,357 @@ class CanvasStudio:
         ensure_canvas_directories()
         self.canvases: Dict[str, Canvas] = {}
         self.active_canvas_id: Optional[str] = None
+
+        # Persistent live-avatar renderer state.  This is presentation-only RAM
+        # history; CanvasStudio has no cognitive or execution authority.
+        self._live_avatar_lock = threading.RLock()
+        self._live_avatar_history: Optional[np.ndarray] = None
+        self._live_avatar_previous_landmarks: Dict[str, Tuple[float, float]] = {}
+        self._live_avatar_previous_parameters: Dict[str, Any] = {}
+        self._live_avatar_frame_id = 0
+        self._live_avatar_last_health: Dict[str, Any] = {}
+        # Bounded stat-aware RAM cache avoids decoding the same identity artwork
+        # every render frame. Cached data is presentation-only and invalidates on
+        # file metadata changes; it grants no execution or memory authority.
+        self._live_avatar_reference_cache: Dict[Tuple[str, int, int, int, int], np.ndarray] = {}
+        self._live_avatar_reference_cache_max = 4
         
         logging.info(f"[CanvasStudio] Initialized v{CANVAS_STUDIO_VERSION} (Build {CANVAS_STUDIO_BUILD})")
     
+    # ---------------------------------------------------------------------
+    # Persistent Live Avatar Renderer
+    # ---------------------------------------------------------------------
+    @staticmethod
+    def _live_avatar_landmark_atlas() -> Dict[str, Tuple[float, float]]:
+        """Normalized reference topology; identity artwork remains external.
+
+        These are topology/anchor rails rather than animation frames.  Projects
+        may later replace this default atlas with calibrated landmarks derived
+        from the user's existing SarahMemory avatar reference artwork.
+        """
+        return {
+            "head_top": (0.50, 0.10),
+            "temple_left": (0.31, 0.25), "temple_right": (0.69, 0.25),
+            "left_brow": (0.40, 0.30), "right_brow": (0.60, 0.30),
+            "left_eye": (0.40, 0.36), "right_eye": (0.60, 0.36),
+            "nose_bridge": (0.50, 0.35), "nose_tip": (0.50, 0.47),
+            "mouth_left": (0.43, 0.55), "upper_lip": (0.50, 0.54),
+            "mouth_right": (0.57, 0.55), "lower_lip": (0.50, 0.58),
+            "jaw_left": (0.36, 0.52), "chin": (0.50, 0.66), "jaw_right": (0.64, 0.52),
+            "neck_left": (0.42, 0.68), "neck_right": (0.58, 0.68),
+            "shoulder_left": (0.25, 0.76), "shoulder_right": (0.75, 0.76),
+            "chest_left": (0.34, 0.80), "chest_center": (0.50, 0.82), "chest_right": (0.66, 0.80),
+            "torso_left": (0.28, 0.96), "torso_right": (0.72, 0.96),
+        }
+
+    @staticmethod
+    def _live_avatar_identity_stiffness() -> Dict[str, float]:
+        return {
+            "head_top": 0.92, "temple_left": 0.86, "temple_right": 0.86,
+            "nose_bridge": 0.94, "nose_tip": 0.88,
+            "left_eye": 0.72, "right_eye": 0.72,
+            "jaw_left": 0.70, "jaw_right": 0.70,
+            "neck_left": 0.55, "neck_right": 0.55,
+            "mouth_left": 0.25, "mouth_right": 0.25, "upper_lip": 0.18, "lower_lip": 0.15,
+            "left_brow": 0.20, "right_brow": 0.20, "chin": 0.45,
+            "shoulder_left": 0.25, "shoulder_right": 0.25,
+            "chest_left": 0.10, "chest_center": 0.08, "chest_right": 0.10,
+            "torso_left": 0.15, "torso_right": 0.15,
+        }
+
+    @staticmethod
+    def _live_avatar_triangles() -> List[Tuple[str, str, str]]:
+        return [
+            ("head_top", "temple_left", "left_brow"), ("head_top", "left_brow", "right_brow"),
+            ("head_top", "right_brow", "temple_right"), ("temple_left", "left_brow", "left_eye"),
+            ("left_brow", "nose_bridge", "left_eye"), ("right_brow", "right_eye", "nose_bridge"),
+            ("temple_right", "right_eye", "right_brow"), ("left_eye", "nose_bridge", "nose_tip"),
+            ("nose_bridge", "right_eye", "nose_tip"), ("temple_left", "left_eye", "jaw_left"),
+            ("left_eye", "nose_tip", "mouth_left"), ("right_eye", "mouth_right", "nose_tip"),
+            ("temple_right", "jaw_right", "right_eye"), ("nose_tip", "upper_lip", "mouth_left"),
+            ("nose_tip", "mouth_right", "upper_lip"), ("mouth_left", "upper_lip", "lower_lip"),
+            ("upper_lip", "mouth_right", "lower_lip"), ("mouth_left", "lower_lip", "jaw_left"),
+            ("mouth_right", "jaw_right", "lower_lip"), ("jaw_left", "lower_lip", "chin"),
+            ("lower_lip", "jaw_right", "chin"), ("jaw_left", "chin", "neck_left"),
+            ("chin", "neck_right", "neck_left"), ("chin", "jaw_right", "neck_right"),
+            ("neck_left", "neck_right", "chest_center"), ("neck_left", "chest_center", "chest_left"),
+            ("neck_right", "chest_right", "chest_center"), ("shoulder_left", "neck_left", "chest_left"),
+            ("neck_right", "shoulder_right", "chest_right"), ("shoulder_left", "chest_left", "torso_left"),
+            ("chest_left", "chest_center", "torso_left"), ("chest_center", "torso_right", "torso_left"),
+            ("chest_center", "chest_right", "torso_right"), ("chest_right", "shoulder_right", "torso_right"),
+        ]
+
+    @staticmethod
+    def _live_avatar_reference_candidates() -> List[str]:
+        values: List[str] = []
+        if SMG is not None:
+            for attr in ("DEFAULT_AVATAR",):
+                candidate = getattr(SMG, attr, None)
+                if candidate:
+                    values.append(os.path.abspath(os.fspath(candidate)))
+            avatar_dir = getattr(SMG, "AVATAR_DIR", None)
+            if avatar_dir:
+                for name in ("avatar.png", "avatar.jpg", "SarahMemory.png", "SarahMemory.jpg", "default.png", "default.jpg"):
+                    values.append(os.path.abspath(os.path.join(os.fspath(avatar_dir), name)))
+        return values
+
+    @staticmethod
+    def _coerce_live_avatar_rgba(reference_rgba: Any, width: int, height: int) -> np.ndarray:
+        """Convert caller/reference artwork into a bounded RGBA working surface."""
+        if reference_rgba is None:
+            raise ValueError("reference_rgba_required")
+        arr = np.asarray(reference_rgba)
+        if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+            raise ValueError("reference_must_be_rgb_or_rgba")
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        if arr.shape[2] == 3:
+            arr = cv2.cvtColor(arr, cv2.COLOR_RGB2RGBA)
+        if arr.shape[1] != width or arr.shape[0] != height:
+            arr = cv2.resize(arr, (width, height), interpolation=cv2.INTER_LINEAR)
+        return np.ascontiguousarray(arr)
+
+    def _load_live_avatar_reference(self, width: int, height: int, reference_path: Optional[str] = None) -> Tuple[Optional[np.ndarray], str]:
+        candidates = [os.path.abspath(reference_path)] if reference_path else []
+        candidates.extend(self._live_avatar_reference_candidates())
+        seen = set()
+        for path in candidates:
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                st = os.stat(path)
+                key = (
+                    os.path.abspath(path), int(width), int(height),
+                    int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+                    int(st.st_size),
+                )
+                with self._live_avatar_lock:
+                    cached = self._live_avatar_reference_cache.get(key)
+                    if isinstance(cached, np.ndarray):
+                        return cached, path
+
+                bgr = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+                if bgr is None:
+                    continue
+                if bgr.ndim == 2:
+                    bgr = cv2.cvtColor(bgr, cv2.COLOR_GRAY2BGRA)
+                elif bgr.shape[2] == 3:
+                    bgr = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGBA)
+                else:
+                    bgr = cv2.cvtColor(bgr, cv2.COLOR_BGRA2RGBA)
+                rgba = self._coerce_live_avatar_rgba(bgr, width, height)
+                with self._live_avatar_lock:
+                    # Remove stale versions of the same path/working size.
+                    stale = [k for k in self._live_avatar_reference_cache if k[0] == key[0] and k[1:3] == key[1:3] and k != key]
+                    for k in stale:
+                        self._live_avatar_reference_cache.pop(k, None)
+                    self._live_avatar_reference_cache[key] = rgba
+                    while len(self._live_avatar_reference_cache) > self._live_avatar_reference_cache_max:
+                        self._live_avatar_reference_cache.pop(next(iter(self._live_avatar_reference_cache)), None)
+                return rgba, path
+            except Exception:
+                continue
+        return None, ""
+
+    @staticmethod
+    def _warp_live_avatar_triangle(source: np.ndarray, destination: np.ndarray, source_tri: List[Tuple[float, float]], target_tri: List[Tuple[float, float]]) -> None:
+        """Warp one RGBA triangle using OpenCV's affine raster primitive."""
+        src = np.float32(source_tri)
+        dst = np.float32(target_tri)
+        src_rect = cv2.boundingRect(src)
+        dst_rect = cv2.boundingRect(dst)
+        sx, sy, sw, sh = src_rect
+        dx, dy, dw, dh = dst_rect
+        if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0:
+            return
+        src_crop = source[sy:sy + sh, sx:sx + sw]
+        if src_crop.size == 0:
+            return
+        src_local = np.float32([(p[0] - sx, p[1] - sy) for p in source_tri])
+        dst_local = np.float32([(p[0] - dx, p[1] - dy) for p in target_tri])
+        matrix = cv2.getAffineTransform(src_local, dst_local)
+        warped = cv2.warpAffine(src_crop, matrix, (dw, dh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101)
+        mask = np.zeros((dh, dw), dtype=np.uint8)
+        cv2.fillConvexPoly(mask, np.int32(dst_local), 255, lineType=cv2.LINE_AA)
+        y2 = min(destination.shape[0], dy + dh)
+        x2 = min(destination.shape[1], dx + dw)
+        if dx < 0 or dy < 0 or x2 <= dx or y2 <= dy:
+            return
+        warped = warped[:y2 - dy, :x2 - dx]
+        mask = mask[:y2 - dy, :x2 - dx]
+        roi = destination[dy:y2, dx:x2]
+        inv = cv2.bitwise_not(mask)
+        for channel in range(destination.shape[2]):
+            roi[:, :, channel] = cv2.bitwise_or(cv2.bitwise_and(roi[:, :, channel], inv), cv2.bitwise_and(warped[:, :, channel], mask))
+
+    def _apply_live_avatar_neon(self, frame: np.ndarray, landmarks_px: Dict[str, Tuple[float, float]], parameters: Dict[str, Any], quality_level: int) -> np.ndarray:
+        try:
+            import SarahMemoryLogicCalc as _LC  # type: ignore
+            intensity = _LC.sml_clamp(parameters.get("neon_intensity", 0.35), 0.0, 1.0)
+            wave = _LC.sml_clamp(parameters.get("neon_wave", 0.0), -1.0, 1.0)
+        except Exception:
+            return frame
+        if intensity <= 0.001:
+            return frame
+        points = []
+        for key in ("shoulder_left", "chest_left", "chest_center", "chest_right", "shoulder_right"):
+            if key in landmarks_px:
+                points.append(tuple(int(v) for v in landmarks_px[key]))
+        if len(points) < 2:
+            return frame
+        emission = np.zeros(frame.shape[:2], dtype=np.uint8)
+        thickness = 2 if quality_level >= 4 else 3
+        cv2.polylines(emission, [np.int32(points)], False, int(128 + (127 * intensity)), thickness=thickness, lineType=cv2.LINE_AA)
+        # Phase is represented by a small traveling highlight along the polyline.
+        highlight_index = 0 if wave < -0.33 else (len(points) // 2 if wave < 0.33 else len(points) - 1)
+        cv2.circle(emission, points[highlight_index], 5 if quality_level < 3 else 3, 255, -1, lineType=cv2.LINE_AA)
+        blur_radius = 11 if quality_level == 0 else (7 if quality_level <= 2 else 3)
+        glow = cv2.GaussianBlur(emission, (blur_radius | 1, blur_radius | 1), 0)
+        overlay = np.zeros_like(frame)
+        overlay[:, :, 0] = np.maximum(emission, glow)
+        overlay[:, :, 1] = np.maximum(emission, glow)
+        overlay[:, :, 2] = np.maximum(emission, glow)
+        overlay[:, :, 3] = np.maximum(emission, glow)
+        return cv2.addWeighted(frame, 1.0, overlay, float(intensity) * 0.32, 0.0)
+
+    def render_live_avatar_frame(
+        self,
+        parameter_packet: Optional[Dict[str, Any]] = None,
+        *,
+        width: int = 512,
+        height: int = 512,
+        reference_path: Optional[str] = None,
+        reference_rgba: Any = None,
+        use_temporal_history: bool = True,
+    ) -> Dict[str, Any]:
+        """Render one persistent live-avatar RGBA frame.
+
+        CanvasStudio owns geometry/raster/lighting mechanics only.  All avatar
+        deformation and temporal weighting mathematics is delegated to LogicCalc.
+        No network, memory, cognition, device, or execution authority exists here.
+        """
+        started = time.perf_counter()
+        width, height = validate_canvas_dimensions(width, height)
+        packet = dict(parameter_packet or {})
+        params = packet.get("parameters") if isinstance(packet.get("parameters"), dict) else packet
+        try:
+            import SarahMemoryLogicCalc as _LC  # type: ignore
+        except Exception as exc:
+            return {"ok": False, "error": f"LogicCalc unavailable: {exc}", "execution_authority": False, "pixel_authority": True}
+
+        if reference_rgba is not None:
+            try:
+                source = self._coerce_live_avatar_rgba(reference_rgba, width, height)
+                source_id = "caller_rgba"
+            except Exception as exc:
+                return {"ok": False, "error": f"invalid_reference_rgba:{exc}", "execution_authority": False, "pixel_authority": True}
+        else:
+            source, source_id = self._load_live_avatar_reference(width, height, reference_path=reference_path)
+            if source is None:
+                return {
+                    "ok": False,
+                    "error": "avatar_reference_artwork_not_found",
+                    "reference_candidates": self._live_avatar_reference_candidates(),
+                    "execution_authority": False,
+                    "pixel_authority": True,
+                    "fallback_required": True,
+                }
+
+        normalized = self._live_avatar_landmark_atlas()
+        offsets = _LC.sml_avatar_deformation_offsets(params)
+        target_norm = _LC.sml_apply_normalized_offsets(normalized, offsets, self._live_avatar_identity_stiffness())
+        source_px = _LC.sml_scale_normalized_points(normalized, width, height)
+        target_px = _LC.sml_scale_normalized_points(target_norm, width, height)
+
+        current = source.copy()
+        for names in self._live_avatar_triangles():
+            if not all(name in source_px and name in target_px for name in names):
+                continue
+            self._warp_live_avatar_triangle(source, current, [source_px[n] for n in names], [target_px[n] for n in names])
+
+        # Determine frame pressure before cosmetic effects using the previous health level.
+        quality_level = int((self._live_avatar_last_health or {}).get("quality_level") or 0)
+        current = self._apply_live_avatar_neon(current, target_px, params, quality_level)
+
+        with self._live_avatar_lock:
+            history_weight = 0.0
+            motion_magnitude = 0.0
+            color_difference = 0.0
+            if use_temporal_history and isinstance(self._live_avatar_history, np.ndarray) and self._live_avatar_history.shape == current.shape:
+                vectors = []
+                for name, point in target_px.items():
+                    prev = self._live_avatar_previous_landmarks.get(name)
+                    if prev is not None:
+                        vectors.append(_LC.sml_motion_vector(prev, point))
+                if vectors:
+                    magnitudes = [_LC.sml_vector_magnitude(v[0], v[1]) for v in vectors]
+                    motion_magnitude = sum(magnitudes) / len(magnitudes)
+                diff = cv2.absdiff(current, self._live_avatar_history)
+                color_difference = _LC.sml_clamp(float(np.mean(diff)) / 255.0, 0.0, 1.0)
+                history_weight = _LC.sml_temporal_history_weight(motion_magnitude, color_difference)
+                if history_weight > 0.0:
+                    current = cv2.addWeighted(current, 1.0 - history_weight, self._live_avatar_history, history_weight, 0.0)
+
+            changed_parameters = [k for k, v in params.items() if self._live_avatar_previous_parameters.get(k) != v]
+            self._live_avatar_history = current.copy()
+            self._live_avatar_previous_landmarks = dict(target_px)
+            self._live_avatar_previous_parameters = dict(params)
+            self._live_avatar_frame_id += 1
+            frame_id = self._live_avatar_frame_id
+
+        frame_ms = (time.perf_counter() - started) * 1000.0
+        quality_level = _LC.sml_frame_budget_level(frame_ms, 30.0)
+        health = {
+            "schema": "SarahMemory.avatar.render_health.v1",
+            "frame_id": frame_id,
+            "frame_ms": frame_ms,
+            "target_fps": 30.0,
+            "quality_level": quality_level,
+            "history_weight": history_weight,
+            "motion_magnitude": motion_magnitude,
+            "color_difference": color_difference,
+            "changed_parameters": changed_parameters[:64],
+            "dirty_region_tracking": True,
+            "partial_raster_update": False,
+            "reference": source_id,
+            "execution_authority": False,
+        }
+        self._live_avatar_last_health = dict(health)
+        return {
+            "ok": True,
+            "schema": "SarahMemory.avatar.live_frame.v1",
+            "frame_id": frame_id,
+            "timestamp_monotonic": time.monotonic(),
+            "frame_rgba": current,
+            "landmarks": target_px,
+            "render_health": health,
+            "execution_authority": False,
+            "pixel_authority": True,
+            "owner": "SarahMemoryCanvasStudio",
+        }
+
+    def live_avatar_renderer_self_test(self) -> Dict[str, Any]:
+        """In-memory renderer smoke test; touches no files, network, or devices."""
+        synthetic = np.zeros((256, 256, 4), dtype=np.uint8)
+        synthetic[:, :, 3] = 255
+        cv2.circle(synthetic, (128, 92), 58, (85, 110, 145, 255), -1, lineType=cv2.LINE_AA)
+        cv2.rectangle(synthetic, (70, 145), (186, 255), (45, 65, 90, 255), -1)
+        packet = {"parameters": {"breath": 0.5, "jaw_open": 0.25, "blink_left": 0.1, "blink_right": 0.1, "gaze_x": 0.1, "neon_intensity": 0.4, "neon_wave": 0.2}}
+        out = self.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic, use_temporal_history=True)
+        second = self.render_live_avatar_frame(packet, width=256, height=256, reference_rgba=synthetic, use_temporal_history=True)
+        frame = out.get("frame_rgba")
+        checks = [
+            {"name": "render_ok", "passed": bool(out.get("ok"))},
+            {"name": "rgba_shape", "passed": isinstance(frame, np.ndarray) and tuple(frame.shape) == (256, 256, 4)},
+            {"name": "persistent_frame_id", "passed": int(second.get("frame_id") or 0) > int(out.get("frame_id") or 0)},
+            {"name": "temporal_metadata", "passed": "history_weight" in (second.get("render_health") or {})},
+            {"name": "no_execution_authority", "passed": out.get("execution_authority") is False},
+        ]
+        return {"ok": all(c["passed"] for c in checks), "checks": checks, "render_health": second.get("render_health"), "execution_authority": False}
+
     def create_canvas(self, width: int, height: int, name: str = None, 
                      depth: int = 8, background_color: Tuple[int, int, int, int] = None) -> Canvas:
         """
@@ -1464,6 +1814,11 @@ def get_canvas_studio_capabilities() -> Dict[str, Any]:
         "local_first": True,
         "network_optional": True,
         "execution_authority": False,
+        "persistent_live_avatar_renderer": True,
+        "live_avatar_schema": "SarahMemory.avatar.live_frame.v1",
+        "persistent_frame_history": True,
+        "temporal_reconstruction": True,
+        "reference_atlas_required_for_identity_render": True,
         "import_side_effect_free": True,
     }
 

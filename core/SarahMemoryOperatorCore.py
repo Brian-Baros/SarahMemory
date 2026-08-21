@@ -1139,13 +1139,13 @@ class SarahMemoryOperatorCore:
     def _govern_contract(self, contract: ActionContract) -> Dict[str, Any]:
         if _CogServices is None:
             return {
-                "decision": "ALLOW",
-                "allow": True,
-                "require_user": False,
-                "risk_score": 0,
-                "risk_factors": [],
-                "reasons": ["CognitiveServices unavailable; fail-soft local allowance."],
-                "recommended_next": "Proceed with bounded operator execution.",
+                "decision": "DEFER",
+                "allow": False,
+                "require_user": True,
+                "risk_score": 100,
+                "risk_factors": ["governance_unavailable"],
+                "reasons": ["CognitiveServices unavailable; state-changing execution fails closed."],
+                "recommended_next": "Restore governance before execution.",
             }
 
         try:
@@ -1198,10 +1198,10 @@ class SarahMemoryOperatorCore:
     def _security_gate(self, contract: ActionContract, governance: Dict[str, Any]) -> Dict[str, Any]:
         if _SecurityGovernor is None:
             return {
-                "decision": "ALLOW",
-                "allow": True,
-                "reasons": ["SecurityGovernor not present yet; fail-soft to governance result."],
-                "risk_score": governance.get("risk_score", 0),
+                "decision": "DENY",
+                "allow": False,
+                "reasons": ["SecurityGovernor unavailable; execution fails closed."],
+                "risk_score": max(100, int(governance.get("risk_score", 0) or 0)),
             }
         for fn_name in ("evaluate_action", "govern_action", "review_action_contract"):
             try:
@@ -1213,18 +1213,19 @@ class SarahMemoryOperatorCore:
             except Exception as exc:
                 logger.debug("SecurityGovernor.%s failed: %s", fn_name, exc)
         return {
-            "decision": "ALLOW",
-            "allow": True,
-            "reasons": ["SecurityGovernor present but no compatible callable exposed yet."],
-            "risk_score": governance.get("risk_score", 0),
+            "decision": "DENY",
+            "allow": False,
+            "reasons": ["SecurityGovernor present but no compatible callable exposed; execution fails closed."],
+            "risk_score": max(100, int(governance.get("risk_score", 0) or 0)),
         }
 
     def _assurance_gate(self, contract: ActionContract, governance: Dict[str, Any], security: Dict[str, Any]) -> Dict[str, Any]:
         if _AssuranceGate is None:
             return {
-                "allow": True,
-                "confidence": 1.0,
-                "reasons": ["AssuranceGate not present yet; fallback to governance/security decisions."],
+                "allow": False,
+                "confidence": 0.0,
+                "decision": "DENY",
+                "reasons": ["AssuranceGate unavailable; state-changing execution fails closed."],
             }
         for fn_name in ("evaluate_action_assurance", "review_action_assurance", "assure_action"):
             try:
@@ -1236,9 +1237,10 @@ class SarahMemoryOperatorCore:
             except Exception as exc:
                 logger.debug("AssuranceGate.%s failed: %s", fn_name, exc)
         return {
-            "allow": True,
-            "confidence": 1.0,
-            "reasons": ["AssuranceGate present but no compatible callable exposed yet."],
+            "allow": False,
+            "confidence": 0.0,
+            "decision": "DENY",
+            "reasons": ["AssuranceGate present but no compatible callable exposed; execution fails closed."],
         }
 
     def _persist_action(self, contract: ActionContract, result: ActionResult) -> None:
@@ -1644,6 +1646,140 @@ def process_action_request(
         proposed_action=proposed_action,
         execution_mode=execution_mode,
     )
+
+
+def authorize_external_domain_action(
+    user_goal: str,
+    *,
+    origin: str,
+    proposed_action: Dict[str, Any],
+    meta: Optional[Dict[str, Any]] = None,
+    user_consented: bool = False,
+) -> Dict[str, Any]:
+    """Authorize a domain-owned state-changing action through OperatorCore gates.
+
+    Some execution domains (for example API driver adapters) must retain ownership
+    of their actual device/API call.  This function makes OperatorCore the common
+    authorization choke point without importing API modules into CORE or pretending
+    that a NoOp executor performed the external action.
+    """
+    core = get_operator_core()
+    pa = dict(proposed_action or {})
+    md = dict(meta or {})
+    md["user_consented"] = bool(user_consented)
+    contract = core.build_action_contract(
+        user_goal,
+        origin=origin,
+        meta=md,
+        proposed_action=pa,
+        execution_mode=MODE_APPLY,
+    )
+    # Domain contract metadata is authoritative for this bounded external action.
+    contract.action_type = str(pa.get("action_type") or contract.action_type or "external_domain_action")
+    contract.target = str(pa.get("target") or contract.target or "external_domain")
+    contract.target_ref = str(pa.get("target_ref") or contract.target_ref or contract.target)
+    contract.capability_name = str(pa.get("capability_name") or contract.capability_name or "external_domain")
+    contract.executor_name = "external_domain_owned"
+    perms = pa.get("required_permissions")
+    if isinstance(perms, list):
+        contract.required_permissions = [str(x) for x in perms if str(x).strip()]
+    if pa.get("risk_level"):
+        contract.risk_level = str(pa.get("risk_level"))
+    contract.requires_confirmation = not bool(user_consented)
+    contract.metadata.setdefault("external_domain", {})
+    contract.metadata["external_domain"].update({
+        "origin": str(origin),
+        "domain_execution_owned_externally": True,
+        "user_consented": bool(user_consented),
+    })
+
+    trace: Dict[str, Any] = {}
+    if not user_consented:
+        core._transition(contract, STATE_FAILED, "External domain action requires explicit user confirmation.")
+        return {
+            "ok": False,
+            "decision": "REQUIRE_USER",
+            "allow": False,
+            "domain_execution_authorized": False,
+            "execution_authority": False,
+            "contract": contract.to_dict(),
+            "trace": trace,
+            "reason": "explicit_user_confirmation_required",
+        }
+
+    energetics = core._energetics_preflight(contract)
+    trace["energetics"] = energetics
+    if str(energetics.get("decision") or "DEFER").upper() in {"DENY", "DEFER", "REDUCE_MODE"} or not bool(energetics.get("ok", True)):
+        core._transition(contract, STATE_FAILED, "Energetics blocked external domain action.", meta=energetics)
+        return {"ok": False, "decision": str(energetics.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": str(energetics.get("reason") or "energetics_block")}
+
+    governance = core._govern_contract(contract)
+    trace["governance"] = governance
+    if not bool(governance.get("allow", governance.get("decision") == "ALLOW")):
+        core._transition(contract, STATE_FAILED, "Governance blocked external domain action.", meta=governance)
+        return {"ok": False, "decision": str(governance.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (governance.get("reasons") or [])) or "governance_block"}
+    core._transition(contract, STATE_AUTHORIZED, "Governance authorized external domain action.", meta=governance)
+
+    security = core._security_gate(contract, governance)
+    trace["security"] = security
+    if not bool(security.get("allow", security.get("decision") == "ALLOW")):
+        core._transition(contract, STATE_FAILED, "SecurityGovernor blocked external domain action.", meta=security)
+        return {"ok": False, "decision": str(security.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (security.get("reasons") or [])) or "security_block"}
+
+    assurance = core._assurance_gate(contract, governance, security)
+    trace["assurance"] = assurance
+    if not bool(assurance.get("allow", False)):
+        core._transition(contract, STATE_FAILED, "AssuranceGate blocked external domain action.", meta=assurance)
+        return {"ok": False, "decision": str(assurance.get("decision") or "DENY"), "allow": False, "domain_execution_authorized": False, "execution_authority": False, "contract": contract.to_dict(), "trace": trace, "reason": "; ".join(str(x) for x in (assurance.get("reasons") or [])) or "assurance_block"}
+
+    core._transition(contract, STATE_PLANNED, "External domain owns bounded dispatch after OperatorCore authorization.", meta={"origin": origin})
+    log_operator_event(contract.contract_id, contract.current_state, "external_domain_authorized", "External domain action passed OperatorCore governance/security/assurance gates.", meta={"origin": origin, "action_type": contract.action_type, "target": contract.target})
+    return {
+        "ok": True,
+        "decision": "ALLOW",
+        "allow": True,
+        "domain_execution_authorized": True,
+        "execution_authority": False,
+        "contract": contract.to_dict(),
+        "trace": trace,
+        "authorization_owner": MODULE_NAME,
+    }
+
+
+def record_external_domain_action_result(
+    authorization: Dict[str, Any],
+    execution_result: Dict[str, Any],
+    *,
+    verified: bool,
+    origin: str,
+) -> Dict[str, Any]:
+    """Record the observed result of a domain-owned action in OperatorCore audit events."""
+    auth = dict(authorization or {})
+    contract = auth.get("contract") if isinstance(auth.get("contract"), dict) else {}
+    contract_id = str(contract.get("contract_id") or "external_" + uuid.uuid4().hex)
+    audit_id = "audit_" + uuid.uuid4().hex
+    state = STATE_VERIFIED if bool(verified) else STATE_FAILED
+    summary = "External domain action verified." if verified else "External domain action failed verification."
+    log_operator_event(
+        contract_id,
+        state,
+        "external_domain_result",
+        summary,
+        meta={
+            "audit_id": audit_id,
+            "origin": str(origin),
+            "verified": bool(verified),
+            "execution_result": execution_result if isinstance(execution_result, dict) else {"result": str(execution_result)},
+        },
+    )
+    return {
+        "ok": bool(verified),
+        "audit_id": audit_id,
+        "contract_id": contract_id,
+        "state": state,
+        "verified": bool(verified),
+        "execution_authority": False,
+    }
 
 
 def _coerce_emergency_contract_to_action_contract(contract: Dict[str, Any]) -> ActionContract:

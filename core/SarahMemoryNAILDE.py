@@ -1,8 +1,8 @@
 """--==The SarahMemory Project==--
 File: SarahMemoryNAILDE.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0
-Date: 2026-08-07
+Version: v9.0.0-alpha-qsml-0.3-addons
+Date: 2026-08-16
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 
 NAILDE — Natural AI Language Developer Environment
@@ -16,7 +16,8 @@ Primary doctrine:
 - NAILDE is a sandbox-first development cockpit, not an execution authority.
 - Live SarahMemory files are read-only to NAILDE.
 - New or changed software must be created in a NAILDE workspace or staged zone.
-- Live apply remains owned by existing governed patch / DevBridge flows.
+- Live CORE/API/UI apply remains owned by existing governed patch / DevBridge flows.
+- A validated application may be installed into SarahMemoryGlobals.ADDONS_DIR only after explicit user confirmation; installation never auto-runs the addon.
 - WeightLab may adjust sandbox learning weights only; production tensor weights
   and global DLScreen/Panel values remain outside AI authority.
 """
@@ -48,6 +49,7 @@ from __future__ import annotations
 # NOTES = "NAILDE visual governed SDK/sandbox runtime. No live file writes, no device mutation, no production weight/tensor edits, no self-approval."
 # --- SARAHMETA END ---
 
+import ast
 import copy
 import hashlib
 import json
@@ -69,11 +71,17 @@ except Exception:  # pragma: no cover
     config = None  # type: ignore
 
 MODULE_NAME = "SarahMemoryNAILDE"
-MODULE_VERSION = "9.0.0-alpha"
+MODULE_VERSION = "9.0.0-alpha-qsml-0.3-addons"
 SDK_SCHEMA = "SarahMemory.nailde.internal_sdk.v1"
 STATE_SCHEMA = "SarahMemory.nailde.self_state.v1"
 THOUGHT_SCHEMA = "SarahMemory.nailde.thought_loop.v1"
 WEIGHTLAB_SCHEMA = "SarahMemory.nailde.weightlab.v1"
+
+# Universal QSML synthesis budgets. These are safety/resource rails only; they
+# never select application content or hardcode a user's requested solution.
+_MAX_UNIVERSAL_TEXT_FILE_BYTES = max(16 * 1024, min(2 * 1024 * 1024, int(os.getenv("NAILDE_UNIVERSAL_MAX_TEXT_FILE_BYTES", "524288") or 524288)))
+_MAX_UNIVERSAL_PROJECT_BYTES = max(_MAX_UNIVERSAL_TEXT_FILE_BYTES, min(64 * 1024 * 1024, int(os.getenv("NAILDE_UNIVERSAL_MAX_PROJECT_BYTES", "16777216") or 16777216)))
+_MAX_UNIVERSAL_EXPORT_FILES = max(1, min(512, int(os.getenv("NAILDE_UNIVERSAL_MAX_EXPORT_FILES", "160") or 160)))
 
 
 # -----------------------------------------------------------------------------
@@ -142,6 +150,71 @@ def _read_only_import(module_name: str):
         return None
 
 
+def _strip_code_fence(text: Any) -> str:
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].lstrip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    return raw
+
+
+def _extract_first_json_object(text: Any) -> Optional[Dict[str, Any]]:
+    """Extract the first balanced JSON object from a local-model response."""
+    raw = _strip_code_fence(text)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except Exception:
+        pass
+    start = raw.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(raw)):
+        ch = raw[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    value = json.loads(raw[start:idx + 1])
+                    return value if isinstance(value, dict) else None
+                except Exception:
+                    return None
+    return None
+
+
+def _language_from_path(path: str, fallback: str = "text") -> str:
+    ext = os.path.splitext(str(path or "").lower())[1]
+    return {
+        ".py": "python", ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript",
+        ".ts": "typescript", ".tsx": "typescript", ".jsx": "javascript", ".html": "html",
+        ".css": "css", ".json": "json", ".md": "markdown", ".txt": "text",
+        ".toml": "toml", ".ini": "ini", ".cfg": "ini", ".xml": "xml", ".svg": "svg",
+        ".sql": "sql", ".java": "java", ".rs": "rust", ".cpp": "cpp", ".cc": "cpp",
+        ".c": "c", ".h": "c_header", ".hpp": "cpp_header", ".cs": "csharp", ".go": "go",
+    }.get(ext, fallback)
+
+
 # -----------------------------------------------------------------------------
 # Static contracts
 # -----------------------------------------------------------------------------
@@ -150,6 +223,7 @@ NAILDE_WRITE_ZONES = [
     "data/nailde/packages",
     "data/nailde/exports",
     "data/addons/pending",
+    "data/addons/<addon_id> (explicit_user_authorized_install_only)",
     "data/devbridge/staged",
 ]
 
@@ -166,11 +240,15 @@ NAILDE_ALLOWED_ACTIONS = [
     "analyze",
     "plan",
     "generate_sandbox_code",
+    "synthesize_arbitrary_application",
+    "compile_qsml_blueprint",
+    "repair_generated_code",
     "simulate",
     "preview_media",
     "rank_candidates",
     "stage_proposal",
     "package_addon_pending_review",
+    "install_validated_addon_after_explicit_user_confirmation",
 ]
 
 NAILDE_DENIED_ACTIONS = [
@@ -994,12 +1072,30 @@ class SarahMemoryNAILDERuntime:
         saved_addon_ui = self.save_workspace_file({"workspace_id": workspace_id, "path": "sandbox/addon_package/ui.json", "content": json.dumps(addon_ui, indent=2, sort_keys=True)})
         saved_addon_py = self.save_workspace_file({"workspace_id": workspace_id, "path": "sandbox/addon_package/addon.py", "content": addon_py})
         saved_addon_code = self.save_workspace_file({"workspace_id": workspace_id, "path": "sandbox/addon_package/app/main.txt", "content": content})
+        editor_blueprint = {
+            "name": app_name, "goal": goal, "project_kind": "editor_application",
+            "files": [{"path": path, "purpose": "User-visible NAILDE editor application entry", "language": _language_from_path(path), "entrypoint": True}],
+            "run": {"entrypoint": path, "arguments": []}, "requested_capabilities": [],
+            "constraints": {"sandbox_only": True, "live_core_write": False, "self_approval": False},
+        }
+        universal_package = self._build_universal_addon_package(
+            workspace_id,
+            {"application_name": app_name, "addon_id": addon_id, "top_prompt": goal, "route_definition_owner": "SarahMemorySMLProtocol", "route_activation_owner": "SarahMemoryNeuron", "qsml_program_id": "editor-visible-source"},
+            {"blueprint": editor_blueprint},
+            {path: content},
+        )
+        if not universal_package.get("ok"):
+            return {"ok": False, "error": "editor_addon_package_build_failed", "workspace_id": workspace_id, "addon_package": universal_package, "validation": validation, "execution_authority": False}
+        addon_manifest = universal_package.get("manifest") or addon_manifest
+        addon_ui = universal_package.get("ui") or addon_ui
         app_manifest["addon_package"] = {
             "addon_id": addon_id,
             "workspace_relative_path": "sandbox/addon_package",
             "absolute_path": os.path.join(self._workspace_root(workspace_id), "sandbox", "addon_package"),
             "manifest": addon_manifest,
             "ui": addon_ui,
+            "runtime": universal_package.get("runtime") or {},
+            "package_validation": universal_package.get("validation") or {},
             "install_requires_user_confirmation": True,
             "no_ui_rebuild_required": True,
             "runtime_icon_target": "AddonsScreen",
@@ -1024,6 +1120,7 @@ class SarahMemoryNAILDERuntime:
             "saved_addon_ui": saved_addon_ui,
             "saved_addon_py": saved_addon_py,
             "saved_addon_code": saved_addon_code,
+            "universal_addon_package": universal_package,
             "validation": validation,
             "filesystem": filesystem,
             "receipt": receipt,
@@ -1032,9 +1129,10 @@ class SarahMemoryNAILDERuntime:
         }
 
     def addon_install_plan(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Prepare an Addons installation plan from a NAILDE sandbox package.
+        """Prepare a validated Addons installation plan from a NAILDE sandbox package.
 
-        This only inspects and plans. It does not copy to the live Addons folder.
+        Planning never copies, launches, or grants authority. The package must pass
+        the same deterministic ABI/integrity checks used after installation.
         """
         payload = payload if isinstance(payload, dict) else {}
         workspace_id = str(payload.get("workspace_id") or "").strip()
@@ -1044,41 +1142,53 @@ class SarahMemoryNAILDERuntime:
         source_abs = os.path.abspath(source_path) if source_path else ""
         if not source_abs or not os.path.isdir(source_abs):
             return {"ok": False, "error": "addon_source_missing", "workspace_id": workspace_id, "source_path": source_path, "execution_authority": False}
-        if not (self._is_nailde_path(source_abs) or os.path.abspath(source_abs).startswith(os.path.abspath(os.path.join(self.data_dir, "addons", "pending")))):
+        pending_root = os.path.abspath(os.path.join(self.data_dir, "addons", "pending"))
+        if not (self._is_nailde_path(source_abs) or source_abs == pending_root or source_abs.startswith(pending_root + os.sep)):
             return {"ok": False, "error": "source_not_in_nailde_or_pending_zone", "source_path": source_abs, "execution_authority": False}
-        manifest_path = os.path.join(source_abs, "manifest.json")
-        ui_path = os.path.join(source_abs, "ui.json")
-        manifest = self._read_json_file(manifest_path)
-        ui = self._read_json_file(ui_path)
-        addon_id = self._safe_addon_id(payload.get("addon_id") or manifest.get("addon_id") or manifest.get("id") or os.path.basename(source_abs))
-        target = os.path.join(self._addons_root(), addon_id)
+        integrity = self._validate_installable_addon_package(source_abs)
+        manifest = integrity.get("manifest") if isinstance(integrity.get("manifest"), dict) else {}
+        ui = integrity.get("ui") if isinstance(integrity.get("ui"), dict) else {}
+        addon_id = self._safe_addon_id(payload.get("addon_id") or integrity.get("addon_id") or manifest.get("addon_id") or manifest.get("id") or os.path.basename(source_abs))
+        target_root = self._addons_root()
+        target = os.path.abspath(os.path.join(target_root, addon_id))
+        try:
+            if os.path.commonpath([os.path.abspath(target_root), target]) != os.path.abspath(target_root):
+                return {"ok": False, "error": "addon_target_outside_addons_root", "execution_authority": False}
+        except Exception:
+            return {"ok": False, "error": "addon_target_validation_failed", "execution_authority": False}
         existing = os.path.isdir(target)
         plan = {
-            "schema": "SarahMemory.nailde.addon_install_plan.v1",
+            "schema": "SarahMemory.nailde.addon_install_plan.v2",
             "workspace_id": workspace_id,
             "source_path": source_abs,
-            "target_addons_dir": self._addons_root(),
+            "target_addons_dir": target_root,
             "target_path": target,
             "addon_id": addon_id,
+            "package_integrity": integrity,
             "manifest_present": bool(manifest),
             "ui_present": bool(ui),
+            "runnable": bool(integrity.get("runnable")),
             "existing_target": existing,
             "will_backup_existing": existing,
+            "will_stage_atomic_copy": True,
             "will_create_runtime_icon": True,
             "no_ui_rebuild_required": True,
             "requires_confirm": True,
             "requires_confirmed": True,
             "copy_only_after_user_authorization": True,
+            "auto_run_allowed": False,
             "execution_authority": False,
             "manifest": manifest,
             "ui": ui,
         }
-        return {"ok": bool(manifest), "plan": plan, "execution_authority": False}
+        return {"ok": bool(integrity.get("ok")), "plan": plan, "execution_authority": False}
 
     def addon_install_authorized(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Copy a NAILDE sandbox addon package into the live Addons folder after explicit user confirmation.
+        """Atomically install a validated NAILDE package into canonical ADDONS_DIR.
 
-        This installs a dynamic addon icon/manifest only. It does not auto-run the addon and does not rebuild the UI.
+        The call requires explicit user confirmation, creates rollback evidence for
+        an existing installation, validates the staged copy, performs a same-root
+        rename into place, validates again, and never auto-runs the application.
         """
         payload = payload if isinstance(payload, dict) else {}
         if not self._confirmed(payload):
@@ -1087,50 +1197,100 @@ class SarahMemoryNAILDERuntime:
         plan = plan_packet.get("plan") if isinstance(plan_packet.get("plan"), dict) else {}
         if not plan_packet.get("ok") or not plan:
             return {"ok": False, "error": "install_plan_failed", "plan": plan_packet, "execution_authority": False}
-        source = str(plan.get("source_path") or "")
-        target = str(plan.get("target_path") or "")
-        addon_id = str(plan.get("addon_id") or "")
+        source = os.path.abspath(str(plan.get("source_path") or ""))
+        target_root = os.path.abspath(str(plan.get("target_addons_dir") or self._addons_root()))
+        target = os.path.abspath(str(plan.get("target_path") or ""))
+        addon_id = self._safe_addon_id(plan.get("addon_id") or "nailde_app")
+        try:
+            if os.path.commonpath([target_root, target]) != target_root:
+                return {"ok": False, "error": "addon_target_outside_addons_root", "execution_authority": False}
+        except Exception:
+            return {"ok": False, "error": "addon_target_validation_failed", "execution_authority": False}
+        _ensure_dir(target_root)
+        token = uuid.uuid4().hex[:10]
+        staged = os.path.join(target_root, f"._installing_{addon_id}_{token}")
+        rollback_dir = os.path.join(target_root, f"._rollback_{addon_id}_{token}")
         backup = None
-        if os.path.isdir(target):
-            backup = self._zip_backup_dir(target, label=f"addon_{addon_id}")
-            shutil.rmtree(target)
-        stats = self._copy_tree_bounded(source, target, max_files=800, max_total_bytes=25 * 1024 * 1024)
-        state = {
-            "schema": "SarahMemory.addon.install_state.v1",
-            "addon_id": addon_id,
-            "installed_ts": _now_iso(),
-            "source": source,
-            "target": target,
-            "backup": backup,
-            "status": "installed_review_required",
-            "activation_status": "installed_not_running",
-            "created_by": "NAILDE",
-            "no_ui_rebuild_required": True,
-            "auto_run_allowed": False,
-            "execution_authority": False,
-        }
-        self._write_json_file(os.path.join(target, "install_state.json"), state)
-        receipt = self._record_receipt(
-            "NAILDE_ADDON_INSTALLED",
-            addon_id,
-            f"Installed NAILDE sandbox addon into Addons folder: {addon_id}",
-            {"addon_id": addon_id, "target": target, "backup": backup, "risk": "medium", "verdict": "USER_AUTHORIZED_INSTALL", "workspace_id": payload.get("workspace_id")},
-        )
-        return {
-            "ok": True,
-            "schema": "SarahMemory.nailde.addon_install_result.v1",
-            "addon_id": addon_id,
-            "source_path": source,
-            "installed_path": target,
-            "copy_stats": stats,
-            "backup": backup,
-            "state": state,
-            "receipt": receipt,
-            "runtime_icon_created": True,
-            "no_ui_rebuild_required": True,
-            "auto_run_performed": False,
-            "execution_authority": False,
-        }
+        stats: Dict[str, Any] = {}
+        old_moved = False
+        new_installed = False
+        try:
+            if os.path.exists(staged):
+                shutil.rmtree(staged)
+            stats = self._copy_tree_bounded(source, staged, max_files=800, max_total_bytes=25 * 1024 * 1024)
+            staged_validation = self._validate_installable_addon_package(staged)
+            if not staged_validation.get("ok"):
+                raise RuntimeError("staged_addon_integrity_failed:" + ",".join(staged_validation.get("errors") or []))
+            if os.path.isdir(target):
+                backup = self._zip_backup_dir(target, label=f"addon_{addon_id}")
+                if os.path.exists(rollback_dir):
+                    shutil.rmtree(rollback_dir)
+                os.replace(target, rollback_dir)
+                old_moved = True
+            os.replace(staged, target)
+            new_installed = True
+            installed_validation = self._validate_installable_addon_package(target)
+            if not installed_validation.get("ok"):
+                raise RuntimeError("installed_addon_integrity_failed:" + ",".join(installed_validation.get("errors") or []))
+            state = {
+                "schema": "SarahMemory.addon.install_state.v2",
+                "addon_id": addon_id,
+                "installed_ts": _now_iso(),
+                "source": source,
+                "target": target,
+                "backup": backup,
+                "status": "installed_review_required",
+                "activation_status": "installed_not_running",
+                "created_by": "NAILDE",
+                "package_validation": {"ok": True, "runnable": bool(installed_validation.get("runnable")), "runtime": installed_validation.get("runtime")},
+                "no_ui_rebuild_required": True,
+                "auto_run_allowed": False,
+                "execution_authority": False,
+            }
+            self._write_json_file(os.path.join(target, "install_state.json"), state)
+            if old_moved and os.path.isdir(rollback_dir):
+                shutil.rmtree(rollback_dir)
+            receipt = self._record_receipt(
+                "NAILDE_ADDON_INSTALLED",
+                addon_id,
+                f"Installed validated NAILDE application into Addons folder: {addon_id}",
+                {"addon_id": addon_id, "target": target, "backup": backup, "risk": "medium", "verdict": "USER_AUTHORIZED_INSTALL", "workspace_id": payload.get("workspace_id")},
+            )
+            return {
+                "ok": True,
+                "schema": "SarahMemory.nailde.addon_install_result.v2",
+                "addon_id": addon_id,
+                "source_path": source,
+                "installed_path": target,
+                "copy_stats": stats,
+                "backup": backup,
+                "state": state,
+                "package_validation": installed_validation,
+                "receipt": receipt,
+                "runtime_icon_created": True,
+                "no_ui_rebuild_required": True,
+                "auto_run_performed": False,
+                "execution_authority": False,
+            }
+        except Exception as exc:
+            try:
+                if os.path.isdir(staged):
+                    shutil.rmtree(staged)
+            except Exception:
+                pass
+            try:
+                if new_installed and not old_moved and os.path.isdir(target):
+                    shutil.rmtree(target)
+            except Exception:
+                pass
+            try:
+                if old_moved and os.path.isdir(rollback_dir):
+                    if os.path.isdir(target):
+                        shutil.rmtree(target)
+                    os.replace(rollback_dir, target)
+            except Exception as restore_exc:
+                return {"ok": False, "error": "addon_install_failed_and_rollback_failed", "detail": str(exc), "rollback_error": str(restore_exc), "backup": backup, "execution_authority": False}
+            return {"ok": False, "error": "addon_install_failed_rolled_back", "detail": str(exc), "backup": backup, "execution_authority": False}
 
     def settings_state(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Load/save NAILDE settings. Secrets are never persisted here."""
@@ -1230,7 +1390,7 @@ class SarahMemoryNAILDERuntime:
                     {"id": "file.save", "label": "Save Sandbox Draft", "shortcut": "Ctrl+S", "command": "save_workspace_file"},
                     {"id": "file.save_as", "label": "Save Sandbox Draft As...", "shortcut": "Ctrl+Shift+S", "command": "save_workspace_file_as"},
                     {"id": "file.save_all", "label": "Save All Sandbox Drafts", "shortcut": "Ctrl+K S", "command": "save_all_sandbox_files"},
-                    {"id": "file.export", "label": "Export Sandbox Package", "command": "package_addon_pending_review"},
+                    {"id": "file.export", "label": "Export Sandbox Application", "command": "package_workspace_export"},
                     {"id": "file.stage", "label": "Stage to DevBridge", "command": "stage_devbridge_proposal", "requires": ["validation", "compare", "ledger", "user_review"]},
                     {"id": "file.close", "label": "Close Workspace", "command": "close_workspace"},
                 ],
@@ -1527,6 +1687,1388 @@ class SarahMemoryNAILDERuntime:
         receipt = self._record_receipt("NAILDE_SANDBOX_FILE_SAVED", workspace_id, f"Saved sandbox file {rel_path}", {"workspace_id": workspace_id, "path": rel_path, "risk": "low", "verdict": "SANDBOX_WRITE"})
         return {"ok": True, "workspace_id": workspace_id, "path": rel_path, "absolute_path": path, "artifact": record, "receipt": receipt, "execution_authority": False}
 
+    def package_workspace_export(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Create a bounded ZIP of a synthesized sandbox application.
+
+        Export is an artifact operation inside NAILDE's allowed export zone. It
+        does not install, launch, activate, or promote the generated application.
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        workspace_id = str(payload.get("workspace_id") or "").strip()
+        if not workspace_id:
+            return {"ok": False, "error": "workspace_id_required", "execution_authority": False}
+        root = self._workspace_root(workspace_id)
+        sandbox_root = os.path.join(root, "sandbox")
+        if not os.path.isdir(sandbox_root):
+            return {"ok": False, "error": "workspace_sandbox_not_found", "workspace_id": workspace_id, "execution_authority": False}
+        _ensure_dir(self.exports_dir)
+        safe_id = _safe_name(workspace_id, "nailde_app")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        zip_path = os.path.join(self.exports_dir, f"{safe_id}_{stamp}.zip")
+        candidates: List[Tuple[str, str, int]] = []
+        total_bytes = 0
+        for dirpath, dirnames, filenames in os.walk(sandbox_root):
+            dirnames[:] = [d for d in dirnames if d not in {"__pycache__", ".git", "node_modules", ".venv", "venv"}]
+            for name in sorted(filenames):
+                if name in {".env", "id_rsa", "id_dsa"} or name.lower().endswith((".pem", ".key")):
+                    continue
+                path = os.path.join(dirpath, name)
+                if os.path.islink(path):
+                    continue
+                rel = os.path.relpath(path, root).replace("\\", "/")
+                if rel.startswith("../") or "/../" in rel:
+                    continue
+                size = os.path.getsize(path)
+                total_bytes += size
+                candidates.append((path, rel, size))
+                if len(candidates) > _MAX_UNIVERSAL_EXPORT_FILES:
+                    return {"ok": False, "error": "workspace_export_file_budget_exceeded", "max_files": _MAX_UNIVERSAL_EXPORT_FILES, "execution_authority": False}
+                if total_bytes > _MAX_UNIVERSAL_PROJECT_BYTES:
+                    return {"ok": False, "error": "workspace_export_size_budget_exceeded", "max_bytes": _MAX_UNIVERSAL_PROJECT_BYTES, "execution_authority": False}
+        if not candidates:
+            return {"ok": False, "error": "workspace_sandbox_has_no_exportable_files", "execution_authority": False}
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zf:
+            for path, rel, _size in candidates:
+                zf.write(path, rel)
+        digest = ""
+        try:
+            h = hashlib.sha256()
+            with open(zip_path, "rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(block)
+            digest = h.hexdigest()
+        except Exception:
+            pass
+        receipt = self._record_receipt(
+            "NAILDE_WORKSPACE_EXPORTED", workspace_id,
+            f"Exported synthesized sandbox application package with {len(candidates)} files.",
+            {"workspace_id": workspace_id, "risk": "low", "verdict": "SANDBOX_EXPORT", "sha256": digest},
+        )
+        return {
+            "ok": True,
+            "schema": "SarahMemory.nailde.workspace_export.v2",
+            "workspace_id": workspace_id,
+            "zip_path": zip_path,
+            "sha256": digest,
+            "file_count": len(candidates),
+            "total_uncompressed_bytes": total_bytes,
+            "sandbox_only": True,
+            "installed": False,
+            "executed": False,
+            "promoted": False,
+            "receipt": receipt,
+            "execution_authority": False,
+        }
+
+    def qsml_compile_request(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        '''Compile a NAILDE natural-language request through SarahMemorySMLProtocol.
+
+        SML/QSML owns the language/route definition. NAILDE consumes the compiled
+        program as a sandbox build specification. Neuron remains the route
+        activation/weighting owner; NAILDE never self-authorizes execution.
+        '''
+        payload = payload if isinstance(payload, dict) else {}
+        top = str(payload.get("top_prompt") or payload.get("goal") or payload.get("prompt") or payload.get("problem") or "").strip()
+        details = str(payload.get("details_prompt") or payload.get("additional_instructions") or "").strip()
+        source = "\n".join(x for x in (top, details) if x).strip()
+        if not source:
+            return {"ok": False, "error": "natural_language_source_required", "execution_authority": False}
+        try:
+            from SarahMemorySMLProtocol import sml_compile_natural_program  # type: ignore
+            compiled = sml_compile_natural_program(
+                source,
+                context={
+                    "target": "nailde",
+                    "surface": "NAILDE",
+                    "workspace_id": str(payload.get("workspace_id") or ""),
+                    "sandbox_only": True,
+                    "requested_target": str(payload.get("target") or ""),
+                },
+                target="nailde",
+                collect_external_evidence=bool(payload.get("collect_language_evidence", True)),
+            )
+            if not isinstance(compiled, dict):
+                return {"ok": False, "error": "qsml_compiler_returned_non_dict", "execution_authority": False}
+            return {
+                "ok": str(compiled.get("status") or "").upper() == "COMPILED",
+                "schema": "SarahMemory.nailde.qsml_compile.v0_2",
+                "source": source,
+                "compiled": compiled,
+                "execution_authority": False,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": "qsml_compiler_unavailable",
+                "detail": str(exc)[:500],
+                "source": source,
+                "execution_authority": False,
+            }
+
+    def _expand_qsml_program(self, compiled: Dict[str, Any], top_prompt: str, details_prompt: str = "") -> Dict[str, Any]:
+        """Convert a compiled QSML program into a NAILDE synthesis request.
+
+        QSML/0.2 deliberately does not select a prompt-specific application
+        template here. The local synthesis model expands the language-neutral
+        contract into an application blueprint, then the universal file
+        synthesizer generates the implementation.
+        """
+        result = compiled.get("compiled") if isinstance(compiled.get("compiled"), dict) else compiled
+        program = result.get("program") if isinstance(result, dict) and isinstance(result.get("program"), dict) else {}
+        build = program.get("build_spec") if isinstance(program.get("build_spec"), dict) else {}
+        project_kind = str(build.get("project_kind") or "software_project")
+        app_name = str(build.get("application_name") or self._title_from_prompt(top_prompt)).strip() or "NAILDE Application"
+        constraints = build.get("constraints") if isinstance(build.get("constraints"), dict) else {}
+        base_blueprint = program.get("synthesis_blueprint") if isinstance(program.get("synthesis_blueprint"), dict) else {}
+        addon_package = True  # Every successful NAILDE application is packageable for Addons; install/run still require explicit user approval.
+        return {
+            "schema": "SarahMemory.nailde.qsml_build_spec.v0_2",
+            "qsml_program_id": str(program.get("program_id") or ""),
+            "qsml_language_version": str(program.get("language_version") or "QSML/0.2"),
+            "project_type": project_kind,
+            "project_kind": project_kind,
+            "top_prompt": top_prompt,
+            "details_prompt": details_prompt,
+            "application_name": app_name,
+            "addon_id": self._safe_addon_id(app_name),
+            "addon_package": addon_package,
+            "languages": list(build.get("languages") or []),
+            "frameworks": list(build.get("frameworks") or []),
+            "features": list(build.get("features") or []),
+            "requested_capabilities": [dict(x) for x in list(build.get("requested_capabilities") or []) if isinstance(x, dict)][:64],
+            "constraints": constraints,
+            "candidate_routes": list(program.get("candidate_routes") or []),
+            "route_definition_owner": str((program.get("metadata") or {}).get("route_definition_owner") or "SarahMemorySMLProtocol"),
+            "route_activation_owner": str((program.get("metadata") or {}).get("route_activation_owner") or "SarahMemoryNeuron"),
+            "required_authority": list(program.get("required_authority") or ["Read"]),
+            "qsml_ast": program.get("ast") or {},
+            "qsml_variables": program.get("variables") or {},
+            "qsml_program": copy.deepcopy(program),
+            "base_synthesis_blueprint": base_blueprint,
+            "novice_summary": f"Synthesize a governed local {project_kind.replace('_', ' ')} named {app_name} from the natural-language requirements.",
+            "required_files": [],
+            "validation_plan": ["qsml_compile", "qsml_blueprint", "file_synthesis", "static_validation", "bounded_repair", "sandbox_containment", "compare_required", "ledger_required"],
+            "synthesis_mode": "universal_local_model",
+            "prompt_specific_template_selection": False,
+            "local_model_required_for_arbitrary_synthesis": True,
+            "denied": list(NAILDE_DENIED_ACTIONS),
+            "sandbox_only": bool(constraints.get("sandbox_only", True)),
+            "execution_authority": False,
+        }
+
+    def _qsml_manifest(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "schema": "SarahMemory.nailde.qsml_application_manifest.v0_1",
+            "name": str(spec.get("application_name") or "NAILDE Application"),
+            "project_type": str(spec.get("project_type") or "generic_sandbox_application"),
+            "project_kind": str(spec.get("project_kind") or "software_project"),
+            "languages": list(spec.get("languages") or []),
+            "features": list(spec.get("features") or []),
+            "constraints": dict(spec.get("constraints") or {}),
+            "qsml_program_id": str(spec.get("qsml_program_id") or ""),
+            "route_definition_owner": str(spec.get("route_definition_owner") or "SarahMemorySMLProtocol"),
+            "route_activation_owner": str(spec.get("route_activation_owner") or "SarahMemoryNeuron"),
+            "sandbox_only": True,
+            "execution_authority": False,
+            "live_core_write": False,
+        }
+
+    def _qsml_local_model_generate(
+        self,
+        prompt: str,
+        *,
+        purpose: str = "application_synthesis",
+        max_tokens: int = 4096,
+        temperature: float = 0.15,
+        model: str = "",
+    ) -> Dict[str, Any]:
+        """Call only approved LOCAL generation backends for NAILDE synthesis.
+
+        This method intentionally bypasses generic provider fallback so a failed
+        local model cannot silently become a cloud dependency. It never executes
+        generated code and returns model text as untrusted synthesis evidence.
+        """
+        api = _read_only_import("SarahMemoryAPI")
+        if api is None:
+            return {"ok": False, "error": "SarahMemoryAPI_unavailable", "purpose": purpose, "execution_authority": False}
+        timeout = 90
+        try:
+            timeout = max(5, min(300, int(getattr(config, "NAILDE_LOCAL_MODEL_TIMEOUT_SECONDS", 90) if config else 90)))
+        except Exception:
+            timeout = 90
+        max_tokens = max(128, min(int(max_tokens or 4096), 16384))
+        attempts: List[Dict[str, Any]] = []
+
+        local_fn = getattr(api, "_call_local_llm", None)
+        if callable(local_fn):
+            try:
+                content, error = local_fn(
+                    prompt=prompt,
+                    model=(model or None),
+                    timeout=timeout,
+                    intent="programming",
+                    user_text=prompt,
+                    meta={"source": "SarahMemoryNAILDE", "purpose": purpose, "local_only": True, "sandbox_only": True},
+                    max_tokens=max_tokens,
+                    temperature=float(temperature),
+                )
+                attempts.append({"backend": "local_llm", "ok": bool(content), "error": str(error or "")[:500]})
+                if content and not error:
+                    return {
+                        "ok": True,
+                        "backend": "local_llm",
+                        "content": str(content),
+                        "attempts": attempts,
+                        "local_only": True,
+                        "execution_authority": False,
+                    }
+            except Exception as exc:
+                attempts.append({"backend": "local_llm", "ok": False, "error": str(exc)[:500]})
+
+        ollama_fn = getattr(api, "_call_ollama", None)
+        if callable(ollama_fn):
+            try:
+                default_models = getattr(api, "DEFAULT_MODELS", {}) or {}
+                requested_model = model or str(default_models.get("ollama") or "")
+                content, error = ollama_fn(prompt, requested_model, "")
+                attempts.append({"backend": "ollama", "ok": bool(content), "error": str(error or "")[:500]})
+                if content and not error:
+                    return {
+                        "ok": True,
+                        "backend": "ollama",
+                        "content": str(content),
+                        "attempts": attempts,
+                        "local_only": True,
+                        "execution_authority": False,
+                    }
+            except Exception as exc:
+                attempts.append({"backend": "ollama", "ok": False, "error": str(exc)[:500]})
+
+        return {
+            "ok": False,
+            "error": "no_local_generation_backend_succeeded",
+            "purpose": purpose,
+            "attempts": attempts,
+            "local_only": True,
+            "execution_authority": False,
+        }
+
+    def _universal_architecture_prompt(self, spec: Dict[str, Any]) -> str:
+        """Create the strict planner prompt for a language-neutral application blueprint."""
+        prompt = str(spec.get("top_prompt") or "").strip()
+        details = str(spec.get("details_prompt") or "").strip()
+        constraints = dict(spec.get("constraints") or {})
+        features = list(spec.get("features") or [])[:48]
+        requested_capabilities = [dict(x) for x in list(spec.get("requested_capabilities") or []) if isinstance(x, dict)][:64]
+        languages = list(spec.get("languages") or [])[:16]
+        frameworks = list(spec.get("frameworks") or [])[:16]
+        base_blueprint = spec.get("base_synthesis_blueprint") if isinstance(spec.get("base_synthesis_blueprint"), dict) else {}
+        contract = {
+            "name": "string",
+            "goal": "string",
+            "project_kind": "open-ended string; describe the requested application honestly",
+            "languages": ["language"],
+            "frameworks": ["framework"],
+            "requirements": [{"requirement_id": "req_1", "text": "requirement", "kind": "functional|nonfunctional|constraint", "priority": "must|should|could", "acceptance": ["observable acceptance criterion"]}],
+            "components": [{"id": "component_id", "name": "name", "responsibility": "single responsibility", "interfaces": ["contract/interface"]}],
+            "dependencies": [{"name": "package_or_runtime", "kind": "stdlib|local_package|external_package", "required": True, "reason": "why"}],
+            "requested_capabilities": [{"name": "capability", "reason": "why needed", "authority_required": ["Read|Write|Execute|Network|Filesystem"], "risk": "bounded|elevated|restricted", "granted": False}],
+            "files": [{"path": "sandbox/<project-relative-path>", "purpose": "what this file implements", "language": "python|javascript|html|css|json|...", "artifact_role": "SOURCE|ENTRYPOINT|CONFIG|MANIFEST|TEST|DOCUMENTATION|ASSET_TEXT|DATA", "component_id": "component_id", "entrypoint": False, "depends_on": ["sandbox/other/file"], "acceptance": ["file-specific criterion"]}],
+            "tests": [{"name": "test name", "type": "static|unit|integration", "target": "component or file", "description": "test objective"}],
+            "acceptance_criteria": ["project-wide observable criterion"],
+            "constraints": {"local_first": True, "sandbox_only": True, "live_core_write": False, "self_approval": False, "shell_allowed": False, "network_allowed": False},
+            "run": {"entrypoint": "sandbox/path/to/entrypoint", "method": "language/runtime description", "arguments": []},
+            "asset_requests": [{"kind": "image|audio|video|model|other", "description": "optional future asset", "required": False, "path": ""}],
+            "phase": "ARCHITECT",
+            "metadata": {"execution_authority": False},
+        }
+        return (
+            "SARAHMEMORY QSML/0.2 UNIVERSAL APPLICATION ARCHITECT\n"
+            "PHASE: ARCHITECTURE\n"
+            "You are planning an arbitrary LOCAL application for the governed NAILDE sandbox.\n"
+            "Do not choose a canned example or substitute a different application. Follow the user's exact goal.\n"
+            "Hardcode rails, not thoughts: the architecture must be derived from the request, not from prompt-specific templates.\n"
+            "Return ONE valid JSON object only. No markdown. No commentary. No code fences.\n"
+            "The blueprint is a plan, not permission to execute. Do not request self-approval, live CORE writes, credentials, or hidden persistence.\n"
+            "If the application needs network, filesystem, database, device, model, or process capabilities, declare them in requested_capabilities with granted=false; declaration is never permission.\n"
+            "Prefer standard-library/local dependencies when they can satisfy the request. External packages may be DECLARED but are not installed here.\n"
+            "If LANGUAGE HINTS is empty, choose the implementation language(s) from the application requirements; do not default every application to Python.\n"
+            "Every generated source file must be necessary, have a clear purpose, and use a relative path beginning with sandbox/.\n"
+            "The current universal file synthesizer produces text artifacts. Do not put binary PNG/JPG/audio/video/GLB/font/PDF files in files. Use SVG/CSS/procedural text assets, or declare unresolved media in asset_requests as required=false.\n"
+            "Include enough files for a COMPLETE coherent first implementation, but keep the architecture bounded (maximum 96 files).\n"
+            "Do not emit TODOs/placeholders as requirements; describe implementable behavior and acceptance criteria.\n\n"
+            f"USER GOAL:\n{prompt}\n\n"
+            f"ADDITIONAL REQUIREMENTS:\n{details or '(none)'}\n\n"
+            f"QSML PROJECT HINT: {spec.get('project_kind') or 'software_project'}\n"
+            f"LANGUAGE HINTS: {json.dumps(languages)}\n"
+            f"FRAMEWORK HINTS: {json.dumps(frameworks)}\n"
+            f"FEATURE HINTS: {json.dumps(features, ensure_ascii=False)}\n"
+            f"QSML CAPABILITY REQUEST HINTS: {json.dumps(requested_capabilities, ensure_ascii=False, sort_keys=True)}\n"
+            f"GOVERNED CONSTRAINTS: {json.dumps(constraints, ensure_ascii=False, sort_keys=True)}\n"
+            f"BASE QSML BLUEPRINT: {json.dumps(base_blueprint, ensure_ascii=False, sort_keys=True)[:12000]}\n\n"
+            f"REQUIRED JSON SHAPE:\n{json.dumps(contract, ensure_ascii=False, indent=2)}"
+        )
+
+    def _normalize_model_blueprint(self, raw: Dict[str, Any], spec: Dict[str, Any]) -> Dict[str, Any]:
+        bp = dict(raw or {})
+        bp["name"] = str(bp.get("name") or spec.get("application_name") or "NAILDE Application")[:160]
+        bp["goal"] = str(bp.get("goal") or spec.get("top_prompt") or "")[:20000]
+        bp["project_kind"] = str(bp.get("project_kind") or spec.get("project_kind") or "software_project")[:120]
+        bp["languages"] = [str(x)[:80] for x in list(bp.get("languages") or spec.get("languages") or [])[:16] if str(x).strip()]
+        bp["frameworks"] = [str(x)[:80] for x in list(bp.get("frameworks") or spec.get("frameworks") or [])[:16] if str(x).strip()]
+        reqs = [dict(x) for x in list(bp.get("requirements") or []) if isinstance(x, dict)][:128]
+        if not reqs:
+            reqs.append({"requirement_id": "req_user_goal", "text": bp["goal"], "kind": "goal", "priority": "must", "source": "user", "acceptance": []})
+        bp["requirements"] = reqs
+        bp["components"] = [dict(x) for x in list(bp.get("components") or []) if isinstance(x, dict)][:64]
+        bp["dependencies"] = [dict(x) if isinstance(x, dict) else {"name": str(x)} for x in list(bp.get("dependencies") or [])][:64]
+        cap_index: Dict[str, Dict[str, Any]] = {}
+        for cap in ([dict(x) for x in list(spec.get("requested_capabilities") or []) if isinstance(x, dict)][:64] + [dict(x) for x in list(bp.get("requested_capabilities") or []) if isinstance(x, dict)][:64]):
+            name = str(cap.get("name") or cap.get("capability") or "").strip().lower().replace(" ", "_")[:120]
+            if not name:
+                continue
+            row = dict(cap)
+            row["name"] = name
+            row["reason"] = str(row.get("reason") or "Application capability requested by QSML/application architecture.")[:1000]
+            row["authority_required"] = [str(x)[:80] for x in list(row.get("authority_required") or row.get("authority") or [])[:16]]
+            row["risk"] = str(row.get("risk") or "bounded")[:40]
+            row["granted"] = False
+            row["execution_authority"] = False
+            cap_index[name] = row
+        bp["requested_capabilities"] = list(cap_index.values())[:64]
+        bp["tests"] = [dict(x) for x in list(bp.get("tests") or []) if isinstance(x, dict)][:96]
+        bp["acceptance_criteria"] = [str(x)[:1000] for x in list(bp.get("acceptance_criteria") or [])[:128] if str(x).strip()]
+        bp["asset_requests"] = [dict(x) for x in list(bp.get("asset_requests") or []) if isinstance(x, dict)][:64]
+        model_constraints = dict(bp.get("constraints") or {})
+        governed = dict(spec.get("constraints") or {})
+        # Higher-authority compiler constraints win over model suggestions.
+        for key, value in governed.items():
+            model_constraints[key] = value
+        model_constraints["sandbox_only"] = True
+        model_constraints["live_core_write"] = False
+        model_constraints["self_approval"] = False
+        model_constraints.setdefault("shell_allowed", False)
+        bp["constraints"] = model_constraints
+        files = []
+        for idx, item in enumerate(list(bp.get("files") or bp.get("file_plan") or [])[:96]):
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            path = str(row.get("path") or "").replace("\\", "/").strip()
+            path = re.sub(r"^\./+", "", path)
+            if path and not path.startswith("sandbox/") and not path.startswith("/") and not re.match(r"^[A-Za-z]:/", path) and ".." not in path.split("/"):
+                path = "sandbox/project/" + path.lstrip("/")
+            row["path"] = path
+            row["purpose"] = str(row.get("purpose") or f"Generated application artifact {idx + 1}")[:2000]
+            row["language"] = str(row.get("language") or _language_from_path(path))[:80]
+            row["artifact_role"] = str(row.get("artifact_role") or row.get("role") or ("ENTRYPOINT" if row.get("entrypoint") else "SOURCE"))[:80]
+            row["component_id"] = str(row.get("component_id") or "")[:120]
+            row["entrypoint"] = bool(row.get("entrypoint", False))
+            row["depends_on"] = [str(x).replace("\\", "/")[:240] for x in list(row.get("depends_on") or [])[:32]]
+            row["acceptance"] = [str(x)[:1000] for x in list(row.get("acceptance") or [])[:32]]
+            files.append(row)
+        bp["files"] = files
+        run = dict(bp.get("run") or {})
+        if not run.get("entrypoint"):
+            entry = next((x.get("path") for x in files if x.get("entrypoint")), "")
+            if entry:
+                run["entrypoint"] = entry
+        bp["run"] = run
+        bp["phase"] = "ARCHITECT"
+        bp["metadata"] = {
+            **dict(bp.get("metadata") or {}),
+            "schema": "SarahMemory.qsml.application_blueprint.v0_2",
+            "planner": "NAILDE_local_synthesis_model",
+            "prompt_specific_template_selection": False,
+            "execution_authority": False,
+        }
+        return bp
+
+    def _validate_qsml_synthesis_ownership(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        """Enforce the SML/Neuron/NAILDE ownership boundary before synthesis.
+
+        SMLProtocol defines the legal route. Neuron owns activation/weighting.
+        NAILDE consumes the selected legal programming route as a sandbox
+        synthesizer. This check prevents NAILDE from silently becoming a router.
+        """
+        route_definition_owner = str(spec.get("route_definition_owner") or "")
+        route_activation_owner = str(spec.get("route_activation_owner") or "")
+        routes = [list(r) for r in list(spec.get("candidate_routes") or []) if isinstance(r, (list, tuple))]
+        compatible_route = None
+        for route in routes:
+            names = [str(x) for x in route]
+            try:
+                i_sml = names.index("SarahMemorySMLProtocol")
+                i_neuron = names.index("SarahMemoryNeuron")
+                i_nailde = names.index("SarahMemoryNAILDE")
+            except ValueError:
+                continue
+            if i_sml < i_neuron < i_nailde:
+                compatible_route = names
+                break
+        errors: List[str] = []
+        if route_definition_owner != "SarahMemorySMLProtocol":
+            errors.append("route_definition_owner_must_be_SarahMemorySMLProtocol")
+        if route_activation_owner != "SarahMemoryNeuron":
+            errors.append("route_activation_owner_must_be_SarahMemoryNeuron")
+        if not compatible_route:
+            errors.append("legal_programming_route_must_place_SMLProtocol_before_Neuron_before_NAILDE")
+        if not bool(spec.get("sandbox_only", True)):
+            errors.append("nailde_synthesis_must_be_sandbox_only")
+        return {
+            "ok": not errors,
+            "schema": "SarahMemory.nailde.qsml_ownership_check.v0_2",
+            "route_definition_owner": route_definition_owner,
+            "route_activation_owner": route_activation_owner,
+            "compatible_route": compatible_route,
+            "errors": errors,
+            "execution_authority": False,
+        }
+
+    @staticmethod
+    def _ordered_universal_file_plan(blueprint: Dict[str, Any]) -> Dict[str, Any]:
+        """Topologically order declared file dependencies without inventing any.
+
+        Unknown dependency labels are retained as warnings because a model may
+        use component identifiers in depends_on. Cycles among actual file paths
+        are rejected as an invalid architecture contract.
+        """
+        plans = [dict(x) for x in list(blueprint.get("files") or []) if isinstance(x, dict)][:96]
+        by_path = {str(x.get("path") or ""): x for x in plans if str(x.get("path") or "")}
+        original_order = {str(x.get("path") or ""): i for i, x in enumerate(plans)}
+        incoming = {p: set() for p in by_path}
+        dependents = {p: set() for p in by_path}
+        warnings: List[Dict[str, Any]] = []
+        for path, row in by_path.items():
+            for dep in list(row.get("depends_on") or [])[:32]:
+                dep_s = str(dep or "").replace("\\", "/").strip()
+                if not dep_s:
+                    continue
+                if dep_s in by_path:
+                    incoming[path].add(dep_s)
+                    dependents[dep_s].add(path)
+                else:
+                    warnings.append({"path": path, "warning": f"depends_on_non_file_reference:{dep_s}"})
+        ready = sorted([p for p, inc in incoming.items() if not inc], key=lambda x: original_order.get(x, 0))
+        ordered_paths: List[str] = []
+        while ready:
+            node = ready.pop(0)
+            ordered_paths.append(node)
+            for child in sorted(dependents.get(node) or [], key=lambda x: original_order.get(x, 0)):
+                incoming[child].discard(node)
+                if not incoming[child] and child not in ordered_paths and child not in ready:
+                    ready.append(child)
+                    ready.sort(key=lambda x: original_order.get(x, 0))
+        if len(ordered_paths) != len(by_path):
+            cycle_paths = sorted(p for p, inc in incoming.items() if inc)
+            return {
+                "ok": False,
+                "error": "file_dependency_cycle",
+                "cycle_paths": cycle_paths,
+                "warnings": warnings,
+                "execution_authority": False,
+            }
+        ordered = [by_path[p] for p in ordered_paths]
+        # Preserve any malformed/no-path plans at the end so later validation can report them.
+        ordered.extend(x for x in plans if not str(x.get("path") or ""))
+        return {"ok": True, "files": ordered, "warnings": warnings, "execution_authority": False}
+
+    def _universal_blueprint_from_model(self, spec: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Create and bounded-repair the arbitrary-application architecture.
+
+        The local model proposes architecture; SMLProtocol validates the formal
+        blueprint. Invalid JSON/contracts are repaired at most three times and
+        never replaced with a canned application.
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        try:
+            max_arch_repairs = max(0, min(3, int(payload.get("max_architecture_repair_rounds") if payload.get("max_architecture_repair_rounds") is not None else 2)))
+        except Exception:
+            max_arch_repairs = 2
+        base_prompt = self._universal_architecture_prompt(spec)
+        prompt = base_prompt
+        attempts: List[Dict[str, Any]] = []
+        last_validation: Dict[str, Any] = {}
+        last_preview = ""
+        for round_index in range(0, max_arch_repairs + 1):
+            purpose = "arbitrary_application_architecture" if round_index == 0 else "arbitrary_application_architecture_repair"
+            model_result = self._qsml_local_model_generate(
+                prompt,
+                purpose=purpose,
+                max_tokens=int(payload.get("architecture_max_tokens") or 6000),
+                temperature=float(payload.get("architecture_temperature") or (0.10 if round_index == 0 else 0.03)),
+                model=str(payload.get("model") or ""),
+            )
+            model_meta = {k: v for k, v in model_result.items() if k != "content"}
+            if not model_result.get("ok"):
+                attempts.append({"round": round_index, "stage": "model", "model": model_meta})
+                return {
+                    "ok": False,
+                    "error": "local_model_required_for_arbitrary_application_architecture",
+                    "model": model_meta,
+                    "attempts": attempts,
+                    "execution_authority": False,
+                }
+            content = str(model_result.get("content") or "")
+            last_preview = content[:1600]
+            raw = _extract_first_json_object(content)
+            if not isinstance(raw, dict):
+                attempts.append({"round": round_index, "stage": "json_parse", "model": model_meta, "response_preview": last_preview})
+                if round_index >= max_arch_repairs:
+                    return {
+                        "ok": False,
+                        "error": "local_model_blueprint_not_valid_json_after_bounded_repairs",
+                        "model": model_meta,
+                        "attempts": attempts,
+                        "response_preview": last_preview,
+                        "execution_authority": False,
+                    }
+                prompt = (
+                    "SARAHMEMORY QSML/0.2 APPLICATION ARCHITECTURE REPAIR\n"
+                    "Return ONE valid JSON object only. Preserve the exact user goal. Do not substitute a template.\n"
+                    "Your previous response was not parseable as the required application blueprint.\n"
+                    f"USER GOAL: {spec.get('top_prompt','')}\n"
+                    f"PREVIOUS RESPONSE PREVIEW: {last_preview}\n\n"
+                    "Re-read and obey this original architecture contract:\n" + base_prompt
+                )
+                continue
+            blueprint = self._normalize_model_blueprint(raw, spec)
+            try:
+                from SarahMemorySMLProtocol import sml_validate_application_blueprint  # type: ignore
+                source_program = spec.get("qsml_program") if isinstance(spec.get("qsml_program"), dict) else None
+                validation = sml_validate_application_blueprint(blueprint, require_files=True, source_program=source_program)
+            except Exception as exc:
+                validation = {"ok": False, "status": "ERROR", "issues": [{"code": "NAILDE-QSML-BP", "message": str(exc), "severity": "ERROR"}]}
+            last_validation = validation
+            attempts.append({
+                "round": round_index,
+                "stage": "validation",
+                "model": model_meta,
+                "status": validation.get("status"),
+                "issues": list(validation.get("issues") or [])[:64],
+            })
+            if validation.get("ok"):
+                return {
+                    "ok": True,
+                    "blueprint": validation.get("blueprint") if isinstance(validation.get("blueprint"), dict) else blueprint,
+                    "validation": validation,
+                    "model": model_meta,
+                    "attempts": attempts,
+                    "architecture_repairs": round_index,
+                    "execution_authority": False,
+                }
+            if round_index >= max_arch_repairs:
+                break
+            prompt = (
+                "SARAHMEMORY QSML/0.2 APPLICATION ARCHITECTURE REPAIR\n"
+                "Repair the blueprint contract. Return ONE complete valid JSON object only; no markdown.\n"
+                "Keep the same requested application and functionality. Do not remove requirements merely to pass validation.\n"
+                "No live-core writes, no self-approval, and every file path must begin with sandbox/.\n"
+                f"USER GOAL: {spec.get('top_prompt','')}\n"
+                f"VALIDATION ISSUES: {json.dumps(validation.get('issues') or [], ensure_ascii=False, sort_keys=True)[:12000]}\n"
+                f"INVALID BLUEPRINT: {json.dumps(blueprint, ensure_ascii=False, sort_keys=True)[:24000]}\n\n"
+                "Original contract follows:\n" + base_prompt
+            )
+        return {
+            "ok": False,
+            "error": "local_model_blueprint_failed_validation_after_bounded_repairs",
+            "validation": last_validation,
+            "attempts": attempts,
+            "response_preview": last_preview,
+            "execution_authority": False,
+        }
+
+    @staticmethod
+    def _file_contract_summary(blueprint: Dict[str, Any]) -> List[Dict[str, Any]]:
+        out = []
+        for row in list(blueprint.get("files") or [])[:96]:
+            if not isinstance(row, dict):
+                continue
+            out.append({
+                "path": row.get("path"),
+                "purpose": row.get("purpose"),
+                "language": row.get("language"),
+                "component_id": row.get("component_id"),
+                "entrypoint": bool(row.get("entrypoint")),
+                "depends_on": list(row.get("depends_on") or [])[:16],
+            })
+        return out
+
+    @staticmethod
+    def _generated_interface_summary(path: str, content: str) -> Dict[str, Any]:
+        """Extract bounded cross-file interface evidence without executing code."""
+        language = _language_from_path(path)
+        summary: Dict[str, Any] = {"path": path, "language": language, "sha256": _sha256_text(content)}
+        raw = str(content or "")
+        if language == "python":
+            try:
+                tree = ast.parse(raw, filename=path)
+                summary["classes"] = [n.name for n in tree.body if isinstance(n, ast.ClassDef)][:64]
+                summary["functions"] = [n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))][:96]
+                summary["imports"] = [
+                    (n.module or "") if isinstance(n, ast.ImportFrom) else ",".join(a.name for a in n.names)
+                    for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))
+                ][:96]
+            except Exception:
+                pass
+        elif language in {"javascript", "typescript"}:
+            summary["exports"] = re.findall(r"(?m)^\s*export\s+(?:default\s+)?(?:class|function|const|let|var)?\s*([A-Za-z_$][\w$]*)", raw)[:96]
+            summary["functions"] = re.findall(r"(?m)^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(", raw)[:96]
+        elif language == "html":
+            summary["ids"] = re.findall(r"\bid=[\"']([^\"']+)[\"']", raw, flags=re.I)[:96]
+            summary["scripts"] = re.findall(r"<script[^>]+src=[\"']([^\"']+)[\"']", raw, flags=re.I)[:48]
+            summary["stylesheets"] = re.findall(r"<link[^>]+href=[\"']([^\"']+)[\"']", raw, flags=re.I)[:48]
+        elif language == "json":
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, dict):
+                    summary["top_level_keys"] = list(obj.keys())[:96]
+            except Exception:
+                pass
+        return summary
+
+    def _universal_file_prompt(self, spec: Dict[str, Any], blueprint: Dict[str, Any], file_plan: Dict[str, Any], generated_index: List[Dict[str, Any]]) -> str:
+        language = str(file_plan.get("language") or _language_from_path(str(file_plan.get("path") or "")))
+        return (
+            "SARAHMEMORY QSML/0.2 UNIVERSAL APPLICATION FILE SYNTHESIZER\n"
+            "PHASE: GENERATE\n"
+            "Generate exactly ONE complete file for the governed NAILDE sandbox application.\n"
+            "Return raw file content only. Do not use markdown fences. Do not add explanations before or after the file.\n"
+            "Implement the requested behavior; do not replace it with a demo from another application.\n"
+            "No TODO, FIXME, 'implement later', pseudo-code, or placeholder business logic.\n"
+            "Do not write or execute outside the generated application. Do not embed credentials or secrets.\n"
+            "Respect interfaces/dependencies from the application blueprint. Prefer deterministic/local behavior.\n"
+            "If an optional external package is unavailable, fail clearly or provide a standard-library fallback when feasible.\n"
+            "Generated code is sandbox evidence only and has no execution authority.\n\n"
+            f"USER GOAL:\n{spec.get('top_prompt','')}\n\n"
+            f"ADDITIONAL REQUIREMENTS:\n{spec.get('details_prompt','')}\n\n"
+            f"APPLICATION BLUEPRINT:\n{json.dumps(blueprint, ensure_ascii=False, sort_keys=True)[:30000]}\n\n"
+            f"TARGET FILE CONTRACT:\n{json.dumps(file_plan, ensure_ascii=False, sort_keys=True)}\n"
+            f"LANGUAGE: {language}\n"
+            f"FILES ALREADY GENERATED (interfaces only):\n{json.dumps(generated_index[-48:], ensure_ascii=False, sort_keys=True)}\n"
+        )
+
+    def _static_validate_generated_content(self, path: str, content: str) -> Dict[str, Any]:
+        language = _language_from_path(path)
+        errors: List[str] = []
+        warnings: List[str] = []
+        raw = str(content or "")
+        raw_bytes = len(raw.encode("utf-8", "replace"))
+        if raw_bytes > _MAX_UNIVERSAL_TEXT_FILE_BYTES:
+            errors.append(f"generated_file_exceeds_text_budget:{raw_bytes}>{_MAX_UNIVERSAL_TEXT_FILE_BYTES}")
+        if not raw.strip():
+            errors.append("empty_file")
+        low = raw.lower()
+        if any(tok in low for tok in ("todo:", "todo ", "fixme", "implement later", "placeholder business logic")):
+            errors.append("unfinished_placeholder_detected")
+        if language == "python" and raw.strip():
+            try:
+                ast.parse(raw, filename=path)
+            except SyntaxError as exc:
+                errors.append(f"python_syntax:{exc.msg}:line_{exc.lineno}")
+        elif language == "json" and raw.strip():
+            try:
+                json.loads(raw)
+            except Exception as exc:
+                errors.append(f"json_syntax:{exc}")
+        elif language == "html" and raw.strip():
+            if "<html" not in low and "<!doctype" not in low:
+                warnings.append("html_document_root_not_detected")
+        elif language in {"javascript", "typescript", "css"} and raw.strip():
+            pairs = [("{", "}"), ("(", ")"), ("[", "]")]
+            for left, right in pairs:
+                if raw.count(left) != raw.count(right):
+                    warnings.append(f"unbalanced_{left}{right}")
+        if re.search(r"(?i)(?:[A-Za-z]:[\\/].*SarahMemory[\\/](?:core|api)|/SarahMemory/(?:core|api))", raw):
+            warnings.append("generated_code_references_live_sarahmemory_core_or_api")
+        risk_patterns = {
+            "shell_process_usage": r"(?i)\b(?:os\.system|subprocess\.(?:run|Popen|call)|powershell|cmd\.exe)\b",
+            "dynamic_code_execution": r"(?i)\b(?:eval|exec)\s*\(",
+            "credential_access": r"(?i)\b(?:api[_-]?key|password|private[_-]?key|credential)\b",
+            "network_usage": r"(?i)\b(?:requests\.|urllib\.|http\.client|socket\.|aiohttp|websockets?|fetch\s*\(|XMLHttpRequest|WebSocket\s*\()",
+            "device_or_sensor_usage": r"(?i)\b(?:cv2\.VideoCapture|pyaudio|sounddevice|serial\.Serial|hid\.|pygame\.joystick)\b",
+        }
+        risk_hits = [name for name, pattern in risk_patterns.items() if re.search(pattern, raw)]
+        return {
+            "ok": not errors,
+            "path": path,
+            "language": language,
+            "errors": errors,
+            "warnings": warnings,
+            "risk_hits": risk_hits,
+            "sha256": _sha256_text(raw),
+            "size_bytes": raw_bytes,
+            "max_size_bytes": _MAX_UNIVERSAL_TEXT_FILE_BYTES,
+            "execution_authority": False,
+        }
+
+    def _compare_generated_artifact(self, user_goal: str, path: str, content: str) -> Dict[str, Any]:
+        """Run Compare GuardDog A when available; never grants execution."""
+        mod = _read_only_import("SarahMemoryCompare")
+        fn = getattr(mod, "validate_response_quality", None) if mod is not None else None
+        if not callable(fn):
+            return {"ok": False, "status": "NOT_AVAILABLE", "accepted": True, "execution_authority": False}
+        try:
+            out = fn(str(user_goal or path), str(content or ""), intent="code")
+            return {"ok": True, "status": "PASS" if bool(out.get("accepted")) else "REJECT", **dict(out), "execution_authority": False}
+        except Exception as exc:
+            return {"ok": False, "status": "ERROR", "accepted": True, "error": str(exc)[:500], "execution_authority": False}
+
+    def _repair_generated_file(
+        self,
+        *,
+        spec: Dict[str, Any],
+        blueprint: Dict[str, Any],
+        file_plan: Dict[str, Any],
+        content: str,
+        validation: Dict[str, Any],
+        payload: Dict[str, Any],
+        repair_round: int,
+    ) -> Dict[str, Any]:
+        repair_prompt = (
+            "SARAHMEMORY QSML/0.2 FILE REPAIR\n"
+            "PHASE: REPAIR\n"
+            "Repair this generated file so it satisfies its contract and static validation.\n"
+            "Return the COMPLETE corrected raw file only. No markdown fences or explanation.\n"
+            "Do not remove requested functionality merely to make validation pass.\n"
+            "Do not add TODOs/placeholders. Preserve sandbox-only/local-first constraints.\n\n"
+            f"USER GOAL: {spec.get('top_prompt','')}\n"
+            f"FILE CONTRACT: {json.dumps(file_plan, ensure_ascii=False, sort_keys=True)}\n"
+            f"VALIDATION: {json.dumps(validation, ensure_ascii=False, sort_keys=True)}\n"
+            f"REPAIR ROUND: {repair_round}\n\n"
+            f"CURRENT FILE:\n{content}\n"
+        )
+        return self._qsml_local_model_generate(
+            repair_prompt,
+            purpose="arbitrary_application_file_repair",
+            max_tokens=int(payload.get("file_max_tokens") or 6000),
+            temperature=float(payload.get("repair_temperature") or 0.05),
+            model=str(payload.get("model") or ""),
+        )
+
+    def _project_static_validation(self, files: Dict[str, str], blueprint: Dict[str, Any]) -> Dict[str, Any]:
+        results = [self._static_validate_generated_content(path, content) for path, content in sorted(files.items())]
+        errors: List[Dict[str, Any]] = []
+        warnings: List[Dict[str, Any]] = []
+        risk_hits: List[Dict[str, Any]] = []
+        for row in results:
+            for err in row.get("errors") or []:
+                errors.append({"path": row.get("path"), "error": err})
+            for warn in row.get("warnings") or []:
+                warnings.append({"path": row.get("path"), "warning": warn})
+            for risk in row.get("risk_hits") or []:
+                risk_hits.append({"path": row.get("path"), "risk": risk})
+        planned = {str(x.get("path") or "") for x in list(blueprint.get("files") or []) if isinstance(x, dict)}
+        actual = set(files.keys())
+        total_bytes = sum(len(str(content or "").encode("utf-8", "replace")) for content in files.values())
+        if total_bytes > _MAX_UNIVERSAL_PROJECT_BYTES:
+            errors.append({"path": "<project>", "error": f"generated_project_exceeds_text_budget:{total_bytes}>{_MAX_UNIVERSAL_PROJECT_BYTES}"})
+        missing = sorted(p for p in planned if p and p not in actual)
+        for path in missing:
+            errors.append({"path": path, "error": "planned_file_missing"})
+        entrypoint = str((blueprint.get("run") or {}).get("entrypoint") or "") if isinstance(blueprint.get("run"), dict) else ""
+        if entrypoint and entrypoint not in actual:
+            errors.append({"path": entrypoint, "error": "declared_entrypoint_missing"})
+
+        # External dependency declarations require a reproducible manifest, but
+        # NAILDE never invents versions or auto-installs packages.
+        external_deps = []
+        for dep in list(blueprint.get("dependencies") or [])[:64]:
+            if not isinstance(dep, dict):
+                continue
+            kind = str(dep.get("kind") or dep.get("type") or "").strip().lower()
+            if kind in {"external", "external_package", "package", "pip", "npm", "library"}:
+                external_deps.append(str(dep.get("name") or "").strip())
+        if external_deps:
+            manifest_names = {
+                "requirements.txt", "pyproject.toml", "setup.cfg", "setup.py",
+                "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+                "pom.xml", "build.gradle", "build.gradle.kts", "cargo.toml",
+                "go.mod", "composer.json", "gemfile",
+            }
+            has_dep_manifest = any(os.path.basename(p).lower() in manifest_names for p in actual)
+            if not has_dep_manifest:
+                warnings.append({
+                    "path": "<project>",
+                    "warning": "external_dependencies_declared_without_dependency_manifest:" + ",".join(x for x in external_deps if x)[:500],
+                })
+        # Check simple Python relative imports without importing or executing code.
+        py_paths = {p for p in actual if p.lower().endswith(".py")}
+        for path in sorted(py_paths):
+            content = files.get(path, "")
+            try:
+                tree = ast.parse(content, filename=path)
+            except Exception:
+                continue
+            base_dir = os.path.dirname(path).replace("\\", "/")
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and int(getattr(node, "level", 0) or 0) > 0:
+                    module = str(node.module or "").replace(".", "/")
+                    up = max(0, int(node.level or 1) - 1)
+                    parent = base_dir
+                    for _ in range(up):
+                        parent = os.path.dirname(parent).replace("\\", "/")
+                    candidate = (parent.rstrip("/") + "/" + module + ".py").replace("//", "/") if module else ""
+                    pkg = (parent.rstrip("/") + "/" + module + "/__init__.py").replace("//", "/") if module else parent.rstrip("/") + "/__init__.py"
+                    if candidate and candidate not in actual and pkg not in actual:
+                        warnings.append({"path": path, "warning": f"relative_import_target_not_found:{module}"})
+        return {
+            "ok": not errors,
+            "schema": "SarahMemory.nailde.universal_synthesis_validation.v0_2",
+            "results": results,
+            "errors": errors,
+            "warnings": warnings,
+            "risk_hits": risk_hits,
+            "risk_review_required": bool(risk_hits),
+            "total_generated_bytes": total_bytes,
+            "max_project_bytes": _MAX_UNIVERSAL_PROJECT_BYTES,
+            "execution_authority": False,
+            "live_runtime_verified": False,
+        }
+
+    def _universal_synthesize_spec(self, spec: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Architect, generate, validate, and bounded-repair an arbitrary app."""
+        payload = payload if isinstance(payload, dict) else {}
+        ownership = self._validate_qsml_synthesis_ownership(spec)
+        if not ownership.get("ok"):
+            return {
+                "ok": False,
+                "phase": "COMPILE",
+                "error": "qsml_synthesis_ownership_contract_failed",
+                "ownership": ownership,
+                "message": "NAILDE refused synthesis because SMLProtocol/Neuron/NAILDE ownership ordering was not preserved.",
+                "execution_authority": False,
+            }
+        architecture = self._universal_blueprint_from_model(spec, payload)
+        if not architecture.get("ok"):
+            return {
+                "ok": False,
+                "phase": "ARCHITECT",
+                "error": architecture.get("error") or "blueprint_validation_failed",
+                "architecture": architecture,
+                "message": "Arbitrary application synthesis stopped rather than substituting an unrelated template.",
+                "execution_authority": False,
+            }
+        blueprint = dict(architecture.get("blueprint") or {})
+        ordering = self._ordered_universal_file_plan(blueprint)
+        if not ordering.get("ok"):
+            return {
+                "ok": False,
+                "phase": "ARCHITECT",
+                "error": ordering.get("error") or "invalid_file_dependency_graph",
+                "ordering": ordering,
+                "blueprint": blueprint,
+                "execution_authority": False,
+            }
+        file_plan = [dict(x) for x in list(ordering.get("files") or []) if isinstance(x, dict)][:96]
+        if ordering.get("warnings"):
+            architecture["ordering_warnings"] = list(ordering.get("warnings") or [])
+        if not file_plan:
+            return {"ok": False, "phase": "ARCHITECT", "error": "blueprint_has_no_files", "architecture": architecture, "execution_authority": False}
+        max_repairs = 3
+        try:
+            max_repairs = max(0, min(3, int(payload.get("max_repair_rounds") if payload.get("max_repair_rounds") is not None else 3)))
+        except Exception:
+            max_repairs = 3
+        files: Dict[str, str] = {}
+        generation_trace: List[Dict[str, Any]] = []
+        generated_index: List[Dict[str, Any]] = []
+        for fp in file_plan:
+            path = str(fp.get("path") or "")
+            generation = self._qsml_local_model_generate(
+                self._universal_file_prompt(spec, blueprint, fp, generated_index),
+                purpose="arbitrary_application_file_generation",
+                max_tokens=int(payload.get("file_max_tokens") or 6000),
+                temperature=float(payload.get("file_temperature") or 0.12),
+                model=str(payload.get("model") or ""),
+            )
+            if not generation.get("ok"):
+                return {
+                    "ok": False,
+                    "phase": "GENERATE",
+                    "error": "local_model_failed_while_generating_file",
+                    "failed_path": path,
+                    "model": generation,
+                    "blueprint": blueprint,
+                    "generated_paths": list(files.keys()),
+                    "execution_authority": False,
+                }
+            content = _strip_code_fence(generation.get("content"))
+            validation = self._static_validate_generated_content(path, content)
+            compare_check = self._compare_generated_artifact(str(spec.get("top_prompt") or ""), path, content)
+            validation["compare"] = compare_check
+            if compare_check.get("ok") and not bool(compare_check.get("accepted", True)):
+                validation.setdefault("errors", []).append("compare_output_validity_reject")
+                validation["ok"] = False
+            repairs = []
+            for repair_round in range(1, max_repairs + 1):
+                if validation.get("ok"):
+                    break
+                repair = self._repair_generated_file(
+                    spec=spec,
+                    blueprint=blueprint,
+                    file_plan=fp,
+                    content=content,
+                    validation=validation,
+                    payload=payload,
+                    repair_round=repair_round,
+                )
+                repairs.append({k: v for k, v in repair.items() if k != "content"})
+                if not repair.get("ok"):
+                    break
+                content = _strip_code_fence(repair.get("content"))
+                validation = self._static_validate_generated_content(path, content)
+                compare_check = self._compare_generated_artifact(str(spec.get("top_prompt") or ""), path, content)
+                validation["compare"] = compare_check
+                if compare_check.get("ok") and not bool(compare_check.get("accepted", True)):
+                    validation.setdefault("errors", []).append("compare_output_validity_reject")
+                    validation["ok"] = False
+            generation_trace.append({
+                "path": path,
+                "model": {k: v for k, v in generation.items() if k != "content"},
+                "validation": validation,
+                "repairs": repairs,
+            })
+            if not validation.get("ok"):
+                return {
+                    "ok": False,
+                    "phase": "VALIDATE",
+                    "error": "generated_file_failed_static_validation_after_bounded_repairs",
+                    "failed_path": path,
+                    "validation": validation,
+                    "blueprint": blueprint,
+                    "generation_trace": generation_trace,
+                    "execution_authority": False,
+                }
+            files[path] = content
+            interface_summary = self._generated_interface_summary(path, content)
+            interface_summary["purpose"] = fp.get("purpose")
+            generated_index.append(interface_summary)
+
+        # Deterministic governance metadata is part of the rails, not app logic.
+        synthesis_manifest = {
+            "schema": "SarahMemory.nailde.universal_synthesis_manifest.v0_2",
+            "application_name": blueprint.get("name"),
+            "goal": blueprint.get("goal"),
+            "qsml_program_id": spec.get("qsml_program_id"),
+            "qsml_language_version": spec.get("qsml_language_version"),
+            "blueprint_id": blueprint.get("blueprint_id"),
+            "project_kind": blueprint.get("project_kind"),
+            "languages": blueprint.get("languages"),
+            "frameworks": blueprint.get("frameworks"),
+            "dependencies": blueprint.get("dependencies"),
+            "requested_capabilities": blueprint.get("requested_capabilities"),
+            "run": blueprint.get("run"),
+            "acceptance_criteria": blueprint.get("acceptance_criteria"),
+            "route_definition_owner": "SarahMemorySMLProtocol",
+            "route_activation_owner": "SarahMemoryNeuron",
+            "synthesis_owner": "SarahMemoryNAILDE",
+            "sandbox_only": True,
+            "live_core_write": False,
+            "execution_authority": False,
+        }
+        manifest_path = "sandbox/QSML_SYNTHESIS_MANIFEST.json"
+        if manifest_path not in files:
+            files[manifest_path] = json.dumps(synthesis_manifest, indent=2, sort_keys=True, ensure_ascii=False)
+        blueprint_path = "sandbox/QSML_APPLICATION_BLUEPRINT.json"
+        if blueprint_path not in files:
+            files[blueprint_path] = json.dumps(blueprint, indent=2, sort_keys=True, ensure_ascii=False)
+
+        project_validation = self._project_static_validation(files, blueprint)
+        return {
+            "ok": bool(project_validation.get("ok")),
+            "phase": "READY" if project_validation.get("ok") else "VALIDATE",
+            "schema": "SarahMemory.nailde.universal_arbitrary_application_synthesis.v0_2",
+            "blueprint": blueprint,
+            "architecture": architecture,
+            "ownership": ownership,
+            "files": files,
+            "generation_trace": generation_trace,
+            "validation": project_validation,
+            "risk_review_required": bool(project_validation.get("risk_review_required")),
+            "sandbox_only": True,
+            "live_file_write": False,
+            "execution_authority": False,
+        }
+
+    def synthesize_arbitrary_application(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Public NAILDE entrypoint for the QSML universal application synthesizer."""
+        payload = payload if isinstance(payload, dict) else {}
+        normalized = dict(payload)
+        if not normalized.get("top_prompt"):
+            normalized["top_prompt"] = normalized.get("goal") or normalized.get("prompt") or normalized.get("problem") or ""
+        normalized["universal_synthesis"] = True
+        return self.auto_build_from_prompt(normalized)
+
+    def handle_gcop_capability_gap(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Translate a GCOP capability gap into a sandbox-only NAILDE build mission.
+
+        This method is deliberately proposal-only.  GCOP/SML may identify that a
+        capability is missing, but NAILDE is not allowed to grant the capability,
+        install the generated package, write live Core/API files, or execute it.
+        The result is a staged application proposal that must continue through the
+        existing validation/Compare/AppStore/DevBridge/human-approval path.
+        """
+        payload = payload if isinstance(payload, dict) else {}
+        gap = payload.get("capability_gap") if isinstance(payload.get("capability_gap"), dict) else {}
+        event_type = str(payload.get("event_type") or payload.get("type") or gap.get("event_type") or "CAPABILITY_GAP").strip().upper()
+        capability = str(
+            gap.get("capability")
+            or gap.get("required_capability")
+            or payload.get("capability")
+            or payload.get("required_capability")
+            or ""
+        ).strip()[:240]
+        goal = str(
+            gap.get("goal")
+            or gap.get("reason")
+            or payload.get("goal")
+            or payload.get("reason")
+            or payload.get("prompt")
+            or ""
+        ).strip()[:4000]
+        if event_type not in {"CAPABILITY_GAP", "GCOP_CAPABILITY_GAP"}:
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "unsupported_gcop_event",
+                "event_type": event_type,
+                "sandbox_only": True,
+                "execution_authority": False,
+            }
+        if not capability and not goal:
+            return {
+                "ok": False,
+                "blocked": True,
+                "reason": "capability_gap_requires_capability_or_goal",
+                "sandbox_only": True,
+                "execution_authority": False,
+            }
+
+        top_prompt = goal or f"Create a governed local capability for: {capability}"
+        normalized = dict(payload)
+        normalized.update({
+            "top_prompt": top_prompt,
+            "goal": top_prompt,
+            "universal_synthesis": True,
+            "gcop_event_type": "CAPABILITY_GAP",
+            "gcop_capability": capability,
+            "sandbox_only": True,
+            "live_file_write": False,
+            "execution_authority": False,
+            "auto_install": False,
+            "auto_run": False,
+            "promotion_required": True,
+        })
+        result = self.synthesize_arbitrary_application(normalized)
+        return {
+            "ok": bool(isinstance(result, dict) and result.get("ok")),
+            "schema": "SarahMemory.nailde.gcop_capability_gap.v1",
+            "event_type": "CAPABILITY_GAP",
+            "capability": capability,
+            "goal": top_prompt,
+            "result": result,
+            "next_stage": "validation_compare_then_explicit_governed_install",
+            "sandbox_only": True,
+            "live_file_write": False,
+            "auto_install": False,
+            "auto_run": False,
+            "execution_authority": False,
+        }
+
+    def _python_qsml_desktop_files(self, spec: Dict[str, Any]) -> Dict[str, str]:
+        app_name = str(spec.get("application_name") or "NAILDE Application")
+        features = [str(x) for x in list(spec.get("features") or [])[:24]]
+        manifest = self._qsml_manifest(spec)
+        code = f'''"""QSML-compiled local desktop application scaffold.
+
+Natural-language source:
+{str(spec.get('top_prompt') or '')[:1200]}
+
+Generated in NAILDE sandbox. No live SarahMemory authority is granted.
+"""
+from __future__ import annotations
+
+import json
+import tkinter as tk
+from pathlib import Path
+from tkinter import ttk
+
+APP_NAME = {app_name!r}
+FEATURES = {features!r}
+
+class Application:
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title(APP_NAME)
+        self.root.geometry("820x560")
+        self.data_path = Path(__file__).with_name("app_data.json")
+        self.status = tk.StringVar(value="Ready")
+        self._build_ui()
+
+    def _build_ui(self) -> None:
+        outer = ttk.Frame(self.root, padding=12)
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text=APP_NAME, font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(outer, text="QSML / NAILDE local sandbox application").pack(anchor="w", pady=(0, 10))
+        body = ttk.Panedwindow(outer, orient="horizontal")
+        body.pack(fill="both", expand=True)
+        left = ttk.Frame(body, padding=8)
+        right = ttk.Frame(body, padding=8)
+        body.add(left, weight=1)
+        body.add(right, weight=3)
+        ttk.Label(left, text="Requested Features").pack(anchor="w")
+        self.feature_list = tk.Listbox(left, height=18)
+        self.feature_list.pack(fill="both", expand=True, pady=6)
+        for feature in FEATURES or ["application workspace"]:
+            self.feature_list.insert("end", feature)
+        ttk.Label(right, text="Workspace").pack(anchor="w")
+        self.editor = tk.Text(right, wrap="word")
+        self.editor.pack(fill="both", expand=True, pady=6)
+        buttons = ttk.Frame(right)
+        buttons.pack(fill="x")
+        ttk.Button(buttons, text="Save Local Data", command=self.save).pack(side="left")
+        ttk.Button(buttons, text="Load Local Data", command=self.load).pack(side="left", padx=6)
+        ttk.Button(buttons, text="Clear", command=lambda: self.editor.delete("1.0", "end")).pack(side="left")
+        ttk.Label(outer, textvariable=self.status).pack(anchor="w", pady=(8, 0))
+
+    def save(self) -> None:
+        payload = {{"text": self.editor.get("1.0", "end-1c"), "features": FEATURES}}
+        self.data_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.status.set(f"Saved {{self.data_path.name}}")
+
+    def load(self) -> None:
+        if not self.data_path.exists():
+            self.status.set("No local data saved yet")
+            return
+        payload = json.loads(self.data_path.read_text(encoding="utf-8"))
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", str(payload.get("text") or ""))
+        self.status.set(f"Loaded {{self.data_path.name}}")
+
+
+def main() -> None:
+    root = tk.Tk()
+    Application(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
+'''
+        readme = f'''# {app_name}
+
+QSML-compiled local desktop application scaffold.
+
+## Natural Language Goal
+
+{spec.get("top_prompt", "")}
+
+## Features
+
+''' + "\n".join(f"- {x}" for x in features) + '''
+
+## Governance
+
+- Sandbox-only generation
+- No live CORE/API/UI modification
+- Neuron remains route activation owner
+- User approval required before installation/execution outside sandbox
+'''
+        return {
+            "sandbox/app/main.py": code,
+            "sandbox/app/app_manifest.json": json.dumps(manifest, indent=2, sort_keys=True),
+            "sandbox/README.md": readme,
+        }
+
+    def _python_qsml_cli_files(self, spec: Dict[str, Any]) -> Dict[str, str]:
+        app_name = str(spec.get("application_name") or "NAILDE CLI")
+        features = [str(x) for x in list(spec.get("features") or [])[:24]]
+        manifest = self._qsml_manifest(spec)
+        code = f'''"""QSML-compiled local command-line application."""
+from __future__ import annotations
+import argparse
+import json
+
+APP_NAME = {app_name!r}
+FEATURES = {features!r}
+
+def main() -> int:
+    parser = argparse.ArgumentParser(prog=APP_NAME)
+    parser.add_argument("--info", action="store_true", help="Show compiled application information")
+    parser.add_argument("text", nargs="*", help="Input to the local sandbox application")
+    args = parser.parse_args()
+    if args.info:
+        print(json.dumps({{"name": APP_NAME, "features": FEATURES, "sandbox_only": True, "execution_authority": False}}, indent=2))
+        return 0
+    print(" ".join(args.text) if args.text else f"{{APP_NAME}} ready")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+        return {
+            "sandbox/app/main.py": code,
+            "sandbox/app/app_manifest.json": json.dumps(manifest, indent=2, sort_keys=True),
+            "sandbox/README.md": f"# {app_name}\n\n{spec.get('top_prompt','')}\n",
+        }
+
+    def _web_qsml_application_files(self, spec: Dict[str, Any]) -> Dict[str, str]:
+        app_name = str(spec.get("application_name") or "NAILDE Web App")
+        features = [str(x) for x in list(spec.get("features") or [])[:24]]
+        cards = "".join(f"<li>{x}</li>" for x in features) or "<li>Application workspace</li>"
+        html = f'''<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{app_name}</title><link rel="stylesheet" href="styles.css"></head>
+<body><main><h1>{app_name}</h1><p>QSML / NAILDE local sandbox web application.</p>
+<section><h2>Requested Features</h2><ul id="features">{cards}</ul></section>
+<section><h2>Workspace</h2><textarea id="workspace" placeholder="Local sandbox workspace"></textarea>
+<div><button id="clear">Clear</button><button id="download">Export JSON</button></div></section>
+<pre id="status"></pre></main><script src="app.js"></script></body></html>'''
+        css = '''body{font-family:system-ui,sans-serif;margin:0;background:#111827;color:#e5e7eb}main{max-width:900px;margin:auto;padding:2rem}section{background:#1f2937;padding:1rem;border-radius:12px;margin:1rem 0}textarea{width:100%;min-height:220px;background:#0f172a;color:#e5e7eb;border:1px solid #475569;border-radius:8px;padding:.8rem;box-sizing:border-box}button{margin:.6rem .4rem 0 0;padding:.6rem 1rem}'''
+        js = '''const workspace=document.getElementById("workspace");const status=document.getElementById("status");document.getElementById("clear").onclick=()=>{workspace.value="";status.textContent="Cleared"};document.getElementById("download").onclick=()=>{const blob=new Blob([JSON.stringify({text:workspace.value,sandboxOnly:true,executionAuthority:false},null,2)],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="app_data.json";a.click();URL.revokeObjectURL(a.href);status.textContent="Exported local JSON"};'''
+        manifest = self._qsml_manifest(spec)
+        return {
+            "sandbox/web/index.html": html,
+            "sandbox/web/styles.css": css,
+            "sandbox/web/app.js": js,
+            "sandbox/app_manifest.json": json.dumps(manifest, indent=2, sort_keys=True),
+            "sandbox/README.md": f"# {app_name}\n\n{spec.get('top_prompt','')}\n",
+        }
+
+    def _python_qsml_game_files(self, spec: Dict[str, Any]) -> Dict[str, str]:
+        '''Generate a genre-aware local game scaffold from QSML.
+
+        This deliberately avoids the old behavior where unrelated game prompts
+        collapsed into a PACMAN-style template.
+        '''
+        app_name = str(spec.get("application_name") or "NAILDE Game")
+        genre = str(spec.get("game_style") or "generic").lower()
+        if genre == "maze_chase":
+            return self._python_game_addon_files(spec)
+        addon_id = str(spec.get("addon_id") or self._safe_addon_id(app_name))
+        manifest = {
+            "addon_id": addon_id, "id": addon_id, "name": app_name, "type": "application", "version": "0.1.0",
+            "description": f"QSML-compiled {genre} game generated in NAILDE.",
+            "entrypoint": {"module": "addon", "callable": "run"}, "entry": {"module": "addon", "callable": "run"},
+            "execution": {"mode": "subprocess"}, "risk_tier": "low",
+            "permissions": ["keyboard_input", "addon_local_file_write"], "denied": list(spec.get("denied") or NAILDE_DENIED_ACTIONS),
+            "security": {"trusted": False, "requires_user_run": True, "auto_run_allowed": False},
+            "governance": {"created_by": "NAILDE_QSML", "sandbox_first": True, "execution_authority": False, "route_activation_owner": "SarahMemoryNeuron"},
+        }
+        ui = {"schema":"SarahMemory.addon.ui_manifest.v1","title":app_name,"icon":"PackageCheck","action":"run","runtime":"python_subprocess_manifest","description":manifest["description"],"execution_authority":False}
+        addon_py='''"""QSML-generated game addon wrapper."""\nfrom __future__ import annotations\n\ndef run(context=None):\n    from game.sm_game import run_game\n    return run_game(context=context or {})\n\ndef addon_info():\n    return {"ok": True, "type": "qsml_game_addon", "execution_authority": False}\n'''
+        if genre == "racing":
+            game_code = f'''"""QSML-compiled local racing game."""
+from __future__ import annotations
+import random
+import tkinter as tk
+
+WIDTH, HEIGHT = 640, 520
+LANES = [120, 240, 360, 480]
+TICK = 35
+
+class RacingGame:
+    def __init__(self, root):
+        self.root=root; self.root.title({app_name!r})
+        self.canvas=tk.Canvas(root,width=WIDTH,height=HEIGHT,bg="#101820",highlightthickness=0); self.canvas.pack()
+        self.lane=1; self.score=0; self.speed=6; self.running=True; self.obstacles=[]
+        root.bind("<Left>",lambda e:self.move(-1)); root.bind("<Right>",lambda e:self.move(1)); root.bind("<a>",lambda e:self.move(-1)); root.bind("<d>",lambda e:self.move(1)); root.bind("<r>",lambda e:self.restart())
+        self.spawn_counter=0; self.loop()
+    def move(self,d): self.lane=max(0,min(len(LANES)-1,self.lane+d))
+    def restart(self): self.score=0; self.speed=6; self.running=True; self.obstacles=[]
+    def loop(self):
+        if self.running:
+            self.spawn_counter+=1
+            if self.spawn_counter%28==0: self.obstacles.append([random.randrange(len(LANES)),-40])
+            for o in self.obstacles: o[1]+=self.speed
+            self.obstacles=[o for o in self.obstacles if o[1]<HEIGHT+50]
+            self.score+=1
+            if self.score%350==0: self.speed=min(14,self.speed+1)
+            px=LANES[self.lane]
+            if any(abs(LANES[o[0]]-px)<30 and HEIGHT-105<o[1]<HEIGHT-35 for o in self.obstacles): self.running=False
+        self.render(); self.root.after(TICK,self.loop)
+    def render(self):
+        c=self.canvas; c.delete("all")
+        for x in LANES: c.create_line(x,0,x,HEIGHT,fill="#405060",dash=(14,14))
+        px=LANES[self.lane]; c.create_rectangle(px-24,HEIGHT-90,px+24,HEIGHT-35,fill="#00d4ff",outline="white")
+        for lane,y in self.obstacles:
+            x=LANES[lane]; c.create_rectangle(x-24,y-45,x+24,y+10,fill="#ff5c5c",outline="white")
+        c.create_text(12,12,anchor="nw",fill="white",font=("Consolas",14),text=f"Score: {{self.score}}  Speed: {{self.speed}}")
+        if not self.running: c.create_text(WIDTH/2,HEIGHT/2,fill="white",font=("Segoe UI",24,"bold"),text="CRASH - press R to restart")
+
+def run_game(context=None):
+    root=tk.Tk(); RacingGame(root); root.mainloop(); return {{"ok":True,"game":{app_name!r},"genre":"racing","execution_authority":False}}
+'''
+        elif genre == "snake":
+            game_code = f'''"""QSML-compiled local snake game."""
+from __future__ import annotations
+import random, tkinter as tk
+CELL=20; W=30; H=22; TICK=110
+class SnakeGame:
+    def __init__(self,root):
+        self.root=root; root.title({app_name!r}); self.c=tk.Canvas(root,width=W*CELL,height=H*CELL,bg="#101820"); self.c.pack()
+        self.snake=[(10,10),(9,10),(8,10)]; self.direction=(1,0); self.food=(18,10); self.running=True; self.score=0
+        for key,d in [("<Up>",(0,-1)),("<Down>",(0,1)),("<Left>",(-1,0)),("<Right>",(1,0))]: root.bind(key,lambda e,d=d:self.set_dir(d))
+        self.loop()
+    def set_dir(self,d):
+        if (d[0]+self.direction[0],d[1]+self.direction[1])!=(0,0): self.direction=d
+    def loop(self):
+        if self.running:
+            x,y=self.snake[0]; dx,dy=self.direction; head=((x+dx)%W,(y+dy)%H)
+            if head in self.snake: self.running=False
+            else:
+                self.snake.insert(0,head)
+                if head==self.food: self.score+=10; self.food=(random.randrange(W),random.randrange(H))
+                else: self.snake.pop()
+        self.render(); self.root.after(TICK,self.loop)
+    def render(self):
+        self.c.delete("all")
+        for x,y in self.snake: self.c.create_rectangle(x*CELL,y*CELL,(x+1)*CELL,(y+1)*CELL,fill="#60e080",outline="#204030")
+        x,y=self.food; self.c.create_oval(x*CELL+3,y*CELL+3,(x+1)*CELL-3,(y+1)*CELL-3,fill="#ff5c5c",outline="")
+        self.c.create_text(8,8,anchor="nw",fill="white",text=f"Score: {{self.score}}")
+        if not self.running:self.c.create_text(W*CELL/2,H*CELL/2,fill="white",font=("Segoe UI",22,"bold"),text="GAME OVER")
+def run_game(context=None):
+    root=tk.Tk(); SnakeGame(root); root.mainloop(); return {{"ok":True,"game":{app_name!r},"genre":"snake","execution_authority":False}}
+'''
+        else:
+            game_code = f'''"""QSML-compiled generic local game scaffold."""
+from __future__ import annotations
+import tkinter as tk
+WIDTH,HEIGHT=640,480
+class Game:
+    def __init__(self,root):
+        self.root=root; root.title({app_name!r}); self.c=tk.Canvas(root,width=WIDTH,height=HEIGHT,bg="#101820"); self.c.pack()
+        self.x,self.y=WIDTH//2,HEIGHT//2; self.score=0
+        root.bind("<KeyPress>",self.key); self.render()
+    def key(self,e):
+        d={{"Left":(-12,0),"Right":(12,0),"Up":(0,-12),"Down":(0,12),"a":(-12,0),"d":(12,0),"w":(0,-12),"s":(0,12)}}.get(e.keysym)
+        if d:self.x=max(15,min(WIDTH-15,self.x+d[0]));self.y=max(15,min(HEIGHT-15,self.y+d[1]));self.score+=1;self.render()
+    def render(self):
+        self.c.delete("all");self.c.create_oval(self.x-14,self.y-14,self.x+14,self.y+14,fill="#00d4ff");self.c.create_text(10,10,anchor="nw",fill="white",text=f"QSML {genre} scaffold | score {{self.score}}")
+def run_game(context=None):
+    root=tk.Tk();Game(root);root.mainloop();return {{"ok":True,"game":{app_name!r},"genre":{genre!r},"execution_authority":False}}
+'''
+        readme = f"# {app_name}\n\nQSML-compiled {genre} game.\n\nNatural language source: {spec.get('top_prompt','')}\n"
+        return {
+            "sandbox/addon_package/manifest.json": json.dumps(manifest, indent=2, sort_keys=True),
+            "sandbox/addon_package/ui.json": json.dumps(ui, indent=2, sort_keys=True),
+            "sandbox/addon_package/addon.py": addon_py,
+            "sandbox/addon_package/game/__init__.py": "# QSML generated game package\n",
+            "sandbox/addon_package/game/sm_game.py": game_code,
+            "sandbox/addon_package/README.md": readme,
+        }
+
+    def _files_from_qsml_spec(self, spec: Dict[str, Any]) -> Dict[str, str]:
+        """Compatibility bridge into the universal synthesizer.
+
+        This intentionally no longer dispatches prompt-specific templates.
+        Callers receive a complete model-synthesized file set or a clear error.
+        """
+        result = self._universal_synthesize_spec(spec, {})
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "universal_synthesis_failed"))
+        return dict(result.get("files") or {})
+
     def natural_language_code_draft(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         payload = payload if isinstance(payload, dict) else {}
         prompt = str(payload.get("prompt") or payload.get("problem") or payload.get("goal") or "Build a NAILDE sandbox addon.").strip()
@@ -1534,21 +3076,58 @@ class SarahMemoryNAILDERuntime:
         if not workspace_id:
             created = self.create_workspace({"goal": prompt, "mode": "BUILD_SANDBOX"})
             workspace_id = str((created.get("workspace") or {}).get("workspace_id") or "")
-        app_name = _safe_name(payload.get("app_name") or self._title_from_prompt(prompt), "NaildeGeneratedTool")
-        target = str(payload.get("target") or "react_flask_addon").lower()
-        files = self._draft_files_for_prompt(app_name, prompt, target)
+        target = str(payload.get("target") or "nailde_local_application").lower()
+        compiled = self.qsml_compile_request({**payload, "prompt": prompt, "target": target, "workspace_id": workspace_id})
+        if not compiled.get("ok"):
+            return {
+                "ok": False, "schema": "SarahMemory.nailde.code_draft.v2", "workspace_id": workspace_id,
+                "error": "qsml_compile_failed", "qsml": compiled,
+                "message": "NAILDE did not substitute a canned draft.", "execution_authority": False,
+            }
+        spec = self._expand_qsml_program(compiled, prompt, "")
+        if payload.get("app_name"):
+            spec["application_name"] = _safe_name(payload.get("app_name"), "NaildeGeneratedTool")
+        app_name = _safe_name(spec.get("application_name") or self._title_from_prompt(prompt), "NaildeGeneratedTool")
+        synthesis = self._universal_synthesize_spec(spec, payload)
+        if not synthesis.get("ok"):
+            return {
+                "ok": False, "schema": "SarahMemory.nailde.code_draft.v2", "workspace_id": workspace_id,
+                "prompt": prompt, "app_name": app_name, "target": target, "qsml": compiled,
+                "spec": spec, "synthesis": synthesis,
+                "message": "Universal application synthesis stopped safely rather than returning an unrelated draft.",
+                "sandbox_only": True, "execution_authority": False,
+            }
+        files = dict(synthesis.get("files") or {})
+        spec["universal_blueprint"] = synthesis.get("blueprint") or {}
         saved = []
         for rel_path, content in files.items():
             saved.append(self.save_workspace_file({"workspace_id": workspace_id, "path": rel_path, "content": content}))
+        addon_package = self._build_universal_addon_package(workspace_id, spec, synthesis, files)
+        if not addon_package.get("ok"):
+            return {
+                "ok": False, "schema": "SarahMemory.nailde.code_draft.v3", "workspace_id": workspace_id,
+                "error": "addon_package_build_failed", "addon_package": addon_package, "qsml": compiled, "spec": spec, "synthesis": synthesis,
+                "sandbox_only": True, "execution_authority": False,
+            }
+        spec["addon_package"] = True
+        spec["addon_id"] = addon_package.get("addon_id") or spec.get("addon_id")
+        spec["addon_runtime"] = addon_package.get("runtime") or {}
+        package_file_paths = [str(row.get("path") or "") for row in list((self.workspace_files({"workspace_id": workspace_id}).get("files") or [])) if str(row.get("path") or "").startswith("sandbox/addon_package/")]
         mission = self.agent_mission({"workspace_id": workspace_id, "goal": prompt, "mission_type": "code_generation_review", "target_files": list(files.keys())})
-        validation = self.validate_text_artifacts({"workspace_id": workspace_id, "paths": list(files.keys())})
+        validation = self.validate_text_artifacts({"workspace_id": workspace_id, "paths": sorted(set(list(files.keys()) + package_file_paths))})
+        install_plan = self.addon_install_plan({"workspace_id": workspace_id})
         packet = {
             "ok": True,
-            "schema": "SarahMemory.nailde.code_draft.v1",
+            "schema": "SarahMemory.nailde.code_draft.v2",
             "workspace_id": workspace_id,
             "prompt": prompt,
             "app_name": app_name,
             "target": target,
+            "qsml": compiled,
+            "spec": spec,
+            "synthesis": synthesis,
+            "addon_package": addon_package,
+            "install_plan": install_plan,
             "files": [{"path": path, "content": content, "sha256": _sha256_text(content)} for path, content in files.items()],
             "saved": saved,
             "agent_mission": mission.get("mission"),
@@ -1834,12 +3413,22 @@ class SarahMemoryNAILDERuntime:
                 return {"ok": True, "command": command, "result": self.create_workspace(args), "execution_authority": False}
             if command in {"natural_language_code_draft", "nl.draft"}:
                 return {"ok": True, "command": command, "result": self.natural_language_code_draft(args), "execution_authority": False}
+            if command in {"qsml_compile", "qsml.compile", "compile_natural_program"}:
+                return {"ok": True, "command": command, "result": self.qsml_compile_request(args), "execution_authority": False}
+            if command in {"auto_build_from_prompt", "nl.build", "qsml.build"}:
+                return {"ok": True, "command": command, "result": self.auto_build_from_prompt(args), "execution_authority": False}
+            if command in {"synthesize_arbitrary_application", "qsml.synthesize", "app.build", "universal.build"}:
+                return {"ok": True, "command": command, "result": self.synthesize_arbitrary_application(args), "execution_authority": False}
+            if command in {"gcop.capability_gap", "capability_gap", "gcop_capability_gap"}:
+                return {"ok": True, "command": command, "result": self.handle_gcop_capability_gap(args), "execution_authority": False}
             if command in {"thought_loop", "run.thought"}:
                 return {"ok": True, "command": command, "result": self.thought_loop(args), "execution_authority": False}
             if command in {"weightlab_simulate", "run.weightlab"}:
                 return {"ok": True, "command": command, "result": self.weightlab_simulate(args), "execution_authority": False}
             if command in {"save_workspace_file", "file.save_sandbox"}:
                 return {"ok": True, "command": command, "result": self.save_workspace_file(args), "execution_authority": False}
+            if command in {"package_workspace_export", "workspace.export", "file.export", "app.export"}:
+                return {"ok": True, "command": command, "result": self.package_workspace_export(args), "execution_authority": False}
             if command in {"reconcile_edits", "edit.reconcile"}:
                 return {"ok": True, "command": command, "result": self.reconcile_edits(args), "execution_authority": False}
             if command in {"editor_validate", "validate_editor"}:
@@ -2152,6 +3741,377 @@ class SarahMemoryNAILDERuntime:
             copied += 1
         return {"files_copied": copied, "bytes_copied": total, "source": source_abs, "target": target_abs}
 
+
+    @staticmethod
+    def _addon_source_relative_path(path: str) -> str:
+        raw = str(path or "").replace("\\", "/").strip()
+        raw = re.sub(r"^\./+", "", raw)
+        if raw.startswith("sandbox/"):
+            raw = raw[len("sandbox/"):]
+        raw = raw.lstrip("/")
+        parts = [part for part in raw.split("/") if part not in {"", "."}]
+        if not parts or ".." in parts:
+            raise ValueError("invalid_generated_application_path")
+        return "/".join(parts)
+
+    def _infer_universal_addon_runtime(self, blueprint: Dict[str, Any], source_files: Dict[str, str]) -> Dict[str, Any]:
+        """Infer a contained Addons runtime from the QSML application blueprint.
+
+        This is packaging/runtime adaptation only. It does not select application
+        behavior, grant authority, install dependencies, or execute the program.
+        """
+        files = [str(path).replace("\\", "/") for path in source_files.keys()]
+        run = blueprint.get("run") if isinstance(blueprint.get("run"), dict) else {}
+        declared = str(run.get("entrypoint") or "").replace("\\", "/").strip()
+        args = [str(x)[:500] for x in list(run.get("arguments") or [])[:32]]
+
+        def _find(*suffixes: str) -> str:
+            lowered = [(path, path.lower()) for path in files]
+            for suffix in suffixes:
+                for path, low in lowered:
+                    if low.endswith(suffix.lower()):
+                        return path
+            return ""
+
+        entry = declared if declared in files else ""
+        if not entry and declared:
+            declared_tail = declared.split("sandbox/", 1)[-1]
+            matches = [path for path in files if path.split("sandbox/", 1)[-1] == declared_tail]
+            entry = matches[0] if len(matches) == 1 else ""
+        if not entry:
+            entry = _find("/main.py", "main.py", "/app.py", "app.py", "/index.html", "index.html", "/main.js", "main.js", "/index.js", "index.js")
+
+        mode = "source_only"
+        runnable = False
+        reason = "No directly runnable text entrypoint was declared by the QSML blueprint."
+        low = entry.lower()
+        if low.endswith(".py"):
+            mode, runnable, reason = "python", True, "Python entrypoint packaged for the current SarahMemory interpreter."
+        elif low.endswith((".html", ".htm")):
+            mode, runnable, reason = "static_web", True, "Static web entrypoint packaged for a localhost Addons server."
+        elif low.endswith((".js", ".mjs", ".cjs")):
+            mode, runnable, reason = "node", True, "JavaScript entrypoint requires a locally installed Node runtime."
+        elif low.endswith(".jar"):
+            mode, runnable, reason = "java_jar", True, "JAR entrypoint requires a locally installed Java runtime."
+        elif low.endswith(".exe"):
+            mode, runnable, reason = "windows_executable", True, "Contained Windows executable entrypoint."
+
+        packaged_entry = ""
+        if entry:
+            try:
+                packaged_entry = "app/" + self._addon_source_relative_path(entry)
+            except Exception:
+                packaged_entry = ""
+                mode, runnable, reason = "source_only", False, "Declared entrypoint was not safely containable."
+        return {
+            "schema": "SarahMemory.nailde.addon_runtime.v1",
+            "mode": mode,
+            "runnable": bool(runnable and packaged_entry),
+            "source_entrypoint": entry,
+            "entrypoint": packaged_entry,
+            "arguments": args,
+            "reason": reason,
+            "local_only": True,
+            "auto_run_allowed": False,
+            "execution_authority": False,
+        }
+
+    @staticmethod
+    def _universal_addon_wrapper_source() -> str:
+        return '"""NAILDE generated universal Addons runtime wrapper.\n\nThe wrapper launches only the application packaged inside this Addon directory.\nIt never writes SarahMemory CORE/API/UI files and never auto-runs.\n"""\nfrom __future__ import annotations\n\nimport functools\nimport json\nimport os\nimport shutil\nimport subprocess\nimport sys\nimport webbrowser\nfrom http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer\nfrom pathlib import Path\nfrom typing import Any, Dict\n\n_ROOT = Path(__file__).resolve().parent\n_APP_ROOT = (_ROOT / "app").resolve()\n_RUNTIME_FILE = _ROOT / "app_runtime.json"\n_SESSION: Dict[str, Any] = {"status": "idle", "runs": 0, "last_result": None}\n\n\ndef _runtime() -> Dict[str, Any]:\n    try:\n        value = json.loads(_RUNTIME_FILE.read_text(encoding="utf-8-sig"))\n        return value if isinstance(value, dict) else {}\n    except Exception as exc:\n        return {"mode": "source_only", "runnable": False, "error": str(exc)}\n\n\ndef _contained_entry(rel: str) -> Path:\n    raw = str(rel or "").replace("\\\\", "/").lstrip("/")\n    if not raw or ".." in raw.split("/"):\n        raise RuntimeError("invalid_addon_runtime_entrypoint")\n    target = (_ROOT / raw).resolve()\n    root = _ROOT.resolve()\n    try:\n        if os.path.commonpath([str(root), str(target)]) != str(root):\n            raise RuntimeError("runtime_entrypoint_outside_addon")\n    except ValueError:\n        raise RuntimeError("runtime_entrypoint_outside_addon")\n    if not target.exists():\n        raise FileNotFoundError(str(target))\n    return target\n\n\ndef _subprocess_result(proc: subprocess.CompletedProcess, mode: str) -> Dict[str, Any]:\n    return {"ok": proc.returncode == 0, "mode": mode, "returncode": int(proc.returncode), "execution_authority": False}\n\n\ndef _child_env() -> Dict[str, str]:\n    env = dict(os.environ)\n    prior = str(env.get("PYTHONPATH") or "")\n    env["PYTHONPATH"] = str(_APP_ROOT) + (os.pathsep + prior if prior else "")\n    env["SARAHMEMORY_ADDON_ROOT"] = str(_ROOT)\n    env["SARAHMEMORY_ADDON_APP_ROOT"] = str(_APP_ROOT)\n    return env\n\n\ndef run(context=None, payload=None):\n    cfg = _runtime()\n    mode = str(cfg.get("mode") or "source_only").strip().lower()\n    if not bool(cfg.get("runnable")):\n        result = {"ok": False, "blocked": True, "mode": mode, "error": "application_is_source_only", "execution_authority": False}\n        _SESSION.update({"status": "source_only", "last_result": result})\n        return result\n    entry = _contained_entry(str(cfg.get("entrypoint") or ""))\n    args = [str(x) for x in list(cfg.get("arguments") or [])[:32]]\n    _SESSION["runs"] = int(_SESSION.get("runs") or 0) + 1\n    _SESSION["status"] = "running"\n    if mode == "python":\n        proc = subprocess.run([sys.executable, str(entry), *args], cwd=str(_APP_ROOT), env=_child_env(), shell=False, check=False)\n        result = _subprocess_result(proc, mode)\n    elif mode == "node":\n        node = shutil.which("node")\n        if not node:\n            result = {"ok": False, "blocked": True, "mode": mode, "error": "node_runtime_not_found", "execution_authority": False}\n        else:\n            proc = subprocess.run([node, str(entry), *args], cwd=str(_APP_ROOT), shell=False, check=False)\n            result = _subprocess_result(proc, mode)\n    elif mode == "java_jar":\n        java = shutil.which("java")\n        if not java:\n            result = {"ok": False, "blocked": True, "mode": mode, "error": "java_runtime_not_found", "execution_authority": False}\n        else:\n            proc = subprocess.run([java, "-jar", str(entry), *args], cwd=str(_APP_ROOT), shell=False, check=False)\n            result = _subprocess_result(proc, mode)\n    elif mode == "windows_executable":\n        if os.name != "nt" or entry.suffix.lower() != ".exe":\n            result = {"ok": False, "blocked": True, "mode": mode, "error": "windows_executable_not_supported_on_this_host", "execution_authority": False}\n        else:\n            proc = subprocess.run([str(entry), *args], cwd=str(entry.parent), shell=False, check=False)\n            result = _subprocess_result(proc, mode)\n    elif mode == "static_web":\n        serve_dir = entry.parent\n        handler = functools.partial(SimpleHTTPRequestHandler, directory=str(serve_dir))\n        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)\n        host, port = server.server_address[:2]\n        url = f"http://{host}:{port}/{entry.name}"\n        try:\n            webbrowser.open(url, new=1, autoraise=True)\n        except Exception:\n            pass\n        _SESSION.update({"status": "serving", "url": url})\n        try:\n            server.serve_forever(poll_interval=0.35)\n        finally:\n            server.server_close()\n        result = {"ok": True, "mode": mode, "url": url, "execution_authority": False}\n    else:\n        result = {"ok": False, "blocked": True, "mode": mode, "error": "unsupported_addon_runtime_mode", "execution_authority": False}\n    _SESSION["last_result"] = result\n    _SESSION["status"] = "completed" if bool(result.get("ok")) else "failed"\n    return result\n\n\ndef addon_init(context=None, config=None):\n    return run(context=context or {})\n\n\ndef addon_info():\n    cfg = _runtime()\n    return {"ok": True, "id": cfg.get("addon_id"), "name": cfg.get("application_name"), "runtime": cfg, "session": dict(_SESSION), "execution_authority": False}\n\n\ndef addon_status(context=None):\n    return {"ok": True, "session": dict(_SESSION), "runtime": _runtime(), "execution_authority": False}\n\n\ndef addon_shutdown(context=None):\n    _SESSION["status"] = "stopped"\n    return True\n'
+
+    def _validate_installable_addon_package(self, source_path: str) -> Dict[str, Any]:
+        """Validate a NAILDE-generated Addons package without importing/executing it."""
+        source_abs = os.path.abspath(str(source_path or ""))
+        errors: List[str] = []
+        warnings: List[str] = []
+        if not source_abs or not os.path.isdir(source_abs):
+            return {"ok": False, "error": "addon_source_missing", "source_path": source_abs, "errors": ["addon_source_missing"], "execution_authority": False}
+        manifest = self._read_json_file(os.path.join(source_abs, "manifest.json"))
+        ui = self._read_json_file(os.path.join(source_abs, "ui.json"))
+        runtime = self._read_json_file(os.path.join(source_abs, "app_runtime.json"))
+        addon_py_path = os.path.join(source_abs, "addon.py")
+        addon_py = self._read_text_file(addon_py_path)
+        if not manifest:
+            errors.append("manifest_json_missing_or_invalid")
+        if not ui:
+            errors.append("ui_json_missing_or_invalid")
+        if not runtime:
+            errors.append("app_runtime_json_missing_or_invalid")
+        if not addon_py:
+            errors.append("addon_py_missing")
+        addon_id = self._safe_addon_id(manifest.get("addon_id") or manifest.get("id") or os.path.basename(source_abs)) if manifest else ""
+        if manifest:
+            declared_id = str(manifest.get("addon_id") or manifest.get("id") or "")
+            if not declared_id or addon_id != declared_id:
+                errors.append("manifest_addon_id_not_safe_or_missing")
+            entry = manifest.get("entrypoint") if isinstance(manifest.get("entrypoint"), dict) else manifest.get("entry") if isinstance(manifest.get("entry"), dict) else {}
+            if str(entry.get("module") or "") != "addon" or str(entry.get("callable") or "") != "addon_init":
+                errors.append("manifest_entrypoint_must_be_addon_addon_init")
+            execution = manifest.get("execution") if isinstance(manifest.get("execution"), dict) else {}
+            if str(execution.get("mode") or "").strip().lower() != "subprocess":
+                errors.append("manifest_execution_mode_must_be_subprocess")
+            security = manifest.get("security") if isinstance(manifest.get("security"), dict) else {}
+            if bool(security.get("auto_run_allowed")):
+                errors.append("addon_auto_run_must_be_false")
+        if addon_py:
+            try:
+                tree = ast.parse(addon_py, filename=addon_py_path)
+                functions = {node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+                for required in ("addon_init", "run", "addon_info"):
+                    if required not in functions:
+                        errors.append(f"addon_wrapper_missing_{required}")
+            except SyntaxError as exc:
+                errors.append(f"addon_wrapper_python_syntax:{exc.msg}:line_{exc.lineno}")
+        runtime_mode = str(runtime.get("mode") or "source_only").strip().lower() if runtime else "source_only"
+        runnable = bool(runtime.get("runnable")) if runtime else False
+        runtime_entry = str(runtime.get("entrypoint") or "").replace("\\", "/").strip() if runtime else ""
+        if runnable:
+            if runtime_mode not in {"python", "static_web", "node", "java_jar", "windows_executable"}:
+                errors.append("unsupported_runnable_runtime_mode")
+            if not runtime_entry or runtime_entry.startswith("/") or ".." in runtime_entry.split("/"):
+                errors.append("invalid_runtime_entrypoint")
+            else:
+                entry_abs = os.path.abspath(os.path.join(source_abs, *runtime_entry.split("/")))
+                try:
+                    if os.path.commonpath([source_abs, entry_abs]) != source_abs:
+                        errors.append("runtime_entrypoint_outside_addon")
+                    elif not os.path.isfile(entry_abs):
+                        errors.append("runtime_entrypoint_missing")
+                except Exception:
+                    errors.append("runtime_entrypoint_outside_addon")
+        else:
+            warnings.append("application_is_source_only_until_a_supported_runtime_entrypoint_exists")
+        app_root = os.path.join(source_abs, "app")
+        if not os.path.isdir(app_root):
+            errors.append("packaged_application_directory_missing")
+        integrity_path = os.path.join(source_abs, "PACKAGE_INTEGRITY.json")
+        package_integrity = self._read_json_file(integrity_path) if os.path.isfile(integrity_path) else {}
+        new_nailde_package = str(manifest.get("type") or "").strip().lower() == "nailde_application" if manifest else False
+        if new_nailde_package and not package_integrity:
+            errors.append("package_integrity_manifest_missing")
+        elif package_integrity:
+            expected_files = package_integrity.get("files") if isinstance(package_integrity.get("files"), dict) else {}
+            for rel, expected_hash in list(expected_files.items())[:1000]:
+                rel_s = str(rel or "").replace("\\", "/").strip()
+                if not rel_s or rel_s.startswith("/") or ".." in rel_s.split("/"):
+                    errors.append("package_integrity_invalid_path")
+                    continue
+                file_path = os.path.abspath(os.path.join(source_abs, *rel_s.split("/")))
+                try:
+                    if os.path.commonpath([source_abs, file_path]) != source_abs or not os.path.isfile(file_path):
+                        errors.append(f"package_integrity_file_missing:{rel_s}")
+                        continue
+                except Exception:
+                    errors.append(f"package_integrity_file_missing:{rel_s}")
+                    continue
+                h = hashlib.sha256()
+                try:
+                    with open(file_path, "rb") as fh:
+                        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                            h.update(chunk)
+                    if h.hexdigest() != str(expected_hash):
+                        errors.append(f"package_integrity_hash_mismatch:{rel_s}")
+                except Exception:
+                    errors.append(f"package_integrity_hash_read_failed:{rel_s}")
+        return {
+            "ok": not errors,
+            "schema": "SarahMemory.nailde.addon_package_validation.v1",
+            "source_path": source_abs,
+            "addon_id": addon_id,
+            "manifest": manifest,
+            "ui": ui,
+            "runtime": runtime,
+            "package_integrity": package_integrity,
+            "runnable": runnable,
+            "errors": errors,
+            "warnings": warnings,
+            "execution_authority": False,
+        }
+
+    def _build_universal_addon_package(self, workspace_id: str, spec: Dict[str, Any], synthesis: Dict[str, Any], source_files: Dict[str, str]) -> Dict[str, Any]:
+        """Package any successful QSML/NAILDE application for the existing Addons runtime.
+
+        Application logic remains model-synthesized. This method deterministically
+        supplies only the SarahMemory Addons ABI: manifest, UI metadata, runtime
+        adapter, local icon, source copy, and governance metadata.
+        """
+        workspace_id = str(workspace_id or "").strip()
+        if not workspace_id:
+            return {"ok": False, "error": "workspace_id_required", "execution_authority": False}
+        root = self._workspace_root(workspace_id)
+        package_root = os.path.join(root, "sandbox", "addon_package")
+        try:
+            expected = os.path.abspath(os.path.join(root, "sandbox"))
+            package_abs = os.path.abspath(package_root)
+            if os.path.commonpath([expected, package_abs]) != expected:
+                return {"ok": False, "error": "addon_package_outside_workspace_sandbox", "execution_authority": False}
+        except Exception:
+            return {"ok": False, "error": "addon_package_path_validation_failed", "execution_authority": False}
+        if os.path.isdir(package_root):
+            shutil.rmtree(package_root)
+        _ensure_dir(os.path.join(package_root, "app"))
+
+        copied: List[Dict[str, Any]] = []
+        total = 0
+        for source_path, content in sorted(source_files.items()):
+            source_key = str(source_path or "").replace("\\", "/")
+            if source_key.startswith("sandbox/addon_package/"):
+                continue
+            try:
+                rel = self._addon_source_relative_path(source_key)
+            except Exception as exc:
+                return {"ok": False, "error": "generated_source_path_not_packageable", "path": source_key, "detail": str(exc), "execution_authority": False}
+            data = str(content if content is not None else "")
+            size = len(data.encode("utf-8", "replace"))
+            total += size
+            if len(copied) >= _MAX_UNIVERSAL_EXPORT_FILES or total > _MAX_UNIVERSAL_PROJECT_BYTES:
+                return {"ok": False, "error": "addon_package_budget_exceeded", "execution_authority": False}
+            target_rel = f"sandbox/addon_package/app/{rel}"
+            saved = self.save_workspace_file({"workspace_id": workspace_id, "path": target_rel, "content": data})
+            if not saved.get("ok"):
+                return {"ok": False, "error": "addon_application_source_copy_failed", "path": source_key, "saved": saved, "execution_authority": False}
+            copied.append({"source": source_key, "packaged": f"app/{rel}", "size_bytes": size, "sha256": _sha256_text(data)})
+
+        blueprint = synthesis.get("blueprint") if isinstance(synthesis.get("blueprint"), dict) else spec.get("universal_blueprint") if isinstance(spec.get("universal_blueprint"), dict) else {}
+        runtime = self._infer_universal_addon_runtime(blueprint, source_files)
+        app_name = str(spec.get("application_name") or blueprint.get("name") or "NAILDE Application").strip()[:160] or "NAILDE Application"
+        addon_id = self._safe_addon_id(spec.get("addon_id") or app_name)
+        requested_caps = [dict(x) for x in list(blueprint.get("requested_capabilities") or spec.get("requested_capabilities") or []) if isinstance(x, dict)][:64]
+        for cap in requested_caps:
+            cap["granted"] = False
+            cap["execution_authority"] = False
+        runtime.update({
+            "addon_id": addon_id,
+            "application_name": app_name,
+            "requested_capabilities": requested_caps,
+            "generated_by": "SarahMemoryNAILDE",
+            "qsml_program_id": str(spec.get("qsml_program_id") or ""),
+            "execution_authority": False,
+        })
+        buttons = ["RUN", "COPY", "REMOVE", "UPDATE"] if runtime.get("runnable") else ["COPY", "REMOVE", "UPDATE"]
+        manifest = {
+            "id": addon_id,
+            "addon_id": addon_id,
+            "name": app_name,
+            "type": "nailde_application",
+            "version": str(spec.get("version") or "0.1.0"),
+            "description": str(blueprint.get("goal") or spec.get("top_prompt") or "NAILDE generated local application")[:1200],
+            "author": "NAILDE",
+            "source": "NAILDE",
+            "created_by": "SarahMemoryNAILDE",
+            "created_from_workspace": workspace_id,
+            "qsml_program_id": str(spec.get("qsml_program_id") or ""),
+            "entrypoint": {"module": "addon", "callable": "addon_init"},
+            "entry": {"module": "addon", "callable": "addon_init"},
+            "execution": {"mode": "subprocess", "runtime_adapter": runtime.get("mode"), "auto_run_allowed": False},
+            "permissions": ["addon_local_runtime", "addon_local_file_read", "addon_local_file_write"],
+            "requested_capabilities": requested_caps,
+            "denied_permissions": list(NAILDE_DENIED_ACTIONS),
+            "risk_tier": "REVIEW_GENERATED_APPLICATION",
+            "security": {"trusted": False, "requires_user_install": True, "requires_user_run": True, "auto_run_allowed": False},
+            "governance": {
+                "schema": "SarahMemory.nailde.generated_application.v1",
+                "sandbox_first": True,
+                "source_workspace": workspace_id,
+                "installed_by_user_only": True,
+                "run_by_user_only": True,
+                "no_ui_rebuild_required": True,
+                "live_core_write": False,
+                "self_approval": False,
+                "execution_authority": False,
+                "route_definition_owner": str(spec.get("route_definition_owner") or "SarahMemorySMLProtocol"),
+                "route_activation_owner": str(spec.get("route_activation_owner") or "SarahMemoryNeuron"),
+            },
+            "ui": {"icon": "PackageCheck", "surface": "addons_runtime_panel"},
+        }
+        ui = {
+            "schema": "SarahMemory.addon.ui_manifest.v1",
+            "title": app_name,
+            "icon": "PackageCheck",
+            "runtime": "python_subprocess_manifest",
+            "description": manifest["description"],
+            "buttons": buttons,
+            "runtime_mode": runtime.get("mode"),
+            "runnable": bool(runtime.get("runnable")),
+            "execution_authority": False,
+        }
+        icon_svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="#111827"/><path d="M18 20h28v24H18z" fill="#0ea5e9"/><path d="M24 27l7 5-7 5M34 38h7" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>\n'
+        readme = "\n".join([
+            f"# {app_name}",
+            "",
+            "Generated by SarahMemory NAILDE through QSML universal application synthesis.",
+            "",
+            f"Workspace: `{workspace_id}`",
+            f"Runtime adapter: `{runtime.get('mode')}`",
+            f"Runnable: `{bool(runtime.get('runnable'))}`",
+            "",
+            "Installation requires explicit user approval. Running the Addon is a separate explicit user action.",
+            "The package does not modify SarahMemory CORE/API/UI files and does not auto-run.",
+            "",
+        ])
+        package_payloads = {
+            "sandbox/addon_package/manifest.json": json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False),
+            "sandbox/addon_package/ui.json": json.dumps(ui, indent=2, sort_keys=True, ensure_ascii=False),
+            "sandbox/addon_package/app_runtime.json": json.dumps(runtime, indent=2, sort_keys=True, ensure_ascii=False),
+            "sandbox/addon_package/addon.py": self._universal_addon_wrapper_source(),
+            "sandbox/addon_package/assets/icon.svg": icon_svg,
+            "sandbox/addon_package/README.md": readme,
+        }
+        saved_meta = []
+        for rel_path, content in package_payloads.items():
+            result = self.save_workspace_file({"workspace_id": workspace_id, "path": rel_path, "content": content})
+            saved_meta.append(result)
+            if not result.get("ok"):
+                return {"ok": False, "error": "addon_metadata_write_failed", "path": rel_path, "saved": result, "execution_authority": False}
+        integrity_files: Dict[str, str] = {}
+        for dirpath, dirnames, filenames in os.walk(package_root):
+            dirnames[:] = [d for d in dirnames if d not in {"__pycache__", ".git", "node_modules", ".venv", "venv"}]
+            for name in sorted(filenames):
+                if name in {"PACKAGE_INTEGRITY.json", "install_state.json", "manifest_launch.log"}:
+                    continue
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    continue
+                rel = os.path.relpath(full, package_root).replace("\\", "/")
+                h = hashlib.sha256()
+                with open(full, "rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                integrity_files[rel] = h.hexdigest()
+        integrity_doc = {
+            "schema": "SarahMemory.nailde.addon_package_integrity.v1",
+            "addon_id": addon_id,
+            "generated_at": _now_iso(),
+            "file_count": len(integrity_files),
+            "files": integrity_files,
+            "execution_authority": False,
+        }
+        integrity_saved = self.save_workspace_file({"workspace_id": workspace_id, "path": "sandbox/addon_package/PACKAGE_INTEGRITY.json", "content": json.dumps(integrity_doc, indent=2, sort_keys=True)})
+        if not integrity_saved.get("ok"):
+            return {"ok": False, "error": "addon_integrity_manifest_write_failed", "saved": integrity_saved, "execution_authority": False}
+        saved_meta.append(integrity_saved)
+        validation = self._validate_installable_addon_package(package_root)
+        return {
+            "ok": bool(validation.get("ok")),
+            "schema": "SarahMemory.nailde.universal_addon_package.v1",
+            "workspace_id": workspace_id,
+            "addon_id": addon_id,
+            "application_name": app_name,
+            "source_path": package_root,
+            "runtime": runtime,
+            "manifest": manifest,
+            "ui": ui,
+            "copied_sources": copied,
+            "saved_metadata": saved_meta,
+            "validation": validation,
+            "install_requires_user_confirmation": True,
+            "run_requires_user_confirmation": True,
+            "no_ui_rebuild_required": True,
+            "auto_run_performed": False,
+            "execution_authority": False,
+        }
+
     def _settings_state_path(self) -> str:
         return os.path.join(_ensure_dir(os.path.join(self.nailde_dir, "settings")), "nailde_settings.json")
 
@@ -2461,25 +4421,81 @@ class SarahMemoryNAILDERuntime:
             else:
                 _ensure_dir(root)
 
-        spec = self._expand_novice_prompt(top_prompt, details_prompt)
-        files = self._files_for_auto_spec(spec)
+        compiled = self.qsml_compile_request({**payload, "top_prompt": top_prompt, "details_prompt": details_prompt, "workspace_id": workspace_id, "target": "nailde"})
+        if not compiled.get("ok"):
+            return {
+                "ok": False,
+                "schema": "SarahMemory.nailde.auto_build.v2",
+                "workspace_id": workspace_id,
+                "error": "qsml_compile_failed",
+                "qsml": compiled,
+                "message": "NAILDE stopped instead of substituting a canned or unrelated project.",
+                "sandbox_only": True,
+                "execution_authority": False,
+            }
+        spec = self._expand_qsml_program(compiled, top_prompt, details_prompt)
+        synthesis = self._universal_synthesize_spec(spec, payload)
+        if not synthesis.get("ok"):
+            receipt = self._record_receipt(
+                "NAILDE_UNIVERSAL_SYNTHESIS_BLOCKED",
+                workspace_id,
+                f"Universal application synthesis stopped safely: {str(synthesis.get('error') or 'unknown')[:300]}",
+                {"workspace_id": workspace_id, "risk": "low", "verdict": "SYNTHESIS_BLOCKED", "phase": synthesis.get("phase")},
+            )
+            return {
+                "ok": False,
+                "schema": "SarahMemory.nailde.auto_build.v2",
+                "workspace_id": workspace_id,
+                "workspace_root": root,
+                "top_prompt": top_prompt,
+                "details_prompt": details_prompt,
+                "project_seed_hash": seed_hash,
+                "spec": spec,
+                "qsml": compiled,
+                "synthesis": synthesis,
+                "receipt": receipt,
+                "message": "NAILDE did not fall back to a different application. Resolve the reported local synthesis/model issue and retry.",
+                "sandbox_only": True,
+                "execution_authority": False,
+                "live_file_write": False,
+            }
+        files = dict(synthesis.get("files") or {})
+        spec["universal_blueprint"] = synthesis.get("blueprint") or {}
+        spec["synthesis_validation"] = synthesis.get("validation") or {}
+        spec["synthesis_mode"] = "universal_local_model"
+        spec["required_files"] = sorted(files.keys())
         saved: List[Dict[str, Any]] = []
         for rel_path, content in files.items():
             saved.append(self.save_workspace_file({"workspace_id": workspace_id, "path": rel_path, "content": content}))
 
+        addon_package = self._build_universal_addon_package(workspace_id, spec, synthesis, files)
+        if not addon_package.get("ok"):
+            return {
+                "ok": False, "schema": "SarahMemory.nailde.auto_build.v3", "workspace_id": workspace_id,
+                "error": "addon_package_build_failed", "addon_package": addon_package, "spec": spec, "synthesis": synthesis,
+                "message": "The application source was synthesized, but NAILDE refused promotion because the Addons package ABI/integrity validation failed.",
+                "sandbox_only": True, "execution_authority": False, "live_file_write": False,
+            }
+        spec["addon_package"] = True
+        spec["addon_id"] = addon_package.get("addon_id") or spec.get("addon_id")
+        spec["addon_runtime"] = addon_package.get("runtime") or {}
+        package_file_paths = [str(row.get("path") or "") for row in list((self.workspace_files({"workspace_id": workspace_id}).get("files") or [])) if str(row.get("path") or "").startswith("sandbox/addon_package/")]
+
         plan = self._build_auto_battle_plan(spec)
         plan_saved = self.save_workspace_file({"workspace_id": workspace_id, "path": "sandbox/BATTLE_PLAN.md", "content": plan})
         state = {
-            "schema": "SarahMemory.nailde.auto_build_state.v1",
+            "schema": "SarahMemory.nailde.auto_build_state.v2",
             "workspace_id": workspace_id,
             "top_prompt": top_prompt,
             "details_prompt": details_prompt,
             "project_seed_hash": seed_hash,
             "project_type": spec.get("project_type"),
+            "qsml_program_id": spec.get("qsml_program_id"),
+            "qsml_language_version": spec.get("qsml_language_version"),
             "application_name": spec.get("application_name"),
             "addon_id": spec.get("addon_id"),
             "created_at": _now_iso(),
-            "status": "sandbox_generated",
+            "status": "universal_application_synthesized",
             "novice_mode": bool(payload.get("novice_mode", True)),
             "enterprise_mode_available": True,
             "sandbox_only": True,
@@ -2495,10 +4511,13 @@ class SarahMemoryNAILDERuntime:
             "file_path": payload.get("file_path") or "",
             "status": "auto_build_complete",
             "generated_files": list(files.keys()),
+            "addon_package_files": package_file_paths,
         })
-        validation = self.validate_text_artifacts({"workspace_id": workspace_id, "paths": list(files.keys())})
+        validation_paths = sorted(set(list(files.keys()) + package_file_paths))
+        validation = self.validate_text_artifacts({"workspace_id": workspace_id, "paths": validation_paths})
         test_run = self._sandbox_test_run_readiness(workspace_id, spec, validation)
-        install_plan = self.addon_install_plan({"workspace_id": workspace_id}) if spec.get("addon_package") else {"ok": False, "reason": "not_an_addon_package"}
+        export_package = self.package_workspace_export({"workspace_id": workspace_id}) if validation.get("ok") else {"ok": False, "reason": "validation_required_before_export", "execution_authority": False}
+        install_plan = self.addon_install_plan({"workspace_id": workspace_id})
         post_popup = self._post_test_popup(spec, validation, test_run, install_plan)
         receipt = self._record_receipt(
             "NAILDE_AUTO_BUILD_FROM_PROMPT",
@@ -2508,19 +4527,23 @@ class SarahMemoryNAILDERuntime:
         )
         return {
             "ok": True,
-            "schema": "SarahMemory.nailde.auto_build.v1",
+            "schema": "SarahMemory.nailde.auto_build.v2",
             "workspace_id": workspace_id,
             "workspace_root": root,
             "top_prompt": top_prompt,
             "details_prompt": details_prompt,
             "project_seed_hash": seed_hash,
             "spec": spec,
+            "qsml": compiled,
+            "synthesis": synthesis,
+            "addon_package": addon_package,
             "battle_plan": plan,
             "battle_plan_saved": plan_saved,
             "files": [{"path": path, "sha256": _sha256_text(content)} for path, content in files.items()],
             "saved": saved,
             "validation": validation,
             "test_run": test_run,
+            "export_package": export_package,
             "install_plan": install_plan,
             "post_test_popup": post_popup,
             "autosave": autosave,
@@ -2714,10 +4737,11 @@ class SarahMemoryNAILDERuntime:
         }
 
     def _files_for_auto_spec(self, spec: Dict[str, Any]) -> Dict[str, str]:
-        if spec.get("project_type") == "python_game_addon":
-            return self._python_game_addon_files(spec)
-        prompt = f"{spec.get('top_prompt','')}\n\n{spec.get('details_prompt','')}".strip()
-        return self._draft_files_for_prompt(str(spec.get("application_name") or "NAILDEApp"), prompt, "generic_sandbox_addon")
+        """Legacy compatibility entrypoint; all new builds use universal synthesis."""
+        result = self._universal_synthesize_spec(spec, {})
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "universal_synthesis_failed"))
+        return dict(result.get("files") or {})
 
     def _python_game_addon_files(self, spec: Dict[str, Any]) -> Dict[str, str]:
         app_name = str(spec.get("application_name") or "SarahMemory Game")
@@ -3060,56 +5084,99 @@ Generated automatically by NAILDE from a simple natural-language prompt.
         }
 
     def _build_auto_battle_plan(self, spec: Dict[str, Any]) -> str:
+        blueprint = spec.get("universal_blueprint") if isinstance(spec.get("universal_blueprint"), dict) else {}
         lines = [
             f"# NAILDE Battle Plan — {spec.get('application_name')}",
             "",
             f"Project type: `{spec.get('project_type')}`",
+            f"Synthesis mode: `{spec.get('synthesis_mode') or 'universal_local_model'}`",
             f"Novice summary: {spec.get('novice_summary')}",
             "",
             "## Required Files",
         ]
         lines.extend([f"- `{p}`" for p in spec.get("required_files", [])])
+        if blueprint:
+            lines.extend(["", "## Architecture Components"])
+            for component in list(blueprint.get("components") or [])[:64]:
+                if isinstance(component, dict):
+                    lines.append(f"- **{component.get('name') or component.get('id') or 'component'}** — {component.get('responsibility') or ''}")
+            lines.extend(["", "## Acceptance Criteria"])
+            lines.extend([f"- {x}" for x in list(blueprint.get("acceptance_criteria") or [])[:128]])
+            deps = list(blueprint.get("dependencies") or [])[:64]
+            if deps:
+                lines.extend(["", "## Declared Dependencies"])
+                for dep in deps:
+                    if isinstance(dep, dict):
+                        lines.append(f"- `{dep.get('name')}` ({dep.get('kind') or 'unspecified'}) — {dep.get('reason') or ''}")
+            caps = list(blueprint.get("requested_capabilities") or [])[:64]
+            if caps:
+                lines.extend(["", "## Requested Runtime Capabilities (Not Granted)"])
+                for cap in caps:
+                    if isinstance(cap, dict):
+                        auth = ", ".join(str(x) for x in list(cap.get("authority_required") or [])) or "unspecified"
+                        lines.append(f"- `{cap.get('name')}` — authority: {auth}; risk: {cap.get('risk') or 'bounded'}; granted: false")
         lines.extend(["", "## Validation Plan"])
         lines.extend([f"- {v}" for v in spec.get("validation_plan", [])])
         lines.extend(["", "## Governance"])
-        lines.extend(["- Sandbox-only generation", "- User approval before Addons install", "- No live CORE/API/UI/driver mutation", "- No production model tensor/global DLScreen write", "- No self-approval"])
+        lines.extend([
+            "- Sandbox-only generation",
+            "- QSML defines the legal synthesis contract; Neuron remains route activation/weighting owner",
+            "- Local synthesis model only; no silent cloud fallback",
+            "- Static validation and bounded repair before readiness",
+            "- User approval before any governed promotion/install/run outside the sandbox",
+            "- No live CORE/API/UI/driver mutation",
+            "- No production model tensor/global DLScreen write",
+            "- No self-approval",
+        ])
         return "\n".join(lines) + "\n"
 
     def _sandbox_test_run_readiness(self, workspace_id: str, spec: Dict[str, Any], validation: Dict[str, Any]) -> Dict[str, Any]:
-        addon_root = os.path.join(self._workspace_root(workspace_id), "sandbox", "addon_package")
-        manifest = self._read_json_file(os.path.join(addon_root, "manifest.json"))
-        ui = self._read_json_file(os.path.join(addon_root, "ui.json"))
-        entry_text = self._read_text_file(os.path.join(addon_root, "addon.py"))
-        entry_ok = bool(entry_text and "def run" in entry_text)
+        """Report static application + Addons ABI readiness without executing code."""
+        workspace_root = self._workspace_root(workspace_id)
+        blueprint = spec.get("universal_blueprint") if isinstance(spec.get("universal_blueprint"), dict) else {}
+        run_contract = blueprint.get("run") if isinstance(blueprint.get("run"), dict) else {}
+        entrypoint = str(run_contract.get("entrypoint") or "")
+        entry_abs = self._workspace_file_path(workspace_id, entrypoint) if entrypoint else ""
+        entry_ok = bool(entry_abs and os.path.isfile(entry_abs)) if entrypoint else True
+        addon_root = os.path.join(workspace_root, "sandbox", "addon_package")
+        package_validation = self._validate_installable_addon_package(addon_root)
+        addon_package = bool(package_validation.get("ok"))
+        static_ready = bool(validation.get("ok") and entry_ok and addon_package)
+        install_readiness = "READY" if static_ready else "NOT_READY"
         return {
-            "schema": "SarahMemory.nailde.sandbox_test_readiness.v1",
-            "status": "sandbox_static_test_complete" if validation.get("ok") else "blocked_by_validation",
+            "schema": "SarahMemory.nailde.sandbox_test_readiness.v3",
+            "status": "sandbox_static_test_complete" if static_ready else "blocked_by_validation_or_addon_integrity",
             "validation_ok": bool(validation.get("ok")),
-            "manifest_ok": bool(manifest),
-            "ui_json_ok": bool(ui),
-            "entrypoint_ok": bool(entry_ok),
-            "keyboard_fallback_expected": True,
-            "controller_optional": True,
-            "controller_absent_is_not_failure": True,
+            "project_kind": spec.get("project_kind"),
+            "addon_package": addon_package,
+            "entrypoint": entrypoint,
+            "entrypoint_ok": entry_ok,
+            "manifest_ok": bool(package_validation.get("manifest")),
+            "ui_json_ok": bool(package_validation.get("ui")),
+            "runtime_ok": bool(package_validation.get("runtime")),
+            "package_integrity": package_validation,
+            "runnable": bool(package_validation.get("runnable")),
+            "static_ready": static_ready,
             "actual_subprocess_executed": False,
-            "reason_actual_run_not_executed": "NAILDE backend has no shell/subprocess execution authority; runtime launch belongs to governed Addons launcher after user approval.",
-            "install_readiness": "READY" if validation.get("ok") and manifest and ui and entry_ok else "NOT_READY",
+            "reason_actual_run_not_executed": "NAILDE performs static/build validation only; Addons runtime launch remains a separate explicit user-authorized action.",
+            "install_readiness": install_readiness,
             "execution_authority": False,
         }
 
     @staticmethod
     def _post_test_popup(spec: Dict[str, Any], validation: Dict[str, Any], test_run: Dict[str, Any], install_plan: Dict[str, Any]) -> Dict[str, Any]:
-        ready = bool(validation.get("ok") and test_run.get("install_readiness") == "READY")
+        ready = bool(validation.get("ok") and test_run.get("static_ready"))
+        addon_package = bool(spec.get("addon_package") and test_run.get("package_integrity", {}).get("ok"))
         return {
-            "schema": "SarahMemory.nailde.post_test_popup.v1",
+            "schema": "SarahMemory.nailde.post_test_popup.v2",
             "show": True,
-            "title": "Sandbox test review completed" if ready else "Sandbox build needs review",
+            "title": "Sandbox synthesis review completed" if ready else "Sandbox build needs review",
             "message": "Choose what to do with this NAILDE project.",
             "application_name": spec.get("application_name"),
             "validation": "PASS" if validation.get("ok") else "REVIEW_REQUIRED",
             "install_readiness": test_run.get("install_readiness"),
             "options": [
-                {"id": "add_to_addons", "label": "Add to Addons", "enabled": ready and bool(install_plan.get("ok"))},
+                {"id": "add_to_addons", "label": "Add to Addons", "enabled": bool(addon_package and ready and install_plan.get("ok"))},
                 {"id": "save", "label": "Save", "enabled": True},
                 {"id": "save_as", "label": "Save As", "enabled": True},
                 {"id": "cancel", "label": "Cancel", "enabled": True},
@@ -3419,64 +5486,62 @@ if __name__ == "__main__":
 # ====================================================================
 
 # --- SML ORGAN ADAPTER START ---
-# Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
+# QSML-aware NAILDE language/runtime adapter. NAILDE is a sandbox development
+# organ and never becomes execution/governance authority.
 SML_ORGAN_METADATA = {
-    "name": 'SarahMemoryNAILDE',
-    "version": "v9.0.0-alpha-sml-0.2",
-    "category": 'Learning',
+    "name": "SarahMemoryNAILDE",
+    "version": "v9.0.0-alpha-qsml-0.3-addons",
+    "category": "Learning",
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['learning', 'sandbox_experimentation'],
-    "supported_missions": ['Conversation', 'Learning', 'Patch', 'Repair'],
-    "supported_omega": ['Ω001', 'Ω080', 'Ω120'],
-    "required_authority": ['Learning', 'Read'],
-    "priority": 65,
+    "capabilities": ["learning", "sandbox_experimentation", "qsml_ide", "natural_language_programming", "universal_arbitrary_application_synthesis", "addon_application_packaging", "addons_install_staging", "local_model_architecture_planning", "multi_file_code_synthesis", "bounded_code_repair", "sandbox_build", "code_generation_review"],
+    "supported_missions": ["Programming", "Planning", "Learning", "Patch", "Repair"],
+    "supported_omega": ["Ω001", "Ω006", "Ω020", "Ω040", "Ω050", "Ω080", "Ω120"],
+    "required_authority": ["Read"],
+    "priority": 82,
     "trust_level": "source_integrated",
     "internal_only": True,
-    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryNAILDE.py'},
+    "metadata": {"sml_adapter": "qsml_sandbox_ide", "source_file": "SarahMemoryNAILDE.py", "execution_authority": False},
+    "language_contract": {
+        "accepts_types": ["SML_STR", "SML_OBJECT", "SML_PACKET", "SML_MISSION", "SML_PIPELINE"],
+        "produces_types": ["SML_OBJECT", "SML_PATH", "SML_GRAPH", "SML_APPLICATION_BLUEPRINT"],
+        "reads_packet_fields": ["mission", "context", "extensions.qsml_program", "pipeline", "authority", "governance"],
+        "owns_packet_fields": ["extensions.nailde"],
+        "writes_packet_fields": ["extensions.nailde"],
+        "supported_missions": ["Programming", "Planning", "Learning", "Patch", "Repair"],
+        "supported_operators": ["IF", "OR", "SAME", "WHEN", "ELSE", "AND", "NEITHER", "NOT", "WHILE"],
+        "required_authority": ["Read"],
+        "deterministic": False,
+        "advisory_only": False,
+        "sandbox_only": True,
+        "side_effecting": True,
+        "failure_states": ["compile_failed", "local_model_unavailable", "blueprint_invalid", "file_generation_failed", "validation_failed", "repair_budget_exhausted", "sandbox_write_failed", "user_review_required"],
+        "rollback_contract": "workspace_autosave_and_recovery",
+    },
 }
 
 
 def sml_get_metadata():
-    """Return this organ's SML registration metadata."""
     return dict(SML_ORGAN_METADATA)
 
 
 def sml_health():
-    """Return a local SML health vector without side effects."""
-    return {
-        "status": "Healthy",
-        "availability": 1.0,
-        "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
-        "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
-    }
+    return {"status":"Healthy","availability":1.0,"integrity":1.0,"performance":1.0,"reliability":1.0,"confidence":0.90,"latency_ms":0.0,"stability":1.0,"compatibility":1.0,"notes":["QSML/0.3 universal arbitrary-application synthesizer + Addons packaging present", "Local-model-only synthesis; no silent cloud fallback", "Sandbox-only generation with bounded repair"]}
 
 
 def sml_diagnostics():
-    """Return SML adapter diagnostics without executing organ behavior."""
-    return {
-        "status": "OK",
-        "component": 'SarahMemoryNAILDE',
-        "sml_adapter": True,
-        "metadata": dict(SML_ORGAN_METADATA),
-        "health": sml_health(),
-    }
+    return {"status":"OK","component":"SarahMemoryNAILDE","sml_adapter":True,"qsml":True,"metadata":dict(SML_ORGAN_METADATA),"health":sml_health()}
 
 
 def sml_receive_packet(packet, *, action="observe", note="", updates=None):
-    """Receive/update an SML packet through the canonical protocol without direct execution."""
     try:
-        from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
+        from SarahMemorySMLProtocol import register_sml_organ, sml_register_organ_contract, sml_touch_packet
         register_sml_organ(SML_ORGAN_METADATA)
-        return sml_touch_packet(packet, organ='SarahMemoryNAILDE', action=action, note=note or "organ observed packet", updates=updates)
+        sml_register_organ_contract({"name": "SarahMemoryNAILDE", **dict(SML_ORGAN_METADATA.get("language_contract") or {})})
+        return sml_touch_packet(packet, organ="SarahMemoryNAILDE", action=action, note=note or "NAILDE observed QSML packet", updates=updates)
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
+
 

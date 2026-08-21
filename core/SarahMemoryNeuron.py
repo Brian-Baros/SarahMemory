@@ -750,8 +750,10 @@ def _logiccalc_neuron_axis_guard(
                     out.setdefault("route_confidence", float(route_confidence or 0.0))
                     return out
     except Exception as exc:
-        return {"ok": False, "decision": 1, "verdict": "ALLOW_WITHOUT_LOGICCALC", "error": str(exc), "requested_lane": lane}
-    return {"ok": False, "decision": 1, "verdict": "ALLOW_WITHOUT_LOGICCALC", "error": "LogicCalc unavailable", "requested_lane": lane}
+        risky = lane in {"action", "network", "system"}
+        return {"ok": False, "decision": 0 if risky else 1, "verdict": "DEFER_NO_LOGICCALC" if risky else "READ_ONLY_FALLBACK_NO_LOGICCALC", "error": str(exc), "requested_lane": lane, "execution_authority": False}
+    risky = lane in {"action", "network", "system"}
+    return {"ok": False, "decision": 0 if risky else 1, "verdict": "DEFER_NO_LOGICCALC" if risky else "READ_ONLY_FALLBACK_NO_LOGICCALC", "error": "LogicCalc unavailable", "requested_lane": lane, "execution_authority": False}
 
 
 # -----------------------------------------------------------------------------
@@ -958,6 +960,7 @@ def _is_greeting_text(text: str) -> bool:
 
 
 def _try_greeting_reply(text: str, intent: str, adv: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Presentation-only greeting adapter; Neuron does not own greeting text."""
     adv_intent = ""
     try:
         adv_intent = str((adv or {}).get("intent") or "").strip().lower()
@@ -967,7 +970,16 @@ def _try_greeting_reply(text: str, intent: str, adv: Optional[Dict[str, Any]] = 
         return None
     if not _is_greeting_text(text) and str(intent or "").lower() not in {"greeting", "salutation"}:
         return None
-    return "Hello. SarahMemory AiOS is online and ready to route governed, local-first requests."
+    try:
+        import SarahMemoryPersonality as _Personality  # presentation layer compatibility
+        fn = getattr(_Personality, "get_greeting_response", None)
+        if callable(fn):
+            out = str(fn() or "").strip()
+            if out:
+                return out
+    except Exception:
+        pass
+    return None
 
 
 def _websym_symbolic_query_allowed(text: str) -> bool:
@@ -1576,192 +1588,12 @@ def _try_logiccalc(text: str) -> Optional[Dict[str, Any]]:
         except Exception:
             pass
 
-    # Fallback: minimal safe evaluator (keeps math functionality alive even without 3rd-party libs)
-    try:
-        import ast
-        import math
+    # No duplicate math fallback exists in Neuron.  LogicCalc/QuantumSafe own
+    # deterministic computation.  If LogicCalc cannot answer or is unavailable,
+    # routing continues to another legal evidence source rather than reimplementing
+    # arithmetic inside the activation organ.
+    return None
 
-        t = raw.lower()
-
-        # Normalize common phrasing into an expression
-        t = re.sub(r"^\s*(?:what(?:'s| is)?|calculate|compute|evaluate|solve|find)\s+", "", t, flags=re.I).strip()
-        t = re.sub(r"^\s*(?:the\s+)?(?:answer\s+to|value\s+of)\s+", "", t, flags=re.I).strip()
-        t = t.replace("=", "").strip()
-        t = re.sub(r"\?$", "", t).strip()
-        t = re.sub(r"^\s*the\s+", "", t)
-        t = t.replace("the sum of", "").replace("sum of", "")
-        t = t.replace("square root of", "sqrt(")
-        # handle "sqrt(25)" already and close paren if we opened one
-        if "sqrt(" in t and ")" not in t.split("sqrt(", 1)[1]:
-            # append closing paren if missing
-            t = t + ")"
-
-        # Words -> numbers (very small, deterministic mapping)
-        words = {
-            "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-            "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-            "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-            "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-            "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
-            "seventy": 70, "eighty": 80, "ninety": 90,
-            "hundred": 100, "thousand": 1000,
-        }
-
-        def words_to_number(s: str) -> Optional[int]:
-            toks = [w for w in re.split(r"[^a-z]+", s.lower()) if w]
-            if not toks:
-                return None
-            total = 0
-            current = 0
-            seen = False
-            for w in toks:
-                if w not in words:
-                    return None
-                seen = True
-                v = words[w]
-                if v == 100:
-                    current = max(1, current) * 100
-                elif v == 1000:
-                    total += max(1, current) * 1000
-                    current = 0
-                else:
-                    current += v
-            if not seen:
-                return None
-            return total + current
-
-        # Replace plus/minus/times/divided
-        t = t.replace(" plus ", " + ").replace(" minus ", " - ").replace(" times ", " * ")
-        t = t.replace(" multiplied by ", " * ").replace(" x ", " * ")
-        t = t.replace(" divided by ", " / ").replace(" divide by ", " / ")
-        t = t.replace(" over ", " / ")
-
-        # Normalize digit scale phrases (e.g., '1 thousand' -> '(1*1000)')
-        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+(thousand|k)\b", r"(\1*1000)", t)
-        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+million\b", r"(\1*1000000)", t)
-        t = re.sub(r"\b(\d+(?:\.\d+)?)\s+billion\b", r"(\1*1000000000)", t)
-
-        # If still no digits but contains number words, attempt conversion on entire string
-        if not re.search(r"\d", t):
-            n = words_to_number(t)
-            if n is not None:
-                t = str(n)
-
-        # Very small story-math fallback for additive word problems.
-        # Example: "If Sam has five apples and Johnny has 3 apples, how many apples do they have total"
-        if re.search(r"\b(how many|total|altogether|combined|in all)\b", t):
-            qty_words = {
-                "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
-                "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
-                "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
-                "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50, "sixty": 60,
-                "seventy": 70, "eighty": 80, "ninety": 90,
-            }
-            vals = [float(x) for x in re.findall(r"\b\d+(?:\.\d+)?\b", t)]
-            for word, num in qty_words.items():
-                vals.extend([float(num)] * len(re.findall(r"(?<![a-z0-9])" + re.escape(word) + r"(?![a-z0-9])", t)))
-            if len(vals) >= 2 and re.search(r"\b(apple|apples|orange|oranges|banana|bananas|item|items|book|books|coin|coins|key|keys|bottle|bottles)\b", t):
-                total = sum(vals)
-                return {
-                    "ok": True,
-                    "engine": "neuron_story_math",
-                    "value": total,
-                    "text": f"Computed result using story-math evaluation = {total}",
-                    "meta": {"normalized_from": raw, "intent": "calc_story"},
-                    "meaning": {"props": [{"predicate": "evaluates", "args": [{"kind": "concept", "name": "story_math_total", "value": total}]}], "meta": {"intent": "calc_story"}},
-                }
-
-        # Convert patterns like "one thousand + two thousand"
-        # Split on operators and convert each side when possible.
-        parts = re.split(r"(\+|\-|\*|/|\(|\)|,)", t)
-        rebuilt = []
-        for p in parts:
-            ps = p.strip()
-            if not ps:
-                rebuilt.append(p)
-                continue
-            if ps in {"+", "-", "*", "/", "(", ")", ","}:
-                rebuilt.append(ps)
-                continue
-            if re.search(r"\d", ps):
-                rebuilt.append(ps)
-                continue
-            n = words_to_number(ps)
-            rebuilt.append(str(n) if n is not None else ps)
-        expr = " ".join([x for x in rebuilt if x != ","]).strip()
-
-        # Allow only a strict subset of AST nodes
-        allowed_nodes = (
-            ast.Expression, ast.BinOp, ast.UnaryOp, ast.Call,
-            ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow,
-            ast.USub, ast.UAdd,
-            ast.Constant, ast.Load, ast.Name,
-        )
-
-        tree = ast.parse(expr, mode="eval")
-        for node in ast.walk(tree):
-            if not isinstance(node, allowed_nodes):
-                return None
-            if isinstance(node, ast.Call):
-                if not isinstance(node.func, ast.Name) or node.func.id != "sqrt":
-                    return None
-
-        def _eval(node):
-            if isinstance(node, ast.Expression):
-                return _eval(node.body)
-            if isinstance(node, ast.Constant):
-                if isinstance(node.value, (int, float)):
-                    return float(node.value)
-                return None
-            if isinstance(node, ast.UnaryOp):
-                v = _eval(node.operand)
-                if v is None:
-                    return None
-                if isinstance(node.op, ast.USub):
-                    return -v
-                if isinstance(node.op, ast.UAdd):
-                    return v
-                return None
-            if isinstance(node, ast.BinOp):
-                a = _eval(node.left)
-                b = _eval(node.right)
-                if a is None or b is None:
-                    return None
-                if isinstance(node.op, ast.Add):
-                    return a + b
-                if isinstance(node.op, ast.Sub):
-                    return a - b
-                if isinstance(node.op, ast.Mult):
-                    return a * b
-                if isinstance(node.op, ast.Div):
-                    return a / b
-                if isinstance(node.op, ast.Pow):
-                    return a ** b
-                return None
-            if isinstance(node, ast.Call):
-                arg0 = _eval(node.args[0]) if node.args else None
-                if arg0 is None:
-                    return None
-                return math.sqrt(arg0)
-            if isinstance(node, ast.Name) and node.id == "sqrt":
-                return None
-            return None
-
-        val = _eval(tree)
-        if val is None:
-            return None
-
-        return {
-            "ok": True,
-            "engine": "neuron_fallback",
-            "value": val,
-            "text": f"Computed result using deterministic evaluation: {expr} = {val}",
-            "meta": {"expression": expr, "normalized_from": raw, "intent": "calc"},
-            "meaning": {"props": [{"predicate": "evaluates", "args": [{"kind": "concept", "name": "expression", "value": expr}]}], "meta": {"intent": "calc"}},
-        }
-    except Exception:
-        return None
 # -----------------------------------------------------------------------------
 # Tier-0: System / Diagnostics lane (safe reads)
 # -----------------------------------------------------------------------------
@@ -1771,28 +1603,15 @@ def _is_public_device(meta: Dict[str, Any]) -> bool:
 
 
 def _detect_system_kind(text: str, intent: str = "") -> Optional[str]:
-    t = (text or "").strip().lower()
-    i = (intent or "").strip().lower()
-    if i in ("diagnostics", "diagnostic"):
-        return "diagnostics"
-    if "diagnos" in t or "self-test" in t or "self test" in t or "health check" in t:
-        return "diagnostics"
-    # Hardware/system stats. Keep specific hardware questions in the safe read-only
-    # system lane. Do not route these into SMGET/sidekick procedural execution.
-    if any(k in t for k in ("gpu", "vram", "cuda", "graphics", "nvidia-smi")):
-        return "gpu"
-    if any(k in t for k in ("cpu", "processor", "what processor")):
-        return "cpu"
-    if any(k in t for k in ("motherboard", "mainboard", "baseboard")):
-        return "motherboard"
-    if any(k in t for k in ("ram", "memory usage", "system memory", "how much memory")):
-        return "ram"
-    if any(k in t for k in ("network adapter", "network adapters", "ethernet", "wi-fi", "wifi", "bluetooth network")):
-        return "network"
-    if any(k in t for k in ("disk space", "free disk", "free space", "storage", "drive space")):
-        return "disk"
-    if any(k in t for k in ("system stats", "system status", "hardware stats", "environment", "where are you running", "what are you running on")):
-        return "system_stats"
+    """Delegate self/runtime interpretation to CognitiveSelf."""
+    try:
+        import SarahMemoryCognitiveSelf as _SMCognitiveSelf  # type: ignore
+        fn = getattr(_SMCognitiveSelf, "classify_runtime_system_question", None)
+        if callable(fn):
+            out = str(fn(text, intent) or "").strip()
+            return out or None
+    except Exception:
+        return None
     return None
 
 
@@ -3593,6 +3412,58 @@ def _agent_passport_neuron_gate(meta: Dict[str, Any], ingress_route: Dict[str, A
     return gate
 
 
+
+def neuron_activate_legal_candidates(candidates, continuity_state=None, *, packet=None):
+    """Activate/rank only candidates already declared legal by SMLProtocol.
+
+    Route legality is not computed here.  LogicCalc owns the deterministic
+    priority-vector math; Neuron owns only activation ordering.
+    """
+    legal = []
+    rejected = []
+    for raw in list(candidates or [])[:64]:
+        c = dict(raw or {})
+        gates = c.get("legal_gates") if isinstance(c.get("legal_gates"), dict) else {}
+        required_gates = ("capability", "authority", "safety", "resource_feasible", "time_valid", "mission_compatible")
+        gate_complete = all(k in gates for k in required_gates)
+        derived_legal = bool(gate_complete and all(bool(gates.get(k, False)) for k in required_gates))
+        sml_legal = bool(c.get("sml_legal", derived_legal)) and derived_legal
+        if not sml_legal:
+            rejected.append({**c, "activation_rejected": "not_sml_legal"})
+            continue
+        legal.append(c)
+    ranked = []
+    try:
+        import SarahMemoryLogicCalc as _LC  # type: ignore
+        score_fn = getattr(_LC, "sml_priority_vector", None)
+    except Exception:
+        score_fn = None
+    for idx, c in enumerate(legal):
+        if callable(score_fn):
+            try:
+                vector = tuple(score_fn(c, continuity_state or {}))
+            except Exception:
+                vector = (0.0, 0.0, 0.0, float(c.get("confidence") or 0.0), 0.0, 0.0)
+        else:
+            vector = (0.0, 0.0, 0.0, float(c.get("confidence") or 0.0), 0.0, 0.0)
+        item = dict(c)
+        item["activation_vector"] = list(vector)
+        item["activation_owner"] = "SarahMemoryNeuron"
+        item["route_definition_owner"] = "SarahMemorySMLProtocol"
+        ranked.append(item)
+    ranked.sort(key=lambda item: tuple(item.get("activation_vector") or []), reverse=True)
+    selected = dict(ranked[0]) if ranked else {}
+    return {
+        "ok": bool(selected),
+        "selected": selected,
+        "ranked": ranked,
+        "rejected": rejected,
+        "activation_owner": "SarahMemoryNeuron",
+        "route_definition_owner": "SarahMemorySMLProtocol",
+        "execution_authority": False,
+    }
+
+
 def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: Optional[Dict[str, Any]] = None) -> NeuronResult:
     _init_db()
     budget = _budget_limits()
@@ -3623,6 +3494,25 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
     trace: Dict[str, Any] = {"tiers": [], "agents": [], "budget": budget, "intent": None, "advcu": {}, "ingress": ingress_route}
     trace["policy"] = {"allowed_tiers": allowed_tiers, "approved_modules": approved_modules}
     trace["core_governance"] = _core_governance_trace()
+
+    # Canonical SML structural route.  Neuron does not invent route legality.
+    try:
+        import SarahMemorySMLProtocol as _SML  # type: ignore
+        _sml_packet = _SML.sml_build_ingress_packet(
+            inp.text,
+            caller="SarahMemoryNeuron.neuron_route",
+            payload={"neuron_meta": {k: v for k, v in inp.meta.items() if k not in {"api_key", "token", "password", "secret"}}},
+            api_context={"local_only": bool(inp.meta.get("local_only") or inp.meta.get("offline")), "surface": inp.meta.get("surface") or "neuron"},
+            discover=False,
+        )
+        inp.meta["sml_packet"] = _sml_packet.to_dict() if hasattr(_sml_packet, "to_dict") else _sml_packet
+        trace["sml"] = _SML.sml_packet_summary(_sml_packet)
+        trace["sml_pipeline"] = list(getattr(_sml_packet, "pipeline", []) or [])
+        trace["sml_mission"] = str((getattr(_sml_packet, "mission", {}) or {}).get("primary") or "Unknown")
+        trace["route_definition_owner"] = "SarahMemorySMLProtocol"
+        trace["route_activation_owner"] = "SarahMemoryNeuron"
+    except Exception as _sml_exc:
+        trace["sml"] = {"ok": False, "error": str(_sml_exc)[:300], "execution_authority": False}
 
     agent_gate = _agent_passport_neuron_gate(inp.meta, ingress_route, inp.text)
     if agent_gate.get("applicable"):
@@ -3841,24 +3731,27 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
         trace["tiers"].append({"tier": "2L", "engine": "LocalResearch", "ok": False, "local_only": True})
 
     if intent == "identity":
-        low_ident = (inp.text or "").strip().lower()
-        if "version" in low_ident:
-            reply = f"I am Sarah — your SarahMemory AiOS companion. Version: {getattr(config, 'PROJECT_VERSION', '9.0.0') if config else '9.0.0'}."
-        elif any(k in low_ident for k in ("who made you", "who created you", "creator", "who built you", "who designed you", "designer", "engineer", "who engineered you")):
-            reply = "I was created by Brian Lee Baros (SOFTDEV0 LLC) as part of SarahMemory AiOS."
-        else:
-            reply = "I am Sarah — your SarahMemory AiOS companion."
-        _trace_primary_lane(trace, "answer", "identity")
-        trace["tiers"].append({"tier": 0, "engine": "IdentityGuard", "ok": True})
+        try:
+            import SarahMemoryCognitiveSelf as _SMCognitiveSelf  # type: ignore
+            fn = getattr(_SMCognitiveSelf, "answer_identity_question", None)
+            packet = fn(inp.text) if callable(fn) else {}
+        except Exception as exc:
+            packet = {"ok": False, "error": str(exc), "execution_authority": False}
+        ok = bool(isinstance(packet, dict) and packet.get("ok"))
+        _trace_primary_lane(trace, "answer", "SarahMemoryCognitiveSelf")
+        trace["tiers"].append({"tier": 0, "engine": "CognitiveSelf.Identity", "ok": ok})
+        if not ok:
+            return NeuronResult(ok=False, reply="Identity state is not currently verified.", confidence=0.25, intent="identity", source="cognitive_self", artifacts={"identity": packet}, trace=trace)
         return NeuronResult(
             ok=True,
-            reply=reply,
-            confidence=0.99,
+            reply=str(packet.get("reply") or ""),
+            confidence=float(packet.get("confidence") or 0.99),
             intent="identity",
-            source="identity_guard",
-            artifacts={"identity": {"name": "Sarah", "platform": "SarahMemory AiOS", "creator": "Brian Lee Baros", "organization": "SOFTDEV0 LLC"}},
+            source=str(packet.get("source") or "SarahMemoryCognitiveSelf"),
+            artifacts={"identity": packet},
             trace=trace,
         )
+
 
     if str(ingress_route.get("route_id") or "").startswith("research.weather") and bool(allowed_tiers.get("tier2", True)) and not inp.meta.get("offline"):
         research_data = _try_research(inp.text, local_only=False, intent=intent)
@@ -3935,193 +3828,47 @@ def neuron_route(user_text: str, meta: Optional[Dict[str, Any]] = None, policy: 
         except Exception as e:
             trace.setdefault("governance", {})["error"] = str(e)
 
-    # System/Diagnostics lane (Tier-0, safe reads; blocked in Public Web mode)
+    # System/Diagnostics lane. Neuron selects the legal route; CognitiveSelf and
+    # Diagnostics own self/runtime interpretation and diagnostics functionality.
     system_kind = _detect_system_kind(inp.text, intent)
     if system_kind:
         if not bool(allowed_tiers.get("tier0", True)):
             trace["tiers"].append({"tier": 0, "engine": "SystemInfo", "ok": False, "reason": "policy_disallow"})
-            return NeuronResult(
-                ok=False,
-                reply="System tools are disabled by policy in this runtime.",
-                intent=intent,
-                source="system",
-                confidence=0.9,
-                artifacts={},
-                trace=trace,
-            )
-
+            return NeuronResult(ok=False, reply="System tools are disabled by policy in this runtime.", intent=intent, source="system", confidence=0.9, artifacts={}, trace=trace)
         if _is_public_device(inp.meta):
             trace["tiers"].append({"tier": 0, "engine": "SystemInfo", "ok": False, "reason": "public_web_restricted"})
-            return NeuronResult(
-                ok=False,
-                reply="This request is not available in Public Web mode.",
-                intent=intent,
-                source="system",
-                confidence=0.9,
-                artifacts={},
-                trace=trace,
-            )
+            return NeuronResult(ok=False, reply="This request is not available in Public Web mode.", intent=intent, source="system", confidence=0.9, artifacts={}, trace=trace)
 
         if system_kind == "diagnostics":
-            _trace_primary_lane(trace, 'system', 'SarahMemoryDiagnostics')
-            diag = _run_quick_diagnostics()
-            ok = bool(diag.get("ok", False))
-            trace["tiers"].append({"tier": 0, "engine": "Diagnostics", "ok": ok})
-            return NeuronResult(
-                ok=ok,
-                reply="Diagnostics completed." if ok else "Diagnostics failed (see artifacts for details).",
-                intent="diagnostics",
-                source="diagnostics",
-                confidence=0.9 if ok else 0.6,
-                artifacts={"diagnostics": diag},
-                trace=trace,
-            )
-
-        if system_kind == "gpu":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            g = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
-            ok = bool(g)
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.GPU", "ok": ok})
-            if ok:
-                name = g.get("name") or "GPU"
-                total = g.get("vram_total_mb")
-                free = g.get("vram_free_mb")
-                if total:
-                    reply = f"My GPU is {name}, with {free if free is not None else 'unknown'} MB free / {total} MB total VRAM."
-                else:
-                    reply = f"My GPU is {name}."
-            else:
-                reply = "GPU stats are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"gpu": g}, trace=trace)
-
-        if system_kind == "cpu":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            c = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
-            ok = bool(c)
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.CPU", "ok": ok})
-            if ok:
-                name = c.get("name") or "Unknown CPU"
-                phys = c.get("physical_cores")
-                logical = c.get("logical_threads")
-                mhz = c.get("max_clock_mhz") or c.get("current_clock_mhz")
-                detail = f"My CPU is {name}"
-                if phys is not None or logical is not None:
-                    detail += f" with {phys if phys is not None else '?'} physical cores and {logical if logical is not None else '?'} logical threads"
-                if mhz:
-                    try:
-                        detail += f" at up to {int(round(float(mhz)))} MHz"
-                    except Exception:
-                        pass
-                reply = detail + "."
-            else:
-                reply = "CPU details are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.92 if ok else 0.6, artifacts={"cpu": c}, trace=trace)
-
-        if system_kind == "motherboard":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            motherboard = str(body.get("motherboard") or "").strip()
-            ok = bool(motherboard and motherboard.lower() != "unknown motherboard")
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.Motherboard", "ok": ok})
-            reply = f"My motherboard is {motherboard}." if ok else "Motherboard details are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"motherboard": motherboard}, trace=trace)
-
-        if system_kind == "ram":
-            _trace_primary_lane(trace, 'system', 'CognitiveSelf.MemoryWitness')
+            _trace_primary_lane(trace, "system", "SarahMemoryDiagnostics")
             try:
-                import SarahMemoryCognitiveSelf as _SMCognitiveSelf  # type: ignore
+                import SarahMemoryDiagnostics as _D  # type: ignore
+                fn = getattr(_D, "run_system_diagnostics", None)
+                diag = fn() if callable(fn) else {"ok": False, "error": "diagnostics_callable_missing"}
+            except Exception as exc:
+                diag = {"ok": False, "error": str(exc)}
+            ok = bool(isinstance(diag, dict) and diag.get("ok", False))
+            trace["tiers"].append({"tier": 0, "engine": "SarahMemoryDiagnostics", "ok": ok})
+            return NeuronResult(ok=ok, reply="Diagnostics completed." if ok else "Diagnostics did not complete successfully.", intent="diagnostics", source="diagnostics", confidence=0.9 if ok else 0.35, artifacts={"diagnostics": diag}, trace=trace)
 
-                ram_answer = _SMCognitiveSelf.answer_ram_question(user_text)
-                ok = bool(ram_answer.get("ok", False))
-                packet = ram_answer.get("packet") if isinstance(ram_answer.get("packet"), dict) else {}
-                trace["tiers"].append({
-                    "tier": 0,
-                    "engine": "CognitiveSelf.MemoryWitness.RAM",
-                    "ok": ok,
-                    "type_verified": bool(packet.get("type_verified", False)),
-                    "capacity_source": packet.get("capacity_source"),
-                    "layout": "distributed_cognitive_living_loop",
-                })
-                return NeuronResult(
-                    ok=ok,
-                    reply=str(ram_answer.get("reply") or "RAM details are not currently verified."),
-                    intent="device_query",
-                    source=str(ram_answer.get("source") or "cognitive_self.memory_witness"),
-                    confidence=float(ram_answer.get("confidence") or (0.9 if ok else 0.6)),
-                    artifacts={"ram": packet},
-                    trace=trace,
-                )
-            except Exception as e:
-                # Fail-soft fallback: use the existing boot environment RAM snapshot.
-                body = _environment_body()
-                r = body.get("ram") if isinstance(body.get("ram"), dict) else {}
-                ok = bool(r)
-                trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.RAM.Fallback", "ok": ok, "error": str(e)})
-                if ok:
-                    reply = f"Memory = capacity: {r.get('total_gb', 'unknown')} GB; available now: {r.get('available_gb', 'unknown')} GB; usage: {r.get('usage_pct', 'unknown')}%. RAM type is unverified from this runtime body."
-                else:
-                    reply = "RAM details are not available in my unified environment snapshot."
-                return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.82 if ok else 0.55, artifacts={"ram": r}, trace=trace)
-
-        if system_kind == "network":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            body = _environment_body()
-            adapters = body.get("network_adapters") if isinstance(body.get("network_adapters"), list) else []
-            names = [str(a.get("name") or "") for a in adapters if isinstance(a, dict) and a.get("name")]
-            ok = bool(names)
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.Network", "ok": ok})
-            reply = f"I can see {len(names)} network adapters: {', '.join(names[:12])}." if ok else "Network adapter details are not available in my unified environment snapshot."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"network_adapters": adapters}, trace=trace)
-
-        if system_kind == "disk":
-            _trace_primary_lane(trace, 'system', 'DiskUsage')
-            base_dir = os.getcwd()
-            try:
-                import SarahMemoryGlobals as _G  # type: ignore
-
-                base_dir = str(getattr(_G, "BASE_DIR", base_dir) or base_dir)
-            except Exception:
-                pass
-            du = _disk_usage_summary(base_dir)
-            ok = bool(du.get("ok", False))
-            trace["tiers"].append({"tier": 0, "engine": "DiskUsage", "ok": ok, "path": base_dir})
-            if ok:
-                reply = f"Disk free space for {du.get('path')}: {du.get('free_gb')} GB free / {du.get('total_gb')} GB total."
-            else:
-                reply = "Disk usage is not available on this system."
-            return NeuronResult(
-                ok=ok,
-                reply=reply,
-                intent="device_query",
-                source="disk_usage",
-                confidence=0.9 if ok else 0.6,
-                artifacts={"disk": du},
-                trace=trace,
-            )
-
-        if system_kind == "system_stats":
-            _trace_primary_lane(trace, 'system', 'UnifiedEnvironment')
-            snap = _boot_environment_snapshot()
-            body = snap.get("body") if isinstance(snap.get("body"), dict) else {}
-            grade = snap.get("hardware_grade") if isinstance(snap.get("hardware_grade"), dict) else {}
-            ok = bool(snap.get("ok", False))
-            trace["tiers"].append({"tier": 0, "engine": "UnifiedEnvironment.SystemStats", "ok": ok})
-            cpu = body.get("cpu") if isinstance(body.get("cpu"), dict) else {}
-            gpu = body.get("gpu") if isinstance(body.get("gpu"), dict) else {}
-            ram = body.get("ram") if isinstance(body.get("ram"), dict) else {}
-            parts = []
-            if cpu.get("name"):
-                parts.append(f"CPU: {cpu.get('name')}")
-            if gpu.get("name"):
-                parts.append(f"GPU: {gpu.get('name')}")
-            if ram.get("total_gb"):
-                parts.append(f"RAM: {ram.get('available_gb')} GB free / {ram.get('total_gb')} GB total")
-            if grade.get("tier_rating"):
-                parts.append(f"Tier: {grade.get('tier_rating')} ({grade.get('score')})")
-            reply = " | ".join(parts) if parts else "System environment snapshot captured."
-            return NeuronResult(ok=ok, reply=reply, intent="device_query", source="unified_environment", confidence=0.9 if ok else 0.6, artifacts={"environment": snap}, trace=trace)
+        _trace_primary_lane(trace, "system", "SarahMemoryCognitiveSelf")
+        try:
+            import SarahMemoryCognitiveSelf as _SMCognitiveSelf  # type: ignore
+            fn = getattr(_SMCognitiveSelf, "answer_runtime_system_question", None)
+            packet = fn(system_kind, inp.text, context=inp.meta) if callable(fn) else {"ok": False, "error": "cognitive_self_runtime_answer_missing"}
+        except Exception as exc:
+            packet = {"ok": False, "error": str(exc), "execution_authority": False}
+        ok = bool(isinstance(packet, dict) and packet.get("ok"))
+        trace["tiers"].append({"tier": 0, "engine": "CognitiveSelf.RuntimeBody", "kind": system_kind, "ok": ok})
+        return NeuronResult(
+            ok=ok,
+            reply=str(packet.get("reply") or "Runtime body evidence is not currently available."),
+            intent="device_query",
+            source=str(packet.get("source") or "SarahMemoryCognitiveSelf"),
+            confidence=float(packet.get("confidence") or (0.9 if ok else 0.25)),
+            artifacts={system_kind: packet.get("evidence") or packet.get("packet") or packet},
+            trace=trace,
+        )
 
     # Vision lane: classify once, then either answer visually or hand off to Action lane.
     vision_request = None

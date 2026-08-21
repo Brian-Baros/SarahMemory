@@ -659,6 +659,27 @@ def _cognitive_self_summary(packet: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+
+def _human_approved_validated_promotion(context: Optional[Dict[str, Any]], proposed_action: Optional[Dict[str, Any]]) -> bool:
+    """Return True only for an explicitly human-approved, validated sandbox promotion.
+
+    DeveloperMode/NeoSkyMatrix are capability-development flags, not authority.
+    Promotion is eligible for downstream governance only after the staged artifact
+    has been validated and the human has explicitly approved the live-apply stage.
+    """
+    ctx = dict(context or {})
+    pa = dict(proposed_action or {})
+    approval_source = str(pa.get("approval_source") or ctx.get("approval_source") or "").strip().lower()
+    promotion_stage = str(pa.get("promotion_stage") or ctx.get("promotion_stage") or "").strip().lower()
+    return bool(
+        promotion_stage == "approved_apply"
+        and pa.get("validated_sandbox") is True
+        and pa.get("user_approved_promotion") is True
+        and approval_source in {"human", "user"}
+        and bool(ctx.get("user_consented"))
+    )
+
 # -----------------------------------------------------------------------------
 # Lens scoring
 # -----------------------------------------------------------------------------
@@ -1024,6 +1045,35 @@ def build_self_model(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     return model
 
 
+def _is_development_or_evolution_candidate(pa: Optional[Dict[str, Any]]) -> bool:
+    """Return True only for proposals that belong in the sandbox/development lane.
+
+    Routine operational actions (filesystem, device, network, etc.) are already
+    governed by CognitiveServices and their domain owner.  Treating every
+    high-impact operation as an experiment creates a dead-end where legitimate
+    user actions can never execute.
+    """
+    action = pa if isinstance(pa, dict) else {}
+    if not action:
+        return False
+    action_type = str(action.get("action_type") or "").strip().lower()
+    change_type = str(action.get("change_type") or "").strip().lower()
+    perms = {str(v).strip().lower() for v in (action.get("required_permissions") or []) if str(v).strip()}
+    if bool(action.get("development_candidate") or action.get("evolution_candidate") or action.get("sandbox_only")):
+        return True
+    if action.get("target_files") or action.get("subsystems"):
+        return True
+    if "patchcore" in perms:
+        return True
+    return action_type in {
+        "patch_or_update", "patch_core", "core_patch", "self_modify", "evolution",
+        "capability_extension", "gcop_capability_gap",
+    } or change_type in {
+        "patch", "core_patch", "validated_patch_promotion", "update", "upgrade",
+        "self_modify", "evolution", "capability_extension",
+    }
+
+
 # -----------------------------------------------------------------------------
 # Public governance entry point
 # -----------------------------------------------------------------------------
@@ -1095,7 +1145,18 @@ def govern_possibility_request(
     state = "candidate"
     priority = 50
 
-    if hard_blocks:
+    human_approved_promotion = _human_approved_validated_promotion(ctx, pa)
+    development_candidate = _is_development_or_evolution_candidate(pa)
+
+    if human_approved_promotion and not hard_blocks and cognitive_decision in {"ALLOW", "REQUIRE_USER", "DEFER"}:
+        # Human approval does not make this organ the authority.  It only removes
+        # the permanent sandbox-only dead-end so SecurityGovernor/AssuranceGate/
+        # OperatorCore may perform the final promotion decision.
+        thinker_decision = "HUMAN_APPROVED_VALIDATED_PROMOTION"
+        state = "eligible_for_governed_promotion"
+        priority = 20
+        recommendations.append("Validated sandbox artifact has explicit human promotion approval; continue through downstream governance and OperatorCore.")
+    elif hard_blocks:
         thinker_decision = "ETHICALLY_BLOCKED"
         state = "blocked"
         priority = 95
@@ -1105,7 +1166,15 @@ def govern_possibility_request(
         state = "blocked_by_logic"
         priority = 85
         recommendations.append("Respect cognitive deny decision; preserve possibility as a future ticket only.")
-    elif score.total >= 0.68 and score.safety >= 0.70 and score.common_interest >= 0.65 and score.reversibility >= 0.40:
+    elif cognitive_decision == "ALLOW" and not development_candidate:
+        # Ordinary operational actions are not software experiments.  Preserve
+        # CognitiveServices' logical decision and let downstream SecurityGovernor,
+        # AssuranceGate and OperatorCore decide execution.  Thinker adds no authority.
+        thinker_decision = "OPERATIONALLY_GOVERNED"
+        state = "governed_operational_action"
+        priority = 35
+        recommendations.append("Preserve the governor decision and continue through the declared domain owner and downstream execution gates.")
+    elif development_candidate and score.total >= 0.68 and score.safety >= 0.70 and score.common_interest >= 0.65 and score.reversibility >= 0.40:
         thinker_decision = "WORTH_EXPLORING_IN_SANDBOX"
         state = "approved_for_sandbox"
         priority = 25
@@ -1127,9 +1196,9 @@ def govern_possibility_request(
         recommendations.append("Add validation tests.")
     if not pa.get("reason"):
         recommendations.append("Add explicit engineering reason / defect statement.")
-    if not pa.get("dry_run"):
+    if development_candidate and not pa.get("dry_run"):
         recommendations.append("Prefer dry_run=True before promotion.")
-    if not pa.get("meaning_case"):
+    if development_candidate and not pa.get("meaning_case"):
         recommendations.append("Add meaning_case or ethical_case so the philosophical lane has explicit grounds.")
 
     ticket_id = "thinker-ticket-" + uuid.uuid4().hex[:12]
@@ -1159,6 +1228,7 @@ def govern_possibility_request(
             "safe_mode": _safe_mode(),
             "local_only": _local_only(),
             "sandbox_required": thinker_decision == "WORTH_EXPLORING_IN_SANDBOX",
+            "development_candidate": development_candidate,
             "direct_core_rewrite_allowed": False,
             "theory_is_not_truth": True,
         },
@@ -1237,10 +1307,14 @@ def paired_governance_view(
 
     if cog_decision == "DENY" or thinker_decision == "ETHICALLY_BLOCKED":
         final = "DENY"
+    elif thinker_decision == "HUMAN_APPROVED_VALIDATED_PROMOTION":
+        final = "PROMOTION_ELIGIBLE"
     elif cog_decision == "REQUIRE_USER":
         final = "REQUIRE_USER"
     elif thinker_decision == "WORTH_EXPLORING_IN_SANDBOX":
         final = "SANDBOX_ONLY"
+    elif cog_decision == "ALLOW" and thinker_decision == "OPERATIONALLY_GOVERNED":
+        final = "ALLOW"
     elif cog_decision == "ALLOW" and thinker_decision in ("MEANINGFUL_BUT_UNPROVEN", "THEORETICAL_ONLY"):
         final = "DEFER"
     elif cog_decision == "ALLOW":
@@ -1721,6 +1795,98 @@ SML_ORGAN_METADATA = {
     "internal_only": True,
     "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryCognitiveThinker.py'},
 }
+
+
+
+# -----------------------------------------------------------------------------
+# GCOP bounded candidate-generation contract
+# -----------------------------------------------------------------------------
+def gcop_candidate_set(packet=None, event=None, continuity_state=None, runtime_context=None, max_candidates=8):
+    """Generate route candidates, never final answers or execution authority."""
+    pkt = dict(packet or {}) if isinstance(packet, dict) else {}
+    evt = dict(event or {}) if isinstance(event, dict) else {}
+    state = dict(continuity_state or {}) if isinstance(continuity_state, dict) else {}
+    pipeline = list(pkt.get("pipeline") or [])
+    mission = str((pkt.get("mission") or {}).get("primary") or "Unknown")
+    confidence = float(pkt.get("confidence") or 0.0)
+    bearing = ((state.get("mission") or {}).get("bearing") or {}) if isinstance(state.get("mission"), dict) else {}
+    hold = bool(bearing.get("hold_required")) if isinstance(bearing, dict) else False
+    candidates = []
+    if pipeline:
+        candidates.append({
+            "candidate_id": "compiled_primary",
+            "kind": "compiled_pipeline",
+            "route_definition_owner": "SarahMemorySMLProtocol",
+            "route_activation_owner": "SarahMemoryNeuron",
+            "route": pipeline,
+            "mission": mission,
+            "confidence": confidence,
+            "mission_priority": float((pkt.get("mission") or {}).get("priority") or evt.get("priority") or 0.5),
+            "reliability": 0.8,
+            "resource_efficiency": 0.7,
+            "legal_gates": {
+                "capability": True,
+                "authority": True,
+                "safety": not hold,
+                "resource_feasible": True,
+                "time_valid": True,
+                "mission_compatible": not hold,
+            },
+            "execution_authority": False,
+        })
+    knowledge = pkt.get("knowledge") if isinstance(pkt.get("knowledge"), dict) else {}
+    for idx, source in enumerate(list(knowledge.get("selected") or [])[:3]):
+        candidates.append({
+            "candidate_id": f"knowledge_{idx}",
+            "kind": "knowledge_route",
+            "route_definition_owner": "SarahMemorySMLProtocol",
+            "route_activation_owner": "SarahMemoryNeuron",
+            "route": [str(source)],
+            "mission": mission,
+            "confidence": max(0.0, confidence - (0.05 * idx)),
+            "mission_priority": float(evt.get("priority") or 0.5),
+            "reliability": 0.65,
+            "resource_efficiency": 0.8,
+            "legal_gates": {
+                "capability": True,
+                "authority": True,
+                "safety": not hold,
+                "resource_feasible": True,
+                "time_valid": True,
+                "mission_compatible": not hold,
+            },
+            "execution_authority": False,
+        })
+    if str(evt.get("event_type") or "").upper() == "CAPABILITY_GAP":
+        candidates.append({
+            "candidate_id": "capability_gap_nailde",
+            "kind": "nailde_capability_extension",
+            "description": str((evt.get("payload") or {}).get("description") or (evt.get("payload") or {}).get("capability") or "missing capability") if isinstance(evt.get("payload"), dict) else "missing capability",
+            "route_definition_owner": "SarahMemorySMLProtocol",
+            "route_activation_owner": "SarahMemoryNeuron",
+            "route": ["SarahMemorySMLProtocol", "SarahMemoryNeuron", "SarahMemoryNAILDE", "SarahMemoryCompare", "SarahMemoryLedger"],
+            "mission": mission,
+            "confidence": confidence,
+            "mission_priority": float(evt.get("priority") or 0.5),
+            "reliability": 0.5,
+            "resource_efficiency": 0.4,
+            "legal_gates": {
+                "capability": True,
+                "authority": bool((runtime_context or {}).get("developer_mode") or (runtime_context or {}).get("DEVELOPERMODE")),
+                "safety": True,
+                "resource_feasible": True,
+                "time_valid": True,
+                "mission_compatible": True,
+            },
+            "sandbox_only": True,
+            "execution_authority": False,
+        })
+    return {
+        "schema": "SarahMemory.gcop.candidate_set.v1",
+        "candidates": candidates[:max(1, min(int(max_candidates or 8), 32))],
+        "execution_authority": False,
+        "owner": "SarahMemoryCognitiveThinker",
+    }
 
 
 def sml_get_metadata():

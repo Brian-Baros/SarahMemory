@@ -1966,6 +1966,35 @@ SML_ORGAN_METADATA = {
 }
 
 
+
+# -----------------------------------------------------------------------------
+# GCOP mission-bearing contract
+# -----------------------------------------------------------------------------
+def gcop_mission_bearing(packet=None, event=None, continuity_state=None, runtime_context=None):
+    """Evaluate mission continuity and drift without executing or replanning work."""
+    pkt = dict(packet or {}) if isinstance(packet, dict) else {}
+    evt = dict(event or {}) if isinstance(event, dict) else {}
+    state = dict(continuity_state or {}) if isinstance(continuity_state, dict) else {}
+    mission = dict(pkt.get("mission") or {})
+    previous = dict(state.get("mission") or {})
+    primary = str(mission.get("primary") or "Unknown")
+    previous_primary = str(previous.get("primary") or primary)
+    authority_change = str(evt.get("event_type") or "").upper() in {"AUTHORITY_CHANGE", "CONTRACT_CHANGE"}
+    drift = bool(previous_primary and previous_primary != primary and not authority_change)
+    bearing = "MISSION_DRIFT_HOLD" if drift else ("MISSION_DEFINED" if primary not in {"", "Unknown"} else "MISSION_UNRESOLVED")
+    return {
+        "schema": "SarahMemory.gcop.mission_bearing.v1",
+        "bearing": bearing,
+        "mission_primary": primary,
+        "previous_mission_primary": previous_primary,
+        "drift_detected": drift,
+        "authority_transition_event": authority_change,
+        "hold_required": drift or primary in {"", "Unknown"},
+        "execution_authority": False,
+        "owner": "SarahMemoryCognitiveCompass",
+    }
+
+
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
     return dict(SML_ORGAN_METADATA)

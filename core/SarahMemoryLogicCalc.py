@@ -58,6 +58,7 @@ from __future__ import annotations
 # NOTES = "Deterministic scientific calculator, engineering solver, dimensional-analysis engine, semantic interlingua, and auditable rational core."
 # --- SARAHMETA END ---
 
+import ast
 import math
 import re
 import time
@@ -91,6 +92,449 @@ def _norm_space(s: str) -> str:
 
 def _lower(s: str) -> str:
     return (s or "").strip().lower()
+
+
+# =============================================================================
+# BOUNDED DETERMINISTIC NUMERIC EXPRESSION EVALUATOR
+# =============================================================================
+
+_SAFE_NUMERIC_FUNCTIONS: Dict[str, Callable[..., Number]] = {
+    "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
+    "asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2,
+    "log": math.log, "log10": math.log10, "exp": math.exp,
+    "abs": abs, "floor": math.floor, "ceil": math.ceil,
+    "min": min, "max": max,
+}
+_SAFE_NUMERIC_CONSTANTS: Dict[str, Number] = {"pi": math.pi, "e": math.e, "tau": math.tau}
+_MAX_EXPR_NODES = 128
+_MAX_POWER_EXPONENT = 256.0
+_MAX_INTEGER_BITS = 4096
+
+
+def _bounded_numeric_value(value: Any) -> Number:
+    """Validate one deterministic numeric intermediate without arbitrary coercion."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("Expression produced a non-numeric value.")
+    if isinstance(value, int):
+        if value.bit_length() > _MAX_INTEGER_BITS:
+            raise ValueError("Expression exceeds the integer computation budget.")
+        return value
+    if not math.isfinite(float(value)):
+        raise ValueError("Expression produced a non-finite value.")
+    return value
+
+
+def _eval_numeric_ast(expression: str, *, names: Optional[Dict[str, Number]] = None) -> Number:
+    """Evaluate bounded arithmetic without Python ``eval`` or arbitrary execution.
+
+    Legal syntax is limited to numeric literals, approved names, approved direct
+    math functions, +, -, *, /, //, %, ** and unary +/-.  Attribute access,
+    indexing, containers, comprehensions, lambdas and assignments are rejected.
+    """
+    source = str(expression or "").strip().replace("^", "**")
+    if not source:
+        raise ValueError("Empty expression.")
+    if len(source) > 2048:
+        raise ValueError("Expression exceeds the length budget.")
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError("Invalid mathematical expression.") from exc
+    if sum(1 for _ in ast.walk(tree)) > _MAX_EXPR_NODES:
+        raise ValueError("Expression exceeds the computation budget.")
+
+    allowed_names: Dict[str, Number] = dict(_SAFE_NUMERIC_CONSTANTS)
+    for key, value in dict(names or {}).items():
+        if str(key).isidentifier():
+            allowed_names[str(key)] = _bounded_numeric_value(value)
+
+    def walk(node: ast.AST) -> Number:
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+                raise ValueError("Only numeric literals are allowed.")
+            return _bounded_numeric_value(node.value)
+        if isinstance(node, ast.Name):
+            if node.id not in allowed_names:
+                raise ValueError(f"Unknown mathematical name: {node.id}")
+            return _bounded_numeric_value(allowed_names[node.id])
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            v = walk(node.operand)
+            return _bounded_numeric_value(+v if isinstance(node.op, ast.UAdd) else -v)
+        if isinstance(node, ast.BinOp):
+            left, right = walk(node.left), walk(node.right)
+            if isinstance(node.op, ast.Add):
+                out = left + right
+            elif isinstance(node.op, ast.Sub):
+                out = left - right
+            elif isinstance(node.op, ast.Mult):
+                out = left * right
+            elif isinstance(node.op, ast.Div):
+                out = left / right
+            elif isinstance(node.op, ast.FloorDiv):
+                out = left // right
+            elif isinstance(node.op, ast.Mod):
+                out = left % right
+            elif isinstance(node.op, ast.Pow):
+                if abs(float(right)) > _MAX_POWER_EXPONENT:
+                    raise ValueError("Exponent exceeds the computation budget.")
+                out = left ** right
+            else:
+                raise ValueError("Unsupported mathematical operator.")
+            return _bounded_numeric_value(out)
+        if isinstance(node, ast.Call):
+            if not isinstance(node.func, ast.Name) or node.func.id not in _SAFE_NUMERIC_FUNCTIONS:
+                raise ValueError("Only approved direct mathematical functions are allowed.")
+            if node.keywords or len(node.args) > 8:
+                raise ValueError("Unsupported function-call structure.")
+            args = [walk(arg) for arg in node.args]
+            return _bounded_numeric_value(_SAFE_NUMERIC_FUNCTIONS[node.func.id](*args))
+        raise ValueError(f"Unsupported mathematical syntax: {type(node).__name__}")
+
+    return walk(tree)
+
+
+# =============================================================================
+# GCOP / LIVE-AVATAR DETERMINISTIC MATH KERNEL
+# =============================================================================
+# Ownership rule: SMLProtocol/Neuron/Avatar/CanvasStudio may consume these
+# deterministic results, but they do not re-implement the mathematics.
+
+
+def sml_clamp(value: Number, low: Number = 0.0, high: Number = 1.0) -> float:
+    """Clamp a numeric value deterministically."""
+    lo, hi = float(low), float(high)
+    if hi < lo:
+        lo, hi = hi, lo
+    return max(lo, min(hi, float(value)))
+
+
+def sml_smoothstep(x: Number, edge0: Number = 0.0, edge1: Number = 1.0) -> float:
+    """Frame-rate independent easing primitive used by QSML/Avatar timing."""
+    a, b = float(edge0), float(edge1)
+    if a == b:
+        return 0.0 if float(x) < a else 1.0
+    t = sml_clamp((float(x) - a) / (b - a), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def sml_oscillator(t_seconds: Number, frequency_hz: Number, amplitude: Number = 1.0, phase_radians: Number = 0.0) -> float:
+    """General-purpose periodic oscillator R(t)=A*sin(2*pi*f*t+phase)."""
+    return float(amplitude) * math.sin((2.0 * math.pi * float(frequency_hz) * float(t_seconds)) + float(phase_radians))
+
+
+def sml_harmonic_oscillator(
+    t_seconds: Number,
+    frequency_hz: Number,
+    harmonics: Optional[List[Tuple[Number, int, Number]]] = None,
+    envelope: Number = 1.0,
+) -> float:
+    """Composable harmonic oscillator for breathing/idle/neon cadence.
+
+    Each harmonic is (amplitude, multiplier, phase_radians).  The default is a
+    bounded three-term respiratory profile; callers may provide their own rail
+    parameters without hardcoding animation frames.
+    """
+    terms = harmonics or [(1.0, 1, 0.0), (0.18, 2, 0.35), (0.06, 3, -0.20)]
+    total = 0.0
+    for amplitude, multiplier, phase in terms[:16]:
+        total += sml_oscillator(t_seconds, float(frequency_hz) * max(1, int(multiplier)), amplitude, phase)
+    return total * float(envelope)
+
+
+def sml_gaussian_pulse(t_seconds: Number, center_seconds: Number, amplitude: Number = 1.0, sigma_seconds: Number = 0.35) -> float:
+    """Gaussian event pulse used by sigh/yawn/neon/transient channels."""
+    sigma = max(1e-6, abs(float(sigma_seconds)))
+    z = (float(t_seconds) - float(center_seconds)) / sigma
+    return float(amplitude) * math.exp(-0.5 * z * z)
+
+
+def sml_exponential_smoothing(current: Number, target: Number, rate_per_second: Number, delta_seconds: Number) -> float:
+    """Frame-rate-independent exponential smoothing."""
+    dt = max(0.0, float(delta_seconds))
+    rate = max(0.0, float(rate_per_second))
+    alpha = 1.0 - math.exp(-rate * dt) if dt > 0.0 and rate > 0.0 else 0.0
+    return float(current) + alpha * (float(target) - float(current))
+
+
+def sml_blink_envelope(elapsed_seconds: Number, duration_seconds: Number = 0.18, close_fraction: Number = 0.42) -> float:
+    """Asymmetric 0..1..0 blink closure envelope."""
+    duration = max(1e-4, float(duration_seconds))
+    u = sml_clamp(float(elapsed_seconds) / duration, 0.0, 1.0)
+    alpha = sml_clamp(close_fraction, 0.05, 0.95)
+    if u < alpha:
+        return sml_smoothstep(u / alpha)
+    return 1.0 - sml_smoothstep((u - alpha) / (1.0 - alpha))
+
+
+def sml_attack_hold_release(elapsed_seconds: Number, attack: Number, hold: Number, release: Number) -> float:
+    """Bounded attack/hold/release envelope for coordinated avatar events."""
+    t = max(0.0, float(elapsed_seconds))
+    a, h, r = max(1e-4, float(attack)), max(0.0, float(hold)), max(1e-4, float(release))
+    if t < a:
+        return sml_smoothstep(t / a)
+    if t < a + h:
+        return 1.0
+    if t < a + h + r:
+        return 1.0 - sml_smoothstep((t - a - h) / r)
+    return 0.0
+
+
+def sml_barycentric_coordinates(point: Tuple[Number, Number], triangle: List[Tuple[Number, Number]]) -> Tuple[float, float, float]:
+    """Return barycentric weights for a 2-D point and triangle."""
+    if len(triangle) != 3:
+        raise ValueError("triangle_requires_three_vertices")
+    px, py = float(point[0]), float(point[1])
+    (x1, y1), (x2, y2), (x3, y3) = [(float(x), float(y)) for x, y in triangle]
+    denom = ((y2 - y3) * (x1 - x3)) + ((x3 - x2) * (y1 - y3))
+    if abs(denom) < 1e-12:
+        raise ValueError("degenerate_triangle")
+    l1 = (((y2 - y3) * (px - x3)) + ((x3 - x2) * (py - y3))) / denom
+    l2 = (((y3 - y1) * (px - x3)) + ((x1 - x3) * (py - y3))) / denom
+    l3 = 1.0 - l1 - l2
+    return (l1, l2, l3)
+
+
+def sml_barycentric_map(weights: Tuple[Number, Number, Number], target_triangle: List[Tuple[Number, Number]]) -> Tuple[float, float]:
+    """Map barycentric weights into a target triangle."""
+    if len(target_triangle) != 3:
+        raise ValueError("triangle_requires_three_vertices")
+    w1, w2, w3 = [float(v) for v in weights]
+    q1, q2, q3 = target_triangle
+    return (
+        w1 * float(q1[0]) + w2 * float(q2[0]) + w3 * float(q3[0]),
+        w1 * float(q1[1]) + w2 * float(q2[1]) + w3 * float(q3[1]),
+    )
+
+
+def sml_motion_vector(previous_xy: Tuple[Number, Number], current_xy: Tuple[Number, Number]) -> Tuple[float, float]:
+    return (float(current_xy[0]) - float(previous_xy[0]), float(current_xy[1]) - float(previous_xy[1]))
+
+
+def sml_spatial_gaussian(x: Number, y: Number, center_x: Number, center_y: Number, sigma: Number) -> float:
+    sigma_f = max(1e-6, abs(float(sigma)))
+    dx, dy = float(x) - float(center_x), float(y) - float(center_y)
+    return math.exp(-((dx * dx) + (dy * dy)) / (2.0 * sigma_f * sigma_f))
+
+
+def sml_temporal_history_weight(
+    motion_magnitude: Number,
+    color_difference: Number,
+    motion_threshold: Number = 8.0,
+    color_threshold: Number = 0.30,
+    base_history_weight: Number = 0.70,
+) -> float:
+    """History trust weight; returns 0 when motion/color divergence is unsafe."""
+    mt = max(1e-6, abs(float(motion_threshold)))
+    ct = max(1e-6, abs(float(color_threshold)))
+    motion_factor = 1.0 - sml_clamp(abs(float(motion_magnitude)) / mt, 0.0, 1.0)
+    color_factor = 1.0 - sml_clamp(abs(float(color_difference)) / ct, 0.0, 1.0)
+    return sml_clamp(float(base_history_weight) * motion_factor * color_factor, 0.0, 0.95)
+
+
+def sml_spring_step(
+    position: Number,
+    velocity: Number,
+    target: Number,
+    stiffness: Number,
+    damping: Number,
+    delta_seconds: Number,
+    mass: Number = 1.0,
+) -> Tuple[float, float]:
+    """Semi-implicit damped spring integration for secondary avatar motion."""
+    dt = sml_clamp(float(delta_seconds), 0.0, 0.1)
+    m = max(1e-6, abs(float(mass)))
+    x, v, x_target = float(position), float(velocity), float(target)
+    force = (-float(stiffness) * (x - x_target)) - (float(damping) * v)
+    acceleration = force / m
+    v = v + acceleration * dt
+    x = x + v * dt
+    return x, v
+
+
+def sml_priority_vector(candidate: Dict[str, Any], continuity: Optional[Dict[str, Any]] = None) -> Tuple[float, ...]:
+    """Lexicographic activation vector for Neuron after SML legality filtering.
+
+    This deliberately avoids a single reward scalar.  Higher-order dimensions
+    dominate lower-order optimization and cannot be traded away by summation.
+    """
+    c = candidate or {}
+    state = continuity or {}
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    adaptive = state.get("adaptive") if isinstance(state.get("adaptive"), dict) else {}
+    return (
+        sml_clamp(c.get("mission_priority", mission.get("priority", 0.5)), 0.0, 1.0),
+        sml_clamp(c.get("obligation_priority", 0.5), 0.0, 1.0),
+        sml_clamp(c.get("urgency", adaptive.get("urgency", 0.0)), 0.0, 1.0),
+        sml_clamp(c.get("confidence", 0.0), 0.0, 1.0),
+        sml_clamp(c.get("reliability", 0.5), 0.0, 1.0),
+        sml_clamp(c.get("resource_efficiency", 0.5), 0.0, 1.0),
+    )
+
+
+
+
+def sml_vector_magnitude(x: Number, y: Number) -> float:
+    """Deterministic Euclidean magnitude used by renderer diagnostics."""
+    return math.sqrt((float(x) * float(x)) + (float(y) * float(y)))
+
+
+def sml_scale_normalized_points(points: Dict[str, Tuple[Number, Number]], width: Number, height: Number) -> Dict[str, Tuple[float, float]]:
+    """Scale normalized 0..1 landmark coordinates into floating-point pixel space."""
+    w = max(1.0, float(width) - 1.0)
+    h = max(1.0, float(height) - 1.0)
+    return {str(name): (float(x) * w, float(y) * h) for name, (x, y) in dict(points or {}).items()}
+
+
+def sml_avatar_deformation_offsets(parameters: Optional[Dict[str, Any]] = None) -> Dict[str, Tuple[float, float]]:
+    """Return normalized per-landmark offsets for the persistent 2-D avatar rig.
+
+    This is deterministic presentation mathematics, not cognition.  CanvasStudio
+    owns topology/rasterization; UnifiedAvatarController owns semantic-to-physical
+    parameter requests.  LogicCalc owns the numeric deformation calculation.
+    """
+    q = dict(parameters or {})
+    breath = sml_clamp(q.get("breath", 0.0), -2.0, 2.0)
+    jaw = sml_clamp(q.get("jaw_open", 0.0), 0.0, 1.0)
+    blink_l = sml_clamp(q.get("blink_left", q.get("blink", 0.0)), 0.0, 1.0)
+    blink_r = sml_clamp(q.get("blink_right", q.get("blink", 0.0)), 0.0, 1.0)
+    gaze_x = sml_clamp(q.get("gaze_x", 0.0), -1.0, 1.0)
+    gaze_y = sml_clamp(q.get("gaze_y", 0.0), -1.0, 1.0)
+    pitch = sml_clamp(q.get("head_pitch", 0.0), -30.0, 30.0) / 30.0
+    yaw = sml_clamp(q.get("head_yaw", 0.0), -45.0, 45.0) / 45.0
+    roll = sml_clamp(q.get("head_roll", 0.0), -20.0, 20.0) / 20.0
+    shoulder_l = sml_clamp(q.get("shoulder_left", 0.0), -1.0, 1.0)
+    shoulder_r = sml_clamp(q.get("shoulder_right", 0.0), -1.0, 1.0)
+    brow_l = sml_clamp(q.get("brow_left", 0.0), -1.0, 1.0)
+    brow_r = sml_clamp(q.get("brow_right", 0.0), -1.0, 1.0)
+    mouth = sml_clamp(q.get("mouth_activity", q.get("speaking_energy", 0.0)), 0.0, 1.0)
+    idle = sml_clamp(q.get("idle_sway", 0.0), -1.0, 1.0)
+    micro = sml_clamp(q.get("head_micro_motion", 0.0), -1.0, 1.0)
+
+    # All offsets are fractions of the working surface.  They are intentionally
+    # small: distributed subpixel motion should accumulate into visible motion
+    # without destroying identity.
+    torso_dy = breath * -0.006
+    shoulder_dx = idle * 0.003
+    head_dx = (yaw * 0.010) + (idle * 0.002)
+    head_dy = pitch * 0.008
+    roll_dx = roll * 0.004
+    jaw_dy = (jaw * 0.020) + (mouth * 0.006)
+    blink_dy_l = blink_l * 0.010
+    blink_dy_r = blink_r * 0.010
+    gaze_dx = gaze_x * 0.006
+    gaze_dy = gaze_y * 0.004
+    micro_dx = micro * 0.0015
+
+    offsets: Dict[str, Tuple[float, float]] = {
+        "head_top": (head_dx + roll_dx + micro_dx, head_dy),
+        "temple_left": (head_dx + roll_dx + micro_dx, head_dy),
+        "temple_right": (head_dx + roll_dx + micro_dx, head_dy),
+        "nose_bridge": (head_dx + micro_dx, head_dy),
+        "nose_tip": (head_dx + micro_dx, head_dy + (pitch * 0.002)),
+        "left_eye": (head_dx + gaze_dx + micro_dx, head_dy + gaze_dy + blink_dy_l),
+        "right_eye": (head_dx + gaze_dx + micro_dx, head_dy + gaze_dy + blink_dy_r),
+        "left_brow": (head_dx + micro_dx, head_dy - (brow_l * 0.006)),
+        "right_brow": (head_dx + micro_dx, head_dy - (brow_r * 0.006)),
+        "mouth_left": (head_dx + micro_dx - (mouth * 0.002), head_dy + (jaw_dy * 0.35)),
+        "mouth_right": (head_dx + micro_dx + (mouth * 0.002), head_dy + (jaw_dy * 0.35)),
+        "upper_lip": (head_dx + micro_dx, head_dy + (jaw_dy * 0.20)),
+        "lower_lip": (head_dx + micro_dx, head_dy + jaw_dy),
+        "chin": (head_dx + micro_dx, head_dy + (jaw_dy * 0.75)),
+        "jaw_left": (head_dx + micro_dx, head_dy + (jaw_dy * 0.55)),
+        "jaw_right": (head_dx + micro_dx, head_dy + (jaw_dy * 0.55)),
+        "neck_left": (head_dx * 0.30, torso_dy * 0.25),
+        "neck_right": (head_dx * 0.30, torso_dy * 0.25),
+        "shoulder_left": (-shoulder_dx, torso_dy - (shoulder_l * 0.004)),
+        "shoulder_right": (shoulder_dx, torso_dy - (shoulder_r * 0.004)),
+        "chest_left": (0.0, torso_dy),
+        "chest_center": (0.0, torso_dy * 1.25),
+        "chest_right": (0.0, torso_dy),
+        "torso_left": (0.0, torso_dy * 0.30),
+        "torso_right": (0.0, torso_dy * 0.30),
+    }
+    return offsets
+
+
+def sml_apply_normalized_offsets(
+    landmarks: Dict[str, Tuple[Number, Number]],
+    offsets: Dict[str, Tuple[Number, Number]],
+    identity_stiffness: Optional[Dict[str, Number]] = None,
+) -> Dict[str, Tuple[float, float]]:
+    """Apply normalized offsets with 0..1 identity stiffness."""
+    stiff = dict(identity_stiffness or {})
+    result: Dict[str, Tuple[float, float]] = {}
+    for name, point in dict(landmarks or {}).items():
+        x, y = float(point[0]), float(point[1])
+        dx, dy = offsets.get(name, (0.0, 0.0))
+        freedom = 1.0 - sml_clamp(stiff.get(name, 0.0), 0.0, 1.0)
+        result[str(name)] = (
+            sml_clamp(x + (float(dx) * freedom), -0.25, 1.25),
+            sml_clamp(y + (float(dy) * freedom), -0.25, 1.25),
+        )
+    return result
+
+
+def sml_frame_mean_difference(current_value: Number, historical_value: Number, scale: Number = 255.0) -> float:
+    """Normalized scalar difference helper for temporal-history decisions."""
+    divisor = max(1e-9, abs(float(scale)))
+    return sml_clamp(abs(float(current_value) - float(historical_value)) / divisor, 0.0, 1.0)
+
+def sml_avatar_constraint_energy(
+    target_error: Number,
+    smooth_error: Number,
+    identity_error: Number,
+    temporal_error: Number,
+    lambda_smooth: Number = 1.0,
+    lambda_identity: Number = 2.0,
+    lambda_temporal: Number = 1.0,
+) -> float:
+    """Deterministic deformation energy used by CanvasStudio diagnostics/selection."""
+    return (
+        float(target_error)
+        + float(lambda_smooth) * float(smooth_error)
+        + float(lambda_identity) * float(identity_error)
+        + float(lambda_temporal) * float(temporal_error)
+    )
+
+
+def sml_frame_budget_level(frame_ms: Number, target_fps: Number = 30.0) -> int:
+    """Return graceful-degradation level 0..6 from measured frame time."""
+    budget_ms = 1000.0 / max(1.0, float(target_fps))
+    ratio = max(0.0, float(frame_ms)) / budget_ms
+    if ratio <= 1.00:
+        return 0
+    if ratio <= 1.10:
+        return 1
+    if ratio <= 1.25:
+        return 2
+    if ratio <= 1.45:
+        return 3
+    if ratio <= 1.75:
+        return 4
+    if ratio <= 2.25:
+        return 5
+    return 6
+
+
+def gcop_math_self_test() -> Dict[str, Any]:
+    """Side-effect-free checks for the deterministic GCOP/avatar math surface."""
+    checks: List[Dict[str, Any]] = []
+    def add(name: str, passed: bool, observed: Any) -> None:
+        checks.append({"name": name, "passed": bool(passed), "observed": observed})
+    try:
+        add("smoothstep_bounds", sml_smoothstep(0.0) == 0.0 and sml_smoothstep(1.0) == 1.0, [sml_smoothstep(0.0), sml_smoothstep(1.0)])
+        bc = sml_barycentric_coordinates((0.25, 0.25), [(0, 0), (1, 0), (0, 1)])
+        add("barycentric_sum", abs(sum(bc) - 1.0) < 1e-9, bc)
+        pv = sml_priority_vector({"mission_priority": 0.8, "confidence": 0.7})
+        add("priority_vector", len(pv) == 6 and pv[0] == 0.8, pv)
+        add("frame_budget", sml_frame_budget_level(20.0, 30.0) == 0 and sml_frame_budget_level(100.0, 30.0) >= 5, [sml_frame_budget_level(20.0, 30.0), sml_frame_budget_level(100.0, 30.0)])
+        offsets = sml_avatar_deformation_offsets({"breath": 1.0, "jaw_open": 0.5})
+        add("avatar_deformation_offsets", "chest_center" in offsets and "lower_lip" in offsets, {"chest_center": offsets.get("chest_center"), "lower_lip": offsets.get("lower_lip")})
+    except Exception as exc:
+        add("unexpected_exception", False, str(exc))
+    return {"ok": all(c["passed"] for c in checks), "checks": checks, "execution_authority": False}
 
 
 # =============================================================================
@@ -2384,18 +2828,9 @@ class ReasoningEngine:
             raise ValueError("Empty expression.")
         e = expr.strip()
         e = e.replace("^", "**").replace("×", "*").replace("÷", "/")
-        allowed = {
-            "x": float(x), "y": float(y), "z": float(z),
-            "pi": math.pi, "e": math.e, "tau": math.tau,
-            "sqrt": math.sqrt, "sin": math.sin, "cos": math.cos, "tan": math.tan,
-            "asin": math.asin, "acos": math.acos, "atan": math.atan, "atan2": math.atan2,
-            "log": math.log, "log10": math.log10, "exp": math.exp,
-            "abs": abs, "floor": math.floor, "ceil": math.ceil,
-            "pow": pow, "min": min, "max": max,
-        }
-        if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\)\sA-Za-z_]+", e):
+        if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\),\sA-Za-z_]+", e):
             raise ValueError("Unsafe expression.")
-        return float(eval(e, {"__builtins__": {}}, allowed))
+        return float(_eval_numeric_ast(e, names={"x": float(x), "y": float(y), "z": float(z)}))
 
     def _split_top_level_args(self, s: str) -> List[str]:
         """
@@ -2430,15 +2865,11 @@ class ReasoningEngine:
         mg.add("evaluates", [Term("expression", "concept", expr)])
 
         try:
-            # Minimal safe eval: digits + operators + math funcs/constants
-            allowed = {"pi": math.pi, "e": math.e, "tau": math.tau, "sqrt": math.sqrt,
-                       "sin": math.sin, "cos": math.cos, "tan": math.tan,
-                       "log": math.log, "log10": math.log10, "exp": math.exp, "abs": abs,
-                       "floor": math.floor, "ceil": math.ceil, "pow": pow}
-            if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\)\sA-Za-z_]+", expr):
+            # Deterministic AST evaluator: no Python eval/attribute/index execution.
+            if not re.fullmatch(r"[0-9\.\+\-\*/\^\(\),\sA-Za-z_]+", expr):
                 raise ValueError("Unsafe expression.")
             expr = expr.replace("^", "**")
-            val = eval(expr, {"__builtins__": {}}, allowed)  # controlled environment
+            val = _eval_numeric_ast(expr)
             return SolveResult(ok=True, kind="calc", value=val, text=self._nlg_calc(expr, val), meaning=mg,
                                meta={"expression": expr})
         except Exception as e:

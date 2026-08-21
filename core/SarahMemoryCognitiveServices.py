@@ -1118,6 +1118,58 @@ def _normalize_proposed_action(pa: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
     return out
 
+def _structured_intent_override(intent: str, pa: Optional[Dict[str, Any]]) -> str:
+    """Resolve state-changing intent from a structured action contract.
+
+    Natural-language classification remains useful for ordinary requests, but an
+    OperatorCore/API domain contract already carries stronger typed evidence about
+    the requested side effect.  This helper may only make the intent *more
+    specific* from explicit action metadata; it does not grant authority.
+    """
+    action = pa if isinstance(pa, dict) else {}
+    if not action:
+        return str(intent or "CHAT")
+
+    action_type = str(action.get("action_type") or "").strip().lower()
+    change_type = str(action.get("change_type") or "").strip().lower()
+    mode = str(action.get("mode") or action.get("operation") or "").strip().lower()
+    perms = {str(v).strip().lower() for v in (action.get("required_permissions") or []) if str(v).strip()}
+
+    # Patch/core promotion is more specific than generic filesystem mutation.
+    if (
+        action_type in {"patch_or_update", "patch_core", "core_patch", "validated_patch_promotion"}
+        or change_type in {"patch", "core_patch", "validated_patch_promotion", "update", "upgrade"}
+        or "patchcore" in perms
+    ):
+        return "PATCH_OR_UPDATE"
+
+    filesystem_modes = {
+        "mkdir", "rename", "move", "copy", "upload", "write", "overwrite",
+        "trash", "delete", "remove", "restore", "empty_trash", "index_push",
+        "browser_state_write", "ingest_learning", "eat_this",
+    }
+    if (
+        action_type in {"filesystem_write", "filesystem_mutation", "file_write"}
+        or mode in filesystem_modes
+        or "filesystemwrite" in perms
+    ):
+        return "FILESYSTEM_WRITE"
+
+    if (
+        action_type in {"network_access", "network_request", "web_request", "api_call"}
+        or "networkaccess" in perms
+    ):
+        return "NETWORK_ACCESS"
+
+    if (
+        action_type in {"driver_action", "device_control", "robot_action", "execute_command"}
+        or "devicecontrol" in perms
+        or "execute" in perms
+    ):
+        return "EXECUTE_COMMAND"
+
+    return str(intent or "CHAT")
+
 # -----------------------------------------------------------------------------
 # Risk scoring helpers
 # -----------------------------------------------------------------------------
@@ -1282,6 +1334,12 @@ def _apply_cognitive_thinker_balance(dec: Dict[str, Any], thinker_view: Dict[str
         if "sandbox_only_by_cognitive_thinker" not in dec["risk_factors"]:
             dec["risk_factors"].append("sandbox_only_by_cognitive_thinker")
         dec["reasons"].append("CognitiveThinker marked the request as worthy of exploration only in sandbox.")
+    elif final_balance == "PROMOTION_ELIGIBLE":
+        # Eligibility is not authorization.  Preserve the logical governor verdict
+        # and allow downstream SecurityGovernor/AssuranceGate/OperatorCore to make
+        # the remaining promotion decisions.
+        dec["reasons"].append("CognitiveThinker confirmed explicit human-approved validated promotion eligibility; no authority was added or widened.")
+        dec.setdefault("trace", {})["promotion_eligible"] = True
     elif final_balance == "DEFER" and str(dec.get("decision") or "") == "ALLOW":
         dec["decision"] = "DEFER"
         dec["allow"] = False
@@ -1313,8 +1371,9 @@ def govern_request(
 
 
     snap = get_cognitive_policy_snapshot()
-    intent = classify_intent(request_text)
     pa = _normalize_proposed_action(proposed_action)
+    text_intent = classify_intent(request_text)
+    intent = _structured_intent_override(text_intent, pa)
     ctx = caller_context or {}
     cognitive_self_packet = _get_cognitive_self_packet(request_text, ctx, force_refresh=False)
     cognitive_self_summary = _self_summary_from_packet(cognitive_self_packet)
@@ -1402,6 +1461,9 @@ def govern_request(
         "trace": {
             "governor_only": True,
             "execution_owner": None,
+            "text_intent": text_intent,
+            "structured_intent": intent,
+            "structured_intent_override": intent != text_intent,
         },
         "routing_policy": {},
         "policy_snapshot": {
@@ -2529,6 +2591,11 @@ _LIVING_LOOP_LOCK = threading.RLock()
 _LIVING_LOOP_STOP_EVENT = threading.Event()
 _LIVING_LOOP_THREAD: Optional[threading.Thread] = None
 
+# GCOP continuity is volatile operational state, not learned knowledge.  It is
+# mirrored into the bounded living-loop runtime snapshot for restart recovery.
+_GCOP_CONTINUITY_LOCK = threading.RLock()
+_GCOP_CONTINUITY_STATE: Dict[str, Any] = {}
+
 _EMERGENCY_INSTINCT_TYPES = {"fire", "medical", "collision", "unknown"}
 _EMERGENCY_MIN_CONFIDENCE = 0.70
 _EMERGENCY_HUMAN_PRIORITY = [
@@ -2667,6 +2734,7 @@ def _sm_write_living_snapshot(extra: Optional[Dict[str, Any]] = None) -> None:
             "module": "SarahMemoryCognitiveServices",
             "state": _sm_living_safe(state, limit=6000),
             "extra": _sm_living_safe(extra or {}, limit=6000),
+            "gcop_continuity": _sm_living_safe(dict(_GCOP_CONTINUITY_STATE), limit=12000),
             "execution_authority": False,
             "doctrine": {
                 "volatile_runtime_snapshot": True,
@@ -3138,6 +3206,117 @@ def run_emergency_instinct(payload: Optional[Dict[str, Any]] = None, *, execute:
     return evaluation
 
 
+
+def _sm_restore_gcop_continuity() -> Dict[str, Any]:
+    """Restore bounded operational continuity from the runtime snapshot once."""
+    with _GCOP_CONTINUITY_LOCK:
+        if _GCOP_CONTINUITY_STATE:
+            return dict(_GCOP_CONTINUITY_STATE)
+    try:
+        path = _sm_living_snapshot_path()
+        if not os.path.isfile(path):
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        restored = payload.get("gcop_continuity") if isinstance(payload, dict) else {}
+        if not isinstance(restored, dict):
+            return {}
+        # Runtime snapshot is evidence only.  SML will revalidate identity,
+        # mission, authority and current reality on the next event.
+        with _GCOP_CONTINUITY_LOCK:
+            _GCOP_CONTINUITY_STATE.clear()
+            _GCOP_CONTINUITY_STATE.update(restored)
+            return dict(_GCOP_CONTINUITY_STATE)
+    except Exception:
+        return {}
+
+
+def gcop_continuity_status() -> Dict[str, Any]:
+    with _GCOP_CONTINUITY_LOCK:
+        state = dict(_GCOP_CONTINUITY_STATE)
+    if not state:
+        state = _sm_restore_gcop_continuity()
+    return {
+        "ok": True,
+        "schema": "SarahMemory.gcop.continuity.status.v1",
+        "available": bool(state),
+        "state_id": state.get("state_id") or "",
+        "version": state.get("version") or "GCOP/1.0",
+        "mission": state.get("mission") if isinstance(state.get("mission"), dict) else {},
+        "continuity": state.get("continuity") if isinstance(state.get("continuity"), dict) else {},
+        "audit": state.get("audit") if isinstance(state.get("audit"), dict) else {},
+        "execution_authority": False,
+    }
+
+
+def run_gcop_event(
+    event: Optional[Dict[str, Any]] = None,
+    *,
+    context: Optional[Dict[str, Any]] = None,
+    continuity_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run one generalized Persistent Governed Cognitive Operation event.
+
+    CognitiveServices owns the cognitive/governance orchestration surface; SML
+    owns packet/lifecycle structure, Neuron owns activation, and no execution is
+    performed here merely because a candidate was selected.
+    """
+    evt = dict(event or {}) if isinstance(event, dict) else {}
+    ctx = _sm_build_idle_context(context)
+    if continuity_state is None:
+        continuity_state = _sm_restore_gcop_continuity()
+    evt.setdefault("event_type", "SYSTEM_TICK")
+    evt.setdefault("source", str(ctx.get("source") or "SarahMemoryCognitiveServices"))
+    payload = evt.setdefault("payload", {})
+    if isinstance(payload, dict):
+        if ctx.get("text") and not payload.get("text"):
+            payload["text"] = str(ctx.get("text"))
+        payload.setdefault("context", {k: v for k, v in ctx.items() if k not in {"password", "token", "secret", "api_key"}})
+    try:
+        import SarahMemorySMLProtocol as _SML  # type: ignore
+        text = str((payload or {}).get("text") or evt.get("description") or evt.get("event_type") or "system event")
+        pkt = _SML.sml_build_ingress_packet(
+            text,
+            caller="SarahMemoryCognitiveServices.run_gcop_event",
+            payload={"gcop_event": evt},
+            api_context=ctx,
+            discover=False,
+        )
+        result = _SML.sml_run_gcop_cycle(
+            pkt,
+            event=evt,
+            continuity_state=continuity_state,
+            runtime_context=ctx,
+        )
+    except Exception as exc:
+        result = {
+            "status": "SAFE_HOLD",
+            "event": evt,
+            "continuity_state": continuity_state or {},
+            "governance": {"decision": "DEFER", "allow": False, "require_user": True},
+            "diagnostics": {"errors": [str(exc)]},
+            "execution_request": {"eligible": False, "execution_authority": False},
+            "stop_reason": "gcop_runtime_unavailable",
+        }
+    result["execution_authority"] = False
+    result["orchestration_owner"] = "SarahMemoryCognitiveServices"
+    next_continuity = result.get("continuity_state") if isinstance(result.get("continuity_state"), dict) else {}
+    if next_continuity:
+        with _GCOP_CONTINUITY_LOCK:
+            _GCOP_CONTINUITY_STATE.clear()
+            _GCOP_CONTINUITY_STATE.update(next_continuity)
+    try:
+        log_cognitive_event(
+            "GCOP_EVENT_CYCLE",
+            str(evt.get("event_type") or "UNKNOWN"),
+            severity="INFO" if str(result.get("status") or "") in {"CONTINUE", "WAIT", "COMPLETE"} else "WARNING",
+            meta={"status": result.get("status"), "stop_reason": result.get("stop_reason"), "event_id": evt.get("event_id")},
+        )
+    except Exception:
+        pass
+    return result
+
+
 def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """One bounded Living Loop tick. Emergency context is routed into Cognitive Instinct."""
     ctx = _sm_build_idle_context(context)
@@ -3149,6 +3328,15 @@ def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[
 
     text = str(ctx.get("text") or ctx.get("observation") or "")
     emergency_hint = bool(ctx.get("emergency") or ctx.get("emergency_mode") or ctx.get("hazard_type") or ctx.get("emergency_type"))
+    gcop_event = {
+        "event_type": "SECURITY_EVENT" if emergency_hint else "SYSTEM_TICK",
+        "source": str(ctx.get("source") or "cognitive_living_loop"),
+        "payload": {"text": text, "observation": ctx.get("observation") or "", "hazard_type": ctx.get("hazard_type") or ctx.get("emergency_type") or ""},
+        "priority": 1.0 if emergency_hint else 0.25,
+        "requires_response": bool(ctx.get("requires_response", False)),
+        "requested_execution": False,
+    }
+    gcop = run_gcop_event(gcop_event, context=ctx, continuity_state=ctx.get("continuity_state") if isinstance(ctx.get("continuity_state"), dict) else None)
     classified = _sm_classify_emergency_from_text(text, ctx)
     if emergency_hint or float(classified.get("confidence") or 0.0) >= 0.55:
         payload = dict(ctx)
@@ -3163,6 +3351,7 @@ def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[
             "emergency_detected": True,
             "action_taken": False,
             "execution_authority": False,
+            "gcop": gcop,
             "instinct": instinct,
         }
     else:
@@ -3177,6 +3366,7 @@ def run_cognitive_living_tick(context: Optional[Dict[str, Any]] = None) -> Dict[
             "distributed_packets": packets,
             "action_taken": False,
             "execution_authority": False,
+            "gcop": gcop,
             "working_memory_policy": {
                 "volatile_first": True,
                 "dedupe_required": True,
@@ -3312,6 +3502,7 @@ def cognitive_living_loop_status() -> Dict[str, Any]:
         "heartbeat_path": _sm_living_heartbeat_path(),
         "emergency_instinct_available": True,
         "evidence_ledger_path": _sm_emergency_chain_path(),
+        "gcop_continuity": gcop_continuity_status(),
         "execution_authority": False,
         "doctrine": {
             "living_loop_distributed_across_cognitive_stack": True,
@@ -3511,6 +3702,48 @@ SML_ORGAN_METADATA = {
     "internal_only": True,
     "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryCognitiveServices.py'},
 }
+
+
+
+# -----------------------------------------------------------------------------
+# GCOP authority/governance contract
+# -----------------------------------------------------------------------------
+def gcop_authority_review(packet=None, event=None, continuity_state=None, selected_candidate=None, runtime_context=None):
+    """Apply existing CognitiveServices governance to a GCOP-selected candidate."""
+    pkt = dict(packet or {}) if isinstance(packet, dict) else {}
+    evt = dict(event or {}) if isinstance(event, dict) else {}
+    selected = dict(selected_candidate or {}) if isinstance(selected_candidate, dict) else {}
+    ctx = dict(runtime_context or {}) if isinstance(runtime_context, dict) else {}
+    payload = pkt.get("payload") if isinstance(pkt.get("payload"), dict) else {}
+    event_payload = evt.get("payload") if isinstance(evt.get("payload"), dict) else {}
+    text = str(event_payload.get("text") or payload.get("raw_request") or selected.get("description") or "GCOP event")
+    requested_execution = bool(evt.get("requested_execution"))
+    proposed_action = {
+        "action_type": selected.get("action_type") or selected.get("kind") or "cognitive_route",
+        "target": selected.get("target") or selected.get("candidate_id") or "",
+        "route": selected.get("route") or [],
+        "execution_mode": "apply" if requested_execution else "simulate",
+        "execution_authority": False,
+        "gcop_candidate_id": selected.get("candidate_id") or "",
+    }
+    try:
+        decision = govern_request(
+            text,
+            caller="SarahMemoryCognitiveServices.gcop_authority_review",
+            caller_context={**ctx, "gcop": True, "event_type": evt.get("event_type"), "authority_reference": evt.get("authority_reference")},
+            user_present=bool(ctx.get("user_present", True)),
+            user_consented=bool(ctx.get("user_consented", False)),
+            proposed_action=proposed_action,
+        )
+        if not isinstance(decision, dict):
+            raise TypeError("govern_request_non_dict")
+        out = dict(decision)
+    except Exception as exc:
+        out = {"decision": "DEFER", "allow": False, "require_user": True, "reasons": [f"GCOP governance unavailable: {exc}"]}
+    out["execution_authority"] = False
+    out["owner"] = "SarahMemoryCognitiveServices"
+    out["gcop_candidate_id"] = selected.get("candidate_id") or ""
+    return out
 
 
 def sml_get_metadata():

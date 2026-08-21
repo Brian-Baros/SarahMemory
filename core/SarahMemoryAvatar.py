@@ -51,6 +51,9 @@ import time
 import os
 import sqlite3
 from datetime import datetime
+from dataclasses import dataclass, field, asdict
+from typing import Any, Dict, Optional
+import threading
 from PIL import Image, ImageDraw, ImageFont, ImageTk  # For GUI display
 from SarahMemoryAdaptive import load_emotional_state
 import SarahMemoryGlobals as config
@@ -58,6 +61,139 @@ from SarahMemoryGlobals import DATASETS_DIR  # for consistent pathing
 import subprocess
 
 DB_FILENAME = "avatar.db"
+
+
+@dataclass
+class AvatarState:
+    """Persistent live-avatar physical state.
+
+    This is presentation/embodiment state only.  It does not own cognition,
+    governance, network authority, or physical robot actuation.
+    """
+    expression: str = "neutral"
+    gaze_x: float = 0.0
+    gaze_y: float = 0.0
+    blink: float = 0.0
+    eyelid_left: float = 0.0
+    eyelid_right: float = 0.0
+    brow_left: float = 0.0
+    brow_right: float = 0.0
+    mouth_shape: str = "rest"
+    jaw_open: float = 0.0
+    head_pitch: float = 0.0
+    head_yaw: float = 0.0
+    head_roll: float = 0.0
+    shoulder_left: float = 0.0
+    shoulder_right: float = 0.0
+    chest_expansion: float = 0.0
+    breathing_phase: float = 0.0
+    speaking_energy: float = 0.0
+    emotional_energy: float = 0.0
+    fatigue: float = 0.0
+    attention: str = "user"
+    gesture: str = "none"
+    neon_phase: float = 0.0
+    neon_intensity: float = 0.25
+    speaking: bool = False
+    listening: bool = False
+    thinking: bool = False
+    active_events: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    revision: int = 0
+    updated_monotonic: float = field(default_factory=time.monotonic)
+
+    def to_dict(self) -> Dict[str, Any]:
+        out = asdict(self)
+        out["schema"] = "SarahMemory.avatar.state.live.v2"
+        out["execution_authority"] = False
+        return out
+
+
+_AVATAR_STATE_LOCK = threading.RLock()
+_LIVE_AVATAR_STATE = AvatarState()
+_AVATAR_STATE_NUMERIC_FIELDS = {
+    "gaze_x": (-1.0, 1.0), "gaze_y": (-1.0, 1.0), "blink": (0.0, 1.0),
+    "eyelid_left": (-1.0, 1.0), "eyelid_right": (-1.0, 1.0),
+    "brow_left": (-1.0, 1.0), "brow_right": (-1.0, 1.0),
+    "jaw_open": (0.0, 1.0), "head_pitch": (-30.0, 30.0),
+    "head_yaw": (-45.0, 45.0), "head_roll": (-20.0, 20.0),
+    "shoulder_left": (-1.0, 1.0), "shoulder_right": (-1.0, 1.0),
+    "chest_expansion": (-1.0, 1.0), "breathing_phase": (-1000000.0, 1000000.0),
+    "speaking_energy": (0.0, 1.0), "emotional_energy": (0.0, 1.0),
+    "fatigue": (0.0, 1.0), "neon_phase": (-1000000.0, 1000000.0),
+    "neon_intensity": (0.0, 1.0),
+}
+
+
+def _avatar_clamp(value: Any, low: float, high: float) -> float:
+    try:
+        from SarahMemoryLogicCalc import sml_clamp  # type: ignore
+        return float(sml_clamp(value, low, high))
+    except Exception:
+        # Fail safe rather than duplicating deterministic clamp mathematics here.
+        return float(low)
+
+
+def get_live_avatar_state() -> Dict[str, Any]:
+    """Return a thread-safe snapshot of the persistent AvatarState."""
+    with _AVATAR_STATE_LOCK:
+        return _LIVE_AVATAR_STATE.to_dict()
+
+
+def update_live_avatar_state(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
+    """Mutate only owned physical/presentation fields and return a new snapshot."""
+    change = dict(updates or {})
+    change.update(kwargs)
+    with _AVATAR_STATE_LOCK:
+        for key, value in change.items():
+            if key in {"schema", "execution_authority", "revision", "updated_monotonic"} or not hasattr(_LIVE_AVATAR_STATE, key):
+                continue
+            if key in _AVATAR_STATE_NUMERIC_FIELDS:
+                low, high = _AVATAR_STATE_NUMERIC_FIELDS[key]
+                value = _avatar_clamp(value, low, high)
+            elif key in {"speaking", "listening", "thinking"}:
+                value = bool(value)
+            elif key == "active_events":
+                value = dict(value or {}) if isinstance(value, dict) else {}
+            else:
+                value = str(value or "")
+            setattr(_LIVE_AVATAR_STATE, key, value)
+        _LIVE_AVATAR_STATE.revision += 1
+        _LIVE_AVATAR_STATE.updated_monotonic = time.monotonic()
+        return _LIVE_AVATAR_STATE.to_dict()
+
+
+def queue_live_avatar_event(event_type: str, *, intensity: float = 1.0, duration_seconds: float = 1.0, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Register a transient physical event (blink/sigh/yawn/gesture) in AvatarState."""
+    event_key = str(event_type or "event").strip().lower() or "event"
+    now = time.monotonic()
+    with _AVATAR_STATE_LOCK:
+        _LIVE_AVATAR_STATE.active_events[event_key] = {
+            "event_type": event_key,
+            "started_monotonic": now,
+            "intensity": _avatar_clamp(intensity, 0.0, 1.0),
+            "duration_seconds": _avatar_clamp(duration_seconds or 1.0, 0.05, 30.0),
+            "metadata": dict(metadata or {}),
+        }
+        _LIVE_AVATAR_STATE.revision += 1
+        _LIVE_AVATAR_STATE.updated_monotonic = now
+        return _LIVE_AVATAR_STATE.to_dict()
+
+
+def prune_live_avatar_events(now_monotonic: Optional[float] = None) -> Dict[str, Any]:
+    now = float(now_monotonic if now_monotonic is not None else time.monotonic())
+    with _AVATAR_STATE_LOCK:
+        expired = []
+        for key, evt in list(_LIVE_AVATAR_STATE.active_events.items()):
+            start = float((evt or {}).get("started_monotonic") or now)
+            duration = float((evt or {}).get("duration_seconds") or 0.0)
+            if now - start > duration:
+                expired.append(key)
+        for key in expired:
+            _LIVE_AVATAR_STATE.active_events.pop(key, None)
+        if expired:
+            _LIVE_AVATAR_STATE.revision += 1
+            _LIVE_AVATAR_STATE.updated_monotonic = now
+        return _LIVE_AVATAR_STATE.to_dict()
 
 
 def _sm_avatar_base_dir() -> str:
@@ -418,15 +554,17 @@ def get_audio_input():
     # For example, you might use a microphone or an audio file.
     pass
 def set_avatar_expression(expression):
-    """
-    Sets the avatar expression in the database.
-    """
+    """Set the legacy expression and mirror it into persistent AvatarState."""
     db_path = os.path.join(DATASETS_DIR, DB_FILENAME)
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("UPDATE avatar_state SET expression = ? WHERE id = 1", (expression,))
     conn.commit()
     conn.close()
+    try:
+        update_live_avatar_state(expression=str(expression or "neutral"))
+    except Exception:
+        pass
     return True
 def get_avatar_state():
     """
@@ -694,6 +832,21 @@ SML_ORGAN_METADATA = {
     "internal_only": True,
     "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryAvatar.py'},
 }
+
+
+
+def live_avatar_state_self_test() -> Dict[str, Any]:
+    before = get_live_avatar_state()
+    after = update_live_avatar_state({"jaw_open": 0.25, "gaze_x": 0.1, "speaking": True})
+    queued = queue_live_avatar_event("blink", intensity=0.8, duration_seconds=0.2)
+    checks = [
+        {"name": "schema", "passed": after.get("schema") == "SarahMemory.avatar.state.live.v2"},
+        {"name": "state_mutation", "passed": abs(float(after.get("jaw_open") or 0.0) - 0.25) < 1e-9},
+        {"name": "event_queue", "passed": "blink" in (queued.get("active_events") or {})},
+        {"name": "execution_authority", "passed": after.get("execution_authority") is False},
+    ]
+    update_live_avatar_state({"jaw_open": before.get("jaw_open", 0.0), "gaze_x": before.get("gaze_x", 0.0), "speaking": before.get("speaking", False), "active_events": before.get("active_events", {})})
+    return {"ok": all(c["passed"] for c in checks), "checks": checks, "execution_authority": False}
 
 
 def sml_get_metadata():

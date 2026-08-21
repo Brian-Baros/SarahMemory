@@ -536,6 +536,12 @@ class UnifiedAvatarController:
         self._speech_lock = threading.RLock()
         self._active_speech_session: Dict[str, Any] = {}
 
+        # Persistent live-avatar presentation state.  This controller owns only
+        # semantic/rhythm -> physical parameter orchestration; it never renders pixels.
+        self._live_motion_lock = threading.RLock()
+        self._last_live_parameters: Dict[str, Any] = {}
+        self._last_live_parameter_time = time.monotonic()
+
         logger.info("[v8.0] UnifiedAvatarController initialized")
 
     def create_avatar(self, design_request: Union[str, Dict]) -> None:
@@ -790,22 +796,156 @@ class UnifiedAvatarController:
         }
 
     def build_morph_token(self, from_state: str = "neutral", to_state: str = "speaking_soft", *, duration_ms: int = 420, speech_phase: str = "idle") -> Dict[str, Any]:
-        """Build a RAM-only morph token for the 2D AvatarPanel LiveLoop renderer."""
+        """Build a compatibility token for the persistent live-state renderer.
+
+        The legacy name is retained for API compatibility.  The token no longer
+        instructs AvatarPanel to crossfade whole images; it describes a bounded
+        state interpolation request consumed by the live avatar pipeline.
+        """
         return {
-            "schema": "SarahMemory.avatar.morphtoken.v1",
+            "schema": "SarahMemory.avatar.morphtoken.v2",
             "from_state": str(from_state or "neutral"),
             "to_state": str(to_state or "speaking_soft"),
             "duration_ms": max(120, int(duration_ms or 420)),
-            "easing": "breath_sine",
-            "blend_mode": "canvas_2d_crossfade_breath_v1",
-            "affected_regions": ["eyes", "brows", "mouth", "head", "shoulders"],
+            "easing": "logiccalc_exponential_smoothing",
+            "blend_mode": "persistent_state_deformation_v1",
+            "affected_regions": ["eyes", "brows", "mouth", "head", "shoulders", "chest", "neon"],
             "speech_phase": str(speech_phase or "idle"),
-            "viseme_mode": "approximate_voice_duration",
+            "viseme_mode": "speech_energy_or_viseme_when_available",
             "ram_only": True,
             "store_generated_frames": False,
-            "fallback": "last_good_frame_then_neutral",
+            "fallback": "last_verified_live_frame_then_reference",
             "source": "UnifiedAvatarController",
+            "execution_authority": False,
+            "pixel_authority": False,
         }
+
+    def _expression_physical_targets(self, expression: str) -> Dict[str, float]:
+        """Presentation mapping only; no cognitive conclusion is made here."""
+        key = str(expression or "neutral").strip().lower()
+        # Physical rails, not image/frame selection.  Unknown states remain neutral.
+        profiles = {
+            "concerned": {"brow_left": 0.18, "brow_right": 0.18, "head_pitch": 1.4, "eyelid_left": -0.05, "eyelid_right": -0.05},
+            "curious": {"brow_left": 0.15, "brow_right": 0.05, "head_yaw": 1.5, "head_pitch": -0.5},
+            "alert": {"brow_left": 0.10, "brow_right": 0.10, "eyelid_left": 0.08, "eyelid_right": 0.08, "head_pitch": -0.7},
+            "relaxed": {"brow_left": -0.04, "brow_right": -0.04, "eyelid_left": -0.06, "eyelid_right": -0.06, "head_pitch": 0.8},
+            "tired": {"eyelid_left": -0.20, "eyelid_right": -0.20, "head_pitch": 2.0, "shoulder_left": -0.05, "shoulder_right": -0.05},
+            "excited": {"brow_left": 0.16, "brow_right": 0.16, "eyelid_left": 0.06, "eyelid_right": 0.06, "head_pitch": -1.0},
+            "focused": {"brow_left": 0.05, "brow_right": 0.05, "head_pitch": -0.4},
+            "thinking": {"brow_left": 0.08, "brow_right": -0.02, "head_yaw": 1.2, "head_pitch": 0.4},
+            "ready": {},
+            "neutral": {},
+            "idle": {},
+        }
+        return dict(profiles.get(key, {}))
+
+    def build_live_avatar_parameter_packet(
+        self,
+        semantic_state: Optional[Dict[str, Any]] = None,
+        rhythm_state: Optional[Dict[str, Any]] = None,
+        *,
+        now_monotonic: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Convert approved avatar/rhythm state into bounded physical parameters.
+
+        LogicCalc owns smoothing and numeric bounds.  This method has no execution
+        or pixel authority and is safe to call at render frequency.
+        """
+        semantic = dict(semantic_state or {})
+        rhythm = dict(rhythm_state or {})
+        now = float(now_monotonic if now_monotonic is not None else time.monotonic())
+        try:
+            import SarahMemoryLogicCalc as _LC  # type: ignore
+        except Exception as exc:
+            return {"ok": False, "schema": "SarahMemory.avatar.parameters.v1", "error": f"LogicCalc unavailable: {exc}", "execution_authority": False, "pixel_authority": False}
+
+        expression = str(semantic.get("expression") or semantic.get("affect") or self.last_emotion or "neutral").strip().lower()
+        targets: Dict[str, Any] = {
+            "gaze_x": semantic.get("gaze_x", 0.0),
+            "gaze_y": semantic.get("gaze_y", 0.0),
+            "jaw_open": semantic.get("jaw_open", 0.0),
+            "head_pitch": semantic.get("head_pitch", 0.0),
+            "head_yaw": semantic.get("head_yaw", 0.0),
+            "head_roll": semantic.get("head_roll", 0.0),
+            "shoulder_left": semantic.get("shoulder_left", 0.0),
+            "shoulder_right": semantic.get("shoulder_right", 0.0),
+            "brow_left": semantic.get("brow_left", 0.0),
+            "brow_right": semantic.get("brow_right", 0.0),
+            "eyelid_left": semantic.get("eyelid_left", 0.0),
+            "eyelid_right": semantic.get("eyelid_right", 0.0),
+            "speaking_energy": semantic.get("speaking_energy", 0.0),
+            "neon_intensity": semantic.get("neon_intensity", 0.35),
+        }
+        targets.update(self._expression_physical_targets(expression))
+
+        events = rhythm.get("event_channels") if isinstance(rhythm.get("event_channels"), dict) else {}
+        blink = _LC.sml_clamp(events.get("blink", semantic.get("blink", 0.0)), 0.0, 1.0)
+        sigh = _LC.sml_clamp(events.get("sigh", 0.0), 0.0, 1.0)
+        yawn = _LC.sml_clamp(events.get("yawn", 0.0), 0.0, 1.0)
+        speech_pressure = _LC.sml_clamp(rhythm.get("speech_pressure", semantic.get("speaking_energy", 0.0)), 0.0, 1.0)
+        targets["jaw_open"] = _LC.sml_clamp(float(targets.get("jaw_open") or 0.0) + (speech_pressure * 0.55) + (yawn * 0.75), 0.0, 1.0)
+        targets["blink_left"] = blink
+        targets["blink_right"] = blink
+        targets["breath"] = _LC.sml_clamp(rhythm.get("breath", 0.0) + (sigh * 0.75) + (yawn * 0.35), -2.0, 2.0)
+        targets["idle_sway"] = _LC.sml_clamp(rhythm.get("idle_sway", 0.0), -1.0, 1.0)
+        targets["head_micro_motion"] = _LC.sml_clamp(rhythm.get("head_micro_motion", 0.0), -1.0, 1.0)
+        targets["mouth_activity"] = speech_pressure
+        targets["neon_wave"] = _LC.sml_clamp(rhythm.get("neon_wave", 0.0), -1.0, 1.0)
+        targets["neon_intensity"] = _LC.sml_clamp(float(targets.get("neon_intensity") or 0.35) + (_LC.sml_clamp(rhythm.get("urgency", 0.0), 0.0, 1.0) * 0.35), 0.0, 1.0)
+
+        with self._live_motion_lock:
+            dt = _LC.sml_clamp(now - float(self._last_live_parameter_time or now), 0.0, 0.25)
+            previous = dict(self._last_live_parameters or {})
+            smoothed: Dict[str, Any] = {}
+            for key, target in targets.items():
+                try:
+                    rate = 14.0 if key in {"jaw_open", "blink_left", "blink_right", "mouth_activity"} else 6.0
+                    smoothed[key] = _LC.sml_exponential_smoothing(previous.get(key, target), target, rate, dt)
+                except Exception:
+                    smoothed[key] = target
+            self._last_live_parameters = dict(smoothed)
+            self._last_live_parameter_time = now
+
+        return {
+            "ok": True,
+            "schema": "SarahMemory.avatar.parameters.v1",
+            "monotonic_time": now,
+            "expression": expression,
+            "parameters": smoothed,
+            "rhythm_schema": rhythm.get("schema"),
+            "avatar_state_revision": semantic.get("revision"),
+            "execution_authority": False,
+            "pixel_authority": False,
+            "owner": "UnifiedAvatarController",
+        }
+
+    def build_live_avatar_state_packet(self, *, now_monotonic: Optional[float] = None) -> Dict[str, Any]:
+        """Collect persistent AvatarState + RhythmCognition and return physical parameters."""
+        if self.avatar is None or not hasattr(self.avatar, "get_live_avatar_state"):
+            return {"ok": False, "error": "persistent_avatar_state_unavailable", "execution_authority": False}
+        semantic = self.avatar.get_live_avatar_state()
+        try:
+            import SarahMemoryRhythmCognition as _Rhythm  # type: ignore
+            rhythm = _Rhythm.build_avatar_rhythm_state({"source": "UnifiedAvatarController"}, avatar_state=semantic, now_monotonic=now_monotonic)
+        except Exception as exc:
+            rhythm = {"ok": False, "error": str(exc), "execution_authority": False}
+        packet = self.build_live_avatar_parameter_packet(semantic, rhythm, now_monotonic=now_monotonic)
+        packet["avatar_state"] = semantic
+        packet["rhythm"] = rhythm
+        return packet
+
+    def live_avatar_controller_self_test(self) -> Dict[str, Any]:
+        sample_semantic = {"expression": "concerned", "gaze_x": 0.2, "speaking_energy": 0.3, "revision": 1}
+        sample_rhythm = {"schema": "SarahMemory.avatar.rhythm.v1", "breath": 0.2, "idle_sway": 0.1, "head_micro_motion": 0.02, "neon_wave": 0.3, "speech_pressure": 0.3, "urgency": 0.1, "event_channels": {}}
+        out = self.build_live_avatar_parameter_packet(sample_semantic, sample_rhythm, now_monotonic=100.0)
+        params = out.get("parameters") if isinstance(out.get("parameters"), dict) else {}
+        checks = [
+            {"name": "parameter_packet", "passed": bool(out.get("ok"))},
+            {"name": "no_execution_authority", "passed": out.get("execution_authority") is False},
+            {"name": "no_pixel_authority", "passed": out.get("pixel_authority") is False},
+            {"name": "physical_parameters_present", "passed": "breath" in params and "jaw_open" in params and "brow_left" in params},
+        ]
+        return {"ok": all(c["passed"] for c in checks), "checks": checks, "sample": out}
 
     def build_voice_avatar_session(self, text: str, voice: str = "sarahvoice", emotion: Optional[str] = None) -> Dict[str, Any]:
         """Build the platform-wide voice/avatar session packet without starting audio."""
@@ -854,6 +994,8 @@ class UnifiedAvatarController:
         try:
             if self.avatar and hasattr(self.avatar, "set_avatar_expression"):
                 self.avatar.set_avatar_expression(str(session.get("emotion") or "neutral"))
+            if self.avatar and hasattr(self.avatar, "update_live_avatar_state"):
+                self.avatar.update_live_avatar_state({"speaking": bool(session.get("speaking")), "speaking_energy": 0.35 if session.get("speaking") else 0.0, "mouth_shape": "speech" if session.get("speaking") else "neutral"})
             if self.avatar and hasattr(self.avatar, "simulate_lip_sync_async"):
                 self.avatar.simulate_lip_sync_async(float(session.get("estimated_duration_ms") or 1200) / 1000.0)
         except Exception as exc:
@@ -889,6 +1031,8 @@ class UnifiedAvatarController:
         try:
             if self.avatar and hasattr(self.avatar, "set_avatar_expression"):
                 self.avatar.set_avatar_expression("ready")
+            if self.avatar and hasattr(self.avatar, "update_live_avatar_state"):
+                self.avatar.update_live_avatar_state({"speaking": False, "speaking_energy": 0.0, "mouth_shape": "neutral", "jaw_open": 0.0})
         except Exception:
             pass
         return {"ok": True, "finished": True, "avatar_session": active}

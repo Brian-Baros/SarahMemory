@@ -785,6 +785,39 @@ SML_ORGAN_METADATA = {
 }
 
 
+
+# -----------------------------------------------------------------------------
+# GCOP identity/context contract
+# -----------------------------------------------------------------------------
+def gcop_identity_context(packet, event=None, continuity_state=None, runtime_context=None):
+    """Resolve identity/context coordinates for one GCOP cycle.
+
+    This function interprets WHO/WHAT/WHY/HOW/WHERE/WHEN evidence only.  It does
+    not authorize execution and does not mutate SML routing ownership.
+    """
+    pkt = dict(packet or {}) if isinstance(packet, dict) else {}
+    evt = dict(event or {}) if isinstance(event, dict) else {}
+    ctx = dict(runtime_context or {}) if isinstance(runtime_context, dict) else {}
+    identity = dict(pkt.get("identity") or {})
+    payload = dict(pkt.get("payload") or {})
+    text = str(evt.get("payload", {}).get("text") if isinstance(evt.get("payload"), dict) else "" or payload.get("raw_request") or "")
+    try:
+        sixq = build_six_question_seed_packet(text, context_packet=ctx)
+    except Exception as exc:
+        sixq = {"ok": False, "error": str(exc), "execution_authority": False}
+    return {
+        "schema": "SarahMemory.gcop.identity.v1",
+        "primary_identity": str(identity.get("primary") or "Unknown"),
+        "identity": identity,
+        "six_question_coordinates": sixq,
+        "context_domain": _context_domain(text, ctx),
+        "event_source": str(evt.get("source") or "unknown"),
+        "event_type": str(evt.get("event_type") or "UNKNOWN"),
+        "execution_authority": False,
+        "owner": "SarahMemoryCognitiveIdentityLayer",
+    }
+
+
 def sml_get_metadata():
     """Return this organ's SML registration metadata."""
     return dict(SML_ORGAN_METADATA)
