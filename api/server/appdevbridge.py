@@ -171,6 +171,71 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+def _operator_authorize_patch_promotion(stage_id: str, manifest: Dict[str, Any], files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Authorize a validated, human-approved DevBridge promotion through OperatorCore."""
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "authorize_external_domain_action", None)
+        if not callable(fn):
+            raise RuntimeError("OperatorCore authorization surface unavailable")
+        targets = [str(item.get("target_path") or "").strip() for item in files if str(item.get("target_path") or "").strip()]
+        tests = manifest.get("tests") if isinstance(manifest.get("tests"), list) else []
+        if not tests:
+            tests = ["stage_validation_passed", "python_compile_when_applicable", "post_apply_sha256_verification"]
+        proposed = {
+            "action_type": "patch_or_update",
+            "change_type": str(manifest.get("change_type") or "validated_patch_promotion"),
+            "capability_name": "developer_patch_apply",
+            "target": targets[0] if targets else "devbridge_stage",
+            "target_ref": str(stage_id),
+            "target_files": targets,
+            "subsystems": list(manifest.get("subsystems") or ["DevBridge"]),
+            "required_permissions": ["FilesystemWrite", "PatchCore"],
+            "risk_level": "TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE",
+            "reason": str(manifest.get("reason") or manifest.get("summary") or "Apply a validated staged patch explicitly approved by the human operator."),
+            "rollback_plan": "Back up every existing target before write; on any stage error restore all already-applied targets and remove newly-created targets.",
+            "tests": tests,
+            "dry_run": True,
+            "apply": True,
+            "touches_filesystem": True,
+            "touches_network": False,
+            "touches_privacy": False,
+            "promotion_stage": "approved_apply",
+            "validated_sandbox": True,
+            "user_approved_promotion": True,
+            "approval_source": "human",
+            "user_consented": True,
+        }
+        return fn(
+            f"Apply validated human-approved DevBridge patch stage {stage_id}",
+            origin="api.server.appdevbridge",
+            proposed_action=proposed,
+            meta={
+                "api_domain": "devbridge",
+                "stage_id": str(stage_id),
+                "promotion_stage": "approved_apply",
+                "validated_sandbox": True,
+                "user_approved_promotion": True,
+                "approval_source": "human",
+                "user_consented": True,
+            },
+            user_consented=True,
+        )
+    except Exception as exc:
+        return {"ok": False, "allow": False, "decision": "DEFER", "domain_execution_authorized": False, "reason": f"operatorcore_unavailable:{exc}", "execution_authority": False}
+
+
+def _operator_record_patch_result(auth: Dict[str, Any], result: Dict[str, Any], *, verified: bool) -> Dict[str, Any]:
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "record_external_domain_action_result", None)
+        if callable(fn):
+            return fn(auth, result, verified=bool(verified), origin="api.server.appdevbridge")
+    except Exception:
+        pass
+    return {"ok": False, "verified": False, "execution_authority": False}
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8", errors="ignore")).hexdigest()
 
@@ -1413,6 +1478,16 @@ def devbridge_apply_approved():
     if not files:
         return _err("No staged files to apply.", 400)
 
+    authorization = _operator_authorize_patch_promotion(stage_id, manifest, files)
+    if not bool(authorization.get("domain_execution_authorized")):
+        return _err(
+            "OperatorCore blocked patch promotion.",
+            409,
+            decision=str(authorization.get("decision") or "DEFER"),
+            reason=str(authorization.get("reason") or "governance_block"),
+            operator=authorization,
+        )
+
     backup_root = os.path.join(_subdir("backups"), _sanitize_id(stage_id, "stage") + "_" + str(int(_now())))
     applied: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
@@ -1457,17 +1532,56 @@ def devbridge_apply_approved():
         except Exception as e:
             errors.append({"target_path": str(item.get("target_path") or ""), "error": str(e)})
 
+    rollback: List[Dict[str, Any]] = []
+    rollback_errors: List[Dict[str, Any]] = []
+    if errors and applied:
+        # A multi-file patch is one governed promotion.  Do not intentionally leave
+        # a half-applied cognitive/runtime state when a later file fails.
+        for rec in reversed(applied):
+            try:
+                target_abs = str(rec.get("target_abs") or "")
+                backup_path = str(rec.get("backup_path") or "")
+                if bool(rec.get("existed_before")) and backup_path and os.path.isfile(backup_path):
+                    _ensure_dir(os.path.dirname(target_abs))
+                    shutil.copy2(backup_path, target_abs)
+                    restored_sha = _sha256_file(target_abs)
+                    expected_sha = str(rec.get("pre_apply_sha256") or "")
+                    ok_restore = bool(expected_sha and restored_sha == expected_sha)
+                    rollback.append({"target_path": rec.get("target_path"), "restored": ok_restore, "sha256": restored_sha})
+                    if not ok_restore:
+                        rollback_errors.append({"target_path": rec.get("target_path"), "error": "rollback_hash_mismatch"})
+                elif bool(rec.get("created_new_file")) and target_abs:
+                    if os.path.isfile(target_abs):
+                        os.remove(target_abs)
+                    ok_restore = not os.path.exists(target_abs)
+                    rollback.append({"target_path": rec.get("target_path"), "removed_new_file": ok_restore})
+                    if not ok_restore:
+                        rollback_errors.append({"target_path": rec.get("target_path"), "error": "new_file_rollback_failed"})
+            except Exception as rollback_exc:
+                rollback_errors.append({"target_path": rec.get("target_path"), "error": str(rollback_exc)})
+
+    ok = not errors and not rollback_errors
     result = {
-        "ok": not errors,
+        "ok": ok,
         "stage_id": stage_id,
         "applied": applied,
         "errors": errors,
+        "rollback": rollback,
+        "rollback_errors": rollback_errors,
+        "rolled_back_after_error": bool(errors and applied and not rollback_errors),
         "backup_root": backup_root,
         "applied_ts": _now(),
         "applied_at": _iso(),
+        "operator_contract_id": str((authorization.get("contract") or {}).get("contract_id") or ""),
     }
+    result["operator_audit"] = _operator_record_patch_result(authorization, result, verified=ok)
     manifest["apply_result"] = result
-    manifest["status"] = "applied" if result["ok"] else "apply_partial_or_failed"
+    if result["ok"]:
+        manifest["status"] = "applied"
+    elif result.get("rolled_back_after_error"):
+        manifest["status"] = "apply_failed_rolled_back"
+    else:
+        manifest["status"] = "apply_failed_rollback_incomplete"
     _write_json(os.path.join(_subdir("staged"), _sanitize_id(stage_id, "stage"), "manifest.json"), manifest)
     _record("apply", _sanitize_id(stage_id, "stage"), manifest["status"], data, result, backup_root)
     return jsonify(result), 200 if result["ok"] else 500

@@ -4386,6 +4386,50 @@ def self_reports_latest():
     return _ok({"reports": _list_selfaware_reports(limit=limit)})
 
 
+@bp.route("/api/self/gcop/continuity", methods=["GET", "OPTIONS"])
+def api_self_gcop_continuity():
+    """Read-only persistent governed cognitive continuity status."""
+    if request.method == "OPTIONS":
+        return _ok()
+    if _CogServices is None:
+        return _ok({"available": False, "decision": "DEFER", "reason": "SarahMemoryCognitiveServices unavailable", "execution_authority": False})
+    try:
+        fn = getattr(_CogServices, "gcop_continuity_status", None)
+        if not callable(fn):
+            return _ok({"available": False, "decision": "DEFER", "reason": "gcop_continuity_status unavailable", "execution_authority": False})
+        status = fn()
+        return _ok({"available": True, "gcop": status, "execution_authority": False})
+    except Exception as exc:
+        return _ok({"available": False, "decision": "DEFER", "reason": str(exc), "execution_authority": False})
+
+
+@bp.route("/api/self/gcop/event", methods=["POST", "OPTIONS"])
+def api_self_gcop_event():
+    """Submit a non-executing cognitive event into the GCOP continuity cycle.
+
+    The event cycle may select/route candidates, but this API bridge grants no
+    state-changing execution authority.  Domain execution remains downstream of
+    governance/OperatorCore.
+    """
+    if request.method == "OPTIONS":
+        return _ok()
+    if _CogServices is None:
+        return jsonify({"ok": False, "decision": "DEFER", "reason": "SarahMemoryCognitiveServices unavailable", "execution_authority": False}), 503
+    payload = _j()
+    try:
+        fn = getattr(_CogServices, "run_gcop_event", None)
+        if not callable(fn):
+            return jsonify({"ok": False, "decision": "DEFER", "reason": "run_gcop_event unavailable", "execution_authority": False}), 503
+        event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {"source": "appself.gcop_event"}
+        result = fn(event, context=context)
+        if isinstance(result, dict):
+            result["execution_authority"] = False
+        return jsonify(_json_safe(result if isinstance(result, dict) else {"ok": False, "result": result, "execution_authority": False}))
+    except Exception as exc:
+        return jsonify({"ok": False, "decision": "DEFER", "reason": str(exc), "execution_authority": False}), 500
+
+
 # -----------------------------------------------------------------------------
 # Lifecycle
 # -----------------------------------------------------------------------------

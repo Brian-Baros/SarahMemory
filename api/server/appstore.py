@@ -645,7 +645,7 @@ def _scan_addon_candidates() -> list[Dict[str, Any]]:
                 "risk_tier": manifest.get("risk_tier") or manifest.get("risk") or "UNDECLARED",
                 "trust_status": str(runtime.get("trust_status") or install_state.get("status") or ("manifest_present" if manifest else "manifest_missing")),
                 "activation_status": str(runtime.get("activation_status") or install_state.get("activation_status") or ("installed_not_running" if installed_zone and manifest else "review_required")),
-                "runtime": runtime,
+                "runtime_state": runtime,
                 "governance": {
                     "auto_run_allowed": False,
                     "promotion_required": not installed_zone,
@@ -757,7 +757,6 @@ def api_store_addon_registry():
             "manifest_type": cand.get("manifest_type"),
             "includes_count": cand.get("includes_count", 0),
             "install_state": cand.get("install_state") or {},
-            "runtime": cand.get("runtime") or {},
             "governance": governance,
         })
     return _cors_ok(_jok({
@@ -890,6 +889,9 @@ def api_store_addon_install():
         return _cors_ok(_jerr("source_path_missing", code="missing_source", http=400))
     if not _install_source_allowed(source):
         return _cors_ok(_jerr("source_path_not_allowed", code="source_not_allowed", http=403, source_path=source))
+    validation = _validate_addon_dir_for_store(source)
+    if not bool(validation.get("ok")):
+        return _cors_ok(_jerr("addon_validation_failed", code="validation_failed", http=409, validation=validation))
     manifest = _read_json_file(os.path.join(source, "manifest.json"))
     addon_id = _manifest_id(manifest, data.get("addon_id") or os.path.basename(source))
     target = os.path.join(_addons_root(), addon_id)
@@ -912,7 +914,7 @@ def api_store_addon_install():
     with open(os.path.join(target, "install_state.json"), "w", encoding="utf-8") as f:
         json.dump(install_state, f, indent=2, sort_keys=True)
     _record_runtime(addon_id, activation_status="installed_not_running", trust_status="installed_review_required", installed_path=target)
-    return _cors_ok(_jok({"addon_id": addon_id, "installed_path": target, "backup": backup, "copy_stats": stats, "install_state": install_state, "auto_run_performed": False}))
+    return _cors_ok(_jok({"addon_id": addon_id, "installed_path": target, "backup": backup, "copy_stats": stats, "install_state": install_state, "validation": validation, "auto_run_performed": False}))
 
 
 @bp2.route("/api/store/addons/run", methods=["POST", "OPTIONS"])
@@ -1012,24 +1014,43 @@ def api_store_addon_run():
             logfile.close()
         except Exception:
             pass
-        time.sleep(0.35)
-        crashed = proc.poll() is not None
-        crash_output = ""
-        if crashed:
+        try:
+            probe_seconds = max(0.05, min(2.0, _as_float(_get_env("SARAH_ADDON_LAUNCH_PROBE_SECONDS", "1.0"), 1.0)))
+            exit_code = proc.wait(timeout=probe_seconds)
+        except subprocess.TimeoutExpired:
+            exit_code = None
+        finished = exit_code is not None
+        completed = bool(finished and int(exit_code) == 0)
+        crashed = bool(finished and int(exit_code) != 0)
+        launch_output = ""
+        if finished:
             try:
                 with open(log_path, "r", encoding="utf-8", errors="ignore") as fh:
-                    crash_output = fh.read()[:4000]
+                    launch_output = fh.read()[:4000]
             except Exception:
-                crash_output = ""
+                launch_output = ""
+        if completed:
+            message = "Addon subprocess completed successfully."
+            activation_status = "completed"
+        elif crashed:
+            message = "Addon subprocess exited with an error; see manifest_launch.log."
+            activation_status = "crashed"
+        else:
+            message = "Addon subprocess launched from manifest entrypoint."
+            activation_status = "running_subprocess"
         launch.update({
             "python_execution_performed": True,
             "pid": int(proc.pid or 0),
             "log_path": log_path,
+            "finished_immediately": bool(finished),
+            "completed_immediately": bool(completed),
             "crashed_immediately": bool(crashed),
-            "crash_output": crash_output,
-            "message": "Addon subprocess launched from manifest entrypoint." if not crashed else "Addon subprocess exited immediately; see manifest_launch.log.",
+            "exit_code": int(exit_code) if exit_code is not None else None,
+            "launch_output": launch_output,
+            "crash_output": launch_output if crashed else "",
+            "message": message,
         })
-        _record_runtime(str(rec.get("id")), activation_status="running_subprocess" if not crashed else "crashed", last_launch=launch, trust_status=rec.get("trust_status") or "manifest_present", pid=int(proc.pid or 0), log_path=log_path)
+        _record_runtime(str(rec.get("id")), activation_status=activation_status, last_launch=launch, trust_status=rec.get("trust_status") or "manifest_present", pid=int(proc.pid or 0), log_path=log_path)
         return _cors_ok(_jok({"launch": launch}))
     except Exception as exc:
         launch.update({"python_execution_performed": False, "error": str(exc), "blocked": True})
@@ -1104,6 +1125,9 @@ def api_store_addon_update():
     source = os.path.abspath(str(data.get("source_path") or ""))
     if not source or not os.path.isdir(source) or not _install_source_allowed(source):
         return _cors_ok(_jerr("source_path_not_allowed", code="source_not_allowed", http=403, source_path=source))
+    validation = _validate_addon_dir_for_store(source)
+    if not bool(validation.get("ok")):
+        return _cors_ok(_jerr("addon_validation_failed", code="validation_failed", http=409, validation=validation))
     manifest = _read_json_file(os.path.join(source, "manifest.json"))
     addon_id = _manifest_id(manifest, data.get("addon_id") or os.path.basename(source))
     target = os.path.join(_addons_root(), addon_id)
@@ -1112,7 +1136,7 @@ def api_store_addon_update():
         shutil.rmtree(target)
     stats = _copy_tree_bounded(source, target)
     _record_runtime(addon_id, activation_status="updated_not_running", trust_status="updated_review_required", installed_path=target, backup=backup)
-    return _cors_ok(_jok({"addon_id": addon_id, "updated_path": target, "backup": backup, "copy_stats": stats, "auto_run_performed": False}))
+    return _cors_ok(_jok({"addon_id": addon_id, "updated_path": target, "backup": backup, "copy_stats": stats, "validation": validation, "auto_run_performed": False}))
 
 
 

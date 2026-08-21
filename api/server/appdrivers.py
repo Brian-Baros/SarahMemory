@@ -314,6 +314,52 @@ def _user_confirmed(payload: Optional[Dict[str, Any]] = None) -> bool:
     return str(payload.get("confirm_phrase") or "").strip().upper() in {"I APPROVE", "USER APPROVED", "CONFIRM ACTION", "APPROVE GOVERNED ACTION"}
 
 
+def _operator_authorize_driver_action(driver_id: str, action_id: str, payload: Any, *, user_consented: bool) -> Dict[str, Any]:
+    """Route state-changing driver intent through OperatorCore before domain dispatch."""
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "authorize_external_domain_action", None)
+        if not callable(fn):
+            raise RuntimeError("OperatorCore authorization surface unavailable")
+        pa = {
+            "action_type": "driver_action",
+            "capability_name": "device_control",
+            "target": str(driver_id),
+            "target_ref": str(driver_id),
+            "driver_id": str(driver_id),
+            "driver_action_id": str(action_id),
+            "required_permissions": ["Execute", "DeviceControl"],
+            "risk_level": "TIER_3_PHYSICAL_OR_DEVICE",
+            "reason": "User-requested governed driver action through appdrivers domain owner.",
+            "rollback_plan": "Driver/domain safe-stop or device-specific rollback when supported; otherwise verify failure and stop.",
+            "tests": ["driver_manifest_present", "energetics_preflight", "post_dispatch_result_verification"],
+            "dry_run": False,
+            "touches_filesystem": False,
+            "physical_actuation": True,
+            "payload_summary": payload if isinstance(payload, dict) else {"value": str(payload)[:500]},
+        }
+        return fn(
+            f"Execute driver action {action_id} on {driver_id}",
+            origin="api.server.appdrivers",
+            proposed_action=pa,
+            meta={"api_domain": "drivers", "driver_id": str(driver_id), "action_id": str(action_id)},
+            user_consented=bool(user_consented),
+        )
+    except Exception as exc:
+        return {"ok": False, "allow": False, "decision": "DEFER", "domain_execution_authorized": False, "reason": f"operatorcore_unavailable:{exc}", "execution_authority": False}
+
+
+def _operator_record_driver_result(auth: Dict[str, Any], result: Dict[str, Any], *, verified: bool) -> Dict[str, Any]:
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "record_external_domain_action_result", None)
+        if callable(fn):
+            return fn(auth, result, verified=bool(verified), origin="api.server.appdrivers")
+    except Exception:
+        pass
+    return {"ok": False, "verified": False, "execution_authority": False}
+
+
 def _ok(**payload: Any):
     data = {"ok": True}
     data.update(payload)
@@ -1051,27 +1097,44 @@ def apply(app):
         if str(_energy_verdict.get("decision") or "ALLOW").upper() in {"DENY", "DEFER", "REDUCE_MODE"} or not bool(_energy_verdict.get("ok", True)):
             return _err("Driver action blocked by hazardous-energy / Energetics preflight", 409, details=_energy_verdict)
 
+        authorization = _operator_authorize_driver_action(driver_id, action_id, payload, user_consented=True)
+        if not bool(authorization.get("domain_execution_authorized")):
+            return _err(
+                "Driver action blocked by OperatorCore governance/security/assurance gates",
+                409,
+                details=authorization,
+                decision=str(authorization.get("decision") or "DEFER"),
+                source="OperatorCore",
+            )
+
         sess = _session_get(driver_id)
         mod, err = _load_driver_module(driver_id)
         if err:
-            return _err(err, 500)
+            audit = _operator_record_driver_result(authorization, {"ok": False, "error": err}, verified=False)
+            return _err(err, 500, operator_audit=audit)
 
-        context = _build_driver_context(driver_id, instance_id=sess.get("instance_id"), extra={"action_id": action_id, "energetics": _energy_verdict})
+        context = _build_driver_context(driver_id, instance_id=sess.get("instance_id"), extra={"action_id": action_id, "energetics": _energy_verdict, "operator_contract": authorization.get("contract")})
 
         try:
             if hasattr(mod, "driver_action"):
                 out = mod.driver_action(action_id=action_id, context=context, payload=payload)  # type: ignore[attr-defined]
-                return jsonify(out if isinstance(out, dict) else {"ok": True, "result": out})
-
-            fn_name = f"action_{action_id}"
-            if hasattr(mod, fn_name):
+            else:
+                fn_name = f"action_{action_id}"
+                if not hasattr(mod, fn_name):
+                    audit = _operator_record_driver_result(authorization, {"ok": False, "error": "action_not_implemented"}, verified=False)
+                    return _err(f"Action '{action_id}' not implemented by driver", 404, operator_audit=audit)
                 fn = getattr(mod, fn_name)
                 out = fn(context=context, payload=payload)  # type: ignore[misc]
-                return jsonify(out if isinstance(out, dict) else {"ok": True, "result": out})
 
-            return _err(f"Action '{action_id}' not implemented by driver", 404)
+            result = out if isinstance(out, dict) else {"ok": True, "result": out}
+            verified = bool(result.get("ok", True)) and not bool(result.get("error"))
+            result["operator_audit"] = _operator_record_driver_result(authorization, result, verified=verified)
+            result["operator_contract_id"] = str((authorization.get("contract") or {}).get("contract_id") or "")
+            return jsonify(result), 200 if verified else 500
         except Exception as e:
-            return _err(f"action failed: {e}", 500, details=traceback.format_exc())
+            failure = {"ok": False, "error": str(e), "traceback": traceback.format_exc()}
+            audit = _operator_record_driver_result(authorization, failure, verified=False)
+            return _err(f"action failed: {e}", 500, details=failure["traceback"], operator_audit=audit)
 
 
     # Register emergency contract validation through the same apply(app) bridge path.

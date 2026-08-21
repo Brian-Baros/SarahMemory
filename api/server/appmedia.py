@@ -70,6 +70,7 @@ import os
 import re
 import time
 import uuid
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple, List
@@ -128,6 +129,25 @@ DEFAULT_EXPORT_SUBDIR = os.environ.get("MEDIA_EXPORT_SUBDIR", "canvas/exports").
 
 # Optional “download token” mechanism (lightweight). If empty, download is open (dev).
 DOWNLOAD_TOKEN = (os.environ.get("MEDIA_DOWNLOAD_TOKEN") or "").strip()
+
+# Persistent live-avatar API bridge state.  The bridge presents frames only;
+# cognition/state ownership stays in Avatar/Rhythm/UnifiedAvatarController and
+# pixel ownership stays in CanvasStudio.
+_LIVE_AVATAR_LOCK = threading.RLock()
+_LIVE_AVATAR_CONTROLLER: Any = None
+_LIVE_AVATAR_CANVAS: Any = None
+
+def _live_avatar_runtime() -> Tuple[Any, Any]:
+    global _LIVE_AVATAR_CONTROLLER, _LIVE_AVATAR_CANVAS
+    with _LIVE_AVATAR_LOCK:
+        if _LIVE_AVATAR_CONTROLLER is None:
+            from UnifiedAvatarController import UnifiedAvatarController  # type: ignore
+            _LIVE_AVATAR_CONTROLLER = UnifiedAvatarController()
+        if _LIVE_AVATAR_CANVAS is None:
+            from SarahMemoryCanvasStudio import CanvasStudio  # type: ignore
+            _LIVE_AVATAR_CANVAS = CanvasStudio()
+        return _LIVE_AVATAR_CONTROLLER, _LIVE_AVATAR_CANVAS
+
 
 # ---------------------------
 # Utilities
@@ -1040,6 +1060,71 @@ def media_job_manifest():
         return _err("manifest_unauthorized", 401)
 
     return _send_file_compat(mp, as_attachment=False, download_name="manifest.json", mimetype="application/json")
+
+
+@bp.get("/api/media/avatar/live/status")
+def media_avatar_live_status():
+    """Read-only status for the persistent embodied-state renderer."""
+    try:
+        controller, canvas = _live_avatar_runtime()
+        packet = controller.build_live_avatar_state_packet(now_monotonic=time.monotonic())
+        health = dict(getattr(canvas, "_live_avatar_last_health", {}) or {})
+        return _ok(
+            schema="SarahMemory.avatar.live_status.v1",
+            persistent_avatar_state=bool(isinstance(packet, dict) and packet.get("ok")),
+            parameter_packet={k: v for k, v in (packet or {}).items() if k not in {"avatar_state", "rhythm"}},
+            render_health=health,
+            execution_authority=False,
+        )
+    except Exception as exc:
+        return _err("live_avatar_unavailable", 503, detail=str(exc), execution_authority=False)
+
+
+@bp.route("/api/media/avatar/live/frame", methods=["GET", "POST"])
+def media_avatar_live_frame():
+    """Render and return one persistent live-avatar PNG frame.
+
+    This endpoint is presentation-only and never grants model/device execution authority.
+    """
+    payload = request.get_json(silent=True) if request.method == "POST" else {}
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        width = max(64, min(1024, int(payload.get("width") or request.args.get("width") or 512)))
+        height = max(64, min(1024, int(payload.get("height") or request.args.get("height") or 512)))
+    except Exception:
+        width = height = 512
+    reference_path = str(payload.get("reference_path") or request.args.get("reference_path") or "").strip() or None
+    try:
+        controller, canvas = _live_avatar_runtime()
+        parameter_packet = controller.build_live_avatar_state_packet(now_monotonic=time.monotonic())
+        if not isinstance(parameter_packet, dict) or not parameter_packet.get("ok"):
+            return _err("live_avatar_state_unavailable", 503, details=parameter_packet, execution_authority=False)
+        rendered = canvas.render_live_avatar_frame(
+            parameter_packet, width=width, height=height, reference_path=reference_path, use_temporal_history=True
+        )
+        if not isinstance(rendered, dict) or not rendered.get("ok"):
+            return _err("live_avatar_render_failed", 503, details=rendered, execution_authority=False)
+        rgba = rendered.get("frame_rgba")
+        if rgba is None:
+            return _err("live_avatar_frame_missing", 503, execution_authority=False)
+        from PIL import Image  # type: ignore
+        from io import BytesIO
+        bio = BytesIO()
+        Image.fromarray(rgba, mode="RGBA").save(bio, format="PNG")
+        png = bio.getvalue()
+        return _ok(
+            schema="SarahMemory.avatar.live_frame.api.v1",
+            frame_id=int(rendered.get("frame_id") or 0),
+            width=width,
+            height=height,
+            mime="image/png",
+            frame_b64=base64.b64encode(png).decode("ascii"),
+            render_health=rendered.get("render_health") or {},
+            execution_authority=False,
+        )
+    except Exception as exc:
+        _arile_api_emit("live_avatar_frame_error", "Persistent live avatar API render failed.", severity=0.45, error=str(exc))
+        return _err("live_avatar_render_exception", 503, detail=str(exc), execution_authority=False)
 
 
 @bp.get("/api/media/governance")

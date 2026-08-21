@@ -233,6 +233,76 @@ def _user_confirmed_file_action(data: Optional[Dict[str, Any]] = None) -> bool:
     return str(data.get("confirm_phrase") or "").strip().upper() in {"DELETE PERMANENTLY", "EMPTY TRASH", "I APPROVE", "USER APPROVED"}
 
 
+def _operator_authorize_filesystem(
+    operation: str,
+    paths: list[str],
+    data: Optional[Dict[str, Any]] = None,
+    *,
+    risk_level: str = "TIER_2_BOUNDED_LOCAL_OPERATION",
+    rollback_plan: str = "Use the operation-specific reversible path when available; otherwise stop and report verification failure.",
+    reason: str = "User-requested filesystem/domain mutation through appsys.",
+    force_explicit_confirmation: bool = False,
+) -> Dict[str, Any]:
+    """Authorize a domain-owned filesystem mutation through OperatorCore."""
+    payload = data if isinstance(data, dict) else {}
+    explicit = _user_confirmed_file_action(payload)
+    # A direct localhost call to a concrete mutation endpoint is the user's active
+    # operation request; destructive/irreversible calls still require an explicit flag.
+    consented = explicit if force_explicit_confirmation else bool(explicit or _is_local_request())
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "authorize_external_domain_action", None)
+        if not callable(fn):
+            raise RuntimeError("OperatorCore authorization surface unavailable")
+        clean_paths = [str(x) for x in paths if str(x).strip()]
+        proposed = {
+            "action_type": "filesystem_write",
+            "capability_name": "filesystem",
+            "target": clean_paths[0] if clean_paths else "filesystem",
+            "target_ref": clean_paths[0] if clean_paths else "filesystem",
+            "paths": clean_paths,
+            "mode": str(operation),
+            "required_permissions": ["FilesystemWrite"],
+            "risk_level": str(risk_level),
+            "reason": str(reason),
+            "rollback_plan": str(rollback_plan),
+            "tests": ["path_scope_validation", "post_mutation_state_verification"],
+            "dry_run": False,
+            "touches_filesystem": True,
+            "apply": True,
+        }
+        return fn(
+            f"Filesystem operation {operation}: {', '.join(clean_paths)[:1200]}",
+            origin="api.server.appsys",
+            proposed_action=proposed,
+            meta={"api_domain": "system_files", "operation": str(operation)},
+            user_consented=consented,
+        )
+    except Exception as exc:
+        return {"ok": False, "allow": False, "decision": "DEFER", "domain_execution_authorized": False, "reason": f"operatorcore_unavailable:{exc}", "execution_authority": False}
+
+
+def _operator_record_filesystem_result(auth: Dict[str, Any], result: Dict[str, Any], *, verified: bool) -> Dict[str, Any]:
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "record_external_domain_action_result", None)
+        if callable(fn):
+            return fn(auth, result, verified=bool(verified), origin="api.server.appsys")
+    except Exception:
+        pass
+    return {"ok": False, "verified": False, "execution_authority": False}
+
+
+def _operator_block_response(auth: Dict[str, Any], operation: str):
+    return _err(
+        f"{operation} blocked by OperatorCore governance/security/assurance gates",
+        409,
+        detail=str(auth.get("reason") or "governance_block"),
+        decision=str(auth.get("decision") or "DEFER"),
+        operator=auth,
+    )
+
+
 def _local_ingest_enabled(*, require_local_only_mode: bool = False) -> bool:
     """Enable local ingestion endpoints under governance.
 
@@ -541,11 +611,16 @@ def files_mkdir():
     if not parent_abs:
         return _err("Invalid path")
 
+    target = Path(parent_abs) / _sanitize_filename(name)
+    auth = _operator_authorize_filesystem("mkdir", [str(target)], data, rollback_plan="Remove the newly created empty directory if verification fails.")
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "mkdir")
     try:
-        target = Path(parent_abs) / _sanitize_filename(name)
         target.mkdir(parents=True, exist_ok=False)
-        log_file_event("mkdir", str(target), details={"rel": str(target.relative_to(_get_base_dir()))})
-        return _ok(created=True, path=str(target.relative_to(_get_base_dir())))
+        verified = target.is_dir()
+        audit = _operator_record_filesystem_result(auth, {"created": verified, "path": str(target)}, verified=verified)
+        log_file_event("mkdir", str(target), details={"rel": str(target.relative_to(_get_base_dir())), "operator_audit": audit})
+        return _ok(created=verified, path=str(target.relative_to(_get_base_dir())), operator_audit=audit)
     except FileExistsError:
         return _err("Folder already exists", 409)
     except Exception as e:
@@ -573,9 +648,19 @@ def files_rename():
         if not sp.exists():
             return _err("Source not found", 404)
         dst = sp.parent / _sanitize_filename(new_name)
+        auth = _operator_authorize_filesystem("rename", [str(sp), str(dst)], data, rollback_plan=f"Rename {dst} back to {sp} if verification fails.")
+        if not auth.get("domain_execution_authorized"):
+            return _operator_block_response(auth, "rename")
         sp.rename(dst)
-        log_file_event("rename", str(dst), details={"from": src_rel, "to": str(dst.relative_to(_get_base_dir()))})
-        return _ok(renamed=True, path=str(dst.relative_to(_get_base_dir())))
+        verified = dst.exists() and not sp.exists()
+        if not verified and dst.exists() and not sp.exists():
+            try:
+                dst.rename(sp)
+            except Exception:
+                pass
+        audit = _operator_record_filesystem_result(auth, {"renamed": verified, "from": src_rel, "to": str(dst)}, verified=verified)
+        log_file_event("rename", str(dst), details={"from": src_rel, "to": str(dst.relative_to(_get_base_dir())), "operator_audit": audit})
+        return _ok(renamed=verified, path=str(dst.relative_to(_get_base_dir())), operator_audit=audit)
     except Exception as e:
         return _err("Rename failed", 500, detail=str(e))
 
@@ -620,6 +705,9 @@ def files_upload():
         return _err("No files uploaded", 400)
 
     max_bytes = int(os.getenv("SARAHMEMORY_MAX_UPLOAD_BYTES", str(200 * 1024 * 1024)))
+    auth = _operator_authorize_filesystem("upload", [str(dl_dir)], request.get_json(silent=True) or {}, rollback_plan="Delete only partially/newly uploaded files if verification fails.")
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "upload")
     saved = []
 
     for f in files:
@@ -659,7 +747,9 @@ def files_upload():
             logger.exception("Upload failed")
             return _err(f"Upload failed: {e}", 500)
 
-    return _ok(saved=saved, count=len(saved))
+    verified = bool(saved) and all(Path(_get_base_dir(), str(item.get("path") or "")).exists() for item in saved)
+    audit = _operator_record_filesystem_result(auth, {"saved": saved, "count": len(saved)}, verified=verified)
+    return _ok(saved=saved, count=len(saved), operator_audit=audit)
 
 
 @bp.post("/api/ingest/eat_this")
@@ -700,6 +790,15 @@ def ingest_eat_this():
         files = []
     if not files:
         return _err("No files uploaded", 400)
+
+    auth = _operator_authorize_filesystem(
+        "ingest_learning", [str((_downloads_dir() / "ingest").resolve())], {"confirm": True},
+        risk_level="TIER_2_BOUNDED_LOCAL_OPERATION",
+        rollback_plan="Uploaded ingest artifacts may be removed; learned rows remain subject to governed dataset provenance/cleanup rules.",
+        reason="Explicit local EAT THIS command requests bounded durable learning from supplied files.",
+    )
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "ingest_learning")
 
     # save into downloads/ingest for traceability
     ingest_dir = (_downloads_dir() / "ingest").resolve()
@@ -757,18 +856,20 @@ def ingest_eat_this():
         for p in saved_paths:
             ext = os.path.splitext(p)[1].lower()
             tuples.append((p, ext))
-        # process_files expects list[(path, type)]
-        SML.process_files(tuples, learn_registry=False)
-        learned = len(tuples)
+        # process_files returns the number of durable records actually accepted.
+        learned = int(SML.process_files(tuples, learn_registry=False) or 0)
     except Exception as e:
         errors.append(f"{type(e).__name__}: {e}")
         logger.exception("EatThis learning failed")
 
+    verified = not errors and learned >= 0
+    audit = _operator_record_filesystem_result(auth, {"ingested": True, "learned": learned, "files": saved_meta, "errors": errors}, verified=verified)
     return _ok(
         ingested=True,
         learned=learned,
         files=saved_meta,
         errors=errors,
+        operator_audit=audit,
     )
 
 
@@ -805,6 +906,13 @@ def index_push():
         return _err("Not available (local-only indexing disabled).", 403)
 
     payload = request.get_json(silent=True) or {}
+    auth = _operator_authorize_filesystem(
+        "index_push", [str((_downloads_dir() / "index_push").resolve())], payload,
+        rollback_plan="Index additions retain source/provenance and can be invalidated or rebuilt from source artifacts.",
+        reason="Explicit UI/index event requests bounded local dataset/index mutation.",
+    )
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "index_push")
 
     items = payload.get("items")
     if not items:
@@ -922,7 +1030,9 @@ def index_push():
         except Exception as e:
             errors.append(f"item: {type(e).__name__}: {e}")
 
-    return _ok(pushed=True, stored=stored, indexed=indexed, errors=errors)
+    verified = not errors
+    audit = _operator_record_filesystem_result(auth, {"pushed": True, "stored": stored, "indexed": indexed, "errors": errors}, verified=verified)
+    return _ok(pushed=True, stored=stored, indexed=indexed, errors=errors, operator_audit=audit)
 
 @bp.post("/api/files/delete")
 def files_delete():
@@ -953,6 +1063,9 @@ def files_delete():
             if stored.exists():
                 stored = items_dir / f"{did}__{safe_name}__{uuid.uuid4().hex}"
 
+            auth = _operator_authorize_filesystem("trash", [str(sp), str(stored)], data, rollback_plan=f"Move {stored} back to {sp} using the dumpster restore record.")
+            if not auth.get("domain_execution_authorized"):
+                return _operator_block_response(auth, "trash")
             shutil.move(str(sp), str(stored))
 
             idx = _load_dumpster_index()
@@ -968,17 +1081,28 @@ def files_delete():
             }
             _save_dumpster_index(idx)
 
-            log_file_event("trash", str(sp), details={"dumpster_id": did, "stored": str(stored)})
-            return _ok(trashed=True, id=did, stored_path=str(stored.relative_to(_get_base_dir())))
+            verified = stored.exists() and not sp.exists()
+            audit = _operator_record_filesystem_result(auth, {"trashed": verified, "dumpster_id": did, "stored": str(stored)}, verified=verified)
+            log_file_event("trash", str(sp), details={"dumpster_id": did, "stored": str(stored), "operator_audit": audit})
+            return _ok(trashed=verified, id=did, stored_path=str(stored.relative_to(_get_base_dir())), operator_audit=audit)
 
         if not _user_confirmed_file_action(data):
             return _err("Permanent delete requires explicit user confirmation. Use mode=trash for reversible delete.", 403, decision="REQUIRE_USER", source="appsys.files_delete")
+        auth = _operator_authorize_filesystem(
+            "delete_permanent", [str(sp)], data, risk_level="TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE",
+            rollback_plan="No automatic rollback after permanent deletion; user confirmation and verified backup are required by policy.",
+            reason="Explicit user-requested permanent deletion.", force_explicit_confirmation=True,
+        )
+        if not auth.get("domain_execution_authorized"):
+            return _operator_block_response(auth, "delete_permanent")
         if sp.is_dir():
             shutil.rmtree(str(sp))
         else:
             sp.unlink()
-        log_file_event("delete_permanent", str(sp), details={"rel": src_rel})
-        return _ok(deleted=True)
+        verified = not sp.exists()
+        audit = _operator_record_filesystem_result(auth, {"deleted": verified, "path": str(sp)}, verified=verified)
+        log_file_event("delete_permanent", str(sp), details={"rel": src_rel, "operator_audit": audit})
+        return _ok(deleted=verified, operator_audit=audit)
     except Exception as e:
         logger.exception("Delete failed")
         return _err(f"Delete failed: {e}", 500)
@@ -1025,6 +1149,9 @@ def trash_restore():
     if not orig_abs:
         return _err("Invalid original path", 400)
 
+    auth = _operator_authorize_filesystem("trash_restore", [str(stored_abs), str(orig_abs)], data, rollback_plan="Move the restored item back to its dumpster storage path if verification fails.")
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "trash_restore")
     try:
         dest = Path(orig_abs)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1035,8 +1162,10 @@ def trash_restore():
         idx.pop(did, None)
         _save_dumpster_index(idx)
 
-        log_file_event("restore", str(dest), details={"dumpster_id": did})
-        return _ok(restored=True, path=str(dest.relative_to(_get_base_dir())))
+        verified = dest.exists() and not stored_abs.exists()
+        audit = _operator_record_filesystem_result(auth, {"restored": verified, "path": str(dest), "dumpster_id": did}, verified=verified)
+        log_file_event("restore", str(dest), details={"dumpster_id": did, "operator_audit": audit})
+        return _ok(restored=verified, path=str(dest.relative_to(_get_base_dir())), operator_audit=audit)
     except Exception as e:
         logger.exception("Restore failed")
         return _err(f"Restore failed: {e}", 500)
@@ -1051,6 +1180,13 @@ def trash_empty():
     data = request.get_json(silent=True) or {}
     if not _user_confirmed_file_action(data):
         return _err("Empty trash requires explicit user confirmation.", 403, decision="REQUIRE_USER", source="appsys.trash_empty")
+    auth = _operator_authorize_filesystem(
+        "trash_empty", [str(_dumpster_dir())], data, risk_level="TIER_4_NETWORK_REMOTE_OR_DESTRUCTIVE",
+        rollback_plan="No automatic rollback after dumpster purge; explicit confirmation is mandatory.",
+        reason="Explicit user request to permanently purge reversible-trash storage.", force_explicit_confirmation=True,
+    )
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "trash_empty")
 
     idx = _load_dumpster_index()
     removed = 0
@@ -1069,8 +1205,10 @@ def trash_empty():
             errors += 1
 
     _save_dumpster_index(idx)
-    log_file_event("trash_empty", str(_dumpster_dir()), details={"removed": removed, "errors": errors})
-    return _ok(emptied=True, removed=removed, errors=errors)
+    verified = errors == 0
+    audit = _operator_record_filesystem_result(auth, {"emptied": verified, "removed": removed, "errors": errors}, verified=verified)
+    log_file_event("trash_empty", str(_dumpster_dir()), details={"removed": removed, "errors": errors, "operator_audit": audit})
+    return _ok(emptied=verified, removed=removed, errors=errors, operator_audit=audit)
 
 
 @bp.post("/api/files/move")
@@ -1090,11 +1228,16 @@ def files_move():
     if not src_abs or not dst_abs:
         return _err("Invalid src or dst")
 
+    auth = _operator_authorize_filesystem("move", [src_abs, dst_abs], data, rollback_plan=f"Move {dst_abs} back to {src_abs} if verification fails.")
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "move")
     try:
         Path(dst_abs).parent.mkdir(parents=True, exist_ok=True)
         shutil.move(src_abs, dst_abs)
-        log_file_event("move", dst_abs, details={"from": src_rel, "to": dst_rel})
-        return _ok(moved=True)
+        verified = Path(dst_abs).exists() and not Path(src_abs).exists()
+        audit = _operator_record_filesystem_result(auth, {"moved": verified, "from": src_rel, "to": dst_rel}, verified=verified)
+        log_file_event("move", dst_abs, details={"from": src_rel, "to": dst_rel, "operator_audit": audit})
+        return _ok(moved=verified, operator_audit=audit)
     except Exception as e:
         return _err("Move failed", 500, detail=str(e))
 
@@ -1116,18 +1259,24 @@ def files_copy():
     if not src_abs or not dst_abs:
         return _err("Invalid src or dst")
 
+    auth = _operator_authorize_filesystem("copy", [src_abs, dst_abs], data, rollback_plan=f"Remove copied destination {dst_abs} if verification fails.")
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "copy")
     try:
         sp = Path(src_abs)
         if not sp.exists():
-            return _err("Source not found", 404)
+            audit = _operator_record_filesystem_result(auth, {"copied": False, "error": "source_not_found"}, verified=False)
+            return _err("Source not found", 404, operator_audit=audit)
         dp = Path(dst_abs)
         dp.parent.mkdir(parents=True, exist_ok=True)
         if sp.is_dir():
             shutil.copytree(src_abs, dst_abs)
         else:
             shutil.copy2(src_abs, dst_abs)
-        log_file_event("copy", dst_abs, details={"from": src_rel, "to": dst_rel})
-        return _ok(copied=True)
+        verified = Path(dst_abs).exists()
+        audit = _operator_record_filesystem_result(auth, {"copied": verified, "from": src_rel, "to": dst_rel}, verified=verified)
+        log_file_event("copy", dst_abs, details={"from": src_rel, "to": dst_rel, "operator_audit": audit})
+        return _ok(copied=verified, operator_audit=audit)
     except FileExistsError:
         return _err("Destination already exists", 409)
     except Exception as e:
@@ -1379,8 +1528,21 @@ def browser_state():
         "updated_ts": now,
         "updated_iso": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
+    auth = _operator_authorize_filesystem(
+        "browser_state_write", [str(_browser_state_path())], data,
+        rollback_plan="Restore previous browser observation state if the write cannot be verified.",
+        reason="Research Browser synchronizes bounded local observation state for cognitive consumers.",
+    )
+    if not auth.get("domain_execution_authorized"):
+        return _operator_block_response(auth, "browser_state_write")
+    previous = _read_browser_state()
     _write_browser_state(state)
-    return _ok(saved=True, state={k: v for k, v in state.items() if k not in ("clean_html", "text")}, text_chars=len(state.get("text") or ""))
+    observed = _read_browser_state()
+    verified = str(observed.get("updated_iso") or "") == str(state.get("updated_iso") or "")
+    if not verified:
+        _write_browser_state(previous)
+    audit = _operator_record_filesystem_result(auth, {"saved": verified, "state_meta": {k: v for k, v in state.items() if k not in ("clean_html", "text")}}, verified=verified)
+    return _ok(saved=verified, state={k: v for k, v in state.items() if k not in ("clean_html", "text")}, text_chars=len(state.get("text") or ""), operator_audit=audit)
 
 @bp.route("/api/browser/fetch", methods=["GET", "POST", "OPTIONS"])
 def browser_fetch():
