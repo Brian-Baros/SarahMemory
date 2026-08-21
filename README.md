@@ -553,7 +553,7 @@ Govern it.
 ## SarahMemory AD Video (HD)
 
 ### Click-to-Play Thumbnail
-[![SarahMemory AD Video](documents/SM_AD_VID_IMAGE.jpg)](documents/SM_AD_VID_HD.mp4)
+[![SarahMemory AD Video](documents/SM_AD_VID_IMG.jpg)](documents/SM_AD_VID_HD.mp4)
 
 ### Inline Video Player
 <video width="100%" controls>
