@@ -1,9 +1,50 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type CSSProperties } from "react";
+import {
+  Cpu,
+  Folder,
+  LayoutGrid,
+  MessageCircle,
+  MonitorCog,
+  Network,
+  Palette,
+  Search,
+  Settings,
+  Terminal,
+  User,
+} from "lucide-react";
 import { StatusBar } from "@/components/StatusBar";
 import { WindowManager } from "./WindowManager";
-import { useWindowStore } from "@/stores/useWindowStore";
+import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { cn } from "@/lib/utils";
+import sarahLogoUrl from "@/assets/smaios-logo.jpg";
+
+const DESKTOP_SHORTCUTS: { id: WindowId; label: string; Icon: any }[] = [
+  { id: "chat", label: "Chat", Icon: MessageCircle },
+  { id: "avatar", label: "Avatar", Icon: User },
+  { id: "nailde", label: "NAILDE", Icon: MonitorCog },
+  { id: "files", label: "Files", Icon: Folder },
+  { id: "research", label: "Research", Icon: Search },
+  { id: "dlengine", label: "DL Engine", Icon: Cpu },
+  { id: "sarahnet", label: "SarahNet", Icon: Network },
+  { id: "studio", label: "Studios", Icon: Palette },
+  { id: "terminal", label: "Terminal", Icon: Terminal },
+  { id: "settings", label: "Settings", Icon: Settings },
+];
+
+const WORKSPACE_PRESETS = [
+  { id: "chat", label: "Chat" },
+  { id: "research", label: "Research" },
+  { id: "operator", label: "Operator" },
+  { id: "engineer", label: "Engineer" },
+  { id: "media", label: "Media" },
+] as const;
+
+function clampNumber(value: any, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(parsed)));
+}
 
 /**
  * DesktopShell
@@ -20,13 +61,24 @@ import { cn } from "@/lib/utils";
  *  - WindowManager will be patched next to respect --taskbar-dock and --taskbar-size
  */
 export function DesktopShell() {
-  const { windows, openWindow } = useWindowStore();
+  const { windows, openWindow, applyWorkspacePreset } = useWindowStore();
   const { settings, updateSettings } = useSarahStore();
   const wallpaperUrl = String((settings as any)?.wallpaperUrl || "").trim();
   const wallpaperMode = String((settings as any)?.wallpaperMode || "cover");
   const panelTransparency = String((settings as any)?.panelTransparency || "glass");
   const shellDensity = String((settings as any)?.shellDensity || "comfortable");
+  const backgroundBrightness = clampNumber((settings as any)?.backgroundBrightness, 82, 20, 125);
+  const backgroundOverlay = clampNumber((settings as any)?.backgroundOverlay, 42, 0, 85);
+  const backgroundBlur = clampNumber((settings as any)?.backgroundBlur, 0, 0, 18);
+  const panelOpacity = clampNumber((settings as any)?.panelOpacity, 82, 45, 100);
+  const activeWorkspace = String((settings as any)?.activeWorkspace || "chat");
   const safeWallpaperCssUrl = wallpaperUrl.replace(/"/g, '\\"');
+  const panelAlpha =
+    panelTransparency === "solid"
+      ? 1
+      : panelTransparency === "translucent"
+        ? Math.min(panelOpacity / 100, 0.68)
+        : panelOpacity / 100;
 
   // Open Chat window by default if no windows are open
   useEffect(() => {
@@ -131,10 +183,14 @@ export function DesktopShell() {
       : "min-h-[100dvh] max-h-[100dvh] flex flex-col overflow-hidden bg-background",
     shellDensity === "compact" && "text-[13px]",
     shellDensity === "operator" && "tracking-wide",
-    panelTransparency === "solid" && "[--panel-bg:hsl(var(--card))]",
-    panelTransparency === "glass" && "[--panel-bg:hsl(var(--card)/0.78)]",
-    panelTransparency === "translucent" && "[--panel-bg:hsl(var(--card)/0.62)]",
   );
+
+  const shellVars = {
+    "--panel-bg": `hsl(var(--card) / ${panelAlpha.toFixed(2)})`,
+    "--wallpaper-brightness": `${backgroundBrightness}%`,
+    "--wallpaper-blur": `${backgroundBlur}px`,
+    "--wallpaper-overlay": (backgroundOverlay / 100).toFixed(2),
+  } as CSSProperties;
 
   // Dock container placement order
   const taskbarFirst = dock === "top" || dock === "left";
@@ -182,33 +238,84 @@ export function DesktopShell() {
   );
 
   return (
-    <div className={shellClass}>
+    <div className={shellClass} style={shellVars}>
       {/* Docked taskbar first (top/left) */}
       {taskbarFirst && TaskbarContainer}
 
       {/* Desktop workspace area */}
       <div className="flex-1 relative min-h-0">
         {/* Wallpaper/Background pattern */}
-        <div
-          className="absolute inset-0 bg-gradient-to-br from-background via-muted/20 to-background"
-          style={
-            wallpaperUrl
-              ? {
-                  backgroundImage: `linear-gradient(rgba(0,0,0,.42), rgba(0,0,0,.42)), url("${safeWallpaperCssUrl}")`,
-                  backgroundSize: wallpaperMode === "stretch" ? "100% 100%" : wallpaperMode === "tile" ? "auto" : wallpaperMode,
-                  backgroundRepeat: wallpaperMode === "tile" ? "repeat" : "no-repeat",
-                  backgroundPosition: "center",
-                }
-              : undefined
-          }
-        >
+        <div className="absolute inset-0 sarah-desktop-ambient" />
+        {wallpaperUrl && (
           <div
-            className="absolute inset-0 opacity-5"
+            className="absolute inset-0 sarah-desktop-wallpaper"
             style={{
-              backgroundImage: `radial-gradient(circle at 2px 2px, currentColor 1px, transparent 0)`,
-              backgroundSize: "32px 32px",
+              backgroundImage: `url("${safeWallpaperCssUrl}")`,
+              backgroundSize:
+                wallpaperMode === "stretch"
+                  ? "100% 100%"
+                  : wallpaperMode === "tile" || wallpaperMode === "center"
+                    ? "auto"
+                    : wallpaperMode,
+              backgroundRepeat: wallpaperMode === "tile" ? "repeat" : "no-repeat",
+              backgroundPosition: "center",
+              filter: "brightness(var(--wallpaper-brightness)) blur(var(--wallpaper-blur))",
+              transform: backgroundBlur > 0 ? "scale(1.02)" : undefined,
             }}
           />
+        )}
+        <div className="absolute inset-0 sarah-desktop-grid" />
+        <div
+          className="absolute inset-0 bg-background"
+          style={{ opacity: "var(--wallpaper-overlay)" }}
+        />
+
+        <div className="absolute left-4 top-4 z-10 hidden max-h-[calc(100%-2rem)] grid-flow-row auto-rows-min grid-cols-1 gap-2 overflow-hidden md:grid">
+          {DESKTOP_SHORTCUTS.map(({ id, label, Icon }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => openWindow(id)}
+              className="group flex w-[86px] flex-col items-center gap-1 rounded-md border border-transparent px-2 py-2 text-center text-xs text-foreground/85 outline-none transition hover:border-primary/35 hover:bg-card/55 focus:border-primary/60 focus:bg-card/70"
+              title={`Open ${label}`}
+            >
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl border border-border/65 bg-card/70 shadow-lg shadow-black/20 transition group-hover:border-primary/50 group-hover:text-primary">
+                <Icon className="h-5 w-5" />
+              </span>
+              <span className="line-clamp-2 min-h-[2em] leading-tight drop-shadow">{label}</span>
+            </button>
+          ))}
+        </div>
+
+        <div className="absolute right-4 top-4 z-10 hidden max-w-[min(560px,calc(100%-8rem))] items-center gap-2 rounded-xl border border-border/70 bg-[var(--panel-bg)] px-3 py-2 shadow-xl shadow-black/25 backdrop-blur-xl xl:flex">
+          <img src={sarahLogoUrl} alt="" className="h-8 w-8 rounded-lg object-cover" />
+          <div className="min-w-0 pr-1">
+            <div className="truncate text-xs font-semibold uppercase tracking-[0.18em] text-primary/85">
+              Governed Cognitive Workstation
+            </div>
+            <div className="truncate text-[11px] text-muted-foreground">
+              Local-first shell with preserved V9 panels
+            </div>
+          </div>
+          <div className="h-8 w-px bg-border" />
+          {WORKSPACE_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              onClick={() => {
+                updateSettings({ activeWorkspace: preset.id } as any);
+                applyWorkspacePreset(preset.id);
+              }}
+              className={cn(
+                "rounded-lg px-2.5 py-1.5 text-xs font-medium transition",
+                activeWorkspace === preset.id
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-secondary/80 hover:text-foreground",
+              )}
+            >
+              {preset.label}
+            </button>
+          ))}
         </div>
 
         {/* Window Manager */}

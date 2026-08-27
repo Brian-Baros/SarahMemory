@@ -12,6 +12,7 @@ import {
   Shield,
   Server,
   Activity,
+  Cable,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -25,6 +26,7 @@ import { api } from '@/lib/api';
 
 import { DialerPanel } from '@/components/panels/DialerPanel';
 import { ContactsPanel } from '@/components/panels/ContactsPanel';
+import { MCPConnectionsPanel } from '@/components/network/MCPConnectionsPanel';
 
 interface NodeInfo {
   id: string;
@@ -238,7 +240,7 @@ export function SarahNetScreen() {
 
       <Tabs defaultValue="nodes" className="flex-1 flex flex-col min-h-0">
         <div className="shrink-0 border-b border-border px-2">
-          <TabsList className="w-full h-12 bg-transparent justify-start gap-1">
+          <TabsList className="w-full h-12 bg-transparent justify-start gap-1 overflow-x-auto">
             <TabsTrigger value="nodes" className="flex-1 gap-1.5 data-[state=active]:bg-primary/10">
               <Users className="h-4 w-4" />
               <span className="text-xs">Nodes</span>
@@ -254,6 +256,10 @@ export function SarahNetScreen() {
             <TabsTrigger value="files" className="flex-1 gap-1.5 data-[state=active]:bg-primary/10">
               <FileText className="h-4 w-4" />
               <span className="text-xs">Files</span>
+            </TabsTrigger>
+            <TabsTrigger value="mcp" className="flex-1 gap-1.5 data-[state=active]:bg-primary/10">
+              <Cable className="h-4 w-4" />
+              <span className="text-xs">MCP</span>
             </TabsTrigger>
           </TabsList>
         </div>
@@ -309,6 +315,10 @@ export function SarahNetScreen() {
                 File transfer routes are available through /api/net/file/* and remain store-and-forward only. Receiving nodes must explicitly accept, verify CRC/SHA, and decide locally.
               </p>
             </div>
+          </TabsContent>
+
+          <TabsContent value="mcp" className="m-0 p-4">
+            <MCPConnectionsPanel />
           </TabsContent>
         </ScrollArea>
       </Tabs>

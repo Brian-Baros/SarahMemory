@@ -631,8 +631,18 @@ export function TerminalPanel() {
           append("stdout", reply);
 
           if (resp?.agent_status) {
-            const smoke = (resp.agent_status as any)?.smoke_tests;
+            const status = resp.agent_status as any;
+            const smoke = status?.smoke_tests;
             if (smoke) append("meta", `AgentFirewall smoke tests: ${smoke.passed ?? 0}/${smoke.total ?? 0} passed.`);
+            // SARAHMEMORY_PATCH_NOTE 2026-08-04:
+            // Display-only governance evidence for Terminal Bay adapter/launch results.
+            // The UI does not authorize execution; it only surfaces backend proof.
+            const taskId = resp?.task_id || status?.task_id;
+            if (taskId) append("meta", `Task ID: ${taskId}`);
+            if (status?.launch_gate) append("meta", `Launch gate: blocked=${Boolean(status.launch_gate.blocked)} reason=${status.launch_gate.reason || "none"}`);
+            if (status?.verified_answer_state) append("meta", `Verified answer state: ${status.verified_answer_state}`);
+            const receiptIds = Array.isArray(resp?.receipt_ids) ? resp.receipt_ids : Array.isArray(status?.receipt_ids) ? status.receipt_ids : [];
+            if (receiptIds.length > 0) append("meta", `Receipt IDs: ${receiptIds.slice(0, 6).join(", ")}`);
           }
 
           if (actions.length > 0) {

@@ -1871,7 +1871,6 @@ if (a.type === "files_preview" || a.type === "files_open") {
 
                 {!preview.loading && !preview.error && preview.kind === "image" && preview.url && (
                   <div className="flex justify-center">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={preview.url}
                       alt={preview.title}

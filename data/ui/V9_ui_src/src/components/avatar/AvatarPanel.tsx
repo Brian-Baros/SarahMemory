@@ -248,20 +248,52 @@ class AvatarSurfaceBoundary extends React.Component<AvatarSurfaceBoundaryProps, 
   }
 }
 
-function Avatar2DImageSurface({ src, onLoad, onError }: { src: string; onLoad: () => void; onError: () => void }) {
+function Avatar2DImageSurface({
+  src,
+  speaking = false,
+  listening = false,
+  expression = "neutral",
+  onLoad,
+  onError,
+}: {
+  src: string;
+  speaking?: boolean;
+  listening?: boolean;
+  expression?: string;
+  onLoad: () => void;
+  onError: () => void;
+}) {
+  const expressionText = String(expression || "neutral").toLowerCase();
   return (
-    <div className="flex h-full w-full items-center justify-center overflow-hidden bg-slate-950">
+    <div
+      className={cn(
+        "relative flex h-full w-full items-center justify-center overflow-hidden bg-slate-950",
+        speaking && "sarah-avatar-speaking",
+        listening && !speaking && "sarah-avatar-listening",
+        expressionText.includes("happy") && "sarah-avatar-happy",
+      )}
+    >
       <img
         src={src}
         alt="Sarah AI Avatar"
         fetchPriority="high"
         width={1254}
         height={1254}
-        className="h-full w-full max-h-full max-w-full object-contain opacity-100 transition-opacity duration-100"
+        className={cn(
+          "h-full w-full max-h-full max-w-full object-contain opacity-100 transition-all duration-150",
+          speaking && "scale-[1.012]",
+          listening && !speaking && "scale-[1.006]",
+        )}
         draggable={false}
         onLoad={onLoad}
         onError={onError}
       />
+      {(speaking || listening) && (
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_36%,rgba(34,211,238,0.22),transparent_38%)]" />
+      )}
+      <div className="pointer-events-none absolute bottom-2 right-2 rounded border border-cyan-500/20 bg-slate-950/70 px-1.5 py-0.5 text-[10px] text-cyan-100/70">
+        {speaking ? "Browser/Server Voice Active" : listening ? "Listening Motion" : "2D Fallback"}
+      </div>
     </div>
   );
 }
@@ -506,7 +538,16 @@ function Avatar2DMorphSurface({ src, speaking, listening, expression, onLoad, on
   }, [speaking, listening, expression, canvasFailed]);
 
   if (canvasFailed) {
-    return <Avatar2DImageSurface src={fallbackSrcRef.current || src} onLoad={onLoad} onError={onError} />;
+    return (
+      <Avatar2DImageSurface
+        src={fallbackSrcRef.current || src}
+        speaking={speaking}
+        listening={listening}
+        expression={expression}
+        onLoad={onLoad}
+        onError={onError}
+      />
+    );
   }
 
   return (

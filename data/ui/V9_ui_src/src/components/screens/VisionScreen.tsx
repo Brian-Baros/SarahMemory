@@ -259,7 +259,7 @@ export function VisionScreen() {
   };
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-black text-red-100">
+    <div className="relative h-[100dvh] w-[100dvw] overflow-hidden bg-black text-red-100">
       <video
         ref={videoRef}
         className="absolute inset-0 h-full w-full object-cover opacity-85 contrast-125 grayscale"
@@ -282,12 +282,12 @@ export function VisionScreen() {
       ))}
 
       {/* Top bar */}
-      <div className="absolute left-4 right-4 top-3 flex items-center justify-between rounded border border-red-500/30 bg-black/60 px-4 py-2 font-mono text-xs backdrop-blur-sm">
-        <div className="flex items-center gap-3 uppercase tracking-[0.25em] text-red-500">
+      <div className="absolute left-2 right-2 top-2 flex flex-col gap-2 rounded border border-red-500/30 bg-black/60 px-3 py-2 font-mono text-[10px] backdrop-blur-sm sm:left-4 sm:right-4 sm:top-3 sm:flex-row sm:items-center sm:justify-between sm:text-xs">
+        <div className="flex items-center gap-2 uppercase tracking-[0.18em] text-red-500 sm:gap-3 sm:tracking-[0.25em]">
           <Radar className="h-4 w-4" />
-          <span>SarahMemory VR Operator HUD</span>
+          <span className="truncate">SarahMemory Camera Vision HUD</span>
         </div>
-        <div className="flex gap-4 text-red-200">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-red-200 sm:gap-4">
           <span>MODE {hudPacket?.mode || "OBSERVE_ONLY"}</span>
           <span>FRAME {frameStatus?.frame_id || hudPacket?.frame?.frame_id || "NO_FRAME"}</span>
           <span>LAT {lastLatencyMs ?? "--"}MS</span>
@@ -296,7 +296,7 @@ export function VisionScreen() {
       </div>
 
       {/* Data tapes */}
-      <div className="absolute left-4 top-20 w-72 space-y-3">
+      <div className="absolute left-2 right-2 top-24 grid gap-2 sm:left-4 sm:right-auto sm:top-20 sm:w-72 sm:block sm:space-y-3">
         <DataTape
           title="Compute Integrity"
           rows={[
@@ -319,7 +319,7 @@ export function VisionScreen() {
         />
       </div>
 
-      <div className="absolute right-4 top-20 w-80 space-y-3">
+      <div className="absolute right-4 top-20 hidden w-80 space-y-3 lg:block">
         <DataTape
           title="Kinetic Integrity"
           rows={[
@@ -343,10 +343,10 @@ export function VisionScreen() {
       </div>
 
       {/* Controls */}
-      <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between rounded border border-red-500/30 bg-black/70 px-4 py-3 backdrop-blur-sm">
+      <div className="absolute bottom-3 left-2 right-2 flex flex-col gap-3 rounded border border-red-500/30 bg-black/70 px-3 py-3 backdrop-blur-sm sm:bottom-4 sm:left-4 sm:right-4 lg:flex-row lg:items-center lg:justify-between lg:px-4">
         <div className="flex items-center gap-2">
           <Shield className="h-4 w-4 text-red-500" />
-          <Label className="font-mono text-xs uppercase tracking-[0.22em] text-red-200">
+          <Label className="font-mono text-[10px] uppercase tracking-[0.16em] text-red-200 sm:text-xs sm:tracking-[0.22em]">
             OBSERVE_ONLY / MOVEMENT LOCKED / HUD CANNOT AUTHORIZE ACTIONS
           </Label>
         </div>
@@ -374,14 +374,14 @@ export function VisionScreen() {
       </div>
 
       {error && (
-        <div className="absolute bottom-24 left-1/2 flex -translate-x-1/2 items-start gap-2 rounded border border-yellow-500/50 bg-black/80 px-4 py-3 text-sm text-yellow-200">
+        <div className="absolute bottom-32 left-1/2 flex w-[min(92vw,620px)] -translate-x-1/2 items-start gap-2 rounded border border-yellow-500/50 bg-black/80 px-4 py-3 text-sm text-yellow-200 sm:bottom-24">
           <AlertTriangle className="mt-0.5 h-4 w-4" />
           <span>{error}</span>
         </div>
       )}
 
       {mode === "idle" && (
-        <div className="absolute left-1/2 top-1/2 w-[min(680px,90vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-red-500/30 bg-black/80 p-6 text-center shadow-2xl backdrop-blur-sm">
+        <div className="absolute left-1/2 top-1/2 w-[min(680px,92vw)] -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-red-500/30 bg-black/80 p-5 text-center shadow-2xl backdrop-blur-sm sm:p-6">
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-red-500/50">
             <Radar className="h-6 w-6 text-red-500" />
           </div>

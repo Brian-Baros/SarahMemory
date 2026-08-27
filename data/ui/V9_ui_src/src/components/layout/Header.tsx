@@ -1,7 +1,8 @@
-import { Settings, User, Menu, SlidersHorizontal } from 'lucide-react';
+import { Camera, Settings, User, Menu, SlidersHorizontal } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { useBackendVersion } from '@/hooks/useBackendVersion';
+import sarahLogoUrl from "@/assets/smaios-logo.jpg";
 
 /**
  * Main header with mobile hamburger menu and settings
@@ -27,6 +28,7 @@ export function Header() {
         </Button>
         
         <div className="flex items-center gap-2">
+          <img src={sarahLogoUrl} alt="" className="h-7 w-7 rounded-lg object-cover ring-1 ring-border" />
           <span className="font-semibold text-foreground text-sm sm:text-base whitespace-nowrap">
             <span className="hidden sm:inline">The SarahMemory Project AiOS</span>
             <span className="sm:hidden">Sarah AiOS</span>
@@ -43,6 +45,16 @@ export function Header() {
           className="text-muted-foreground hover:text-foreground hidden sm:flex"
         >
           <User className="h-5 w-5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="text-muted-foreground hover:text-foreground"
+          onClick={() => window.open('/vision', '_self')}
+          aria-label="Open Camera Vision"
+          title="Open Camera Vision"
+        >
+          <Camera className="h-5 w-5" />
         </Button>
         <Button 
           variant="ghost" 

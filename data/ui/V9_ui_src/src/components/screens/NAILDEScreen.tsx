@@ -43,6 +43,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { apiFetch } from "@/lib/config";
 import { cn } from "@/lib/utils";
 
 interface FloatingWindowState {
@@ -157,19 +158,19 @@ const PANEL_ICONS: Record<string, any> = {
 };
 
 const DEFAULT_WINDOWS: WindowsMap = {
-  battle_plan: { id: "battle_plan", title: "Battle Plan", x: 72, y: 82, w: 340, h: 480, z: 1, open: true, minimized: false, maximized: false, dock: "float" },
-  explorer: { id: "explorer", title: "Sandbox Explorer", x: 88, y: 585, w: 360, h: 350, z: 2, open: true, minimized: false, maximized: false, dock: "float" },
-  prompt: { id: "prompt", title: "Natural Language Build Prompt", x: 452, y: 82, w: 610, h: 268, z: 3, open: true, minimized: false, maximized: false, dock: "float" },
-  editor: { id: "editor", title: "Code Editor", x: 1088, y: 82, w: 650, h: 590, z: 4, open: true, minimized: false, maximized: false, dock: "float" },
-  output: { id: "output", title: "Output / Evidence", x: 452, y: 372, w: 610, h: 300, z: 5, open: true, minimized: false, maximized: false, dock: "float" },
-  sdk: { id: "sdk", title: "SDK Library", x: 72, y: 958, w: 430, h: 300, z: 6, open: true, minimized: false, maximized: false, dock: "float" },
-  agents: { id: "agents", title: "Agent Mission Bay", x: 526, y: 708, w: 440, h: 270, z: 7, open: true, minimized: false, maximized: false, dock: "float" },
-  weightlab: { id: "weightlab", title: "WeightLab", x: 990, y: 708, w: 450, h: 270, z: 8, open: true, minimized: false, maximized: false, dock: "float" },
-  toolbox: { id: "toolbox", title: "Visual Object Toolbox", x: 1462, y: 708, w: 360, h: 270, z: 9, open: true, minimized: false, maximized: false, dock: "float" },
-  device_bay: { id: "device_bay", title: "Device Bay", x: 1462, y: 372, w: 360, h: 310, z: 10, open: true, minimized: false, maximized: false, dock: "float" },
-  holoforge: { id: "holoforge", title: "HoloForge / XR", x: 990, y: 372, w: 450, h: 310, z: 11, open: true, minimized: false, maximized: false, dock: "float" },
-  validation: { id: "validation", title: "Validation", x: 526, y: 1008, w: 640, h: 240, z: 12, open: true, minimized: false, maximized: false, dock: "float" },
-  terminal: { id: "terminal", title: "Governed Terminal Output", x: 1188, y: 1008, w: 634, h: 240, z: 13, open: true, minimized: false, maximized: false, dock: "float" },
+  battle_plan: { id: "battle_plan", title: "Battle Plan", x: 16, y: 88, w: 260, h: 230, z: 1, open: true, minimized: false, maximized: false, dock: "float" },
+  explorer: { id: "explorer", title: "Project Explorer", x: 16, y: 332, w: 260, h: 370, z: 2, open: true, minimized: false, maximized: false, dock: "float" },
+  prompt: { id: "prompt", title: "Natural Language Build Prompt", x: 292, y: 88, w: 520, h: 200, z: 3, open: true, minimized: false, maximized: false, dock: "float" },
+  editor: { id: "editor", title: "Code Editor", x: 292, y: 304, w: 700, h: 398, z: 4, open: true, minimized: false, maximized: false, dock: "float" },
+  output: { id: "output", title: "Output / Evidence", x: 292, y: 718, w: 700, h: 220, z: 5, open: true, minimized: false, maximized: false, dock: "float" },
+  sdk: { id: "sdk", title: "SDK Library", x: 16, y: 718, w: 260, h: 220, z: 6, open: false, minimized: false, maximized: false, dock: "float" },
+  agents: { id: "agents", title: "Agent Mission Bay", x: 700, y: 88, w: 420, h: 240, z: 7, open: false, minimized: false, maximized: false, dock: "float" },
+  weightlab: { id: "weightlab", title: "WeightLab", x: 700, y: 348, w: 420, h: 260, z: 8, open: false, minimized: false, maximized: false, dock: "float" },
+  toolbox: { id: "toolbox", title: "VB Toolbox", x: 1008, y: 88, w: 300, h: 250, z: 9, open: true, minimized: false, maximized: false, dock: "float" },
+  device_bay: { id: "device_bay", title: "Device Bay", x: 1008, y: 348, w: 300, h: 260, z: 10, open: false, minimized: false, maximized: false, dock: "float" },
+  holoforge: { id: "holoforge", title: "HoloForge / XR", x: 1008, y: 348, w: 300, h: 260, z: 11, open: false, minimized: false, maximized: false, dock: "float" },
+  validation: { id: "validation", title: "Validation", x: 16, y: 718, w: 260, h: 220, z: 12, open: false, minimized: false, maximized: false, dock: "float" },
+  terminal: { id: "terminal", title: "Governed Terminal", x: 1008, y: 718, w: 300, h: 220, z: 13, open: true, minimized: false, maximized: false, dock: "float" },
   search: { id: "search", title: "Workspace Search", x: 188, y: 174, w: 450, h: 300, z: 14, open: false, minimized: false, maximized: false, dock: "float" },
   diff: { id: "diff", title: "Diff Viewer", x: 740, y: 184, w: 600, h: 330, z: 15, open: false, minimized: false, maximized: false, dock: "float" },
   graph: { id: "graph", title: "Flow Graph", x: 500, y: 520, w: 560, h: 360, z: 16, open: false, minimized: false, maximized: false, dock: "float" },
@@ -178,10 +179,10 @@ const DEFAULT_WINDOWS: WindowsMap = {
   model_bay: { id: "model_bay", title: "Model Bay", x: 760, y: 230, w: 480, h: 300, z: 19, open: false, minimized: false, maximized: false, dock: "float" },
   governance: { id: "governance", title: "Governance Gates", x: 260, y: 230, w: 520, h: 340, z: 20, open: false, minimized: false, maximized: false, dock: "float" },
   receipts: { id: "receipts", title: "Ledger Receipts", x: 820, y: 280, w: 520, h: 320, z: 21, open: false, minimized: false, maximized: false, dock: "float" },
-  properties: { id: "properties", title: "Properties", x: 1330, y: 190, w: 360, h: 330, z: 22, open: false, minimized: false, maximized: false, dock: "float" },
+  properties: { id: "properties", title: "Properties", x: 1008, y: 354, w: 300, h: 340, z: 22, open: true, minimized: false, maximized: false, dock: "float" },
   simulation: { id: "simulation", title: "Simulation Media", x: 500, y: 250, w: 620, h: 340, z: 23, open: false, minimized: false, maximized: false, dock: "float" },
   run_debug: { id: "run_debug", title: "Run and Debug", x: 620, y: 250, w: 560, h: 330, z: 24, open: false, minimized: false, maximized: false, dock: "float" },
-  database_builder: { id: "database_builder", title: "Access-Style Database Builder", x: 1180, y: 520, w: 470, h: 360, z: 25, open: false, minimized: false, maximized: false, dock: "float" },
+  database_builder: { id: "database_builder", title: "Access-Style Database Builder", x: 1008, y: 354, w: 300, h: 340, z: 25, open: false, minimized: false, maximized: false, dock: "float" },
   filesystem: { id: "filesystem", title: "Filesystem Map", x: 70, y: 220, w: 500, h: 420, z: 26, open: false, minimized: false, maximized: false, dock: "float" },
   problems: { id: "problems", title: "Problems / Bugs / Tasks", x: 560, y: 925, w: 640, h: 300, z: 27, open: false, minimized: false, maximized: false, dock: "float" },
   settings: { id: "settings", title: "NAILDE Settings", x: 1220, y: 190, w: 540, h: 420, z: 28, open: false, minimized: false, maximized: false, dock: "float" },
@@ -295,26 +296,28 @@ function WindowFrame({
 }) {
   if (!win.open || win.minimized) return null;
   const Icon = PANEL_ICONS[win.id] || PanelRightOpen;
+  const vbPanels = new Set(["toolbox", "properties", "form_designer", "database_builder", "blockforge"]);
+  const badge = vbPanels.has(win.id) ? "VB6" : win.id === "editor" ? "CODE" : "VSC";
   const style = win.maximized
     ? { left: 56, top: 40, width: "calc(100% - 72px)", height: "calc(100% - 72px)", zIndex: win.z }
     : { left: win.x, top: win.y, width: win.w, height: win.h, zIndex: win.z };
   return (
     <div
       className={cn(
-        "absolute overflow-hidden rounded-xl border bg-card shadow-2xl backdrop-blur",
-        active ? "border-primary/70 ring-1 ring-primary/30" : "border-border/80",
+        "absolute overflow-hidden rounded-lg border bg-[#0b1020]/95 shadow-2xl shadow-black/40 backdrop-blur",
+        active ? "border-cyan-400/80 ring-1 ring-cyan-400/30" : "border-slate-700/80",
       )}
       style={style}
       onPointerDown={() => onFocus(win.id)}
     >
       <div
-        className="flex h-9 cursor-move select-none items-center justify-between border-b border-border bg-muted/60 px-2"
+        className="flex h-9 cursor-move select-none items-center justify-between border-b border-slate-700 bg-[linear-gradient(180deg,rgba(30,41,59,0.95),rgba(15,23,42,0.95))] px-2"
         onPointerDown={(event) => onStartDrag(event, win.id)}
       >
         <div className="flex min-w-0 items-center gap-2">
-          <Icon className="h-4 w-4 text-primary" />
+          <Icon className="h-4 w-4 text-cyan-300" />
           <span className="truncate text-xs font-semibold uppercase tracking-wide">{win.title}</span>
-          <Badge variant="outline" className="h-5 px-1.5 text-[10px]">FLOAT</Badge>
+          <Badge variant="outline" className="h-5 border-cyan-500/40 px-1.5 text-[10px] text-cyan-100">{badge}</Badge>
         </div>
         <div className="flex items-center gap-1">
           <Button size="icon" variant="ghost" className="h-6 w-6" onPointerDown={(e) => e.stopPropagation()} onClick={() => onMinimize(win.id)}>
@@ -328,7 +331,7 @@ function WindowFrame({
           </Button>
         </div>
       </div>
-      <div className="h-[calc(100%-2.25rem)] overflow-hidden p-3">{children}</div>
+      <div className="h-[calc(100%-2.25rem)] overflow-hidden bg-[#050814]/80 p-3">{children}</div>
       {!win.maximized ? (
         <div
           className="absolute bottom-0 right-0 h-5 w-5 cursor-se-resize border-b-2 border-r-2 border-primary/60"
@@ -371,7 +374,7 @@ export default function NAILDEScreen() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [commandFilter, setCommandFilter] = useState("");
   const [busy, setBusy] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([{ ts: nowIso(), level: "info", text: "NAILDE Extreme Workbench initialized." }]);
+  const [logs, setLogs] = useState<LogEntry[]>([{ ts: nowIso(), level: "info", text: "NAILDE Workbench initialized." }]);
   const [projectSeedHash, setProjectSeedHash] = useState("");
   const [lastTopPrompt, setLastTopPrompt] = useState(DEFAULT_TOP_PROMPT);
   const [workspaceDecision, setWorkspaceDecision] = useState<any | null>(null);
@@ -618,19 +621,15 @@ export default function NAILDEScreen() {
   }, [addLog, workspaceId]);
 
   const postNailde = useCallback(async (path: string, body: Record<string, unknown>) => {
-    const response = await fetch(path, {
+    return await apiFetch<any>(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await response.json().catch(() => ({ ok: false, error: "invalid_json_response" }));
-    return data;
   }, []);
 
   const checkRecovery = useCallback(async () => {
     try {
-      const response = await fetch('/api/nailde/workspace/recovery?action=latest');
-      const packet = await response.json();
+      const packet = await apiFetch<any>('/api/nailde/workspace/recovery?action=latest', { method: "GET" });
       if (packet?.restore_available && !workspaceId) {
         setRecoveryPopup(packet.latest || packet);
         addLog("info", "Recoverable NAILDE workspace found.");
@@ -887,18 +886,27 @@ export default function NAILDEScreen() {
 
   const installAddonFromSandbox = useCallback(async () => {
     try {
-      const packet = await fetch('/api/nailde/addons/install-authorized', {
+      const packet = await apiFetch<any>('/api/nailde/addons/install-authorized', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           workspace_id: workspaceId,
           confirm: true,
           confirmed: true,
           user_confirmed: true,
         }),
-      }).then((response) => response.json());
-      setOutputText(pretty(packet).slice(0, 30000));
-      addLog(packet?.ok ? 'info' : 'warn', packet?.ok ? 'Installed sandbox addon icon into Addons folder.' : 'Addon install was blocked or failed.');
+      });
+      let registryPacket: any = null;
+      try {
+        registryPacket = await apiFetch<any>('/api/store/addons/registry', { method: 'GET' });
+      } catch (registryErr) {
+        registryPacket = { ok: false, error: String(registryErr) };
+      }
+      const registrySource = registryPacket?.data || registryPacket || {};
+      const registryItems = Array.isArray(registrySource.addons) ? registrySource.addons : Array.isArray(registrySource.candidates) ? registrySource.candidates : [];
+      const installedId = String(packet?.addon_id || packet?.install_state?.addon_id || packet?.data?.addon_id || '');
+      const visibleInAddons = installedId ? registryItems.some((item: any) => String(item?.id || item?.addon_id || '') === installedId) : registryItems.length > 0;
+      setOutputText(pretty({ install: packet, addons_registry_visibility: { checked: true, visible_in_addons: visibleInAddons, installed_id: installedId, registry_count: registryItems.length, registry: registryPacket } }).slice(0, 30000));
+      addLog(packet?.ok && visibleInAddons ? 'info' : 'warn', packet?.ok && visibleInAddons ? 'Installed sandbox addon and verified Addons registry visibility.' : 'Addon install completed or failed, but registry visibility needs review.');
       openWindow('output');
       openWindow('filesystem');
     } catch (err) {
@@ -924,7 +932,8 @@ export default function NAILDEScreen() {
         battle_plan: battlePlan,
       };
       if (action === "save_as") {
-        const suffix = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 12);
+        const isoFileSuffixPattern = new RegExp("[" + ["-", ":", ".", "T", "Z"].join("") + "]", "g");
+        const suffix = new Date().toISOString().replace(isoFileSuffixPattern, "").slice(0, 12);
         body.new_workspace_id = `${workspaceId || "NAILDEWorkspace"}_copy_${suffix}`;
       }
       const packet = await postNailde('/api/nailde/workspace/decision', body);
@@ -1289,15 +1298,18 @@ export default function NAILDEScreen() {
   }, [battlePlan, busy, createWorkspace, diffText, draftFromLanguage, editorText, filePath, files, goal, handleEditorDrop, handleToolboxDragStart, insertSnippetAtCursor, logs, openFile, outputText, prepareAgentMission, prompt, propertiesText, reconcileEditor, refreshFiles, runAutoBuild, runThought, runWeightLab, saveEditor, scaffoldExtreme, sdk, searchQuery, searchText, searchWorkspace, snippetForToolboxItem, status, toolbox, toolboxItems, toolboxSearch, terminalText, validateEditor, validationText, workspaceId, createApplicationFromEditor, installAddonFromSandbox, filesystemText, githubBranch, githubOperation, githubRepo, loadFilesystemMap, planGithubOperation, problemsText, saveSettings, settingsText, noviceMode]);
 
   return (
-    <div className="relative h-full min-h-[720px] overflow-hidden bg-background text-foreground">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/0.18),transparent_28%),radial-gradient(circle_at_bottom_right,hsl(var(--accent)/0.14),transparent_30%)]" />
+    <div className="nailde-workbench relative h-full min-h-0 overflow-hidden bg-[#050814] text-foreground">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.18),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.14),transparent_30%),linear-gradient(rgba(148,163,184,0.045)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.045)_1px,transparent_1px)] bg-[size:auto,auto,24px_24px,24px_24px]" />
 
-      <div className="relative z-[10000] flex h-10 items-center gap-2 border-b border-border bg-card/95 px-2 shadow-sm backdrop-blur">
+      <div className="relative z-[10000] flex min-h-10 flex-wrap items-center gap-2 border-b border-slate-700 bg-[#101827]/95 px-2 shadow-sm backdrop-blur">
         <div className="flex items-center gap-2 pr-3">
-          <div className="grid h-7 w-7 place-items-center rounded bg-primary text-primary-foreground"><Code2 className="h-4 w-4" /></div>
-          <div className="text-xs font-bold uppercase tracking-widest">NAILDE Extreme</div>
+          <div className="grid h-7 w-7 place-items-center rounded bg-cyan-500 text-slate-950"><Code2 className="h-4 w-4" /></div>
+          <div>
+            <div className="text-xs font-bold uppercase tracking-widest text-cyan-100">NAILDE Workbench</div>
+            <div className="hidden text-[10px] uppercase tracking-[0.18em] text-slate-400 sm:block">VS Code navigation + VB6 toolbox/forms</div>
+          </div>
         </div>
-        <div className="flex h-full items-center">
+        <div className="flex h-10 min-w-0 flex-1 items-center overflow-x-auto">
           {menus.map((menu) => (
             <div key={menu.id || menu.label} className="relative h-full">
               <button className="h-full px-3 text-xs hover:bg-muted" onClick={() => setActiveMenu(activeMenu === menu.id ? null : String(menu.id || ""))}>
@@ -1318,13 +1330,13 @@ export default function NAILDEScreen() {
         </div>
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setCommandPaletteOpen(true)}><Command className="mr-1 h-3 w-3" />Command</Button>
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={persistLayout}>Save Layout</Button>
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={resetLayout}>Reset</Button>
+          <Button size="sm" variant="outline" className="hidden h-7 text-xs sm:inline-flex" onClick={persistLayout}>Save Layout</Button>
+          <Button size="sm" variant="outline" className="hidden h-7 text-xs sm:inline-flex" onClick={resetLayout}>Reset</Button>
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={refreshCore} disabled={busy}>{busy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}Refresh</Button>
         </div>
       </div>
 
-      <div className="absolute left-0 top-10 z-[9999] flex h-[calc(100%-4.5rem)] w-12 flex-col items-center gap-2 border-r border-border bg-card/80 py-2 backdrop-blur">
+      <div className="absolute left-0 top-10 z-[9999] hidden h-[calc(100%-4.5rem)] w-12 flex-col items-center gap-2 border-r border-slate-700 bg-[#101827]/90 py-2 backdrop-blur md:flex">
         {Object.entries(ACTIVITY_TO_WINDOW).map(([activity, panel]) => {
           const Icon = PANEL_ICONS[panel] || Workflow;
           const isOpen = Boolean(windows[panel]?.open && !windows[panel]?.minimized);
@@ -1340,9 +1352,9 @@ export default function NAILDEScreen() {
         </div>
       </div>
 
-      <div className="absolute left-12 right-0 top-10 bottom-8 overflow-auto">
-        <div className="relative h-[1300px] min-w-[1850px]">
-          <div className="absolute left-6 top-4 right-6 grid grid-cols-6 gap-2">
+      <div className="absolute bottom-8 left-0 right-0 top-[5.5rem] overflow-auto md:left-12 md:top-10">
+        <div className="relative h-[980px] min-w-[1320px] xl:min-w-[1500px]">
+          <div className="absolute left-4 top-4 right-4 grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
             <StatCard icon={ShieldCheck} label="Sandbox" value={status?.sandbox_first ? "ON" : "UNKNOWN"} detail="live files read-only" />
             <StatCard icon={Lock} label="Execution" value={status?.execution_authority ? "AUTH" : "FALSE"} detail="NAILDE cannot self-apply" />
             <StatCard icon={SlidersHorizontal} label="Weights" value="ISOLATED" detail="sandbox only" />
@@ -1368,7 +1380,7 @@ export default function NAILDEScreen() {
         </div>
       </div>
 
-      <div className="absolute left-12 right-0 bottom-0 z-[10000] flex h-8 items-center gap-3 border-t border-border bg-card/95 px-3 text-[11px] text-muted-foreground backdrop-blur">
+      <div className="absolute bottom-0 left-0 right-0 z-[10000] flex h-8 items-center gap-3 overflow-x-auto whitespace-nowrap border-t border-slate-700 bg-[#101827]/95 px-3 text-[11px] text-slate-400 backdrop-blur md:left-12">
         <span>Workspace: {workspaceId || "none"}</span>
         <span>Sandbox: ON</span>
         <span>Live Write: BLOCKED</span>

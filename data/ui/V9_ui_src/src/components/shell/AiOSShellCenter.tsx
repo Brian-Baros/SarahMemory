@@ -6,12 +6,14 @@ import {
   CheckCircle2,
   Cpu,
   Eye,
+  Folder,
   Gauge,
   Image as ImageIcon,
   LayoutGrid,
-  Lock,
+  MessageCircle,
   MonitorCog,
   Palette,
+  PlayCircle,
   Search,
   Shield,
   SlidersHorizontal,
@@ -23,21 +25,23 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import sarahLogoUrl from "@/assets/smaios-logo.jpg";
 
 const APPS: { id: WindowId; label: string; icon: any; mode: "simple" | "operator" | "engineer" }[] = [
-  { id: "chat", label: "Chat", icon: AppWindow, mode: "simple" },
+  { id: "chat", label: "Chat", icon: MessageCircle, mode: "simple" },
   { id: "history", label: "History", icon: Bell, mode: "simple" },
-  { id: "files", label: "Files", icon: MonitorCog, mode: "simple" },
+  { id: "files", label: "Files", icon: Folder, mode: "simple" },
   { id: "research", label: "Research", icon: Search, mode: "simple" },
   { id: "avatar", label: "Avatar", icon: User, mode: "simple" },
   { id: "sarahnet", label: "SarahNet", icon: Shield, mode: "operator" },
-  { id: "media", label: "Media", icon: Eye, mode: "operator" },
+  { id: "media", label: "Media", icon: PlayCircle, mode: "operator" },
   { id: "studio", label: "Studios", icon: Palette, mode: "operator" },
   { id: "dlengine", label: "DL Engine", icon: Cpu, mode: "engineer" },
   { id: "terminal", label: "Terminal", icon: Terminal, mode: "engineer" },
@@ -57,6 +61,11 @@ function modeRank(mode: string) {
   if (mode === "engineer") return 3;
   if (mode === "operator") return 2;
   return 1;
+}
+
+function numberSetting(settings: any, key: string, fallback: number) {
+  const value = Number(settings?.[key]);
+  return Number.isFinite(value) ? value : fallback;
 }
 
 export function AiOSShellCenter({ status }: { status?: any }) {
@@ -92,6 +101,9 @@ export function AiOSShellCenter({ status }: { status?: any }) {
 
   const setMode = (mode: "simple" | "operator" | "engineer") => updateSettings({ uiMode: mode });
   const setWallpaper = (wallpaperUrl: string) => updateSettings({ wallpaperUrl });
+  const setNumericAppearance = (key: string, value: number[]) => {
+    updateSettings({ [key]: value[0] } as any);
+  };
   const applyWorkspace = (preset: any) => {
     updateSettings({ activeWorkspace: preset });
     applyWorkspacePreset(preset);
@@ -100,9 +112,9 @@ export function AiOSShellCenter({ status }: { status?: any }) {
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
-        <Button variant="ghost" size="sm" className="h-8 px-2 gap-1.5" title="SarahMemory AiOS Shell Center">
-          <LayoutGrid className="h-4 w-4 text-primary" />
-          <span className="hidden lg:inline text-xs">AiOS</span>
+        <Button variant="ghost" size="sm" className="h-9 px-2 gap-2 rounded-lg" title="SarahMemory AiOS Start Center">
+          <img src={sarahLogoUrl} alt="" className="h-6 w-6 rounded-md object-cover" />
+          <span className="hidden lg:inline text-xs font-semibold">Start</span>
         </Button>
       </SheetTrigger>
       <SheetContent side="right" className="w-[92vw] sm:w-[520px] p-0 overflow-hidden">
@@ -185,6 +197,31 @@ export function AiOSShellCenter({ status }: { status?: any }) {
                 <label className="text-sm font-medium flex items-center gap-2"><ImageIcon className="h-4 w-4" /> Wallpaper URL</label>
                 <Input value={settings.wallpaperUrl || ""} onChange={(e) => setWallpaper(e.target.value)} placeholder="/assets/sarah-hero.jpeg or https://..." />
                 <Button variant="outline" size="sm" onClick={() => setWallpaper("")}>Clear wallpaper</Button>
+              </div>
+              <div className="rounded-xl border border-border bg-card/60 p-3 space-y-4">
+                {[
+                  ["Background brightness", "backgroundBrightness", 82, 20, 125, "%"],
+                  ["Background overlay", "backgroundOverlay", 42, 0, 85, "%"],
+                  ["Background blur", "backgroundBlur", 0, 0, 18, "px"],
+                  ["Panel opacity", "panelOpacity", 82, 45, 100, "%"],
+                ].map(([label, key, fallback, min, max, suffix]) => {
+                  const value = numberSetting(settings, String(key), Number(fallback));
+                  return (
+                    <div key={String(key)} className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-medium">{String(label)}</span>
+                        <span className="font-mono text-xs text-muted-foreground">{value}{String(suffix)}</span>
+                      </div>
+                      <Slider
+                        value={[value]}
+                        min={Number(min)}
+                        max={Number(max)}
+                        step={1}
+                        onValueChange={(next) => setNumericAppearance(String(key), next)}
+                      />
+                    </div>
+                  );
+                })}
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium">Shell Density</label>

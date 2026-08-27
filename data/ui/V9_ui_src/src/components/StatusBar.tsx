@@ -21,6 +21,9 @@ import {
   AlertTriangle,
   Loader2,
   Terminal,
+  MonitorCog,
+  Volume2,
+  Wifi,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -58,6 +61,7 @@ const DEFAULT_TASKBAR_IDS = [
   "sarahnet",
   "media",
   "dlengine",
+  "nailde",
   "terminal",
   "addons",
   "settings",
@@ -232,6 +236,8 @@ export function StatusBar() {
   const currentModeId = (settings.mode || "any") as keyof typeof MODE_LABELS;
   const currentMode = MODE_LABELS[currentModeId] || MODE_LABELS.any;
   const ModeIcon = currentMode.icon;
+  const taskbarDock = String((settings as any)?.taskbar?.dock || "bottom");
+  const isVerticalDock = taskbarDock === "left" || taskbarDock === "right";
 
   const nextModeId = useMemo(() => {
     const idx = MODE_ORDER.indexOf(currentModeId as any);
@@ -308,6 +314,11 @@ export function StatusBar() {
       label: "DL Engine",
       Icon: Cpu,
       onClick: () => clickWindow("dlengine"),
+    },
+    nailde: {
+      label: "NAILDE",
+      Icon: MonitorCog,
+      onClick: () => clickWindow("nailde"),
     },
     terminal: {
       label: "Terminal",
@@ -390,13 +401,11 @@ export function StatusBar() {
   }, [status.api]);
 
   const statusTitle = useMemo(() => {
-    const yes = "✅";
-    const no = "❌";
     return [
-      `Local: ${status.local ? yes : no}`,
-      `Web: ${status.web ? yes : no}`,
-      `API: ${status.api ? yes : no}`,
-      `Network: ${status.network ? yes : no}`,
+      `Local: ${status.local ? "online" : "offline"}`,
+      `Web: ${status.web ? "online" : "offline"}`,
+      `API: ${status.api ? "online" : "offline"}`,
+      `Network: ${status.network ? "online" : "offline"}`,
     ].join("  |  ");
   }, [status]);
 
@@ -406,10 +415,15 @@ export function StatusBar() {
   return (
     <div
       ref={barRef}
-      className="h-14 bg-card/95 backdrop-blur-sm border-t border-border flex items-center justify-between px-3 shrink-0"
+      className={cn(
+        "h-full min-h-14 w-full shrink-0 border-border bg-card/95 backdrop-blur-sm",
+        isVerticalDock
+          ? "flex flex-col items-stretch justify-start gap-3 overflow-y-auto px-2 py-3"
+          : "flex items-center justify-between gap-3 px-3",
+      )}
       data-taskbar="true"
     >
-      <div className="flex items-center gap-3 min-w-0">
+      <div className={cn("flex min-w-0", isVerticalDock ? "flex-col gap-2" : "items-center gap-3")}>
         <button
           type="button"
           onClick={cycleMode}
@@ -428,7 +442,7 @@ export function StatusBar() {
           </span>
         </button>
 
-        <div className="h-4 w-px bg-border hidden sm:block" />
+        <div className={cn("bg-border hidden sm:block", isVerticalDock ? "h-px w-full" : "h-4 w-px")} />
 
         <a
           href={config.githubUrl}
@@ -446,15 +460,31 @@ export function StatusBar() {
         </a>
       </div>
 
-      <div className="flex items-center justify-center flex-1">
-        <div className="flex items-center gap-1 px-3 py-1.5 bg-secondary/50 rounded-xl">
+      <div className={cn("flex flex-1 items-center justify-center min-w-0", isVerticalDock && "w-full flex-none")}>
+        <div className={cn(
+          "gap-1 bg-secondary/50 rounded-xl",
+          isVerticalDock
+            ? "grid w-full grid-cols-2 px-1.5 py-2"
+            : "flex max-w-full items-center overflow-x-auto px-3 py-1.5",
+        )}>
           {taskbarOrder.map((id) => renderTaskbarButton(String(id)))}
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className={cn("flex", isVerticalDock ? "flex-col gap-2" : "items-center gap-3")}>
+        <div className={cn(
+          "flex items-center gap-2 rounded-md bg-secondary/30 px-2 py-1 text-muted-foreground",
+          isVerticalDock ? "justify-center" : "hidden md:flex",
+        )}>
+          <Volume2 className="h-4 w-4" />
+          <Wifi className={cn("h-4 w-4", status.network ? "text-status-online" : "text-status-error")} />
+        </div>
+
         <div
-          className="hidden sm:flex items-center gap-2 px-2 py-1 rounded-md bg-secondary/30"
+          className={cn(
+            "items-center gap-2 px-2 py-1 rounded-md bg-secondary/30",
+            isVerticalDock ? "flex justify-center" : "hidden sm:flex",
+          )}
           title={now.toLocaleString()}
         >
           <Clock className="h-4 w-4 text-muted-foreground" />
@@ -465,12 +495,15 @@ export function StatusBar() {
 
         <AiOSShellCenter status={status} />
 
-        <div className="h-4 w-px bg-border hidden sm:block" />
+        <div className={cn("bg-border hidden sm:block", isVerticalDock ? "h-px w-full" : "h-4 w-px")} />
 
         <Button
           variant="outline"
           size="sm"
-          className="h-8 px-3 text-xs border-primary/30 hover:border-primary hover:bg-primary/10"
+          className={cn(
+            "h-8 px-3 text-xs border-primary/30 hover:border-primary hover:bg-primary/10",
+            isVerticalDock && "hidden",
+          )}
           asChild
         >
           <a
@@ -484,12 +517,13 @@ export function StatusBar() {
           </a>
         </Button>
 
-        <div className="h-4 w-px bg-border hidden sm:block" />
+        <div className={cn("bg-border hidden sm:block", isVerticalDock ? "h-px w-full" : "h-4 w-px")} />
 
         <div
           className={cn(
             "flex items-center gap-2 px-2.5 py-1 rounded-md",
             "bg-secondary/30 border border-border",
+            isVerticalDock && "justify-center",
           )}
           title={statusTitle}
           aria-label="System Status"

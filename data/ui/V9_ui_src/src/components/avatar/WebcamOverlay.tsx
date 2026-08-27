@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { apiFetch } from "@/lib/config";
 import { Camera, EyeOff, Eye, AlertTriangle } from "lucide-react";
 
 type VisionPolicy = {
@@ -76,9 +77,7 @@ export function WebcamOverlay({
     let cancelled = false;
     const loadPolicy = async () => {
       try {
-        const res = await fetch("/api/vision/policy", { credentials: "include" });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await apiFetch<any>("/api/vision/policy", { method: "GET" });
         const next = data?.policy && typeof data.policy === "object" ? data.policy : data;
         if (!cancelled && next && typeof next === "object") {
           setPolicy({ ...DEFAULT_VISION_POLICY, ...next });
@@ -178,10 +177,8 @@ export function WebcamOverlay({
       lastSent = now;
       sending = true;
 
-      void fetch("/api/vision/frame/submit", {
+      void apiFetch("/api/vision/frame/submit", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({
           imageBase64: dataUrl,
           data_url: dataUrl,

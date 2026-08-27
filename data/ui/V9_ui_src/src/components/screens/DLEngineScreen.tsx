@@ -34,6 +34,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
+import { apiFetch } from "@/lib/config";
 import { cn } from "@/lib/utils";
 import { useNavigationStore } from "@/stores/useNavigationStore";
 
@@ -1033,17 +1034,14 @@ export function DLEngineScreen() {
     try {
       let result: any = null;
       try {
-        const res = await fetch("/api/dlengine/weights/reset", {
+        result = await apiFetch<any>("/api/dlengine/weights/reset", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
           body: JSON.stringify({
             category: selectedWeightCategory,
             model_id: selectedWeightModelId,
             source: "dlengine_screen_reset",
           }),
         });
-        result = await res.json().catch(() => null);
       } catch {
         result = null;
       }

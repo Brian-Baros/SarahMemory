@@ -134,10 +134,9 @@ export function Window({ window: win, children }: WindowProps) {
     <div
       ref={windowRef}
       className={cn(
-        "absolute flex flex-col rounded-lg overflow-hidden shadow-2xl",
-        "bg-[var(--panel-bg,hsl(var(--card)))] border border-border backdrop-blur-md",
+        "sarah-workstation-card absolute flex flex-col overflow-hidden rounded-md",
         "transition-shadow duration-150",
-        isFocused ? "ring-2 ring-primary/50 shadow-primary/10" : "opacity-95",
+        isFocused ? "ring-1 ring-primary/60 shadow-primary/10" : "opacity-95",
         isDragging && "cursor-grabbing",
         isResizing && "cursor-se-resize",
       )}
@@ -147,15 +146,18 @@ export function Window({ window: win, children }: WindowProps) {
       {/* Title Bar */}
       <div
         className={cn(
-          "h-9 flex items-center justify-between px-3 shrink-0",
-          "bg-muted/80 border-b border-border",
+          "h-10 flex items-center justify-between px-3 shrink-0",
+          "bg-background/70 border-b border-border/80",
           "select-none",
           !win.isMaximized && "cursor-grab",
         )}
         onMouseDown={handleDragStart}
         onDoubleClick={handleTitleDoubleClick}
       >
-        <span className="text-sm font-medium text-foreground truncate">{win.title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+          <span className={cn("h-2 w-2 rounded-full", isFocused ? "bg-primary" : "bg-muted-foreground/50")} />
+          <span className="truncate">{win.title}</span>
+        </span>
 
         <div className="flex items-center gap-1">
           {/* Minimize */}
@@ -175,7 +177,11 @@ export function Window({ window: win, children }: WindowProps) {
           <button
             onClick={(e) => {
               e.stopPropagation();
-              win.isMaximized ? restoreWindow(win.id) : maximizeWindow(win.id);
+              if (win.isMaximized) {
+                restoreWindow(win.id);
+              } else {
+                maximizeWindow(win.id);
+              }
             }}
             className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
             aria-label={win.isMaximized ? "Restore" : "Maximize"}

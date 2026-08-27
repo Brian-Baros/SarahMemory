@@ -4,7 +4,7 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatComposer } from "./ChatComposer";
 import { TypingIndicator } from "./TypingIndicator";
 import { api, speakWithSarahBrowserVoice, type ChatResponse } from "@/lib/api";
-import { apiFetch } from "@/lib/config";
+import { apiFetch, config } from "@/lib/config";
 import { toast } from "sonner";
 import { useIsMobile } from "@/hooks/use-mobile";
 
@@ -203,10 +203,8 @@ export function ChatPanel() {
 
   const postAvatarEvent = async (event: string) => {
     try {
-      await fetch("/api/avatar/event", {
+      await apiFetch("/api/avatar/event", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
         body: JSON.stringify({ event }),
       });
     } catch {
@@ -250,7 +248,7 @@ export function ChatPanel() {
     }, durationMs);
   };
 
-  const useBrowserTTS = async (text: string) => {
+  const playBrowserTTS = async (text: string) => {
     if (speakingTimeoutRef.current) {
       clearTimeout(speakingTimeoutRef.current);
       speakingTimeoutRef.current = null;
@@ -287,7 +285,7 @@ export function ChatPanel() {
           api.avatar.setSpeaking(true).catch(() => {});
           audio.onended = () => stopAvatarSpeaking();
           audio.onerror = () => {
-            if (resp?.browser_fallback_allowed !== false) void useBrowserTTS(text);
+            if (resp?.browser_fallback_allowed !== false) void playBrowserTTS(text);
             else stopAvatarSpeaking();
           };
           speakingTimeoutRef.current = setTimeout(() => {
@@ -310,11 +308,11 @@ export function ChatPanel() {
       }
 
       if (resp?.browser_fallback_required || resp?.fallback || !resp?.success) {
-        await useBrowserTTS(text);
+        await playBrowserTTS(text);
       }
     } catch (e) {
       console.warn("[ChatPanel] TTS failed, using browser fallback:", e);
-      await useBrowserTTS(text);
+      await playBrowserTTS(text);
     }
   };
 
@@ -478,8 +476,9 @@ export function ChatPanel() {
   );
 
   // Unified send (used by composer + follow-ups + regenerate)
-  const sendText = async (text: string, files?: File[]) => {
+  const sendText = async (text: string, files?: File[], options?: { ingest?: boolean }) => {
     const clean = (text || "").trim();
+    let cleanForBackend = clean;
     if (!clean) return;
     if (isTyping) return;
 
@@ -503,14 +502,15 @@ if (repairApprovalCommand) {
   return;
 }
 
-if (hasFiles && cmd === "eat this") {
+if (hasFiles && (cmd === "eat this" || options?.ingest)) {
   try {
     const form = new FormData();
     form.append("text", "EAT THIS");
     for (const f of files || []) form.append("files", f);
 
-    const resp = await fetch("/api/ingest/eat_this", {
+    const resp = await fetch(`${config.apiBaseUrl}/api/ingest/eat_this`, {
       method: "POST",
+      credentials: "include",
       body: form,
     });
 
@@ -554,6 +554,35 @@ if (hasFiles && cmd === "eat this") {
   }
 }
 
+if (hasFiles) {
+  try {
+    const form = new FormData();
+    for (const file of files || []) form.append("files", file);
+    const resp = await fetch(`${config.apiBaseUrl}/api/files/upload`, {
+      method: "POST",
+      credentials: "include",
+      body: form,
+    });
+    const packet = await resp.json().catch(() => ({} as any));
+    if (!resp.ok || packet?.ok === false) {
+      throw new Error(packet?.error || `Upload failed (HTTP ${resp.status})`);
+    }
+    const saved = Array.isArray(packet?.saved) ? packet.saved : [];
+    const receipts = saved.map((item: any) => `- ${item.name || "file"} | ${item.path || "path unavailable"} | SHA-256 ${item.sha256 || "unavailable"}`).join("\n");
+    addMessage({
+      role: "assistant",
+      content: `Uploaded ${saved.length || files?.length || 0} file(s) to the governed local file store.${receipts ? `\n\n${receipts}` : ""}`,
+    });
+    cleanForBackend = `${clean}\n\nVerified uploaded-file context:\n${receipts || "Upload completed; backend returned no file receipt details."}`;
+  } catch (error: any) {
+    setTyping(false);
+    const message = String(error?.message || error || "File upload failed");
+    toast.error(message);
+    addMessage({ role: "assistant", content: `File upload failed: ${message}` });
+    return;
+  }
+}
+
 
 
     try {
@@ -563,7 +592,7 @@ if (hasFiles && cmd === "eat this") {
 
     try {
       const messageHistory = messages.map((m) => ({ role: m.role, content: m.content }));
-      messageHistory.push({ role: "user" as const, content: clean });
+      messageHistory.push({ role: "user" as const, content: cleanForBackend });
 
       const response = await api.chat.sendMessage(messageHistory);
 

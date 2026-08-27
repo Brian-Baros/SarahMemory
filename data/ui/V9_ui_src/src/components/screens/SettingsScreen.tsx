@@ -3,6 +3,7 @@ import { Volume2, Palette, Bell, Sparkles, Play, Loader2, Zap, Globe, Database, 
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -54,6 +55,11 @@ const MODEL_DOMAIN_OPTIONS = [
 ] as const;
 
 const MODEL_LIVE_SCAN_INTERVAL_MS = 30_000;
+
+function numberSetting(settings: any, key: string, fallback: number): number {
+  const value = Number(settings?.[key]);
+  return Number.isFinite(value) ? value : fallback;
+}
 
 type SettingsPanelProps = {
   /** When true, renders as a regular screen (no Dialog wrapper) */
@@ -617,6 +623,10 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
       await api.settings.setSetting('wallpaperUrl', String((settings as any).wallpaperUrl || ''));
       await api.settings.setSetting('wallpaperMode', String((settings as any).wallpaperMode || 'cover'));
       await api.settings.setSetting('panelTransparency', String((settings as any).panelTransparency || 'glass'));
+      await api.settings.setSetting('backgroundBrightness', String((settings as any).backgroundBrightness ?? 82));
+      await api.settings.setSetting('backgroundOverlay', String((settings as any).backgroundOverlay ?? 42));
+      await api.settings.setSetting('backgroundBlur', String((settings as any).backgroundBlur ?? 0));
+      await api.settings.setSetting('panelOpacity', String((settings as any).panelOpacity ?? 82));
       await api.settings.setSetting('shellDensity', String((settings as any).shellDensity || 'comfortable'));
 
       // Update store with final mode
@@ -762,6 +772,18 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     </div>
   );
 
+  const backgroundBrightness = numberSetting(settings, "backgroundBrightness", 82);
+  const backgroundOverlay = numberSetting(settings, "backgroundOverlay", 42);
+  const backgroundBlur = numberSetting(settings, "backgroundBlur", 0);
+  const panelOpacity = numberSetting(settings, "panelOpacity", 82);
+  const setAppearanceNumber = (key: string, value: number[]) => updateSettings({ [key]: value[0] } as any);
+  const appearanceSliders = [
+    { key: "backgroundBrightness", label: "Background brightness", value: backgroundBrightness, min: 20, max: 125, suffix: "%" },
+    { key: "backgroundOverlay", label: "Background dim overlay", value: backgroundOverlay, min: 0, max: 85, suffix: "%" },
+    { key: "backgroundBlur", label: "Background blur", value: backgroundBlur, min: 0, max: 18, suffix: "px" },
+    { key: "panelOpacity", label: "Panel opacity", value: panelOpacity, min: 45, max: 100, suffix: "%" },
+  ];
+
   const appearanceSection = (
     <div className="grid gap-4 xl:grid-cols-[0.9fr_1.1fr]">
       <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
@@ -846,6 +868,26 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
               </div>
             </div>
 
+            <div className="grid gap-3 rounded-lg border border-border bg-background/40 p-3 lg:grid-cols-2">
+              {appearanceSliders.map((slider) => (
+                <div key={slider.key} className="space-y-2">
+                  <div className="flex items-center justify-between gap-3">
+                    <Label className="text-xs text-muted-foreground">{slider.label}</Label>
+                    <span className="font-mono text-[11px] text-muted-foreground">
+                      {slider.value}{slider.suffix}
+                    </span>
+                  </div>
+                  <Slider
+                    value={[slider.value]}
+                    min={slider.min}
+                    max={slider.max}
+                    step={1}
+                    onValueChange={(value) => setAppearanceNumber(slider.key, value)}
+                  />
+                </div>
+              ))}
+            </div>
+
             <div className="flex flex-wrap gap-2">
               <Button type="button" variant="outline" size="sm" onClick={handleWallpaperClear}>Clear Wallpaper</Button>
               <Button type="button" variant={(settings as any).shellDensity === 'compact' ? 'default' : 'outline'} size="sm" onClick={() => updateSettings({ shellDensity: 'compact' } as any)}>Compact</Button>
@@ -858,10 +900,11 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
             <div
               className="aspect-video w-full overflow-hidden rounded-md border border-border bg-secondary"
               style={wallpaperDraftUrl ? {
-                backgroundImage: `linear-gradient(rgba(0,0,0,.22), rgba(0,0,0,.22)), url("${wallpaperDraftUrl.replace(/"/g, '\\"')}")`,
+                backgroundImage: `linear-gradient(rgba(0,0,0,${Math.max(0, Math.min(0.85, backgroundOverlay / 100))}), rgba(0,0,0,${Math.max(0, Math.min(0.85, backgroundOverlay / 100))})), url("${wallpaperDraftUrl.replace(/"/g, '\\"')}")`,
                 backgroundSize: (settings as any).wallpaperMode === 'stretch' ? '100% 100%' : (settings as any).wallpaperMode === 'tile' ? 'auto' : ((settings as any).wallpaperMode || 'cover'),
                 backgroundRepeat: (settings as any).wallpaperMode === 'tile' ? 'repeat' : 'no-repeat',
                 backgroundPosition: 'center',
+                filter: `brightness(${backgroundBrightness}%) blur(${backgroundBlur}px)`,
               } : undefined}
             >
               {!wallpaperDraftUrl && (

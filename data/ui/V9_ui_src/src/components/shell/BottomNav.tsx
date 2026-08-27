@@ -9,6 +9,7 @@ import {
   Search,
   Cpu,
   Terminal,
+  MonitorCog,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ const iconMap: Record<string, React.ElementType> = {
   search: Search,
   cpu: Cpu,
   terminal: Terminal,
+  "monitor-cog": MonitorCog,
 };
 
 // Map MobileScreen -> DesktopApp (desktop shell mode)
@@ -40,6 +42,8 @@ function screenToDesktopApp(screen: string) {
       return "research";
     case "dlengine":
       return "dlengine";
+    case "nailde":
+      return "nailde";
     case "terminal":
       return "terminal";
     case "avatar":
@@ -78,6 +82,15 @@ export function BottomNav() {
   // Add terminal item even if store list has not been updated yet.
   const navItems = useMemo(() => {
     const base = Array.isArray(BOTTOM_NAV_ITEMS) ? [...BOTTOM_NAV_ITEMS] : [];
+
+    const hasNailde = base.some((item) => String(item?.screen) === "nailde");
+    if (!hasNailde) {
+      base.push({
+        screen: "nailde",
+        label: "NAILDE",
+        icon: "monitor-cog",
+      } as any);
+    }
 
     const hasTerminal = base.some((item) => String(item?.screen) === "terminal");
     if (!hasTerminal) {
