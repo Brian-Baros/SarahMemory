@@ -1,15 +1,22 @@
 {
-  "name": "vite_react_shadcn_ts",
+  "name": "sarahmemory-aios-v9-functional-ui",
   "private": true,
-  "version": "0.0.0",
+  "version": "9.0.0-alpha.workstation.4",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "build:dev": "vite build --mode development",
+    "dev": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173",
+    "build": "node ./node_modules/vite/bin/vite.js build",
+    "check": "node ./node_modules/typescript/bin/tsc --noEmit",
+    "build:checked": "node ./node_modules/typescript/bin/tsc --noEmit && node ./node_modules/vite/bin/vite.js build",
+    "build:dev": "node ./node_modules/vite/bin/vite.js build --mode development",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "build:local": "vite build --mode production"
+    "test:contracts": "node ./scripts/verify-ui-contracts.mjs",
+    "preview": "node ./node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173",
+    "build:local": "node ./node_modules/vite/bin/vite.js build --mode production"
+  },
+  "engines": {
+    "node": ">=20.19.0",
+    "npm": ">=10.0.0"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

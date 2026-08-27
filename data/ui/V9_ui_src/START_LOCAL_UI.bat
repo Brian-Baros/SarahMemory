@@ -2,7 +2,6 @@
 setlocal
 cd /d "%~dp0"
 
-echo [SarahMemory] Rebuilding local V9 functional UI source...
 if not exist "node_modules\.bin\vite.cmd" (
   echo [SarahMemory] node_modules missing. Installing dependencies first.
   set NPM_CONFIG_PRODUCTION=false
@@ -13,7 +12,6 @@ if not exist "node_modules\.bin\vite.cmd" (
   )
 )
 
-call npm run build || exit /b 1
-
-echo [SarahMemory] Build complete. Output folder: dist
-pause
+echo [SarahMemory] Starting Vite UI on http://127.0.0.1:5173
+echo [SarahMemory] Make sure the SarahMemory API Bridge is running on VITE_SARAH_API_URL or http://127.0.0.1:8000.
+call npm run dev

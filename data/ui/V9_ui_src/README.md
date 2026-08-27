@@ -1,48 +1,102 @@
-## Project info
+# SarahMemory AiOS V9 Workstation UI Source
 
-**URL**: https://ai.sarahmemory.com
+This is a source-code package, not a hosted-site shortcut and not a compiled-only export.
 
-If you want to work locally using your own IDE, you can clone this repo.
+It is based on the older V9 UI because that version contains the working panels, backend wiring, avatar controls, NAILDE workbench, file browser, research lane, DL Engine, SarahNet, media, settings, and terminal surfaces.
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+The revamp keeps those working screens and adds a cleaner source registry, better local build scripts, backend URL fixes, responsive shell improvements, and a professional workstation desktop/mobile layer.
 
-Follow these steps:
+This revision also adds universal panel-to-Chat context handoff, governed file upload with path/hash receipts, explicit local ingestion controls, microphone permission/device testing and recognition-language options, plus an MCP workbench under SarahNet for JSON-RPC initialization, tools, resources, prompts, receipts, and passive evidence.
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+This workstation revision adds:
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+- Real SarahMemory logo in the launcher and mobile header.
+- Desktop shortcuts for the main panels.
+- Workspace presets for Chat, Research, Operator, Engineer, and Media modes.
+- Start/AiOS launcher polish with app search and quick settings.
+- Background brightness, dim overlay, blur, and panel opacity sliders.
+- Improved top/bottom/left/right taskbar handling.
+- Mobile portrait quick actions for Chat, Camera Vision, Voice, Files, Avatar, NAILDE, Models, and Settings.
+- Camera Vision mobile route using the existing `/vision` HUD and existing `/api/vision/*` backend contracts.
 
-# Step 3: Install the necessary dependencies.
-npm i
+## Run on Windows
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
+From this folder:
+
+```bat
+INSTALL_WINDOWS.bat
+START_LOCAL_UI.bat
+```
+
+Or manually:
+
+```bat
+npm ci --include=dev --legacy-peer-deps
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Then open:
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```text
+http://127.0.0.1:5173
+```
 
-**Use GitHub Codespaces**
+## Build on Windows
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+```bat
+REBUILD_V9_UI.bat
+```
 
-## What technologies are used for this project?
+Manual equivalent:
 
-This project is built with:
+```bat
+npm ci --include=dev --legacy-peer-deps
+npm run build
+```
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+If you want TypeScript checking too:
 
+```bat
+npm run check
+npm run build:checked
+```
+
+## Why `tsc is not recognized` happened
+
+`tsc` is the TypeScript compiler. It is installed locally by `npm ci --include=dev` because it lives in `devDependencies`.
+
+Do not install random global TypeScript just to fix this. Install the project dependencies from the source folder first. The npm scripts call the local compiler through:
+
+```text
+node .\node_modules\typescript\bin\tsc --noEmit
+```
+
+## Backend connection
+
+Default local API Bridge:
+
+```text
+http://127.0.0.1:8000
+```
+
+If your bridge runs elsewhere, copy `.env.example` to `.env.local` and set:
+
+```text
+VITE_SARAH_API_URL=http://127.0.0.1:8000
+```
+
+The frontend routes NAILDE, avatar, webcam, DL Engine, Camera Vision, chat, and ingestion calls through the configured backend instead of hardcoding same-origin `/api` calls.
+
+## Source map
+
+Start here:
+
+- `docs/UI_SOURCE_MAP.md`
+- `src/features/featureRegistry.tsx`
+- `docs/FUNCTIONAL_FIXES.md`
+- `docs/LOCAL_BUILD_WINDOWS.md`
+- `docs/VALIDATION_REPORT.md`
+
+## Important runtime truth
+
+The 3D avatar loads only when the SarahMemory backend or local public asset provides a real GLB/model endpoint. If no model exists, the UI falls back to the working V9 2D/morph avatar and visibly animates during speaking/listening instead of pretending the 3D model loaded.
