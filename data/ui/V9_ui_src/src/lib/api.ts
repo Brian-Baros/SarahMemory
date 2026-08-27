@@ -1007,7 +1007,7 @@ export const terminalApi = {
 export const voiceApi = {
   async speak(text: string, voice?: string): Promise<VoiceResponse> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/tts/speak"], {
+      const { data } = await tryDirectEndpoints<any>(["/api/tts/speak", "/api/voice/speak", "/api/voice", "/voice/speak"], {
         method: "POST",
         body: JSON.stringify({ action: "speak", text, voice }),
       });
@@ -1021,10 +1021,6 @@ export const voiceApi = {
         text: data.text ?? text,
         fallback: false,
         error: data.error,
-        server_tts_started: Boolean(data.server_tts_started),
-        browser_fallback_required: Boolean(data.browser_fallback_required),
-        voice_identity: data.voice_identity,
-        voice_model_id: data.voice_model_id,
         server_tts_started: Boolean(data.server_tts_started),
         browser_fallback_required: Boolean(data.browser_fallback_required),
         browser_fallback_allowed: data.browser_fallback_allowed !== false,

@@ -11,6 +11,7 @@ export type WindowId =
   | "sarahnet"
   | "media"
   | "dlengine"
+  | "nailde"
   | "addons"   // ✅ ADDED (Apps/Addons launcher)
   | "settings" // ✅ ADDED
   | "terminal"; // 🚀 Added terminal window type
@@ -63,6 +64,7 @@ const WINDOW_DEFAULTS: Record<
   sarahnet: { id: "sarahnet", title: "SarahNet", icon: "network", width: 540, height: 500 },
   media: { id: "media", title: "Media", icon: "play", width: 480, height: 420 },
   dlengine: { id: "dlengine", title: "DL Engine", icon: "cpu", width: 520, height: 460 },
+  nailde: { id: "nailde", title: "NAILDE", icon: "monitor-cog", width: 1180, height: 720 },
   terminal: { id: "terminal", title: "Terminal", icon: "terminal", width: 620, height: 520 },
 
   // ✅ ADDONS LAUNCHER WINDOW
@@ -121,7 +123,7 @@ const WORKSPACE_PRESETS: Record<string, WindowId[]> = {
   chat: ["chat", "history", "avatar"],
   research: ["research", "files", "chat"],
   operator: ["avatar", "sarahnet", "media", "settings"],
-  engineer: ["terminal", "dlengine", "addons", "settings"],
+  engineer: ["nailde", "terminal", "dlengine", "addons", "settings"],
   media: ["studio", "media", "files"],
 };
 

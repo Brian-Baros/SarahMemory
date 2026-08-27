@@ -105,7 +105,7 @@ export function useChatSend() {
     }, durationMs + 500);
   }, [setSpeechCues, setAvatarSpeaking, setSpeechStartTime, stopAvatarSpeaking, estimateSpeakingDuration]);
 
-  const useBrowserTTS = useCallback(async (text: string) => {
+  const playBrowserTTS = useCallback(async (text: string) => {
     const ok = await speakWithSarahBrowserVoice(text, settings.selectedVoice || "sarahvoice", stopAvatarSpeaking);
     if (!ok) stopAvatarSpeaking();
   }, [settings.selectedVoice, stopAvatarSpeaking]);
@@ -151,13 +151,13 @@ export function useChatSend() {
       }
 
       if (resp.browser_fallback_required || resp.fallback || !resp.success) {
-        await useBrowserTTS(text);
+        await playBrowserTTS(text);
       }
     } catch (e) {
       console.error("TTS error:", e);
-      await useBrowserTTS(text);
+      await playBrowserTTS(text);
     }
-  }, [settings.selectedVoice, stopAvatarSpeaking, useBrowserTTS]);
+  }, [settings.selectedVoice, stopAvatarSpeaking, playBrowserTTS]);
 
   const send = useCallback(async (text: string, opts: SendOptions = {}) => {
     const clean = (text || "").trim();

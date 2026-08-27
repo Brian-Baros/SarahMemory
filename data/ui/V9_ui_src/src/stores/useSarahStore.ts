@@ -121,20 +121,25 @@ const DEFAULT_TASKBAR = {
   items: DEFAULT_TASKBAR_ITEMS,
 };
 
+function clampNumber(value: any, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(parsed)));
+}
+
 function ensureTaskbarSettings(s: any): any {
   // s is Settings-like
   const next = { ...(s || {}) };
 
   if (!next.taskbar || typeof next.taskbar !== "object") {
     next.taskbar = { ...DEFAULT_TASKBAR };
-    return next;
+  } else {
+    // Merge missing pieces only
+    next.taskbar = {
+      ...DEFAULT_TASKBAR,
+      ...next.taskbar,
+    };
   }
-
-  // Merge missing pieces only
-  next.taskbar = {
-    ...DEFAULT_TASKBAR,
-    ...next.taskbar,
-  };
 
   // Sanitize known fields (defensive)
   const dock = String(next.taskbar.dock || "bottom") as TaskbarDock;
@@ -150,6 +155,11 @@ function ensureTaskbarSettings(s: any): any {
   } else {
     next.taskbar.items = next.taskbar.items.map((x: any) => String(x));
   }
+
+  next.backgroundBrightness = clampNumber(next.backgroundBrightness, 82, 20, 125);
+  next.backgroundOverlay = clampNumber(next.backgroundOverlay, 42, 0, 85);
+  next.backgroundBlur = clampNumber(next.backgroundBlur, 0, 0, 18);
+  next.panelOpacity = clampNumber(next.panelOpacity, 82, 45, 100);
 
   return next;
 }
@@ -346,7 +356,7 @@ function estimateSpeechDurationMs(text: string): number {
   return Math.max(1600, Math.min(180000, Math.round((words / 1.45) * 1000) + 1800));
 }
 
-async function useBrowserSpeechFallback(text: string, onDone: () => void, selectedVoice?: string): Promise<boolean> {
+async function playBrowserSpeechFallback(text: string, onDone: () => void, selectedVoice?: string): Promise<boolean> {
   return speakWithSarahBrowserVoice(text, selectedVoice || "sarahvoice", onDone);
 }
 
@@ -372,7 +382,7 @@ async function playVoiceResponseAudio(res: any, text: string, onDone: () => void
   }
 
   if (res?.browser_fallback_required || res?.fallback || !res?.success) {
-    if (await useBrowserSpeechFallback(text, onDone, selectedVoice)) return "browser";
+    if (await playBrowserSpeechFallback(text, onDone, selectedVoice)) return "browser";
   }
 
   if (res?.server_tts_started) {
@@ -523,6 +533,10 @@ export const useSarahStore = create<SarahState>()(
         wallpaperUrl: "",
         wallpaperMode: "cover",
         panelTransparency: "glass",
+        backgroundBrightness: 82,
+        backgroundOverlay: 42,
+        backgroundBlur: 0,
+        panelOpacity: 82,
         shellDensity: "comfortable",
         activeWorkspace: "chat",
       }),

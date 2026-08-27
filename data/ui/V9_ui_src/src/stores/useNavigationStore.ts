@@ -16,6 +16,9 @@ export type MobileScreen =
   | "files"
   | "media"
   | "dlengine"
+  | "nailde"
+  | "terminal"
+  | "addons"
   | "settings";
 
 export type DesktopApp =
@@ -25,6 +28,11 @@ export type DesktopApp =
   | "research"
   | "studio"
   | "dlengine"
+  | "nailde"
+  | "terminal"
+  | "history"
+  | "addons"
+  | "settings"
   | "sarahnet"
   | "avatar";
 
@@ -35,8 +43,14 @@ export const SCREEN_ORDER: MobileScreen[] = [
   "files",
   "research",
   "dlengine",
+  "nailde",
+  "terminal",
   "avatar",
+  "sarahnet",
+  "media",
   "studios",
+  "addons",
+  "settings",
 ];
 
 // Bottom nav items (5 max)
@@ -130,6 +144,11 @@ export const useNavigationStore = create<NavigationState>()(
             studio: "studio",
             studios: "studio",
             dlengine: "dlengine",
+            nailde: "nailde",
+            terminal: "terminal",
+            history: "history",
+            addons: "addons",
+            settings: "settings",
             sarahnet: "sarahnet",
             avatar: "avatar",
           };
@@ -171,6 +190,11 @@ export const useNavigationStore = create<NavigationState>()(
             research: "research",
             studio: "studio",
             dlengine: "dlengine",
+            nailde: "nailde",
+            terminal: "terminal",
+            history: "history",
+            addons: "addons",
+            settings: "settings",
             sarahnet: "sarahnet",
             avatar: "avatar",
           };

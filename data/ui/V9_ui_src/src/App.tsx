@@ -10,6 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import Index from "@/pages/Index";
 import NotFound from "@/pages/NotFound";
 import { VisionScreen } from "@/components/screens/VisionScreen";
+import NAILDEScreen from "@/components/screens/NAILDEScreen";
 
 import { api } from "@/lib/api";
 import { apiFetch } from "@/lib/config";
@@ -155,6 +156,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Index />} />
               <Route path="/vision" element={<VisionScreen />} />
+              <Route path="/nailde" element={<NAILDEScreen />} />
               <Route path="/vr-hud" element={<VisionScreen />} />
               <Route path="*" element={<NotFound />} />
             </Routes>

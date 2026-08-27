@@ -86,8 +86,11 @@ export interface Settings {
   wallpaperUrl?: string;
   wallpaperMode?: 'cover' | 'contain' | 'stretch' | 'tile' | 'center';
   panelTransparency?: 'solid' | 'glass' | 'translucent';
+  backgroundBrightness?: number;
+  backgroundOverlay?: number;
+  backgroundBlur?: number;
+  panelOpacity?: number;
   shellDensity?: 'compact' | 'comfortable' | 'operator';
   activeWorkspace?: 'chat' | 'research' | 'operator' | 'engineer' | 'media';
 }
-
 
