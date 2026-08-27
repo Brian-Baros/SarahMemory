@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import os
 import sys
+import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -160,6 +161,199 @@ def _exception_response(source: str, exc: Exception):
         "source": source,
         "execution_authority": False,
     }), 500
+
+
+def _looks_like_software_creation_request(text: str) -> bool:
+    t = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not t:
+        return False
+    creation = bool(re.search(r"\b(make|create|build|generate|code|write)\b", t))
+    software = bool(re.search(r"\b(app|application|program|software|game|addon|add-on|addons|plugin|tool|dashboard|tracker|website|web app|panel|widget|playable|launcher|simulator)\b", t))
+    return bool(creation and software)
+
+
+
+def _emit_avatar_event_safe(event: Dict[str, Any], *, source: str = "api.appsdk.creation_mission") -> Dict[str, Any]:
+    """Best-effort avatar embodiment signal; never controls mission authority."""
+    try:
+        import appmedia as _sm_appmedia  # type: ignore
+        fn = getattr(_sm_appmedia, "run_avatar_event_packet", None)
+        if callable(fn):
+            return fn(dict(event or {}), source=source, meta={"caller": "appsdk"})
+    except Exception as exc:
+        return {"ok": False, "error": f"avatar_event_emit_failed:{exc}", "execution_authority": False}
+    return {"ok": False, "error": "avatar_event_bridge_unavailable", "execution_authority": False}
+
+def run_governed_creation_mission(
+    text: str,
+    *,
+    payload: Optional[Dict[str, Any]] = None,
+    user_consented: bool = False,
+    source: str = "api.appsdk.creation_mission",
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Run the B07 NAILDE/ADDON creation mission through the domain owner.
+
+    This is a sandbox-build bridge, not an install/run bridge. An imperative
+    create/build request grants only NAILDE workspace staging authority. Live
+    ADDON installation and runtime launch remain separate explicit user actions.
+    """
+    payload = dict(payload or {})
+    meta = dict(meta or {})
+    raw = str(text or payload.get("text") or payload.get("message") or payload.get("goal") or payload.get("top_prompt") or "").strip()
+    if not raw:
+        return {"ok": False, "schema": "SarahMemory.api.appsdk.creation_mission.B07", "error": "missing_text", "execution_authority": False}
+    if not _looks_like_software_creation_request(raw):
+        return {"ok": False, "schema": "SarahMemory.api.appsdk.creation_mission.B07", "error": "not_a_software_creation_request", "handled": False, "execution_authority": False}
+
+    contract: Dict[str, Any]
+    try:
+        from SarahMemorySMLProtocol import sml_build_creation_mission_contract  # type: ignore
+        contract = sml_build_creation_mission_contract(raw, context={"source": source, "target": "nailde", "collect_external_evidence": True, **meta})
+    except Exception as exc:
+        contract = {"ok": False, "error": f"sml_creation_contract_failed:{exc}", "execution_authority": False}
+
+    plan_only = bool(
+        payload.get("plan_only")
+        or payload.get("dry_run")
+        or payload.get("create_files") is False
+        or re.search(r"\b(before creating files|without creating files|mission plan|governance state|return the plan|return a plan)\b", raw, flags=re.I)
+    )
+    if plan_only:
+        presentation = (
+            "NAILDE built a governed creation mission plan only. No workspace files were created, no ADDON was installed, and nothing was run. "
+            "Review the creation contract, research questions, validation requirements, and governance state before authorizing sandbox generation."
+        )
+        return {
+            "ok": True,
+            "schema": "SarahMemory.api.appsdk.creation_mission.B10",
+            "handled": True,
+            "presentation_text": presentation,
+            "creation_contract": contract,
+            "mode": "plan_only_no_files_created",
+            "files_created": False,
+            "workspace_id": None,
+            "application_name": "",
+            "addon_id": "",
+            "install_plan": None,
+            "test_run": None,
+            "validation": {"status": "PLANNED_NOT_RUN", "syntax": "NOT_VERIFIED", "sandbox": "NOT_CREATED"},
+            "actions": [
+                {"type": "nailde_sandbox_generation_requires_confirmation", "enabled": True},
+                {"type": "addon_install_requires_confirmation", "enabled": False},
+            ],
+            "sandbox_only": True,
+            "execution_authority": False,
+            "live_install_authority": False,
+            "live_run_authority": False,
+            "source": source,
+            "meta": meta,
+        }
+
+    explicit_create = bool(re.match(r"^\s*(hey\s+sarah[, ]*)?(please\s+)?(make|create|build|generate|code|write)\b", raw, flags=re.I))
+    sandbox_authorized = bool(user_consented or payload.get("confirmed") or payload.get("confirm") or explicit_create)
+    if not sandbox_authorized:
+        return {
+            "ok": False,
+            "schema": "SarahMemory.api.appsdk.creation_mission.B07",
+            "requires_confirmation": True,
+            "message": "This is a sandbox software/addon build mission. Confirm that SarahMemory may create NAILDE sandbox workspace files. Install and run will still require separate approval.",
+            "creation_contract": contract,
+            "execution_authority": False,
+            "live_install_authority": False,
+            "live_run_authority": False,
+        }
+
+    rt = _runtime()
+    if rt is None:
+        return {
+            "ok": False,
+            "schema": "SarahMemory.api.appsdk.creation_mission.B07",
+            "error": "nailde_runtime_unavailable",
+            "creation_contract": contract,
+            "execution_authority": False,
+        }
+
+    build_payload = dict(payload)
+    build_payload.update({
+        "top_prompt": raw,
+        "goal": raw,
+        "target": "nailde",
+        "collect_language_evidence": True,
+        "novice_mode": bool(payload.get("novice_mode", True)),
+        "install_after_build": False,
+        "run_after_build": False,
+        "source": source,
+    })
+    try:
+        result = rt.auto_build_from_prompt(build_payload)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "schema": "SarahMemory.api.appsdk.creation_mission.B07",
+            "error": f"nailde_auto_build_failed:{exc}",
+            "creation_contract": contract,
+            "execution_authority": False,
+        }
+
+    ok = bool(result.get("ok"))
+    application_name = ""
+    try:
+        application_name = str(((result.get("spec") or {}) if isinstance(result.get("spec"), dict) else {}).get("application_name") or "")
+    except Exception:
+        application_name = ""
+    addon_id = ""
+    try:
+        addon_id = str(((result.get("spec") or {}) if isinstance(result.get("spec"), dict) else {}).get("addon_id") or (result.get("addon_package") or {}).get("addon_id") or "")
+    except Exception:
+        addon_id = ""
+    if ok:
+        presentation = (
+            f"NAILDE created a sandbox ADDON-ready build{f' for {application_name}' if application_name else ''}. "
+            "Static validation and the install plan are included. I did not install or run it; those require separate explicit approval."
+        )
+    else:
+        presentation = "NAILDE started the governed creation mission but stopped before producing a verified sandbox build. Review the returned synthesis/validation issue; no live install or run occurred."
+
+    avatar_event = _emit_avatar_event_safe({
+        "event_type": "creation_mission_completed" if ok else "creation_mission_stopped",
+        "domain": "creative_build_mission",
+        "source": source,
+        "message": presentation,
+        "validation_state": "verified" if ok else "failed",
+        "source_verified": bool(ok),
+        "severity": 0.35 if ok else 0.65,
+        "workspace_id": result.get("workspace_id"),
+        "addon_id": addon_id,
+        "claim": {"workspace_staged": bool(result.get("workspace_id")), "addon_id": addon_id},
+    }, source="api.appsdk.creation_mission")
+
+    return {
+        "ok": ok,
+        "schema": "SarahMemory.api.appsdk.creation_mission.B07",
+        "handled": True,
+        "presentation_text": presentation,
+        "creation_contract": contract,
+        "nailde_result": result,
+        "workspace_id": result.get("workspace_id"),
+        "application_name": application_name,
+        "addon_id": addon_id,
+        "install_plan": result.get("install_plan"),
+        "test_run": result.get("test_run"),
+        "validation": result.get("validation"),
+        "post_test_popup": result.get("post_test_popup"),
+        "avatar_event": avatar_event,
+        "actions": [
+            {"type": "nailde_workspace_review", "workspace_id": result.get("workspace_id"), "enabled": bool(result.get("workspace_id"))},
+            {"type": "addon_install_requires_confirmation", "addon_id": addon_id, "enabled": bool(ok and addon_id)},
+        ],
+        "sandbox_only": True,
+        "execution_authority": False,
+        "live_install_authority": False,
+        "live_run_authority": False,
+        "source": source,
+        "meta": meta,
+    }
 
 
 @appsdk_bp.route("/api/nailde/status", methods=["GET"])
@@ -527,6 +721,26 @@ def api_nailde_addon_install_authorized():
     except Exception as exc:
         return _exception_response("api.appsdk.nailde.addon_install_authorized", exc)
 
+@appsdk_bp.route("/api/nailde/mission/create", methods=["POST"])
+def api_nailde_mission_create():
+    if not _request_allowed():
+        return _blocked_response()
+    try:
+        payload = _payload()
+        text = str(payload.get("text") or payload.get("message") or payload.get("goal") or payload.get("top_prompt") or "").strip()
+        result = run_governed_creation_mission(
+            text,
+            payload=payload,
+            user_consented=bool(payload.get("confirmed") or payload.get("confirm") or payload.get("user_confirmed")),
+            source="api.appsdk.http.nailde_mission_create",
+            meta={"http_route": "/api/nailde/mission/create"},
+        )
+        status = 200 if result.get("ok") else (409 if result.get("requires_confirmation") else 400)
+        return jsonify(result), status
+    except Exception as exc:
+        return _exception_response("api.appsdk.nailde.mission_create", exc)
+
+
 @appsdk_bp.route("/api/nailde/auto-build", methods=["POST"])
 def api_nailde_auto_build():
     if not _request_allowed():
@@ -622,7 +836,7 @@ def init_app(flask_app: Any, logger: Optional[Any] = None) -> Dict[str, Any]:
         return {"ok": False, "registered": False, "error": str(exc), "blueprint": _BLUEPRINT_NAME, "schema": SDK_SCHEMA}
 
 
-__all__ = ["appsdk_bp", "init_app"]
+__all__ = ["appsdk_bp", "init_app", "run_governed_creation_mission"]
 
 # ====================================================================
 # END OF appsdk.py v9.0.0-alpha
@@ -637,7 +851,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
+    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate', 'nailde_creation_mission'],
     "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
     "required_authority": ['Read'],

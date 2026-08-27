@@ -814,6 +814,392 @@ def _driver_discover(driver_id: str, payload: Optional[Dict[str, Any]] = None):
         return _err(f"discover failed: {e}", 500, details=traceback.format_exc())
 
 
+# ------------------------------ Governed Chat Device Actions ------------------------------
+# B06: appdrivers owns bounded local-device execution. app.py may detect a
+# chat route, but appdrivers performs governance, dispatch, verification, and
+# OperatorCore audit for local keyboard/RGB/device actions. This keeps driver
+# authority out of the central chat bridge.
+
+_KEY_LOCK_ACTION_ID = "system_keyboard_lock_state"
+_KEY_LOCK_DRIVER_ID = "system.keyboard.local_os"
+
+
+def _json_plain(value: Any) -> Any:
+    try:
+        json.dumps(value, ensure_ascii=False, default=str)
+        return value
+    except Exception:
+        try:
+            if isinstance(value, dict):
+                return {str(k): _json_plain(v) for k, v in value.items()}
+            if isinstance(value, (list, tuple, set)):
+                return [_json_plain(v) for v in list(value)]
+            return str(value)
+        except Exception:
+            return "<unserializable>"
+
+
+def _normalize_chat_device_route(text: str = "", route: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return a bounded local-device route inferred from SML/app.py route data.
+
+    This helper is intentionally small. It does not become an infinite device
+    intent table. It recognizes only the stable low-level route families B06 is
+    allowed to dispatch, then leaves all unknown device work to normal driver
+    discovery/actions.
+    """
+    route = dict(route or {}) if isinstance(route, dict) else {}
+    t = str(text or route.get("text") or "").strip().lower()
+    t = t.replace("capslock", "caps lock").replace("numlock", "num lock").replace("scrolllock", "scroll lock")
+    route_id = str(route.get("route_id") or "").strip()
+
+    if route_id == "system.keyboard.key_state" or (
+        any(k in t for k in ("caps lock", "num lock", "scroll lock"))
+        and any(k in t for k in ("turn", "put", "set", "enable", "disable", "switch"))
+    ):
+        key_name = str(route.get("key_name") or "").strip().lower()
+        if not key_name:
+            key_name = "caps_lock" if "caps lock" in t else ("num_lock" if "num lock" in t else "scroll_lock")
+        key_name = key_name.replace(" ", "_").replace("capslock", "caps_lock").replace("numlock", "num_lock").replace("scrolllock", "scroll_lock")
+        requested_state = str(route.get("requested_state") or "").strip().lower()
+        if requested_state not in {"on", "off"}:
+            requested_state = "off" if any(k in t for k in ("turn off", "switch off", "disable", "off")) else "on"
+        return {
+            "ok": True,
+            "route_id": "system.keyboard.key_state",
+            "action_family": "keyboard_lock_state",
+            "driver_id": _KEY_LOCK_DRIVER_ID,
+            "action_id": _KEY_LOCK_ACTION_ID,
+            "key_name": key_name,
+            "requested_state": requested_state,
+            "risk_level": "TIER_1_HARMLESS_LOCAL_UI",
+            "requires_confirmation": True,
+        }
+
+    if route_id == "drivers.keyboard.lighting" or (
+        "keyboard" in t and any(k in t for k in ("light", "lights", "led", "rgb", "backlight", "color", "colors", "colour", "colours"))
+    ):
+        color = str(route.get("value") or "").strip().lower()
+        if not color or color == "requested":
+            for c in ("red", "green", "blue", "purple", "yellow", "white", "orange", "pink"):
+                if c in t:
+                    color = c
+                    break
+        requested_state = str(route.get("requested_state") or "").strip().lower() or ("on" if any(k in t for k in ("turn on", "enable", "activate")) else "")
+        return {
+            "ok": True,
+            "route_id": "drivers.keyboard.lighting",
+            "action_family": "keyboard_lighting",
+            "driver_id": "dynamic.driver.catalog",
+            "action_id": "keyboard_lighting_set",
+            "device_type": "keyboard",
+            "value": color or "requested",
+            "requested_state": requested_state or None,
+            "risk_level": "TIER_2_BOUNDED_LOCAL_OPERATION",
+            "requires_confirmation": True,
+        }
+
+    return {"ok": False, "error": "unsupported_or_unknown_device_intent", "route_id": route_id or "unknown"}
+
+
+def _authorize_bounded_local_device_action(
+    *,
+    action_type: str,
+    capability_name: str,
+    target: str,
+    action_id: str,
+    payload: Dict[str, Any],
+    user_goal: str,
+    risk_level: str,
+    user_consented: bool,
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Authorize a bounded appdrivers-owned action through OperatorCore.
+
+    Uses a non-hazardous action_type for PC keyboard lock-state changes so the
+    hazardous-energy constitution does not falsely classify Caps Lock as robot/
+    motor/driver actuation. Higher-risk driver actions still use the generic
+    driver action path above.
+    """
+    try:
+        import SarahMemoryOperatorCore as _OperatorCore  # type: ignore
+        fn = getattr(_OperatorCore, "authorize_external_domain_action", None)
+        if not callable(fn):
+            raise RuntimeError("OperatorCore authorization surface unavailable")
+        proposed_action = {
+            "action_type": str(action_type),
+            "capability_name": str(capability_name),
+            "target": str(target),
+            "target_ref": str(target),
+            "driver_id": str(target),
+            "driver_action_id": str(action_id),
+            "required_permissions": ["Execute", "DeviceControl"],
+            "risk_level": str(risk_level or "TIER_2_BOUNDED_LOCAL_OPERATION"),
+            "reason": "User-requested bounded local-device action through appdrivers domain owner.",
+            "rollback_plan": "Verify final device state when possible; if requested state is not reached, report failure and stop. Manual reversal remains available for keyboard lock state.",
+            "tests": ["operatorcore_authorization", "bounded_dispatch", "post_dispatch_state_verification", "audit_record"],
+            "dry_run": False,
+            "touches_filesystem": False,
+            "touches_network": False,
+            "physical_actuation": False,
+            "payload_summary": _json_plain(payload),
+        }
+        return fn(
+            str(user_goal or f"Execute {action_id} on {target}"),
+            origin="api.server.appdrivers.chat_device_action",
+            proposed_action=proposed_action,
+            meta={"api_domain": "drivers", "bounded_local_device_action": True, **dict(meta or {})},
+            user_consented=bool(user_consented),
+        )
+    except Exception as exc:
+        return {"ok": False, "allow": False, "decision": "DEFER", "domain_execution_authorized": False, "execution_authority": False, "reason": f"operatorcore_unavailable:{exc}"}
+
+
+def _keyboard_lock_nice_name(key_name: str) -> str:
+    return {"caps_lock": "Caps Lock", "num_lock": "Num Lock", "scroll_lock": "Scroll Lock"}.get(str(key_name), str(key_name))
+
+
+def _set_keyboard_lock_state_native(key_name: str, requested_state: str) -> Dict[str, Any]:
+    """Bounded OS adapter for Caps/Num/Scroll Lock. Windows-only for now.
+
+    This is the execution primitive owned by appdrivers, not app.py. It verifies
+    final state and fails closed on unsupported hosts instead of producing LLM
+    advice.
+    """
+    key_name = str(key_name or "caps_lock").strip().lower().replace(" ", "_")
+    requested_state = str(requested_state or "on").strip().lower()
+    vk_map = {"caps_lock": 0x14, "num_lock": 0x90, "scroll_lock": 0x91}
+    if key_name not in vk_map:
+        return {"ok": False, "verified": False, "error": "unsupported_keyboard_lock_key", "key_name": key_name, "requested_state": requested_state}
+    nice = _keyboard_lock_nice_name(key_name)
+    desired_on = requested_state != "off"
+    if os.name != "nt":
+        return {
+            "ok": False,
+            "verified": False,
+            "error": "keyboard_lock_state_not_supported_on_this_os",
+            "presentation_text": f"{nice} control is governed, but this runtime does not currently expose a verified OS adapter for {os.name}.",
+            "key_name": key_name,
+            "requested_state": requested_state,
+            "os": os.name,
+            "action_taken": False,
+        }
+    try:
+        import ctypes
+        import time as _time
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        vk = vk_map[key_name]
+        key_event_flags_extended = 0x0001
+        key_event_flags_keyup = 0x0002
+        changed = False
+        for _ in range(4):
+            current_on = bool(user32.GetKeyState(vk) & 1)
+            if current_on == desired_on:
+                break
+            user32.keybd_event(vk, 0x45, key_event_flags_extended, 0)
+            user32.keybd_event(vk, 0x45, key_event_flags_extended | key_event_flags_keyup, 0)
+            changed = True
+            _time.sleep(0.05)
+        final_on = bool(user32.GetKeyState(vk) & 1)
+        verified = final_on == desired_on
+        final_state = "on" if final_on else "off"
+        if verified:
+            verb = "turned" if changed else "already"
+            text = f"{nice} {verb} {final_state.upper()}."
+        else:
+            text = f"Unable to verify {nice} reached the requested {requested_state.upper()} state."
+        return {
+            "ok": bool(verified),
+            "verified": bool(verified),
+            "presentation_text": text,
+            "key_name": key_name,
+            "requested_state": requested_state,
+            "final_state": final_state,
+            "changed": bool(changed),
+            "action_taken": bool(changed),
+            "os": "nt",
+        }
+    except Exception as exc:
+        return {"ok": False, "verified": False, "error": f"keyboard_lock_state_failed:{exc}", "key_name": key_name, "requested_state": requested_state, "action_taken": False}
+
+
+def _find_keyboard_lighting_driver_candidates() -> list[Dict[str, Any]]:
+    candidates: list[Dict[str, Any]] = []
+    try:
+        for driver_id in _discover_driver_ids():
+            try:
+                manifest = _load_manifest(driver_id)
+            except Exception:
+                manifest = {}
+            raw = json.dumps(manifest or {}, ensure_ascii=False).lower()
+            actions = manifest.get("actions_supported") if isinstance(manifest, dict) else []
+            actions = actions if isinstance(actions, list) else []
+            action_blob = " ".join(str(x).lower() for x in actions)
+            if any(x in raw for x in ("keyboard", "rgb", "lighting", "backlight", "led")) and any(x in raw + " " + action_blob for x in ("rgb", "lighting", "backlight", "set_color", "led")):
+                candidates.append({"driver_id": str(driver_id), "manifest": manifest, "actions_supported": actions})
+    except Exception:
+        return candidates
+    return candidates
+
+
+def _execute_keyboard_lighting_via_governed_driver(route: Dict[str, Any], *, user_consented: bool, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Try a governed runtime driver for keyboard lighting.
+
+    This deliberately does not spawn arbitrary OpenRGB commands from app.py or
+    appdrivers. Lighting succeeds only when a registered SarahMemory driver
+    exposes an appropriate action.
+    """
+    candidates = _find_keyboard_lighting_driver_candidates()
+    if not candidates:
+        return {
+            "ok": False,
+            "verified": False,
+            "decision": "DRIVER_UNAVAILABLE",
+            "presentation_text": "Keyboard lighting control is governed, but no registered keyboard/RGB lighting driver is currently available.",
+            "driver_candidates": [],
+            "action_taken": False,
+        }
+    preferred_actions = ["keyboard_lighting_set", "keyboard_rgb_set", "set_color", "set_rgb", "set_led_color", "set_backlight", "lighting_set"]
+    payload = {
+        "source": "appdrivers.chat_device_action",
+        "device_type": "keyboard",
+        "value": route.get("value"),
+        "requested_state": route.get("requested_state"),
+        "meta": dict(meta or {}),
+    }
+    errors = []
+    for candidate in candidates:
+        driver_id = str(candidate.get("driver_id") or "")
+        manifest = candidate.get("manifest") if isinstance(candidate.get("manifest"), dict) else {}
+        actions_blob = json.dumps(manifest or {}, ensure_ascii=False).lower()
+        selected_action = ""
+        for action_id in preferred_actions:
+            if action_id.lower() in actions_blob:
+                selected_action = action_id
+                break
+        if not selected_action:
+            continue
+        auth = _operator_authorize_driver_action(driver_id, selected_action, payload, user_consented=user_consented)
+        if not bool(auth.get("domain_execution_authorized")):
+            errors.append({"driver_id": driver_id, "action_id": selected_action, "authorization": auth})
+            continue
+        try:
+            cfg = _load_config(driver_id)
+            _driver_connect(driver_id, cfg=cfg if isinstance(cfg, dict) else {}, connect_payload={"source": "appdrivers.chat_device_action", "autoconnect_for_action": True})
+            mod, err = _load_driver_module(driver_id)
+            if err or mod is None:
+                failure = {"ok": False, "error": err or "driver_module_unavailable"}
+                audit = _operator_record_driver_result(auth, failure, verified=False)
+                errors.append({"driver_id": driver_id, "action_id": selected_action, "result": failure, "operator_audit": audit})
+                continue
+            context = _build_driver_context(driver_id, instance_id=_session_get(driver_id).get("instance_id"), extra={"action_id": selected_action, "operator_contract": auth.get("contract")})
+            if hasattr(mod, "driver_action"):
+                out = mod.driver_action(action_id=selected_action, context=context, payload=payload)  # type: ignore[attr-defined]
+            else:
+                fn_name = f"action_{selected_action}"
+                if not hasattr(mod, fn_name):
+                    continue
+                out = getattr(mod, fn_name)(context=context, payload=payload)  # type: ignore[misc]
+            result = out if isinstance(out, dict) else {"ok": True, "result": out}
+            verified = bool(result.get("ok", True)) and not bool(result.get("error"))
+            audit = _operator_record_driver_result(auth, result, verified=verified)
+            return {
+                "ok": bool(verified),
+                "verified": bool(verified),
+                "decision": "EXECUTED" if verified else "FAILED_VERIFICATION",
+                "presentation_text": f"Keyboard lighting action {'completed' if verified else 'failed verification'} through governed driver {driver_id}.",
+                "driver_id": driver_id,
+                "action_id": selected_action,
+                "driver_result": _json_plain(result),
+                "operator_audit": audit,
+                "action_taken": bool(verified),
+            }
+        except Exception as exc:
+            errors.append({"driver_id": driver_id, "action_id": selected_action, "error": str(exc), "traceback": traceback.format_exc()})
+    return {
+        "ok": False,
+        "verified": False,
+        "decision": "NO_DRIVER_ACTION_SUCCEEDED",
+        "presentation_text": "Keyboard lighting matched a governed device route, but no registered driver action completed and verified.",
+        "driver_candidates": [{"driver_id": c.get("driver_id")} for c in candidates],
+        "errors": errors[-5:],
+        "action_taken": False,
+    }
+
+
+def run_governed_device_intent(
+    text: str = "",
+    *,
+    route: Optional[Dict[str, Any]] = None,
+    user_consented: bool = False,
+    source: str = "api_chat",
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Public in-process B06 bridge used by app.py chat routing.
+
+    Returns a plain dict. It never asks a local model to explain how to perform
+    device control and never lets app.py execute the action directly.
+    """
+    meta = dict(meta or {}) if isinstance(meta, dict) else {}
+    normalized = _normalize_chat_device_route(text, route)
+    if not normalized.get("ok"):
+        return {"ok": False, "handled": False, "decision": "UNSUPPORTED_DEVICE_INTENT", "error": normalized.get("error"), "route": normalized}
+    if not user_consented:
+        return {
+            "ok": False,
+            "handled": True,
+            "blocked": True,
+            "decision": "REQUIRE_USER",
+            "requires_confirmation": True,
+            "presentation_text": "This local device action requires explicit user confirmation before appdrivers can execute it.",
+            "route": normalized,
+            "source": source,
+        }
+
+    if normalized.get("action_family") == "keyboard_lock_state":
+        payload = {"route": normalized, "user_text": str(text or ""), "source": source, "meta": meta}
+        auth = _authorize_bounded_local_device_action(
+            action_type="local_os_keyboard_lock_state",
+            capability_name="pc_keyboard_lock_state",
+            target=_KEY_LOCK_DRIVER_ID,
+            action_id=_KEY_LOCK_ACTION_ID,
+            payload=payload,
+            user_goal=str(text or f"Set {_keyboard_lock_nice_name(str(normalized.get('key_name')))} {normalized.get('requested_state')}"),
+            risk_level=str(normalized.get("risk_level") or "TIER_1_HARMLESS_LOCAL_UI"),
+            user_consented=True,
+            meta={"route_id": normalized.get("route_id"), **meta},
+        )
+        if not bool(auth.get("domain_execution_authorized")):
+            return {
+                "ok": False,
+                "handled": True,
+                "blocked": True,
+                "decision": str(auth.get("decision") or "DEFER"),
+                "presentation_text": "Keyboard lock-state action was blocked by OperatorCore governance.",
+                "authorization": auth,
+                "route": normalized,
+                "action_taken": False,
+            }
+        result = _set_keyboard_lock_state_native(str(normalized.get("key_name") or "caps_lock"), str(normalized.get("requested_state") or "on"))
+        audit = _operator_record_driver_result(auth, result, verified=bool(result.get("verified")))
+        result.update({
+            "handled": True,
+            "decision": "EXECUTED" if result.get("verified") else "FAILED_VERIFICATION",
+            "authorization": auth,
+            "operator_audit": audit,
+            "route": normalized,
+            "source": source,
+        })
+        result.setdefault("presentation_text", "Keyboard lock-state action completed." if result.get("ok") else "Keyboard lock-state action did not verify.")
+        return _json_plain(result)
+
+    if normalized.get("action_family") == "keyboard_lighting":
+        result = _execute_keyboard_lighting_via_governed_driver(normalized, user_consented=True, meta={"source": source, **meta})
+        result.update({"handled": True, "route": normalized, "source": source})
+        return _json_plain(result)
+
+    return {"ok": False, "handled": False, "decision": "UNSUPPORTED_DEVICE_ACTION_FAMILY", "route": normalized}
+
+
 # ------------------------------ Flask Mount ------------------------------
 
 def apply(app):
@@ -847,6 +1233,7 @@ def apply(app):
                 "disconnect",
                 "status",
                 "actions",
+                "governed_chat_device_action",
             ],
         )
 
@@ -1080,6 +1467,24 @@ def apply(app):
             return jsonify({"ok": True, "session": sess, "status": {"ok": True, "note": "driver_status not implemented"}})
         except Exception as e:
             return _err(f"status failed: {e}", 500, details=traceback.format_exc())
+
+
+    @app.route("/api/drivers/actions/governed", methods=["POST"])
+    def drivers_governed_action():
+        if not _verify_auth():
+            return _err("Unauthorized", 401)
+        body = request.get_json(force=True, silent=True) or {}
+        text = str(body.get("text") or body.get("user_text") or "")
+        route = body.get("route") if isinstance(body.get("route"), dict) else {}
+        result = run_governed_device_intent(
+            text,
+            route=route,
+            user_consented=_user_confirmed(body),
+            source="api.drivers.actions.governed",
+            meta={"http_route": "/api/drivers/actions/governed"},
+        )
+        status = 200 if bool(result.get("ok")) else (403 if str(result.get("decision") or "") == "REQUIRE_USER" else 409)
+        return jsonify(result), status
 
     @app.route("/api/drivers/<driver_id>/actions/<action_id>", methods=["POST"])
     def drivers_action(driver_id: str, action_id: str):

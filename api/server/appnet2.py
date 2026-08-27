@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import time
@@ -282,6 +283,60 @@ def _ensure_tables() -> None:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_agent_events_task ON net2_agent_events(task_id,ts)")
 
+        # -----------------------------
+        # SarahNet World Fabric control-plane alpha
+        # Persistent world/region identity lives here; high-frequency SML-RT
+        # state remains in appnet.py memory and is never written per frame.
+        # -----------------------------
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS net2_worlds (
+                world_id TEXT PRIMARY KEY,
+                owner_node TEXT NOT NULL,
+                name TEXT,
+                reality_class TEXT NOT NULL,
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL,
+                status TEXT NOT NULL,
+                metadata_json TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_worlds_owner ON net2_worlds(owner_node,updated_ts)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS net2_regions (
+                world_id TEXT NOT NULL,
+                region_id TEXT NOT NULL,
+                authority_node TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL,
+                updated_ts REAL NOT NULL,
+                metadata_json TEXT,
+                PRIMARY KEY (world_id, region_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_regions_authority ON net2_regions(authority_node,updated_ts)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS net2_authority_leases (
+                lease_id TEXT PRIMARY KEY,
+                identity TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                world_id TEXT NOT NULL,
+                region_id TEXT NOT NULL,
+                permitted_state_classes_json TEXT NOT NULL,
+                constraints_json TEXT,
+                revocation_conditions_json TEXT,
+                issuer_node TEXT NOT NULL,
+                created_ts REAL NOT NULL,
+                start_ts REAL NOT NULL,
+                expires_ts REAL NOT NULL,
+                status TEXT NOT NULL,
+                signature TEXT,
+                revoked_ts REAL,
+                revoke_reason TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_leases_entity ON net2_authority_leases(world_id,region_id,entity_id,status,expires_ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_leases_identity ON net2_authority_leases(identity,status,expires_ts)")
+
         con.commit()
     except Exception:
         try:
@@ -319,6 +374,66 @@ def _purge_expired_challenges(cur) -> int:
         return expired_n + used_n
     except Exception:
         return 0
+
+def _attest_proof_message(node_id: str, challenge_id: str, nonce: str) -> bytes:
+    return f"SARAHNET_ATTEST_V1|{node_id}|{challenge_id}|{nonce}".encode("utf-8")
+
+
+def _decode_key_material(value: str) -> bytes:
+    text = str(value or "").strip()
+    if ":" in text and text.split(":", 1)[0].lower() in ("ed25519", "base64", "b64", "hex"):
+        prefix, text = text.split(":", 1)
+        prefix = prefix.lower()
+    else:
+        prefix = ""
+    if not text:
+        return b""
+    if prefix == "hex":
+        return bytes.fromhex(text)
+    if prefix in ("ed25519", "base64", "b64"):
+        try:
+            return base64.b64decode(text.encode("ascii"), validate=True)
+        except Exception:
+            if prefix == "ed25519":
+                try: return bytes.fromhex(text)
+                except Exception: return b""
+            return b""
+    try:
+        raw = base64.b64decode(text.encode("ascii"), validate=True)
+        if raw:
+            return raw
+    except Exception:
+        pass
+    try:
+        return bytes.fromhex(text)
+    except Exception:
+        return b""
+
+
+def _verify_ed25519_proof(pubkey_text: str, signature_text: str, message: bytes) -> tuple[bool, str]:
+    pub = _decode_key_material(pubkey_text)
+    sig = _decode_key_material(signature_text)
+    if len(pub) != 32:
+        return False, "invalid_ed25519_public_key"
+    if len(sig) != 64:
+        return False, "invalid_ed25519_signature"
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey  # type: ignore
+        Ed25519PublicKey.from_public_bytes(pub).verify(sig, message)
+        return True, "verified_cryptography"
+    except ImportError:
+        pass
+    except Exception:
+        return False, "signature_verification_failed"
+    try:
+        from nacl.signing import VerifyKey  # type: ignore
+        VerifyKey(pub).verify(message, sig)
+        return True, "verified_pynacl"
+    except ImportError:
+        return False, "ed25519_backend_unavailable"
+    except Exception:
+        return False, "signature_verification_failed"
+
 
 # ----------------------------- endpoints ---------------------------------
 
@@ -446,7 +561,8 @@ def net2_node_challenge():
             (cid, node_id, nonce, now, expires),
         )
         con.commit()
-        return _ok(challenge_id=cid, node_id=node_id, nonce=nonce, expires_ts=expires, purged=purged)
+        proof_message = _attest_proof_message(node_id, cid, nonce).decode("utf-8")
+        return _ok(challenge_id=cid, node_id=node_id, nonce=nonce, expires_ts=expires, purged=purged, proof_algorithm="ed25519", proof_message=proof_message)
     except Exception as e:
         return _err("DB error", 500, detail=str(e))
     finally:
@@ -499,12 +615,12 @@ def net2_node_list():
 
 @bp2.post("/api/net2/node/attest")
 def net2_node_attest():
-    """
-    Attestation placeholder:
-    - We mark challenge used and update node last_ts.
-    - Signature verification belongs in node code + injected auth, or later cryptographic expansion.
-    Body:
-      { "node_id": "...", "challenge_id": "...", "proof": {..} }
+    """Verify a one-time Ed25519 challenge proof for a registered SarahNet node.
+
+    Expected proof:
+      {"signature": "<base64-or-hex-ed25519-signature>", "algorithm": "ed25519"}
+    The signed message is returned by /api/net2/node/challenge as proof_message.
+    Unverified proof is never reported as attested.
     """
     raw = _body_bytes()
     if not _verify_auth(raw):
@@ -515,20 +631,20 @@ def net2_node_attest():
     data = _j()
     node_id = (data.get("node_id") or "").strip()
     challenge_id = (data.get("challenge_id") or "").strip()
-    proof = data.get("proof") or {}
-
+    proof = data.get("proof") if isinstance(data.get("proof"), dict) else {}
+    signature = str(proof.get("signature") or proof.get("sig") or "").strip()
+    algorithm = str(proof.get("algorithm") or "ed25519").strip().lower()
     if not node_id or not challenge_id:
         return _err("Missing node_id/challenge_id")
+    if algorithm != "ed25519":
+        return _err("Unsupported attestation algorithm", 400, supported=["ed25519"])
 
     _ensure_tables()
     con = None
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
-
-        # housekeeping
         purged = _purge_expired_challenges(cur)
-
         cur.execute("SELECT nonce, expires_ts, used FROM net2_challenges WHERE id=? AND node_id=? LIMIT 1", (challenge_id, node_id))
         row = cur.fetchone()
         if not row:
@@ -537,86 +653,68 @@ def net2_node_attest():
             return _err("Challenge already used", 409)
         if float(row[1] or 0) < _now():
             return _err("Challenge expired", 409)
-
-        # Mark used
+        cur.execute("SELECT pubkey FROM net2_nodes WHERE node_id=? LIMIT 1", (node_id,))
+        nr = cur.fetchone()
+        pubkey = str((nr[0] if nr else "") or "").strip()
+        if not pubkey:
+            return _err("Registered node has no public key; cryptographic attestation unavailable", 409, attested=False, verified=False)
+        if not signature:
+            return _err("Missing Ed25519 proof signature", 400, attested=False, verified=False)
+        message = _attest_proof_message(node_id, challenge_id, str(row[0]))
+        verified, verify_detail = _verify_ed25519_proof(pubkey, signature, message)
+        if not verified:
+            _arile_api_emit("node_attestation_failed", "SarahNet node challenge signature verification failed.", severity=0.84, node_id=node_id, challenge_id=challenge_id, detail=verify_detail)
+            return _err("Node attestation proof verification failed", 403, attested=False, verified=False, detail=verify_detail)
         cur.execute("UPDATE net2_challenges SET used=1 WHERE id=? AND node_id=?", (challenge_id, node_id))
-
-        # Update last_ts on node
         cur.execute("UPDATE net2_nodes SET last_ts=? WHERE node_id=?", (_now(), node_id))
-
         con.commit()
-        return _ok(attested=True, node_id=node_id, challenge_id=challenge_id, purged=purged, note="proof stored/accepted (verification policy external)")
+        return _ok(attested=True, verified=True, algorithm="ed25519", node_id=node_id, challenge_id=challenge_id, purged=purged, verification=verify_detail)
     except Exception as e:
-        return _err("DB error", 500, detail=str(e))
+        return _err("DB/attestation error", 500, detail=str(e))
     finally:
         try:
-            if con:
-                con.close()
+            if con: con.close()
         except Exception:
             pass
 
 @bp2.post("/api/net2/node/challenge_and_attest")
 def net2_node_challenge_and_attest():
-    """
-    Single-call operational convenience to avoid copy/paste errors.
-    Body:
-      { "node_id": "...", "proof": {..} }
-    Returns:
-      { challenge_id, nonce, expires_ts, attested:true, ... }
+    """Compatibility route that now performs challenge creation only.
+
+    Secure challenge-response cannot be completed in one request because the
+    client must first receive the unpredictable nonce, sign the returned
+    proof_message, then call /api/net2/node/attest. This route is retained so
+    callers do not receive a 404, but it no longer claims unverified attestation.
     """
     raw = _body_bytes()
     if not _verify_auth(raw):
         return _err("Unauthorized", 401)
     if not _require_injected():
         return _err("Storage not configured (META_DB).", 500)
-
     data = _j()
     node_id = (data.get("node_id") or "").strip()
-    proof = data.get("proof") or {}
     if not node_id:
         return _err("Missing node_id")
-
-    # Create challenge
     nonce = _b64e(os.urandom(32))
     cid = _new_id("chal")
     now = _now()
     ttl = int(os.environ.get("SARAHNET_CHALLENGE_TTL_SEC", "120") or 120)
     expires = now + max(30, min(600, ttl))
-
     _ensure_tables()
     con = None
     try:
         con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
         cur = con.cursor()
-
-        # housekeeping
         purged = _purge_expired_challenges(cur)
-
-        cur.execute(
-            "INSERT INTO net2_challenges(id,node_id,nonce,created_ts,expires_ts,used) VALUES(?,?,?,?,?,0)",
-            (cid, node_id, nonce, now, expires),
-        )
-
-        # Immediately attest (mark used) – this preserves your current policy (verification external)
-        cur.execute("UPDATE net2_challenges SET used=1 WHERE id=? AND node_id=?", (cid, node_id))
-        cur.execute("UPDATE net2_nodes SET last_ts=? WHERE node_id=?", (_now(), node_id))
-
+        cur.execute("INSERT INTO net2_challenges(id,node_id,nonce,created_ts,expires_ts,used) VALUES(?,?,?,?,?,0)", (cid, node_id, nonce, now, expires))
         con.commit()
-        return _ok(
-            node_id=node_id,
-            challenge_id=cid,
-            nonce=nonce,
-            expires_ts=expires,
-            attested=True,
-            purged=purged,
-            note="challenge+attest bundled (verification policy external)",
-        )
+        proof_message = _attest_proof_message(node_id, cid, nonce).decode("utf-8")
+        return _ok(node_id=node_id, challenge_id=cid, nonce=nonce, expires_ts=expires, attested=False, verified=False, requires_separate_attest=True, proof_algorithm="ed25519", proof_message=proof_message, purged=purged, note="Sign proof_message with the registered Ed25519 private key, then call /api/net2/node/attest.")
     except Exception as e:
         return _err("DB error", 500, detail=str(e))
     finally:
         try:
-            if con:
-                con.close()
+            if con: con.close()
         except Exception:
             pass
 
@@ -841,6 +939,363 @@ def net2_tunnel_status():
 # ---------------------------------------------------------------------
 # Governed AI-agent passport/task control plane
 # ---------------------------------------------------------------------
+
+# ------------------ SarahNet World Fabric control-plane alpha ------------------
+
+def _node_exists(cur, node_id: str) -> bool:
+    cur.execute("SELECT 1 FROM net2_nodes WHERE node_id=? LIMIT 1", (node_id,))
+    return cur.fetchone() is not None
+
+
+def _world_row(cur, world_id: str):
+    cur.execute("SELECT world_id,owner_node,name,reality_class,created_ts,updated_ts,status,metadata_json FROM net2_worlds WHERE world_id=? LIMIT 1", (world_id,))
+    return cur.fetchone()
+
+
+def _region_row(cur, world_id: str, region_id: str):
+    cur.execute("SELECT world_id,region_id,authority_node,version,status,updated_ts,metadata_json FROM net2_regions WHERE world_id=? AND region_id=? LIMIT 1", (world_id, region_id))
+    return cur.fetchone()
+
+
+@bp2.post("/api/net2/world/register")
+def net2_world_register():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    data = _j()
+    if not _confirmed(data):
+        return _err("Explicit user approval required", 403, execution_authority=False)
+    if not _require_injected():
+        return _err("Storage not configured (META_DB).", 500)
+    owner_node = str(data.get("owner_node") or "").strip()[:180]
+    world_id = str(data.get("world_id") or _new_id("world")).strip()[:180]
+    name = str(data.get("name") or world_id).strip()[:240]
+    reality_class = str(data.get("reality_class") or "USER_CREATED").strip().upper()
+    status = str(data.get("status") or "active").strip().lower()
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    if not owner_node or not world_id:
+        return _err("owner_node and world_id are required")
+    sml = _sarahnet_sml_module()
+    allowed_reality = set(getattr(sml, "SARAHNET_REALITY_CLASSES", set())) if sml else {"PHYSICAL","OBSERVED","EXTERNAL","MIRRORED","USER_CREATED","AI_GENERATED","SIMULATED","FORKED","FICTIONAL","UNKNOWN"}
+    if reality_class not in allowed_reality:
+        return _err("Invalid reality_class")
+    if status not in ("active", "suspended", "archived"):
+        return _err("Invalid world status")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        if not _node_exists(cur, owner_node):
+            return _err("owner_node must be registered before creating a world", 409)
+        existing = _world_row(cur, world_id)
+        if existing and str(existing[1]) != owner_node:
+            return _err("World is owned by another node", 403)
+        now = _now()
+        created = float(existing[4]) if existing else now
+        cur.execute(
+            "INSERT INTO net2_worlds(world_id,owner_node,name,reality_class,created_ts,updated_ts,status,metadata_json) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(world_id) DO UPDATE SET name=excluded.name,reality_class=excluded.reality_class,updated_ts=excluded.updated_ts,status=excluded.status,metadata_json=excluded.metadata_json",
+            (world_id, owner_node, name, reality_class, created, now, status, json.dumps(metadata, ensure_ascii=False)),
+        )
+        con.commit()
+        _sarahnet_control_receipt("WORLD_REGISTER", world_id, "APPROVED", "SarahNet world registered/updated.", {"owner_node": owner_node, "reality_class": reality_class})
+        return _ok(world_id=world_id, owner_node=owner_node, reality_class=reality_class, status=status, execution_authority=False)
+    except Exception as exc:
+        try:
+            if con: con.rollback()
+        except Exception:
+            pass
+        return _err("World registration failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.get("/api/net2/world/list")
+def net2_world_list():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    if not _require_injected():
+        return _err("Storage not configured (META_DB).", 500)
+    owner_node = str(request.args.get("owner_node") or "").strip()
+    limit = max(1, min(500, int(request.args.get("limit") or 100)))
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        if owner_node:
+            cur.execute("SELECT world_id,owner_node,name,reality_class,created_ts,updated_ts,status,metadata_json FROM net2_worlds WHERE owner_node=? ORDER BY updated_ts DESC LIMIT ?", (owner_node, limit))
+        else:
+            cur.execute("SELECT world_id,owner_node,name,reality_class,created_ts,updated_ts,status,metadata_json FROM net2_worlds ORDER BY updated_ts DESC LIMIT ?", (limit,))
+        out = []
+        for r in cur.fetchall() or []:
+            try: meta = json.loads(r[7] or "{}")
+            except Exception: meta = {}
+            out.append({"world_id":r[0],"owner_node":r[1],"name":r[2],"reality_class":r[3],"created_ts":r[4],"updated_ts":r[5],"status":r[6],"metadata":meta})
+        return _ok(worlds=out, count=len(out))
+    except Exception as exc:
+        return _err("World listing failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.post("/api/net2/region/upsert")
+def net2_region_upsert():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    data = _j()
+    if not _confirmed(data):
+        return _err("Explicit user approval required", 403, execution_authority=False)
+    world_id = str(data.get("world_id") or "").strip()[:180]
+    region_id = str(data.get("region_id") or "").strip()[:180]
+    issuer_node = str(data.get("issuer_node") or "").strip()[:180]
+    authority_node = str(data.get("authority_node") or issuer_node).strip()[:180]
+    status = str(data.get("status") or "active").strip().lower()
+    metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    if not world_id or not region_id or not issuer_node or not authority_node:
+        return _err("world_id, region_id, issuer_node, and authority_node are required")
+    if status not in ("active", "handoff_pending", "suspended", "offline"):
+        return _err("Invalid region status")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        world = _world_row(cur, world_id)
+        if not world:
+            return _err("Unknown world", 404)
+        if not _node_exists(cur, authority_node):
+            return _err("authority_node must be registered", 409)
+        existing = _region_row(cur, world_id, region_id)
+        if existing:
+            current_authority = str(existing[2])
+            if issuer_node not in (current_authority, str(world[1])):
+                return _err("Only current region authority or world owner may update region control", 403)
+            version = int(existing[3] or 1) + 1
+        else:
+            if issuer_node != str(world[1]):
+                return _err("Only world owner may create the initial region authority", 403)
+            version = 1
+        cur.execute(
+            "INSERT INTO net2_regions(world_id,region_id,authority_node,version,status,updated_ts,metadata_json) VALUES(?,?,?,?,?,?,?) "
+            "ON CONFLICT(world_id,region_id) DO UPDATE SET authority_node=excluded.authority_node,version=excluded.version,status=excluded.status,updated_ts=excluded.updated_ts,metadata_json=excluded.metadata_json",
+            (world_id, region_id, authority_node, version, status, _now(), json.dumps(metadata, ensure_ascii=False)),
+        )
+        con.commit()
+        _sarahnet_control_receipt("REGION_UPSERT", f"{world_id}:{region_id}", "APPROVED", "SarahNet region authority updated.", {"issuer_node": issuer_node, "authority_node": authority_node, "version": version})
+        return _ok(world_id=world_id, region_id=region_id, authority_node=authority_node, version=version, status=status, execution_authority=False)
+    except Exception as exc:
+        try:
+            if con: con.rollback()
+        except Exception:
+            pass
+        return _err("Region update failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.get("/api/net2/region/list")
+def net2_region_list():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    world_id = str(request.args.get("world_id") or "").strip()
+    if not world_id:
+        return _err("world_id is required")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT world_id,region_id,authority_node,version,status,updated_ts,metadata_json FROM net2_regions WHERE world_id=? ORDER BY region_id ASC", (world_id,))
+        out=[]
+        for r in cur.fetchall() or []:
+            try: meta=json.loads(r[6] or "{}")
+            except Exception: meta={}
+            out.append({"world_id":r[0],"region_id":r[1],"authority_node":r[2],"version":int(r[3] or 1),"status":r[4],"updated_ts":r[5],"metadata":meta})
+        return _ok(regions=out, count=len(out), world_id=world_id)
+    except Exception as exc:
+        return _err("Region listing failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.post("/api/net2/lease/issue")
+def net2_lease_issue():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    data = _j()
+    if not _confirmed(data):
+        return _err("Explicit user approval required", 403, execution_authority=False)
+    identity = str(data.get("identity") or "").strip()[:240]
+    entity_id = str(data.get("entity_id") or "").strip()[:180]
+    world_id = str(data.get("world_id") or "").strip()[:180]
+    region_id = str(data.get("region_id") or "").strip()[:180]
+    issuer_node = str(data.get("issuer_node") or "").strip()[:180]
+    requested_classes = data.get("permitted_state_classes") if isinstance(data.get("permitted_state_classes"), list) else []
+    constraints = data.get("constraints") if isinstance(data.get("constraints"), dict) else {}
+    revocations = data.get("revocation_conditions") if isinstance(data.get("revocation_conditions"), list) else []
+    try: ttl_sec = int(data.get("ttl_sec") or 300)
+    except Exception: ttl_sec = 300
+    ttl_sec = max(5, min(3600, ttl_sec))
+    if not all((identity, entity_id, world_id, region_id, issuer_node)):
+        return _err("identity, entity_id, world_id, region_id, and issuer_node are required")
+    sml = _sarahnet_sml_module()
+    allowed_classes = set(getattr(sml, "SARAHNET_RT_STATE_CLASSES", set())) if sml else {"pose","animation","locomotion","physics","presence","gaze","gesture","speech_timing","spatial_audio"}
+    classes = sorted({str(x or "").strip().lower() for x in requested_classes if str(x or "").strip().lower() in allowed_classes})
+    if not classes:
+        return _err("At least one supported SML-RT state class is required")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        region = _region_row(cur, world_id, region_id)
+        if not region:
+            return _err("Unknown region", 404)
+        if str(region[2]) != issuer_node:
+            return _err("Only current region authority may issue an SML-RT authority lease", 403)
+        now = _now()
+        lease_id = str(data.get("lease_id") or _new_id("lease"))[:200]
+        expires = now + ttl_sec
+        contract = {
+            "schema": getattr(sml, "SARAHNET_AUTHORITY_LEASE_SCHEMA", "SarahNet.AuthorityLease/1.0-alpha") if sml else "SarahNet.AuthorityLease/1.0-alpha",
+            "lease_id": lease_id,
+            "identity": identity,
+            "entity_id": entity_id,
+            "world_id": world_id,
+            "region_id": region_id,
+            "permitted_state_classes": classes,
+            "constraints": constraints,
+            "start_ts": now,
+            "expires_ts": expires,
+            "revocation_conditions": [str(x) for x in revocations if str(x).strip()],
+            "issuer_node": issuer_node,
+            "status": "active",
+            "execution_authority": False,
+        }
+        canonical = json.dumps(contract, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        secret = os.getenv("SARAHNET_SHARED_SECRET", "").encode("utf-8")
+        signature = hmac.new(secret, canonical, hashlib.sha256).hexdigest() if secret else ""
+        contract["signature"] = signature
+        cur.execute(
+            "INSERT INTO net2_authority_leases(lease_id,identity,entity_id,world_id,region_id,permitted_state_classes_json,constraints_json,revocation_conditions_json,issuer_node,created_ts,start_ts,expires_ts,status,signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (lease_id, identity, entity_id, world_id, region_id, json.dumps(classes), json.dumps(constraints, ensure_ascii=False), json.dumps(contract["revocation_conditions"], ensure_ascii=False), issuer_node, now, now, expires, "active", signature),
+        )
+        con.commit()
+        _sarahnet_control_receipt("AUTHORITY_LEASE_ISSUED", lease_id, "APPROVED", "Bounded SML-RT authority lease issued.", {"world_id":world_id,"region_id":region_id,"entity_id":entity_id,"issuer_node":issuer_node,"expires_ts":expires})
+        return _ok(lease=contract, execution_authority=False, warning="Lease authorizes only listed SML-RT state classes; consequential mutations require Full SML.")
+    except Exception as exc:
+        try:
+            if con: con.rollback()
+        except Exception:
+            pass
+        return _err("Lease issuance failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.get("/api/net2/lease/status")
+def net2_lease_status():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    lease_id = str(request.args.get("lease_id") or "").strip()
+    if not lease_id:
+        return _err("lease_id is required")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT lease_id,identity,entity_id,world_id,region_id,permitted_state_classes_json,constraints_json,revocation_conditions_json,issuer_node,created_ts,start_ts,expires_ts,status,signature,revoked_ts,revoke_reason FROM net2_authority_leases WHERE lease_id=? LIMIT 1", (lease_id,))
+        r=cur.fetchone()
+        if not r:
+            return _ok(found=False, lease_id=lease_id)
+        try: classes=json.loads(r[5] or "[]")
+        except Exception: classes=[]
+        try: constraints=json.loads(r[6] or "{}")
+        except Exception: constraints={}
+        try: revocations=json.loads(r[7] or "[]")
+        except Exception: revocations=[]
+        status=str(r[12] or "")
+        if status == "active" and float(r[11] or 0) <= _now():
+            status = "expired"
+            cur.execute("UPDATE net2_authority_leases SET status='expired' WHERE lease_id=? AND status='active'", (lease_id,))
+            con.commit()
+        lease={"schema":"SarahNet.AuthorityLease/1.0-alpha","lease_id":r[0],"identity":r[1],"entity_id":r[2],"world_id":r[3],"region_id":r[4],"permitted_state_classes":classes,"constraints":constraints,"revocation_conditions":revocations,"issuer_node":r[8],"created_ts":r[9],"start_ts":r[10],"expires_ts":r[11],"status":status,"signature":r[13] or "","revoked_ts":r[14],"revoke_reason":r[15],"execution_authority":False}
+        return _ok(found=True, lease=lease, valid=bool(status == "active" and float(r[11] or 0) > _now()), execution_authority=False)
+    except Exception as exc:
+        return _err("Lease status failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+@bp2.post("/api/net2/lease/revoke")
+def net2_lease_revoke():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    data = _j()
+    if not _confirmed(data):
+        return _err("Explicit user approval required", 403)
+    lease_id = str(data.get("lease_id") or "").strip()
+    issuer_node = str(data.get("issuer_node") or "").strip()
+    reason = str(data.get("reason") or "user_revoked").strip()[:1000]
+    if not lease_id or not issuer_node:
+        return _err("lease_id and issuer_node are required")
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute("SELECT world_id,region_id,issuer_node,status FROM net2_authority_leases WHERE lease_id=? LIMIT 1", (lease_id,))
+        r=cur.fetchone()
+        if not r:
+            return _err("Unknown lease", 404)
+        region=_region_row(cur, str(r[0]), str(r[1]))
+        current_authority=str(region[2]) if region else ""
+        if issuer_node not in (str(r[2]), current_authority):
+            return _err("Only lease issuer or current region authority may revoke", 403)
+        cur.execute("UPDATE net2_authority_leases SET status='revoked',revoked_ts=?,revoke_reason=? WHERE lease_id=?", (_now(), reason, lease_id))
+        con.commit()
+        _sarahnet_control_receipt("AUTHORITY_LEASE_REVOKED", lease_id, "REVOKED", reason, {"issuer_node":issuer_node,"world_id":r[0],"region_id":r[1]})
+        return _ok(lease_id=lease_id, status="revoked", execution_authority=False)
+    except Exception as exc:
+        try:
+            if con: con.rollback()
+        except Exception:
+            pass
+        return _err("Lease revocation failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
 def _agent_modules() -> tuple:
     try:
         import SarahMemoryAgentFirewall as firewall  # type: ignore
@@ -900,6 +1355,32 @@ def _confirmed(data: Dict[str, Any]) -> bool:
     if isinstance(value, bool):
         return value
     return str(value or "").strip().lower() in ("1", "true", "yes", "approved", "i approve", "confirm")
+
+
+def _sarahnet_sml_module():
+    try:
+        import SarahMemorySMLProtocol as sml  # type: ignore
+        return sml
+    except Exception:
+        return None
+
+
+def _sarahnet_control_receipt(event_type: str, subject_id: str, verdict: str, summary: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+    try:
+        from SarahMemoryLedger import record_governance_receipt  # type: ignore
+        record_governance_receipt(
+            "sarahnet_world",
+            event_type,
+            subject_id=subject_id,
+            lane="sarahnet_control",
+            verdict=verdict,
+            risk="high" if verdict in ("DENY", "REVOKED") else "medium",
+            retention_class="sarahnet_world_control",
+            summary=summary,
+            metadata={**(metadata or {}), "execution_authority": False},
+        )
+    except Exception:
+        pass
 
 
 @bp2.post("/api/net2/agent/issue")
@@ -1246,13 +1727,18 @@ def net2_governance():
             "supports": [
                 "node_register",
                 "challenge",
-                "attestation",
+                "ed25519_attestation",
                 "dns_directory",
                 "tunnel_session_metadata",
+                "world_registry",
+                "region_authority",
+                "bounded_sml_rt_authority_leases",
             ],
             "safety_notes": [
                 "net2 is a control-plane API, not an OS VPN driver.",
                 "Tunnel issue/status routes create governed metadata only unless a separate approved transport implements runtime data movement.",
+                "World/region control is persistent control-plane state; SML-RT frame data belongs to appnet and is not written here per frame.",
+                "Authority leases cannot change ownership, wallet state, permissions, or physical devices; those require Full SML governance.",
             ],
         },
     )
@@ -1317,10 +1803,10 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
-    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
+    "capabilities": ['api_bridge', 'transport', 'network_control_plane', 'world_registry', 'region_authority', 'authority_lease', 'sml_bridge_candidate'],
+    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics', 'Network', 'Governance'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
-    "required_authority": ['Read'],
+    "required_authority": ['Read', 'Network'],
     "priority": 58,
     "trust_level": "api_bridge_integrated",
     "internal_only": False,

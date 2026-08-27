@@ -72,7 +72,7 @@ import imaplib
 from email import message_from_bytes
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -171,6 +171,19 @@ def _downloads_dir() -> Path:
     except Exception:
         pass
     return (_get_base_dir() / "downloads").resolve()
+
+def _get_settings_dir() -> Path:
+    """Return SarahMemoryGlobals.SETTINGS_DIR if available; else DATA_DIR/settings."""
+    try:
+        import SarahMemoryGlobals as config  # type: ignore
+        sd = getattr(config, "SETTINGS_DIR", None)
+        if sd:
+            return Path(str(sd)).expanduser().resolve()
+    except Exception:
+        pass
+    return (_get_data_dir() / "settings").resolve()
+
+
 
 
 def _dumpster_dir() -> Path:
@@ -1477,6 +1490,229 @@ def _write_browser_state(data: Dict[str, Any]) -> None:
         os.replace(str(tmp), str(path))
     except Exception as exc:
         logger.warning(f"Failed to write browser state: {exc}")
+
+
+
+# ---------------------------------------------------------------------
+# Clock / Locality Court (read-only source authority)
+# ---------------------------------------------------------------------
+
+def _clock_config_value(*names: str) -> str:
+    try:
+        import SarahMemoryGlobals as config  # type: ignore
+        for name in names:
+            value = getattr(config, name, None)
+            if value not in (None, "", [], {}):
+                return str(value).strip()
+    except Exception:
+        pass
+    for name in names:
+        value = os.environ.get(str(name), "")
+        if value.strip():
+            return value.strip()
+    return ""
+
+
+def _clock_offset_text(dt: datetime) -> str:
+    try:
+        off = dt.utcoffset()
+        if off is None:
+            return ""
+        total = int(off.total_seconds() // 60)
+        sign = "+" if total >= 0 else "-"
+        total = abs(total)
+        return f"{sign}{total // 60:02d}:{total % 60:02d}"
+    except Exception:
+        return ""
+
+
+def _clock_claim_type(claim: str = "") -> str:
+    text = str(claim or "").strip().lower().replace("what's", "what is")
+    if any(x in text for x in ("timezone", "time zone", "utc offset", "offset")):
+        return "LOCAL_TIMEZONE"
+    if any(x in text for x in ("what year", "current year", "year is it", "which year")):
+        return "LOCAL_YEAR"
+    if any(x in text for x in ("what date", "today's date", "todays date", "current date", "date is it", "what day")):
+        return "LOCAL_DATE"
+    if any(x in text for x in ("what time", "current time", "time is it", "local time")):
+        return "LOCAL_TIME"
+    if any(x in text for x in ("where are you", "where am i", "location", "locality")):
+        return "LOCATION_CONTEXT"
+    return "TEMPORAL_CONTEXT"
+
+
+def build_clock_court_packet(claim: str = "", *, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a claim-specific Clock/Locality Court packet.
+
+    This function is read-only. It does not use model memory, IP geolocation,
+    GPS, network scanning, or external web calls. Network/IP/satellite location
+    may be attached by another evidence organ later, but it is not authoritative
+    for local clock/year/timezone here.
+    """
+    context = context if isinstance(context, dict) else {}
+    now_local = datetime.now().astimezone()
+    now_utc = datetime.now(timezone.utc)
+    claim_type = _clock_claim_type(claim)
+    configured_tz = _clock_config_value("SARAHMEMORY_TIMEZONE", "LOCAL_TIMEZONE", "USER_TIMEZONE", "TZ")
+    configured_locality = _clock_config_value("SARAHMEMORY_LOCALITY", "USER_LOCALITY", "LOCALITY", "PHYSICAL_LOCATION")
+    os_tz_name = str(now_local.tzinfo or "")
+    offset = _clock_offset_text(now_local)
+
+    accepted_value: Any = None
+    verdict = "ACCEPT_SYSTEM_CLOCK"
+    confidence = 0.97
+    if claim_type == "LOCAL_YEAR":
+        accepted_value = now_local.strftime("%Y")
+    elif claim_type == "LOCAL_DATE":
+        accepted_value = now_local.date().isoformat()
+    elif claim_type == "LOCAL_TIME":
+        accepted_value = now_local.strftime("%I:%M %p").lstrip("0")
+    elif claim_type == "LOCAL_TIMEZONE":
+        accepted_value = configured_tz or os_tz_name or offset
+        verdict = "ACCEPT_CONFIGURED_OR_OS_TIMEZONE"
+        confidence = 0.94 if configured_tz else 0.86
+    elif claim_type == "LOCATION_CONTEXT":
+        accepted_value = configured_locality or "unknown_physical_location"
+        verdict = "ACCEPT_USER_CONFIGURED_LOCALITY_ONLY" if configured_locality else "PHYSICAL_LOCATION_NOT_VERIFIED"
+        confidence = 0.92 if configured_locality else 0.0
+    else:
+        accepted_value = {
+            "local_iso": now_local.isoformat(timespec="seconds"),
+            "utc_iso": now_utc.isoformat(timespec="seconds"),
+            "timezone": configured_tz or os_tz_name or offset,
+            "utc_offset": offset,
+        }
+
+    artifacts = [
+        {
+            "source": "system_clock",
+            "source_type": "os_runtime_clock",
+            "claim": now_local.isoformat(timespec="seconds"),
+            "authority": "high",
+            "trusted_for": ["LOCAL_TIME", "LOCAL_DATE", "LOCAL_YEAR"],
+            "observed_at_utc": now_utc.isoformat(timespec="seconds"),
+        },
+        {
+            "source": "utc_clock",
+            "source_type": "os_utc_clock",
+            "claim": now_utc.isoformat(timespec="seconds"),
+            "authority": "high",
+            "trusted_for": ["UTC_TIME"],
+            "observed_at_utc": now_utc.isoformat(timespec="seconds"),
+        },
+        {
+            "source": "configured_timezone",
+            "source_type": "config_or_environment",
+            "claim": configured_tz,
+            "authority": "high" if configured_tz else "none",
+            "trusted_for": ["LOCAL_TIMEZONE"] if configured_tz else [],
+        },
+        {
+            "source": "os_timezone",
+            "source_type": "runtime_timezone",
+            "claim": {"tzinfo": os_tz_name, "utc_offset": offset, "tzname": time.tzname},
+            "authority": "medium_high",
+            "trusted_for": ["LOCAL_TIMEZONE", "LOCAL_TIME", "LOCAL_DATE", "LOCAL_YEAR"],
+        },
+        {
+            "source": "local_model_memory",
+            "source_type": "model_candidate",
+            "claim": "not_consulted",
+            "authority": "none",
+            "trusted_for": [],
+            "rejection_reason": "Model memory is not authoritative for live temporal/locality facts.",
+        },
+    ]
+    if configured_locality:
+        artifacts.append({
+            "source": "configured_locality",
+            "source_type": "user_or_system_configured_context",
+            "claim": configured_locality,
+            "authority": "high",
+            "trusted_for": ["PHYSICAL_LOCATION", "LOCALITY_CONTEXT"],
+        })
+
+    packet = {
+        "ok": True,
+        "court": "SML_CLOCK_LOCALITY_COURT",
+        "version": "2026-08-22.B05",
+        "claim": str(claim or ""),
+        "claim_type": claim_type,
+        "accepted_value": accepted_value,
+        "confidence": confidence,
+        "authority_basis": ["system_clock", "utc_clock", "configured_timezone_or_os_timezone"],
+        "artifacts": artifacts,
+        "rejected_sources": ["local_model_memory_for_live_time", "ip_geolocation_for_physical_location_without_user_or_gps_confirmation"],
+        "verdict": verdict,
+        "limits": {
+            "model_memory_authority": False,
+            "ip_geolocation_used": False,
+            "network_scan_performed": False,
+            "external_web_call_performed": False,
+            "state_changed": False,
+            "read_only": True,
+        },
+        "context": context,
+        "ts": time.time(),
+    }
+    packet["presentation_text"] = _clock_presentation_text(packet)
+    return packet
+
+
+def _clock_presentation_text(packet: Dict[str, Any]) -> str:
+    claim_type = str(packet.get("claim_type") or "TEMPORAL_CONTEXT")
+    val = packet.get("accepted_value")
+    if claim_type == "LOCAL_YEAR":
+        return f"The current local year is {val}."
+    if claim_type == "LOCAL_DATE":
+        return f"The current local date is {val}."
+    if claim_type == "LOCAL_TIME":
+        return f"The current local time is {val}."
+    if claim_type == "LOCAL_TIMEZONE":
+        return f"The active local timezone context is {val}."
+    if claim_type == "LOCATION_CONTEXT":
+        if val == "unknown_physical_location":
+            return "I do not have verified physical-location authority in this route. I can report system clock/timezone context, but I will not treat IP or model memory as physical-location truth."
+        return f"The configured local context is {val}. Network/IP location is not treated as physical-location truth by this court."
+    if isinstance(val, dict):
+        return f"Clock context: local {val.get('local_iso')}; UTC {val.get('utc_iso')}; timezone {val.get('timezone')} ({val.get('utc_offset')})."
+    return str(val or "Clock context unavailable.")
+
+
+def run_clock_court_query(*, claim: str = "", source: str = "api", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    packet = build_clock_court_packet(claim, context={"source": source, "meta": meta or {}})
+    packet["source"] = source
+    return packet
+
+
+@bp.route("/api/system/clock-court", methods=["GET", "POST", "OPTIONS"])
+def api_system_clock_court():
+    if request.method == "OPTIONS":
+        return _ok()
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        claim = str(data.get("claim") or data.get("text") or data.get("question") or "")
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    else:
+        claim = str(request.args.get("claim") or request.args.get("q") or "")
+        meta = {}
+    return _ok(clock_court=run_clock_court_query(claim=claim, source="api.system.clock_court", meta=meta))
+
+
+@bp.route("/api/system/time-authority", methods=["GET", "OPTIONS"])
+def api_system_time_authority():
+    if request.method == "OPTIONS":
+        return _ok()
+    claim = str(request.args.get("claim") or "what time is it")
+    return _ok(time_authority=run_clock_court_query(claim=claim, source="api.system.time_authority"))
+
+
+@bp.route("/api/system/location-context", methods=["GET", "OPTIONS"])
+def api_system_location_context():
+    if request.method == "OPTIONS":
+        return _ok()
+    claim = str(request.args.get("claim") or "where are you")
+    return _ok(location_context=run_clock_court_query(claim=claim, source="api.system.location_context"))
 
 
 @bp.route("/api/browser/governance", methods=["GET", "OPTIONS"])

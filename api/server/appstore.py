@@ -864,6 +864,18 @@ def _install_source_allowed(source: str) -> bool:
     return any(src.startswith(os.path.abspath(root)) for root in allowed)
 
 
+
+def _emit_avatar_event_safe(event: Dict[str, Any], *, source: str = "api.store.addons") -> Dict[str, Any]:
+    """Best-effort avatar event emission for ADDON lifecycle telemetry."""
+    try:
+        import appmedia as _sm_appmedia  # type: ignore
+        fn = getattr(_sm_appmedia, "run_avatar_event_packet", None)
+        if callable(fn):
+            return fn(dict(event or {}), source=source, meta={"caller": "appstore"})
+    except Exception as exc:
+        return {"ok": False, "error": f"avatar_event_emit_failed:{exc}", "execution_authority": False}
+    return {"ok": False, "error": "avatar_event_bridge_unavailable", "execution_authority": False}
+
 def _record_runtime(addon_id: str, **updates: Any) -> Dict[str, Any]:
     state = _read_runtime_state()
     addons = state.setdefault("addons", {})
@@ -914,7 +926,18 @@ def api_store_addon_install():
     with open(os.path.join(target, "install_state.json"), "w", encoding="utf-8") as f:
         json.dump(install_state, f, indent=2, sort_keys=True)
     _record_runtime(addon_id, activation_status="installed_not_running", trust_status="installed_review_required", installed_path=target)
-    return _cors_ok(_jok({"addon_id": addon_id, "installed_path": target, "backup": backup, "copy_stats": stats, "install_state": install_state, "validation": validation, "auto_run_performed": False}))
+    avatar_event_install = _emit_avatar_event_safe({
+        "event_type": "addon_installed_review_required",
+        "domain": "addon_runtime",
+        "source": "api.store.addons.install",
+        "message": f"Addon {addon_id} installed and awaits review before run.",
+        "validation_state": "verified",
+        "source_verified": True,
+        "severity": 0.35,
+        "addon_id": addon_id,
+        "claim": {"installed_path": target, "activation_status": "installed_not_running"},
+    }, source="api.store.addons.install")
+    return _cors_ok(_jok({"addon_id": addon_id, "installed_path": target, "backup": backup, "copy_stats": stats, "install_state": install_state, "validation": validation, "avatar_event": avatar_event_install, "auto_run_performed": False}))
 
 
 @bp2.route("/api/store/addons/run", methods=["POST", "OPTIONS"])
@@ -951,7 +974,18 @@ def api_store_addon_run():
             "execution_authority": False,
         }
         _record_runtime(str(rec.get("id")), activation_status="bundle_review_required", last_launch=launch, trust_status=rec.get("trust_status") or "manifest_present")
-        return _cors_ok(_jok({"launch": launch}))
+        avatar_event_bundle = _emit_avatar_event_safe({
+            "event_type": "addon_launch_review_required",
+            "domain": "addon_runtime",
+            "source": "api.store.addons.run",
+            "message": str(launch.get("message") or "Addon launch requires manifest review."),
+            "validation_state": "pending",
+            "source_verified": True,
+            "severity": 0.45,
+            "addon_id": rec.get("id"),
+            "claim": {"activation_status": "bundle_review_required"},
+        }, source="api.store.addons.run")
+        return _cors_ok(_jok({"launch": launch, "avatar_event": avatar_event_bundle}))
     entry = manifest.get("entrypoint") if isinstance(manifest.get("entrypoint"), dict) else manifest.get("entry") if isinstance(manifest.get("entry"), dict) else {}
     module_name = str(entry.get("module") or "").strip()
     callable_name = str(entry.get("callable") or "").strip()
@@ -1051,11 +1085,33 @@ def api_store_addon_run():
             "message": message,
         })
         _record_runtime(str(rec.get("id")), activation_status=activation_status, last_launch=launch, trust_status=rec.get("trust_status") or "manifest_present", pid=int(proc.pid or 0), log_path=log_path)
-        return _cors_ok(_jok({"launch": launch}))
+        avatar_event_launch = _emit_avatar_event_safe({
+            "event_type": "addon_launch_crashed" if crashed else ("addon_launch_completed" if completed else "addon_launched_running"),
+            "domain": "addon_runtime",
+            "source": "api.store.addons.run",
+            "message": message,
+            "validation_state": "failed" if crashed else "verified",
+            "source_verified": True,
+            "severity": 0.75 if crashed else 0.40,
+            "addon_id": rec.get("id"),
+            "claim": {"activation_status": activation_status, "pid": int(proc.pid or 0), "exit_code": int(exit_code) if exit_code is not None else None},
+        }, source="api.store.addons.run")
+        return _cors_ok(_jok({"launch": launch, "avatar_event": avatar_event_launch}))
     except Exception as exc:
         launch.update({"python_execution_performed": False, "error": str(exc), "blocked": True})
         _record_runtime(str(rec.get("id")), activation_status="launch_failed", last_launch=launch, trust_status=rec.get("trust_status") or "manifest_present")
-        return _cors_ok(_jerr(str(exc), code="addon_launch_failed", http=500, launch=launch))
+        avatar_event_launch_failed = _emit_avatar_event_safe({
+            "event_type": "addon_launch_failed",
+            "domain": "addon_runtime",
+            "source": "api.store.addons.run",
+            "message": str(exc),
+            "validation_state": "failed",
+            "source_verified": True,
+            "severity": 0.80,
+            "addon_id": rec.get("id"),
+            "claim": {"activation_status": "launch_failed"},
+        }, source="api.store.addons.run")
+        return _cors_ok(_jerr(str(exc), code="addon_launch_failed", http=500, launch=launch, avatar_event=avatar_event_launch_failed))
 
 
 @bp2.route("/api/store/addons/copy", methods=["POST", "OPTIONS"])

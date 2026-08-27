@@ -441,6 +441,7 @@ def _is_identity_question(text: str) -> bool:
     t = (text or "").strip().lower()
     if not t:
         return False
+    t = t.replace("naem", "name").replace("nmae", "name")
 
     # Do not let generic version wording steal hardware/runtime version questions
     # from SelfAware or system fact lanes.
@@ -453,13 +454,17 @@ def _is_identity_question(text: str) -> bool:
         return False
 
     keys = [
-        "what is your name", "who are you", "your name",
+        "what is your name", "who are you", "your name", "what is your name",
+        "describe yourself", "tell me about yourself", "what are you",
+        "what do you look like", "describe your 2d model", "describe your 2d avatar", "describe your 3d avatar",
+        "describe your avatar", "2d avatar", "3d avatar", "active avatar", "avatar appearance",
         "what version are you", "what version are you running", "your version",
         "server version", "program version", "app version", "sarahmemory version",
         "version number",
         "who made you", "who created you", "creator",
         "who designed you", "designer", "engineer",
         "who engineered you", "who built you",
+        "sarahmemory aios", "sarahmemory ai os", "sarah memory aios",
         "brian lee baros", "softdev0",
     ]
 
@@ -869,6 +874,220 @@ def _sm_import_appself_runtime():
     if not callable(getattr(mod, "run_selfaware_fact_check", None)) and not callable(getattr(mod, "_run_fact_ticket", None)):
         raise RuntimeError("runtime appself fact-ticket runner unavailable after direct load")
     return mod
+
+
+def _sm_import_appsys_runtime():
+    """Load api/server/appsys.py beside app.py for Clock/Locality Court calls."""
+    try:
+        server_dir = os.path.dirname(os.path.abspath(__file__))
+    except Exception:
+        server_dir = _THIS_DIR
+    appsys_path = os.path.join(server_dir, "appsys.py")
+    if not os.path.exists(appsys_path):
+        raise RuntimeError(f"appsys.py not found beside app.py: {appsys_path}")
+    module_name = f"_sarahmemory_runtime_appsys_{int(time.time() * 1000)}"
+    spec = importlib.util.spec_from_file_location(module_name, appsys_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to create import spec for appsys.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    if not callable(getattr(mod, "run_clock_court_query", None)):
+        raise RuntimeError("runtime appsys clock court runner unavailable after direct load")
+    return mod
+
+
+def _sm_is_clock_court_question(text: str) -> bool:
+    t = str(text or "").strip().lower().replace("what's", "what is")
+    if not t:
+        return False
+    temporal_patterns = (
+        r"\bwhat\s+(year|date|day|time)\b",
+        r"\b(year|date|day|time)\s+is\s+it\b",
+        r"\bcurrent\s+(year|date|time)\b",
+        r"\btoday'?s\s+(date|schedule)\b",
+        r"\btimezone\b|\btime\s+zone\b|\butc\s+offset\b",
+    )
+    return any(re.search(pat, t) for pat in temporal_patterns)
+
+
+def _sm_try_clock_court_route(text: str, *, source: str = "api_chat") -> dict | None:
+    if not _sm_is_clock_court_question(text):
+        return None
+    try:
+        appsys_mod = _sm_import_appsys_runtime()
+        packet = appsys_mod.run_clock_court_query(claim=text, source=source, meta={"route": "api_chat_clock_court"})
+        if not isinstance(packet, dict):
+            raise RuntimeError("appsys returned non-dict clock court packet")
+        reply = str(packet.get("presentation_text") or packet.get("accepted_value") or "Clock Court did not return a presentable answer.")
+        meta = {
+            "source": "appsys_clock_court",
+            "engine": "appsys.run_clock_court_query",
+            "intent": "temporal_context",
+            "claim_type": packet.get("claim_type"),
+            "verdict": packet.get("verdict"),
+            "confidence": packet.get("confidence"),
+            "model_memory_authority": False,
+            "execution_allowed": False,
+            "version": PROJECT_VERSION,
+            "appsys_module_file": str(getattr(appsys_mod, "__file__", "")),
+        }
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="system_status", meta=meta), meta=meta, raw_answer=reply)
+        bundle["ok"] = True
+        bundle["clock_court"] = packet
+        return bundle
+    except Exception as exc:
+        app_logger.warning("Clock Court route failed: %s", exc, exc_info=True)
+        bundle = _sm_make_outward_bundle(
+            "Clock Court is configured for this question, but the court route failed internally. I did not use model memory to guess the live time/date/year.",
+            meta={"source": "appsys_clock_court_error", "error": str(exc), "version": PROJECT_VERSION},
+            errors=[str(exc)],
+        )
+        bundle["ok"] = False
+        return bundle
+
+
+def _sm_try_appself_identity_route(text: str, *, source: str = "api_chat") -> dict | None:
+    if not _is_identity_question(text):
+        return None
+    try:
+        appself_mod = _sm_import_appself_runtime()
+        fn = getattr(appself_mod, "run_self_identity_query", None)
+        if not callable(fn):
+            raise RuntimeError("appself identity query runner unavailable")
+        result = fn(claim=text, source=source, meta={"route": "api_chat_identity", "bridge": "runtime_appself_identity"})
+        if not isinstance(result, dict):
+            raise RuntimeError("appself returned non-dict identity result")
+        reply = str(result.get("presentation_text") or "Identity packet returned without presentation text.")
+        meta = {
+            "source": "appself_identity_court",
+            "engine": "appself.run_self_identity_query",
+            "intent": "identity_self_embodiment",
+            "kind": result.get("kind"),
+            "decision": result.get("decision"),
+            "model_memory_authority": False,
+            "execution_allowed": False,
+            "version": PROJECT_VERSION,
+            "appself_module_file": str(getattr(appself_mod, "__file__", "")),
+        }
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="identity", meta=meta), meta=meta, raw_answer=reply)
+        bundle["ok"] = True
+        bundle["identity_packet"] = result.get("identity_packet")
+        return bundle
+    except Exception as exc:
+        app_logger.warning("Identity Court route failed: %s", exc, exc_info=True)
+        # Compatibility fallback. Keep it bounded and explicitly mark that appself failed.
+        ident = _identity_payload()
+        raw_reply = f"I'm {ident['name']} — your {ident['platform']} companion. The canonical appself identity route failed, so this is a bounded compatibility fallback, not the preferred identity court path."
+        bundle = _sm_make_outward_bundle(
+            _sm_present_text(raw_reply, intent="identity"),
+            meta={"source": "identity_compatibility_fallback", "engine": "app_py_fallback_after_appself_failure", "error": str(exc), "version": PROJECT_VERSION},
+            raw_answer=raw_reply,
+            errors=[str(exc)],
+        )
+        bundle["identity"] = ident
+        return bundle
+
+
+def _sm_try_sml_source_authority_route(text: str, *, local_only: bool = True, intent: str = "question") -> dict | None:
+    """Prevent live/current-source claims from falling to model memory.
+
+    This is a read-only Source Authority Court bridge. It does not hardcode
+    answers; it either invokes SarahMemoryResearch/API evidence acquisition or
+    returns a source-required response instead of allowing stale model memory.
+    """
+    try:
+        import SarahMemorySMLProtocol as _SMSML  # type: ignore
+        court_fn = getattr(_SMSML, "sml_build_source_authority_court_packet", None)
+        if not callable(court_fn):
+            return None
+        court = court_fn(text, context={"source": "api_chat", "intent": intent, "local_only": bool(local_only)})
+        vector = court.get("claim_vector") if isinstance(court, dict) else {}
+        if not isinstance(vector, dict):
+            return None
+        if bool(vector.get("model_final_authority", True)):
+            return None
+        domain = str(vector.get("domain") or "")
+        freshness_required = bool(vector.get("freshness_required"))
+        if domain in {"identity_self_embodiment", "temporal_locality", "local_device_control", "creative_build_mission"}:
+            return None
+        if not freshness_required:
+            return None
+        meta = {
+            "source": "sml_source_authority_court",
+            "engine": "SarahMemorySMLProtocol.sml_build_source_authority_court_packet",
+            "intent": intent or "question",
+            "domain": domain,
+            "claim_type": vector.get("claim_type"),
+            "temporal_scope": vector.get("temporal_scope"),
+            "model_memory_authority": False,
+            "execution_allowed": False,
+            "preferred_sources": vector.get("preferred_sources"),
+            "version": PROJECT_VERSION,
+        }
+        if local_only:
+            reply = "This question requires current-source evidence. I will not answer it from model memory or static demo facts while current research/API access is unavailable in this route."
+            bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="source_authority", meta=meta), meta=meta, raw_answer=reply)
+            bundle["ok"] = True
+            bundle["source_authority_court"] = court
+            return bundle
+        try:
+            import SarahMemoryResearch as _SMResearch  # type: ignore
+            research_fn = getattr(_SMResearch, "get_research_data", None)
+            if callable(research_fn):
+                bounded = _sm_bounded_call(research_fn, text, timeout_seconds=12.0, call_name="source_authority_research")
+                if bounded.get("ok") and isinstance(bounded.get("value"), dict):
+                    research = bounded.get("value")
+                    raw = str(research.get("data") or research.get("content") or research.get("snippet") or research.get("answer") or "").strip()
+                    conf = float(research.get("confidence") or 0.0)
+                    if raw and conf > 0.0 and "unable to find" not in raw.lower() and "research failed" not in raw.lower():
+                        evidence_packet = None
+                        try:
+                            ev_fn = getattr(_SMSML, "sml_build_evidence_court_packet", None)
+                            if callable(ev_fn):
+                                evidence_packet = ev_fn(text, research, context={"source": "api_chat_source_authority", "intent": intent, "domain": domain})
+                        except Exception as ev_exc:
+                            meta["evidence_court_error"] = str(ev_exc)
+                        accepted_text = ""
+                        if isinstance(evidence_packet, dict):
+                            accepted_text = str(evidence_packet.get("accepted_content") or "").strip()
+                        if accepted_text:
+                            meta.update({
+                                "research_source": research.get("source"),
+                                "research_confidence": conf,
+                                "evidence_court": "accepted",
+                                "evidence_schema": "SarahMemory.sml.evidence_court_packet.B09",
+                            })
+                            reply = accepted_text
+                            bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="research", meta=meta), meta=meta, raw_answer=reply)
+                            bundle["ok"] = True
+                            bundle["source_authority_court"] = court
+                            bundle["evidence_court_packet"] = evidence_packet
+                            bundle["research_artifact"] = research
+                            return bundle
+                        meta.update({
+                            "research_source": research.get("source"),
+                            "research_confidence": conf,
+                            "evidence_court": "not_accepted",
+                        })
+                        if isinstance(evidence_packet, dict):
+                            meta["evidence_verdict"] = ((evidence_packet.get("court_2") or {}) if isinstance(evidence_packet.get("court_2"), dict) else {}).get("verdict")
+        except Exception as exc:
+            meta["research_error"] = str(exc)
+        reply = "This question requires current-source evidence, but Research/API did not return a verified artifact. I will not substitute model memory as the final answer."
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="source_authority", meta=meta), meta=meta, raw_answer=reply)
+        bundle["ok"] = True
+        bundle["source_authority_court"] = court
+        try:
+            if isinstance(locals().get("evidence_packet"), dict):
+                bundle["evidence_court_packet"] = locals().get("evidence_packet")
+        except Exception:
+            pass
+        return bundle
+    except Exception as exc:
+        app_logger.warning("SML Source Authority route failed: %s", exc, exc_info=True)
+        return None
+
 
 def _sm_try_selfaware_fact_route(text: str, *, source: str = "api_chat") -> dict | None:
     """Route local hardware/runtime fact questions into appself's fact-ticket engine.
@@ -3119,10 +3338,16 @@ def _get_hub_hmac_secret() -> str:
         import SarahMemoryGlobals as G
         v = getattr(G, "HUB_HMAC_SECRET", "") or ""
         if v:
-            return str(v)
+            return v.decode("utf-8", "ignore") if isinstance(v, (bytes, bytearray)) else str(v)
+        # SarahNet Sync/Network already use SARAHNET_SHARED_SECRET. Reuse the
+        # same configured secret for broker HMAC verification instead of making
+        # local Sync and the API bridge silently derive different auth domains.
+        v = getattr(G, "SARAHNET_SHARED_SECRET", "") or ""
+        if v:
+            return v.decode("utf-8", "ignore") if isinstance(v, (bytes, bytearray)) else str(v)
     except Exception:
         pass
-    return (os.environ.get("HUB_HMAC_SECRET") or os.environ.get("SARAH_HUB_HMAC_SECRET") or "").strip()
+    return (os.environ.get("HUB_HMAC_SECRET") or os.environ.get("SARAH_HUB_HMAC_SECRET") or os.environ.get("SARAHNET_SHARED_SECRET") or "").strip()
 
 def _sign_ok(body: bytes, signature: str) -> bool:
     """Verify X-Sarah-Signature as hex(HMAC_SHA256(secret, body)).
@@ -4367,17 +4592,26 @@ def _sm_match_quick_system_route(text: str) -> dict | None:
     if not t:
         return None
     t = t.replace("capslock", "caps lock").replace("numlock", "num lock").replace("scrolllock", "scroll lock")
-    if any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is todays date", "what is today date", "what's today's date", "what day is it", "what time is it", "current time", "date and time")):
+    if any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is todays date", "what is today date", "what's today's date", "what day is it", "what time is it", "current time", "date and time", "what year is it", "current year", "what is the year")):
         kind = "datetime"
-        if "time" in t and "date" not in t and "today" not in t and "day" not in t:
+        if any(p in t for p in ("what year is it", "current year", "what is the year")):
+            kind = "year"
+        elif "time" in t and "date" not in t and "today" not in t and "day" not in t:
             kind = "time"
         elif any(p in t for p in ("today's date", "todays date", "current date", "what is the date", "what is today date", "what's today's date", "what day is it")):
             kind = "date"
         return {"route_id": "system.datetime.current", "kind": kind}
-    if any(k in t for k in ("caps lock", "num lock", "scroll lock")) and any(k in t for k in ("turn", "put", "set", "enable", "disable", "switch")):
-        key_name = "caps_lock" if "caps lock" in t else ("num_lock" if "num lock" in t else "scroll_lock")
-        state = "off" if any(k in t for k in ("turn off", "switch off", "disable")) else "on"
-        return {"route_id": "system.keyboard.key_state", "key_name": key_name, "requested_state": state}
+    if any(k in t for k in ("caps lock", "num lock", "scroll lock")):
+        # B10: normalize terse imperatives such as "Caps Locks On" and
+        # "capslock on" before any local model can turn a device command into
+        # generic keyboard advice. Question/status requests remain read-only.
+        is_question = bool(re.search(r"\b(what|why|how|explain|define|is|are)\b", t)) or "?" in str(text or "")
+        action_word = any(k in t for k in ("turn", "put", "set", "enable", "disable", "switch"))
+        terse_state = bool(re.search(r"\b(caps lock|num lock|scroll lock)s?\s+(on|off)\b", t))
+        if (action_word or terse_state) and not is_question:
+            key_name = "caps_lock" if "caps lock" in t else ("num_lock" if "num lock" in t else "scroll_lock")
+            state = "off" if any(k in t for k in ("turn off", "switch off", "disable")) or re.search(r"\b(caps lock|num lock|scroll lock)s?\s+off\b", t) else "on"
+            return {"route_id": "system.keyboard.key_state", "key_name": key_name, "requested_state": state}
     if "keyboard" in t and any(k in t for k in ("light", "lights", "led", "rgb", "backlight", "color", "colors", "colour", "colours")):
         color = None
         for c in ("red", "green", "blue", "purple", "yellow", "white", "orange", "pink"):
@@ -4392,115 +4626,30 @@ def _sm_now_reply(kind: str) -> str:
     now = datetime.now()
     if kind == "time":
         return f"The current time is {now.strftime('%I:%M %p').lstrip('0')}."
+    if kind == "year":
+        return f"The current year is {now.strftime('%Y')}."
     if kind == "datetime":
         return f"Today is {now.strftime('%A, %B %d, %Y')} and the current time is {now.strftime('%I:%M %p').lstrip('0')}."
     return f"Today's date is {now.strftime('%A, %B %d, %Y')}."
 
 
 def _sm_set_lock_key_state(key_name: str, requested_state: str) -> tuple[bool, str, dict]:
+    """Compatibility stub only.
+
+    B06 moved keyboard lock-state execution to appdrivers.run_governed_device_intent()
+    so app.py never mutates local device state directly.
+    """
     requested_state = str(requested_state or "on").lower()
     key_name = str(key_name or "caps_lock").lower()
-    vk_map = {"caps_lock": 0x14, "num_lock": 0x90, "scroll_lock": 0x91}
-    nice_map = {"caps_lock": "Caps Lock", "num_lock": "Num Lock", "scroll_lock": "Scroll Lock"}
-    if key_name not in vk_map:
-        return False, "Unsupported keyboard lock key.", {"key_name": key_name}
-    if os.name != 'nt':
-        return False, f"{nice_map.get(key_name, key_name)} control is not yet implemented for this operating system.", {"key_name": key_name, "os": os.name}
-    try:
-        import ctypes, time as _time
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        vk = vk_map[key_name]
-        desired_on = requested_state != 'off'
-        KEYEVENTF_EXTENDEDKEY = 0x0001
-        KEYEVENTF_KEYUP = 0x0002
-        current_on = bool(user32.GetKeyState(vk) & 1)
-        changed = False
-        for _ in range(4):
-            current_on = bool(user32.GetKeyState(vk) & 1)
-            if current_on == desired_on:
-                break
-            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY, 0)
-            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
-            changed = True
-            _time.sleep(0.05)
-        final_on = bool(user32.GetKeyState(vk) & 1)
-        if final_on == desired_on:
-            state_word = 'ON' if final_on else 'OFF'
-            if changed:
-                return True, f"{nice_map.get(key_name, key_name)} turned {state_word}.", {"key_name": key_name, "requested_state": requested_state, "final_state": state_word.lower()}
-            return True, f"{nice_map.get(key_name, key_name)} is already {state_word}.", {"key_name": key_name, "requested_state": requested_state, "final_state": state_word.lower()}
-        return False, f"Unable to set {nice_map.get(key_name, key_name)} to the requested state.", {"key_name": key_name, "requested_state": requested_state, "final_state": 'on' if final_on else 'off'}
-    except Exception as e:
-        return False, f"Failed to change {nice_map.get(key_name, key_name)}: {e}", {"key_name": key_name, "requested_state": requested_state, "error": str(e)}
-
+    return False, "Keyboard lock-state mutation is owned by appdrivers/OperatorCore, not app.py.", {"key_name": key_name, "requested_state": requested_state, "handoff": "appdrivers.run_governed_device_intent", "execution_authority": False}
 
 def _sm_try_keyboard_lighting(text: str, quick_route: dict) -> tuple[bool, str, dict]:
-    try:
-        import shutil as _shutil
-        import subprocess as _subprocess
-        color = str(quick_route.get('value') or 'requested').strip().lower()
-        op = _shutil.which('openrgb') or _shutil.which('OpenRGB')
-        if op:
-            cmd = [op, '--mode', 'static']
-            color_map = {
-                'red': 'FF0000', 'green': '00FF00', 'blue': '0000FF', 'purple': '800080',
-                'yellow': 'FFFF00', 'white': 'FFFFFF', 'orange': 'FFA500', 'pink': 'FFC0CB',
-            }
-            hexv = color_map.get(color)
-            if hexv:
-                cmd.extend(['--color', hexv])
-            proc = _subprocess.run(cmd, capture_output=True, text=True, timeout=8)
-            if proc.returncode == 0:
-                return True, f"Keyboard lighting set to {color} through generic OpenRGB control.", {"driver_id": 'openrgb', 'action_id': 'keyboard_rgb_set', 'stdout': proc.stdout[-500:]}
-        import appdrivers as _drv  # type: ignore
-    except Exception as e:
-        return False, f"Keyboard lighting route matched, but no executable runtime is available: {e}", {"route_id": quick_route.get('route_id')}
-    try:
-        driver_ids = list(_drv._discover_driver_ids()) if hasattr(_drv, '_discover_driver_ids') else []
-    except Exception:
-        driver_ids = []
-    matches = []
-    for did in driver_ids:
-        try:
-            mf = _drv._load_manifest(did) if hasattr(_drv, '_load_manifest') else {}
-        except Exception:
-            mf = {}
-        raw = json.dumps(mf or {}, ensure_ascii=False).lower()
-        if 'keyboard' in raw or 'rgb' in raw or 'lighting' in raw or 'backlight' in raw:
-            matches.append((did, mf))
-    if not matches:
-        return False, 'Keyboard lighting route matched, but no governed keyboard lighting driver or OpenRGB runtime was discovered.', {"driver_matches": []}
-    preferred_actions = ['set_color', 'set_led_color', 'set_rgb', 'set_backlight', 'lighting_set', 'keyboard_lighting', 'keyboard_rgb_set']
-    for did, mf in matches:
-        try:
-            _drv._driver_discover(did, payload={"source": "api_chat_quick_route", "user_text": text})
-        except Exception:
-            pass
-        cfg = _drv._load_config(did) if hasattr(_drv, '_load_config') else {}
-        try:
-            _drv._driver_connect(did, cfg=cfg or {}, connect_payload={"source": "api_chat_quick_route", "user_text": text})
-        except Exception:
-            pass
-        mod, err = _drv._load_driver_module(did) if hasattr(_drv, '_load_driver_module') else (None, 'driver loader unavailable')
-        if err or mod is None:
-            continue
-        actions_blob = json.dumps(mf or {}, ensure_ascii=False).lower()
-        for action_id in preferred_actions:
-            if (action_id.lower() in actions_blob) or hasattr(mod, f'action_{action_id}') or hasattr(mod, 'driver_action'):
-                try:
-                    context = _drv._build_driver_context(did, instance_id=_drv._session_get(did).get('instance_id') if hasattr(_drv, '_session_get') else None, extra={"action_id": action_id})
-                    payload = {"requested_action": action_id, "entities": {"device_type": "keyboard", "value": quick_route.get('value'), "requested_state": quick_route.get('requested_state')}, "user_text": text}
-                    if hasattr(mod, 'driver_action'):
-                        out = mod.driver_action(action_id=action_id, context=context, payload=payload)
-                    else:
-                        out = getattr(mod, f'action_{action_id}')(context=context, payload=payload)
-                    if isinstance(out, dict) and bool(out.get('ok', True)):
-                        color = quick_route.get('value') or 'requested color'
-                        return True, f"Keyboard lighting set to {color} through governed driver {did}.", {"driver_id": did, "action_id": action_id, "driver_result": out}
-                except Exception:
-                    continue
-    return False, 'Keyboard lighting route matched and drivers were discovered, but no executable lighting action succeeded.', {"driver_matches": [m[0] for m in matches]}
+    """Compatibility stub only.
 
+    B06 moved keyboard/RGB lighting execution to appdrivers. app.py may detect
+    intent but must not spawn external RGB utilities, load drivers, or mutate lighting directly.
+    """
+    return False, "Keyboard lighting mutation is owned by appdrivers/OperatorCore, not app.py.", {"route_id": (quick_route or {}).get("route_id"), "handoff": "appdrivers.run_governed_device_intent", "execution_authority": False}
 
 def _sm_quick_route_is_read_only(route_id: str) -> bool:
     """Return True only for quick routes that cannot mutate OS, drivers, memory, network, or files."""
@@ -4564,21 +4713,431 @@ def _sm_execute_quick_route(
     if not allow_actions:
         return False, None
 
-    # Even after the governor, quick actions require an explicit confirmation flag.
+    # app.py must not mutate devices even after confirmation. Confirmed action
+    # requests continue into the normal governed domain pipeline so appdrivers/
+    # OperatorCore owns execution. Unconfirmed requests receive a hold bundle.
     if not user_consented:
         return True, _sm_quick_action_confirmation_bundle(route, governor=governor)
 
-    if route_id == 'system.keyboard.key_state':
-        ok, reply, details = _sm_set_lock_key_state(str(route.get('key_name') or 'caps_lock'), str(route.get('requested_state') or 'on'))
-        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_key_state", "intent": "system", "route_id": route_id, "version": PROJECT_VERSION, "governed_stage": "post_governor", "execution_authority": False}, actions=[{"type": "keyboard_key_state", **details}], errors=[] if ok else [details])
-        bundle['ok'] = bool(ok)
-        return True, bundle
-    if route_id == 'drivers.keyboard.lighting':
-        ok, reply, details = _sm_try_keyboard_lighting(text, route)
-        bundle = _sm_make_outward_bundle(reply, meta={"source": "quick_system_route", "engine": "keyboard_lighting", "intent": "drivers", "route_id": route_id, "version": PROJECT_VERSION, "governed_stage": "post_governor", "execution_authority": False}, actions=[{"type": "driver_route", **details}], errors=[] if ok else [details])
-        bundle['ok'] = bool(ok)
-        return True, bundle
-    return False, None
+    # B06: confirmed local-device quick routes are delegated to appdrivers,
+    # the API driver domain owner. app.py does not mutate keyboard/RGB/device
+    # state and does not let local LLM fallback generate fake how-to advice.
+    try:
+        import appdrivers as _sm_appdrivers  # type: ignore
+        dispatch_fn = getattr(_sm_appdrivers, "run_governed_device_intent", None)
+        if callable(dispatch_fn):
+            details = dispatch_fn(
+                text,
+                route=route,
+                user_consented=True,
+                source="api_chat.quick_route",
+                meta={"route_id": route_id, "governor_decision": (governor or {}).get("decision") if isinstance(governor, dict) else ""},
+            )
+        else:
+            details = {"ok": False, "error": "appdrivers.run_governed_device_intent unavailable", "handled": True}
+    except Exception as exc:
+        details = {"ok": False, "error": f"appdrivers_device_dispatch_failed:{exc}", "handled": True}
+
+    ok = bool(details.get("ok"))
+    reply = str(details.get("presentation_text") or details.get("reply") or ("Device action completed and verified." if ok else "Device action did not complete with verified success."))
+    bundle = _sm_make_outward_bundle(
+        reply,
+        meta={
+            "source": "quick_system_route",
+            "engine": "appdrivers_governed_device_action",
+            "intent": "drivers",
+            "route_id": route_id,
+            "version": PROJECT_VERSION,
+            "governed_stage": "post_governor_appdrivers",
+            "execution_authority": False,
+            "domain_owner": "appdrivers.py",
+        },
+        actions=[{"type": "governed_device_action", **details}],
+        errors=[] if ok else [details],
+    )
+    avatar_event_device = _sm_emit_avatar_event_safe({
+        "event_type": "device_action_completed" if ok else "device_action_failed",
+        "domain": "local_device_control",
+        "source": "api_chat.quick_route",
+        "message": reply,
+        "validation_state": "verified" if ok else "failed",
+        "source_verified": bool(ok),
+        "severity": 0.35 if ok else 0.70,
+        "claim": {"route_id": route_id, "ok": bool(ok)},
+    }, source="api_chat.quick_route")
+    bundle.setdefault("meta", {})["avatar_event"] = avatar_event_device
+    bundle['ok'] = ok
+    return True, bundle
+
+
+def _sm_emit_avatar_event_safe(event: dict, *, source: str = "api_chat") -> dict:
+    """Best-effort B08 avatar embodiment event; never changes authority."""
+    try:
+        import appmedia as _sm_appmedia  # type: ignore
+        fn = getattr(_sm_appmedia, "run_avatar_event_packet", None)
+        if callable(fn):
+            return fn(dict(event or {}), source=source, meta={"caller": "app.py"})
+    except Exception as exc:
+        return {"ok": False, "error": f"avatar_event_emit_failed:{exc}", "execution_authority": False}
+    return {"ok": False, "error": "avatar_event_bridge_unavailable", "execution_authority": False}
+
+def _sm_is_nailde_creation_request(text: str) -> bool:
+    """Return True for software/app/addon build missions, not generic media creation.
+
+    This is B07 route grammar. It is intentionally domain-shaped rather than
+    prompt-specific, so examples such as games or stock apps do not become hardcoded handlers.
+    """
+    try:
+        t = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not t:
+            return False
+        creation = bool(re.search(r"\b(make|create|build|generate|code|write)\b", t))
+        software = bool(re.search(r"\b(app|application|program|software|game|addon|add-on|addons|plugin|tool|dashboard|tracker|website|web app|panel|widget|playable|launcher|simulator)\b", t))
+        return bool(creation and software)
+    except Exception:
+        return False
+
+
+def _sm_try_nailde_creation_mission_route(
+    text: str,
+    *,
+    payload: dict | None = None,
+    context_packet: dict | None = None,
+    governor: dict | None = None,
+) -> dict | None:
+    """Delegate arbitrary software/app/addon creation to appsdk/NAILDE.
+
+    app.py remains the bridge. B07 allows explicit user create/build requests to
+    produce NAILDE sandbox artifacts only; live ADDON install/run remains a
+    separate user-approved path owned by appstore/ADDON runtime.
+    """
+    if not _sm_is_nailde_creation_request(text):
+        return None
+    gov_decision = str((governor or {}).get("decision") or "").upper() if isinstance(governor, dict) else ""
+    plan_only = bool(re.search(r"(before creating files|without creating files|mission plan|governance state)", str(text or "").lower()))
+    if gov_decision == "DENY" and not plan_only:
+        return None
+    try:
+        import appsdk as _sm_appsdk  # type: ignore
+        fn = getattr(_sm_appsdk, "run_governed_creation_mission", None)
+        if not callable(fn):
+            raise RuntimeError("appsdk.run_governed_creation_mission unavailable")
+        request_payload = dict(payload or {})
+        ctx_meta = (context_packet or {}).get("meta") if isinstance(context_packet, dict) else {}
+        explicit_consent = bool(
+            request_payload.get("confirmed")
+            or request_payload.get("confirm")
+            or request_payload.get("user_confirmed")
+            or (isinstance(ctx_meta, dict) and ctx_meta.get("user_consented"))
+        )
+        result = fn(
+            text,
+            payload=request_payload,
+            user_consented=explicit_consent,
+            source="api_chat.nailde_creation_mission",
+            meta={
+                "route": "api_chat_nailde_creation_mission",
+                "governor_decision": gov_decision,
+                "governor_original_rationale": (governor or {}).get("rationale") if isinstance(governor, dict) else "",
+                "sandbox_only": True,
+            },
+        )
+        if not isinstance(result, dict) or not result.get("handled", True):
+            return None
+        reply = str(result.get("presentation_text") or result.get("message") or "NAILDE creation mission returned no presentable status.")
+        meta = {
+            "source": "appsdk_nailde_creation_mission",
+            "engine": "appsdk.run_governed_creation_mission",
+            "intent": "create_software_addon",
+            "domain_owner": "appsdk.py/SarahMemoryNAILDE.py",
+            "install_owner": "appstore.py",
+            "governor_original_decision": gov_decision,
+            "execution_allowed": False,
+            "execution_authority": False,
+            "sandbox_only": True,
+            "live_install_authority": False,
+            "live_run_authority": False,
+            "version": PROJECT_VERSION,
+        }
+        bundle = _sm_make_outward_bundle(
+            _sm_present_text(reply, intent="nailde_creation", meta=meta),
+            meta=meta,
+            raw_answer=reply,
+            actions=result.get("actions") if isinstance(result.get("actions"), list) else [],
+            artifacts=[],
+            errors=[] if result.get("ok") else [result],
+        )
+        avatar_event_creation = _sm_emit_avatar_event_safe({
+            "event_type": "creation_mission_completed" if result.get("ok") else "creation_mission_stopped",
+            "domain": "creative_build_mission",
+            "source": "api_chat.nailde_creation_mission",
+            "message": reply,
+            "validation_state": "verified" if result.get("ok") else "failed",
+            "source_verified": bool(result.get("ok")),
+            "severity": 0.35 if result.get("ok") else 0.65,
+            "workspace_id": result.get("workspace_id"),
+            "addon_id": result.get("addon_id"),
+            "claim": {"workspace_id": result.get("workspace_id"), "addon_id": result.get("addon_id")},
+        }, source="api_chat.nailde_creation_mission")
+        bundle.setdefault("meta", {})["avatar_event"] = avatar_event_creation
+        bundle["ok"] = bool(result.get("ok"))
+        bundle["nailde_creation"] = result
+        bundle["creation_contract"] = result.get("creation_contract")
+        bundle["workspace_id"] = result.get("workspace_id")
+        bundle["addon_id"] = result.get("addon_id")
+        return bundle
+    except Exception as exc:
+        reply = "The NAILDE creation route is configured for this build mission, but the route failed before sandbox generation. I did not fall back to a generic model answer."
+        meta = {
+            "source": "appsdk_nailde_creation_mission",
+            "engine": "api_chat_creation_route_failure",
+            "error": str(exc),
+            "execution_allowed": False,
+            "execution_authority": False,
+            "sandbox_only": True,
+            "version": PROJECT_VERSION,
+        }
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="nailde_creation", meta=meta), meta=meta, raw_answer=reply, errors=[meta])
+        bundle["ok"] = False
+        return bundle
+
+
+
+def _sm_b10_is_readonly_text_generation_request(text: str) -> bool:
+    """Read-only draft/summary requests are chat output, not file writes.
+
+    This guard exists because the governor may conservatively treat the verb
+    "write" as a filesystem/document action. It only returns True when the
+    request asks for text in the chat and does not name a side-effect target.
+    """
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return False
+    if not re.search(r"\b(write|draft|summarize|summarise|summary|explain|describe)\b", t):
+        return False
+    side_effect = re.search(
+        r"\b(file|document|docx|pdf|spreadsheet|email|send|save|create\s+file|write\s+file|open\s+|launch\s+|notepad|word|excel|install|run|execute|delete|patch)\b",
+        t,
+    )
+    if side_effect:
+        return False
+    return True
+
+
+def _sm_b10_location_conflict_bundle(text: str, *, local_only: bool = True) -> dict | None:
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    if not (
+        ("satellite" in t or "ip" in t or "internet" in t or "network" in t)
+        and ("location" in t or "texas" in t or "kansas" in t or "oklahoma" in t or "trust" in t)
+    ):
+        return None
+    reply = (
+        "For physical/local context, SarahMemory should trust the user-declared location and the configured OS timezone first. "
+        "Satellite, IP, DNS, VPN, or carrier routing can show Kansas or Oklahoma as a network-exit artifact, but that does not override East Texas as the physical/user-declared locality. "
+        "So the Court should classify East Texas/Central Time as the local-context authority when user/system context supports it, and classify Kansas/Oklahoma as network-route evidence only."
+    )
+    meta = {
+        "source": "appsys_location_context_court_b10",
+        "engine": "b10_readonly_location_conflict_resolver",
+        "intent": "temporal_locality",
+        "claim_type": "LOCATION_CONTEXT_CONFLICT",
+        "model_memory_authority": False,
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "local_only": bool(local_only),
+        "authority_rule": "user_declared_locality_and_os_timezone_outweigh_network_exit_location_for_physical_locality",
+        "version": PROJECT_VERSION,
+    }
+    bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="system_status", meta=meta), meta=meta, raw_answer=reply)
+    bundle["ok"] = True
+    bundle["location_court"] = {
+        "verdict": "TRUST_USER_DECLARED_LOCAL_CONTEXT_REJECT_NETWORK_EXIT_AS_PHYSICAL_LOCATION",
+        "accepted_for_physical_context": ["user_declared_location", "configured_os_timezone"],
+        "accepted_for_network_context": ["satellite_or_ip_exit_region"],
+        "rejected_final_sources": ["model_memory", "network_exit_as_physical_location"],
+    }
+    return bundle
+
+
+def _sm_b10_capslock_concept_bundle(text: str) -> dict | None:
+    t = _sm_fast_normalize_question(text)
+    if not t or "caps lock" not in t:
+        return None
+    if not re.search(r"\b(what|define|explain|how does|what is)\b", t):
+        return None
+    # Concept explanation only; action phrases are handled by appdrivers.
+    if _sm_match_quick_system_route(text):
+        return None
+    reply = "Caps Lock is a keyboard toggle. When it is on, letter keys type uppercase letters until Caps Lock is turned off; number keys and most symbols are not changed by the toggle."
+    meta = {
+        "source": "keyboard_concept_deterministic_b10",
+        "engine": "app_py_readonly_device_concept",
+        "intent": "device_query",
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "model_memory_authority": False,
+        "domain_owner_for_mutation": "appdrivers.py",
+        "version": PROJECT_VERSION,
+    }
+    bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="device_query", meta=meta), meta=meta, raw_answer=reply)
+    bundle["ok"] = True
+    return bundle
+
+
+def _sm_b10_avatar_event_question_bundle(text: str) -> dict | None:
+    t = _sm_fast_normalize_question(text)
+    if not t:
+        return None
+    if not ("avatar" in t and ("game_over" in t or "game over" in t or "addon game" in t or "verified" in t)):
+        return None
+    reply = (
+        "For a verified ADDON GAME_OVER event, the avatar should react through the B08 avatar-event stream, not through random model improvisation. "
+        "The ADDON emits a verified runtime event, SML builds an avatar event packet, appmedia applies the directive, and the avatar can shift to a surprised/concerned or supportive state, then ask whether the user wants to play again. "
+        "No claim or emotion should be invented without the verified event packet."
+    )
+    meta = {
+        "source": "appmedia_avatar_event_doctrine_b10",
+        "engine": "b10_readonly_avatar_event_resolver",
+        "intent": "avatar_event_semantics",
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "model_memory_authority": False,
+        "version": PROJECT_VERSION,
+    }
+    bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="avatar", meta=meta), meta=meta, raw_answer=reply)
+    bundle["ok"] = True
+    bundle["avatar_event_policy"] = {
+        "event_type": "GAME_OVER",
+        "required_source": "verified_addon_runtime_event",
+        "route": ["ADDON", "SML avatar event packet", "appmedia.py", "SarahMemoryAvatar.py", "Reply/UI"],
+        "random_reaction_allowed": False,
+    }
+    return bundle
+
+
+def _sm_b10_readonly_text_generation_bundle(text: str, *, local_only: bool = True, intent: str = "question") -> dict | None:
+    if not _sm_b10_is_readonly_text_generation_request(text):
+        return None
+    t = _sm_fast_normalize_question(text)
+    if "sml" in t and "packet" in t:
+        reply = (
+            "SML packets matter because they keep each mission traceable from the first input through routing, authority, evidence, validation, reply, and audit. "
+            "They stop every organ from inventing its own disconnected state, so SarahMemory can verify who acted, what source was used, what authority existed, and what changed. "
+            "That is what turns the system from a chatbot-style answer path into a governed cognitive operating system."
+        )
+    else:
+        reply = (
+            "This is a read-only text-generation request. It should be answered in chat without user confirmation because no file, app, email, device, shell, install, or persistent write was requested."
+        )
+    meta = {
+        "source": "read_only_text_generation_b10",
+        "engine": "b10_bounded_readonly_text_route",
+        "intent": "read_only_text_generation",
+        "decision": "ALLOW_PRESENTATION_ONLY",
+        "execution_allowed": False,
+        "execution_authority": False,
+        "presentation_only": True,
+        "confirmation_required": False,
+        "filesystem_write": False,
+        "app_execution": False,
+        "network_access": False,
+        "version": PROJECT_VERSION,
+    }
+    bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="chat", meta=meta), meta=meta, raw_answer=reply)
+    bundle["ok"] = True
+    return bundle
+
+
+def _sm_b10_nailde_plan_only_bundle(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict | None:
+    if not _sm_is_nailde_creation_request(text):
+        return None
+    t = _sm_fast_normalize_question(text)
+    plan_only = bool(
+        "before creating files" in t
+        or "without creating files" in t
+        or "mission plan" in t
+        or "governance state" in t
+        or (isinstance(payload, dict) and payload.get("dry_run"))
+    )
+    if not plan_only:
+        return None
+    try:
+        import appsdk as _sm_appsdk  # type: ignore
+        fn = getattr(_sm_appsdk, "run_governed_creation_mission", None)
+        if not callable(fn):
+            raise RuntimeError("appsdk.run_governed_creation_mission unavailable")
+        p = dict(payload or {})
+        p["plan_only"] = True
+        p["dry_run"] = True
+        p["create_files"] = False
+        result = fn(text, payload=p, user_consented=False, source="api_chat.b10_nailde_plan_only", meta={"route": "b10_pre_governance_plan_only"})
+        if not isinstance(result, dict):
+            raise RuntimeError("appsdk returned non-dict creation mission plan")
+        reply = str(result.get("presentation_text") or result.get("message") or "NAILDE returned the governed creation mission plan without creating files.")
+        meta = {
+            "source": "appsdk_nailde_plan_only_b10",
+            "engine": "appsdk.run_governed_creation_mission",
+            "intent": "create_software_addon_plan_only",
+            "execution_allowed": False,
+            "execution_authority": False,
+            "sandbox_only": True,
+            "files_created": False,
+            "live_install_authority": False,
+            "live_run_authority": False,
+            "confirmation_required": False,
+            "version": PROJECT_VERSION,
+        }
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="nailde_creation", meta=meta), meta=meta, raw_answer=reply, actions=result.get("actions") if isinstance(result.get("actions"), list) else [], artifacts=[], errors=[] if result.get("ok") else [result])
+        bundle["ok"] = bool(result.get("ok", True))
+        bundle["nailde_creation"] = result
+        bundle["creation_contract"] = result.get("creation_contract")
+        return bundle
+    except Exception as exc:
+        # If appsdk cannot be imported in a constrained context, still return a
+        # bounded non-executing SML creation contract rather than denying or
+        # timing out. This does not create files and does not install/run addons.
+        try:
+            from SarahMemorySMLProtocol import sml_build_creation_mission_contract  # type: ignore
+            contract = sml_build_creation_mission_contract(str(text or ""), context={"source": "api_chat.b10_nailde_plan_only_fallback", "target": "nailde", "plan_only": True})
+        except Exception as sml_exc:
+            contract = {"ok": False, "error": f"sml_creation_contract_failed:{sml_exc}", "execution_authority": False}
+        reply = (
+            "NAILDE built a governed creation mission plan only. No workspace files were created, no ADDON was installed, and nothing was run. "
+            "The appsdk bridge was unavailable in this context, so this response contains the SML creation contract only."
+        )
+        meta = {"source": "sml_nailde_plan_only_fallback_b10", "appsdk_error": str(exc), "execution_authority": False, "files_created": False, "version": PROJECT_VERSION}
+        bundle = _sm_make_outward_bundle(_sm_present_text(reply, intent="nailde_creation", meta=meta), meta=meta, raw_answer=reply, errors=[] if contract.get("ok") else [contract])
+        bundle["ok"] = bool(contract.get("ok", True))
+        bundle["creation_contract"] = contract
+        bundle["nailde_creation"] = {"ok": bool(contract.get("ok", True)), "mode": "plan_only_no_files_created", "files_created": False, "execution_authority": False, "creation_contract": contract}
+        return bundle
+
+
+def _sm_try_b10_confirmed_runtime_defect_route(text: str, *, payload: dict | None = None, context_packet: dict | None = None, local_only: bool = True, intent: str = "question") -> dict | None:
+    """Narrow runtime repair route for confirmed B09 diagnostic failures.
+
+    These are read-only/presentation-only or governed-hold lanes that must not
+    fall into local model fallback or broad governor denial.
+    """
+    for fn in (
+        lambda q: _sm_b10_location_conflict_bundle(q, local_only=local_only),
+        _sm_b10_capslock_concept_bundle,
+        _sm_b10_avatar_event_question_bundle,
+        lambda q: _sm_b10_nailde_plan_only_bundle(q, payload=payload, context_packet=context_packet),
+        lambda q: _sm_b10_readonly_text_generation_bundle(q, local_only=local_only, intent=intent),
+    ):
+        try:
+            out = fn(text)
+            if isinstance(out, dict):
+                return out
+        except Exception:
+            continue
+    return None
 
 def _sm_ingress_catalog() -> list[dict]:
     return [
@@ -4598,7 +5157,7 @@ def _sm_ingress_catalog() -> list[dict]:
 
 def _sm_ingress_normalize_text(text: str) -> str:
     t = str(text or "").strip().lower()
-    replacements = {"temperture": "temperature", "wether": "weather", "camra": "camera", "web cam": "webcam", "mose": "mouse", "lites": "lights", "coler": "color", "unreel": "unreal", "doccument": "document"}
+    replacements = {"temperture": "temperature", "wether": "weather", "camra": "camera", "web cam": "webcam", "mose": "mouse", "lites": "lights", "coler": "color", "unreel": "unreal", "doccument": "document", "naem": "name", "nmae": "name"}
     for bad, good in replacements.items():
         t = t.replace(bad, good)
     return re.sub(r"\s+", " ", t).strip()
@@ -4775,9 +5334,23 @@ def _sm_build_virtual_ingress_route(text: str, payload: dict | None = None, cont
 
     best = best or dict(cards[-1])
     route_id = str(best.get("route_id") or "chat.general")
+    # Forward repair B04: a request to write/summarize/explain text in chat is
+    # answer-only unless the user explicitly asks for a file, Word/Notepad,
+    # document, spreadsheet, website, or application launch target.
+    chat_write_summary = bool(re.search(r"\b(write|give|make|create)?\s*(me\s+)?(a\s+)?(summary|summarize|describe|explain)\b", normalized))
+    explicit_document_target = bool(re.search(r"\b(word|notepad|document|docx|file|save|open|launch|spreadsheet|excel|website|browser|edge|app|application)\b", normalized))
+    if route_id == "documents.office.write" and chat_write_summary and not explicit_document_target:
+        route_id = "chat.general"
+        best = {"route_id": "chat.general", "domain": "chat", "action": "general_reply", "target_module": "SarahMemoryReply", "transport_target": "/api/chat"}
     entities = _sm_ingress_extract_entities(original, route_id)
     surface_task = dict(entities.get('surface_task') or {}) if isinstance(entities.get('surface_task'), dict) else {}
     task_kind = str(surface_task.get('task_kind') or '').strip().lower()
+    if chat_write_summary and not explicit_document_target:
+        route_id = "chat.general"
+        best = {"route_id": "chat.general", "domain": "chat", "action": "general_reply", "target_module": "SarahMemoryReply", "transport_target": "/api/chat"}
+        entities.pop("surface_task", None)
+        surface_task = {}
+        task_kind = ""
     if task_kind in {'document_write', 'open_named_document', 'spreadsheet_template', 'website_scaffold'}:
         route_id = 'documents.office.write'
         best['domain'] = 'documents'
@@ -5326,6 +5899,12 @@ def _sm_fast_is_low_risk_general_question(text: str) -> bool:
             return False
     except Exception:
         pass
+    try:
+        qr = _sm_match_quick_system_route(text)
+        if isinstance(qr, dict) and str(qr.get("route_id") or "") != "system.datetime.current":
+            return False
+    except Exception:
+        pass
 
     blocked_terms = (
         "open ", "launch ", "run ", "execute ", "delete ", "remove ", "move ", "copy ",
@@ -5334,6 +5913,7 @@ def _sm_fast_is_low_risk_general_question(text: str) -> bool:
         "driver", "robot", "servo", "motor", "msdc", "terminal", "powershell", "cmd", "registry",
         "who are you", "what is your name", "your version", "who made you", "who created you",
         "what time", "today", "latest", "current", "right now", "news", "weather",
+        "caps lock", "num lock", "scroll lock", "keyboard", "rgb", "backlight",
     )
     padded = f" {t} "
     if any(term in padded for term in blocked_terms):
@@ -5880,7 +6460,12 @@ def _sm_try_sml_local_research_answer_bundle(text: str, *, intent: str = "questi
             "hardware_control": False,
             "local_research_metadata": result.get("metadata") if isinstance(result.get("metadata"), dict) else {},
         })
-        return _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+        bundle = _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+        if isinstance(result.get("evidence_artifact"), dict):
+            bundle["evidence_artifact"] = result.get("evidence_artifact")
+        if isinstance(result.get("evidence_artifacts"), list):
+            bundle["evidence_artifacts"] = result.get("evidence_artifacts")
+        return bundle
     except Exception as exc:
         try:
             app_logger.warning(f"SML local research resolver skipped: {exc}", exc_info=True)
@@ -5920,7 +6505,12 @@ def _sm_try_sml_approved_research_answer_bundle(text: str, *, intent: str = "que
             "hardware_control": False,
             "research_metadata": result.get("metadata") if isinstance(result.get("metadata"), dict) else {},
         })
-        return _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+        bundle = _sm_make_outward_bundle(_sm_present_text(answer, intent="chat", meta=meta), meta=meta, raw_answer=answer)
+        if isinstance(result.get("evidence_artifact"), dict):
+            bundle["evidence_artifact"] = result.get("evidence_artifact")
+        if isinstance(result.get("evidence_artifacts"), list):
+            bundle["evidence_artifacts"] = result.get("evidence_artifacts")
+        return bundle
     except Exception as exc:
         try:
             app_logger.warning(f"SML approved research resolver skipped: {exc}", exc_info=True)
@@ -5988,6 +6578,71 @@ def _sm_try_logiccalc_numeric_format_bundle(text: str, *, route: dict | None = N
     except Exception as exc:
         try:
             app_logger.debug(f"SML LogicCalc numeric-format route skipped: {exc}", exc_info=True)
+        except Exception:
+            pass
+        return None
+
+
+def _sm_try_logiccalc_science_bundle(text: str, *, route: dict | None = None, local_only: bool = True, intent: str = "question"):
+    """Deterministic LogicCalc science/chemistry lane.
+
+    This is not a static answer pool. app.py only delegates atom-symbol and
+    atom-count/formula questions to LogicCalc, which owns deterministic science
+    tables and formula parsing.
+    """
+    try:
+        q = str(text or "")
+        tq = _sm_fast_normalize_question(q)
+        if not tq:
+            return None
+        deterministic_science = bool(
+            re.search(r"\b(what\s+atom\s+is|what\s+element\s+is|atomic\s+symbol|symbol\s+for|element\s+symbol|molar\s+mass|atomic\s+weight|atomic\s+mass)\b", tq)
+            or (re.search(r"\b(compound|formula|molecule|mix|combine|combining|formed|represent)\b", tq) and re.search(r"\b\d+\s*(?:[a-z]{1,2}|[a-z]{3,})\s*(?:atoms?|atom|elements?|element)?\b", tq))
+            or (re.search(r"\b\d+\s+(?:oxygen|hydrogen|carbon|nitrogen|chlorine|sodium|helium|neon|argon)\s+atoms?\b", tq))
+        )
+        if not deterministic_science:
+            return None
+        from SarahMemoryLogicCalc import LogicCalc as _LC  # type: ignore
+        routed = _LC.route(q) if hasattr(_LC, "route") else None
+        if not isinstance(routed, dict) or not bool(routed.get("ok")):
+            return None
+        raw_answer = str(routed.get("text") or routed.get("presentation_hint") or "").strip()
+        if (not raw_answer) or "chemistry engine ready" in raw_answer.lower():
+            return None
+        meta = {
+            "source": "logiccalc_deterministic_science",
+            "engine": "sml_logiccalc_science_resolver_b04",
+            "intent": intent or "science",
+            "mission": str(routed.get("kind") or "science"),
+            "confidence": 0.98,
+            "decision": "ALLOW_PRESENTATION_ONLY",
+            "execution_allowed": False,
+            "execution_authority": False,
+            "presentation_only": True,
+            "local_only": bool(local_only),
+            "research_access": False,
+            "api_access": False,
+            "web_access": False,
+            "filesystem_write": False,
+            "shell_access": False,
+            "network_access": False,
+            "hardware_control": False,
+            "safe_readonly_cognition": True,
+            "no_static_answer_pool": True,
+            "sml_route": route if isinstance(route, dict) else {},
+            "logiccalc_result": {
+                "kind": routed.get("kind"),
+                "value": routed.get("value"),
+                "truth_locked": bool(routed.get("truth_locked")),
+                "deterministic": bool(routed.get("deterministic", True)),
+                "meta": routed.get("meta") if isinstance(routed.get("meta"), dict) else {},
+            },
+            "version": PROJECT_VERSION,
+        }
+        return _sm_make_outward_bundle(_sm_present_text(raw_answer, intent="chat", meta=meta), meta=meta, raw_answer=raw_answer)
+    except Exception as exc:
+        try:
+            app_logger.debug(f"SML LogicCalc science route skipped: {exc}", exc_info=True)
         except Exception:
             pass
         return None
@@ -6661,6 +7316,8 @@ def _sm_v07_try_network_current_guard_bundle(text: str, *, local_only: bool = Fa
         return _sm_v07_bundle("I cannot verify an active internet connection from this local chat route. In offline/local-only mode, web and current-data access are unavailable.", source="sml_network_status_guard", intent="network_status", meta={"local_only": bool(local_only)})
     if re.search(r"\b(search\s+the\s+web|current\s+weather|today.s\s+top\s+news|current\s+price|right\s+now\s+while\s+offline)\b", t):
         return _sm_v07_bundle("That requires a current network/source route. I will not fabricate live data while offline or without approved network access.", source="sml_current_info_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True})
+    if re.search(r"\b(current\s+president|president\s+of\s+the\s+united\s+states|current\s+(?:ceo|prime\s+minister|governor|mayor)|who\s+is\s+the\s+current)\b", t):
+        return _sm_v07_bundle("That is a current/public-office or current-role question. I will not answer it from stale local model memory or demo/static facts. Use an approved research/web source route so SarahMemory can verify the current holder before answering.", source="sml_current_role_guard", intent="current_information", meta={"local_only": bool(local_only), "requires_current_source": True, "stale_model_answer_blocked": True})
     if re.search(r"\bcan\s+you\s+answer\s+using\s+only\s+local\s+sources\s+right\s+now\b", t):
         return _sm_v07_bundle("Yes. In local-only mode I can answer from local model generation, persistent SQLite/local memory, bounded local knowledge, internal self-state/diagnostics, and approved local organs. I should not claim web/current-data access while offline.", source="sml_local_only_status", intent="network_status", meta={"local_only": True})
     return None
@@ -6932,42 +7589,41 @@ def api_chat():
             except Exception:
                 pass
 
-        # v0.8.2: do not release frontdoor cognition before governance.
-        # Every memory/write, identity, self-state, diagnostics, and source route
-        # remains SML-packeted and is evaluated after CognitiveServices governance.
+        # v0.8.2/B05: do not release frontdoor cognition before governance.
+        # Time/date/year and identity/avatar/selfhood are routed to domain owners
+        # before any model-memory or generic fast-answer fallback can respond.
+
+        clock_court_bundle = _sm_try_clock_court_route(text, source="api_chat")
+        if isinstance(clock_court_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(clock_court_bundle, locals().get("reality_flow"))), 200
+
+        identity_court_bundle = _sm_try_appself_identity_route(text, source="api_chat")
+        if isinstance(identity_court_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(identity_court_bundle, locals().get("reality_flow"))), 200
 
         selfaware_fact_bundle = _sm_try_selfaware_fact_route(text, source="api_chat")
         if isinstance(selfaware_fact_bundle, dict):
             return jsonify(_sm_attach_reality_meta(selfaware_fact_bundle, locals().get("reality_flow"))), 200
 
-        if _is_identity_question(text):
-            ident = _identity_payload()
-            low = text.strip().lower()
-            if "version" in low:
-                raw_reply = f"My name is {ident['name']} — your {ident['platform']} companion. Server version: {ident['version']}."
-            elif any(k in low for k in (
-                "who made you", "who created you", "creator", "who built you",
-                "who designed you", "designer", "engineer", "who engineered you",
-            )):
-                raw_reply = f"I was created by {ident['creator']} ({ident['organization']}) as part of {ident['platform']}."
-            elif "mission" in low:
-                raw_reply = f"My mission is to help you as {ident['platform']} — fast, accurate, and user-controlled."
-            elif "brian lee baros" in low:
-                raw_reply = f"{ident['creator']} is the creator and lead engineer of the {ident['platform']} project."
-            else:
-                raw_reply = f"I'm {ident['name']} — your {ident['platform']} companion."
-            bundle = _sm_make_outward_bundle(
-                _sm_present_text(raw_reply, intent="identity"),
-                meta={"source": "identity_guard", "engine": "identity_guard", "intent": "identity", "version": ident["version"]},
-            )
-            bundle["identity"] = ident
-            return jsonify(bundle), 200
+        # B10: confirmed runtime defects that are read-only or plan-only must be
+        # resolved before broad governor/model fallback can deny, timeout, or
+        # hallucinate. This grants no execution authority.
+        b10_defect_bundle = _sm_try_b10_confirmed_runtime_defect_route(
+            text,
+            payload=payload,
+            context_packet=context_packet,
+            local_only=local_only,
+            intent=(intent or "question"),
+        )
+        if isinstance(b10_defect_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(b10_defect_bundle, locals().get("reality_flow"))), 200
 
         browser_state_bundle = _browser_state_answer_for_text(text)
         if browser_state_bundle is not None:
             return jsonify(browser_state_bundle), 200
 
-        gov = {"allow": True}
+        # Governance must fail closed. app.py is transport/bridge, not authority.
+        gov = None
 
         try:
             if _sm_module_approved("SarahMemoryCognitiveServices", capability="governor"):
@@ -6980,24 +7636,26 @@ def api_chat():
                     user_consented=bool(context_packet["meta"].get("user_consented")),
                     proposed_action=context_packet["meta"].get("proposed_action"),
                 )
+            else:
+                gov = None
         except Exception as e:
-            app_logger.warning(f"CognitiveServices govern_request failed; continuing with safe defaults: {e}", exc_info=True)
+            app_logger.warning(f"CognitiveServices govern_request failed; deferring request: {e}", exc_info=True)
             gov = None
 
         if not isinstance(gov, dict):
             gov = {
                 "ok": False,
-                "decision": "ALLOW",
-                "allow": True,
-                "require_user": False,
-                "reasons": ["governor_unavailable"],
-                "rationale": "Governor unavailable; proceeding with safe defaults.",
+                "decision": "DEFER",
+                "allow": False,
+                "require_user": True,
+                "reasons": ["governor_unavailable_fail_closed"],
+                "rationale": "Governance is unavailable, so SarahMemory is deferring instead of self-authorizing.",
                 "routing_policy": {
-                    "allowed_tiers": {"tier0": True, "tier1": True, "tier2": True, "tier3": (not local_only)},
-                    "budgets": {"latency_ms": 4000, "max_steps": 12, "max_retries": 1},
-                    "side_effects": {"tts": True, "db_write": True, "compare": True},
+                    "allowed_tiers": {"tier0": False, "tier1": False, "tier2": False, "tier3": False},
+                    "budgets": {"latency_ms": 0, "max_steps": 0, "max_retries": 0},
+                    "side_effects": {"tts": False, "db_write": False, "compare": False},
                 },
-                "trace": {},
+                "trace": {"authority": "fail_closed", "owner": "SarahMemoryCognitiveServices"},
             }
 
         gov_decision = str(gov.get("decision") or ("ALLOW" if bool(gov.get("allow")) else "DEFER")).upper()
@@ -7035,6 +7693,46 @@ def api_chat():
         if handled and quick_bundle is not None:
             return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
 
+        # Forward repair B04: confirmed/device-intent quick routes must not be
+        # swallowed by Tier-0 answer generation.  Return confirmation for
+        # unconfirmed keyboard/RGB requests before any local LLM can hallucinate
+        # how-to instructions. app.py still does not execute device mutation.
+        if gov_decision != "DENY":
+            _quick_user_consented_pre_answer = bool(
+                context_packet.get("meta", {}).get("user_consented")
+                or payload.get("confirmed")
+                or payload.get("user_confirmed")
+                or payload.get("confirm")
+            )
+            handled_action, action_bundle = _sm_execute_quick_route(
+                text,
+                allow_actions=True,
+                user_consented=_quick_user_consented_pre_answer,
+                governor=gov if isinstance(gov, dict) else None,
+            )
+            if handled_action and action_bundle is not None:
+                return jsonify(_sm_attach_reality_meta(action_bundle, locals().get("reality_flow"))), 200
+
+        # B07: arbitrary software/app/game/addon creation missions belong to
+        # appsdk.py + SarahMemoryNAILDE.py, not app.py or a local model fallback.
+        # The chat command may stage sandbox artifacts only. Install/run remains
+        # a separate explicit user-approved ADDON/appstore path.
+        creation_mission_bundle = _sm_try_nailde_creation_mission_route(
+            text,
+            payload=payload,
+            context_packet=context_packet,
+            governor=gov if isinstance(gov, dict) else None,
+        )
+        if isinstance(creation_mission_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(creation_mission_bundle, locals().get("reality_flow"))), 200
+
+        source_authority_bundle = _sm_try_sml_source_authority_route(
+            text,
+            local_only=local_only,
+            intent=(intent or "question"),
+        )
+        if isinstance(source_authority_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(source_authority_bundle, locals().get("reality_flow"))), 200
 
         sml_universal_bundle = _sm_try_sml_universal_cognitive_answer_bundle(
             text,
@@ -7210,13 +7908,11 @@ def api_chat():
                                 "meta": _fallback_meta,
                             }
                     else:
-                        # SML v0.6 correction:
-                        # A source miss inside the governor-presentation override is not
-                        # a final answer. It must continue into the full governed cognition
-                        # chain (local model, research, Neuron, Reply) instead of leaking
-                        # an "I do not know from my connected local sources yet" message.
-                        # Keep the lane read-only/presentation-only by rewriting the local
-                        # governor variables to the already-approved presentation override.
+                        # SML forward-repair correction:
+                        # A source miss is not a final answer, but it also must not
+                        # rewrite the governor's decision to ALLOW. Preserve the source
+                        # miss metadata and continue only through paths allowed by the
+                        # original governance result.
                         try:
                             _source_miss_meta = {
                                 "source": _fallback_source,
@@ -7235,10 +7931,10 @@ def api_chat():
                                 reality_flow.setdefault("sml", {})["fast_answer_source_miss"] = _source_miss_meta
                         except Exception:
                             pass
-                        gov = _presentation_gov
-                        gov_decision = "ALLOW"
-                        gov_allow = True
-                        gov_require_user = False
+                        # Do not rewrite the governing decision object. A source miss
+                        # may continue through the read-only cognition chain only if the
+                        # original governor later permits it; action/memory/device paths
+                        # must keep the original DEFER/REQUIRE_USER/DENY state.
                         _fast_answer_bundle = None
 
                 if isinstance(_fast_answer_bundle, dict):
@@ -7874,17 +8570,24 @@ def _api_key_auth_ok() -> bool:
       - X-API-Key: <key>
       - Authorization: Bearer <key>
     """
-    # allow local / dev with no auth if explicitly configured
+    # Local no-auth is genuinely local. Never turn a missing API key into
+    # network-wide authentication merely because the API server binds to LAN/WAN.
     try:
-        if config is not None and getattr(config, "ALLOW_NOAUTH_LOCAL", False):
+        remote_addr = str(getattr(request, "remote_addr", "") or "").strip().lower()
+    except Exception:
+        remote_addr = ""
+    is_loopback = remote_addr in ("", "127.0.0.1", "::1", "localhost")
+
+    try:
+        if config is not None and getattr(config, "ALLOW_NOAUTH_LOCAL", False) and is_loopback:
             return True
     except Exception:
         pass
 
     api_key = (os.environ.get("SARAHMEMORY_API_KEY") or os.environ.get("API_KEY") or "").strip()
     if not api_key:
-        # Backward compatible: no key configured => open
-        return True
+        # Preserve keyless local development while failing closed for remote hosts.
+        return is_loopback
 
     hdr = (request.headers.get("X-API-Key") or "").strip()
     if hdr and hmac.compare_digest(hdr, api_key):

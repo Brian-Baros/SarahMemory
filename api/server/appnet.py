@@ -80,6 +80,7 @@ import os
 import time
 import uuid
 import zlib
+import threading
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from flask import Blueprint, jsonify, request
@@ -148,6 +149,19 @@ SUGGESTED_CLIENT_DOWNLOAD_DIR = os.environ.get("SARAHNET_SUGGESTED_CLIENT_DOWNLO
 MAX_CHUNK_BYTES = int(os.environ.get("SARAHNET_MAX_CHUNK_BYTES", str(512 * 1024)))  # 512KB default
 MAX_TRANSFER_BYTES = int(os.environ.get("SARAHNET_MAX_TRANSFER_BYTES", str(25 * 1024 * 1024)))  # 25MB default
 MAX_POLL_CHUNKS = int(os.environ.get("SARAHNET_MAX_POLL_CHUNKS", "10"))  # per poll
+
+# SML-RT broker lane: bounded, in-memory, latest-wins state. No frame-by-frame
+# SQLite/Ledger writes are permitted here. appnet2 owns lease issuance; this
+# data plane verifies those leases against the shared META_DB before accepting
+# an ephemeral state delta.
+SML_RT_PROFILE = "SML-RT/1.0-alpha"
+SML_RT_MAX_DELTA_BYTES = int(os.environ.get("SARAHNET_RT_MAX_DELTA_BYTES", str(64 * 1024)))
+SML_RT_TTL_SEC = max(1.0, float(os.environ.get("SARAHNET_RT_TTL_SEC", "15") or 15.0))
+SML_RT_MAX_RECORDS = max(100, int(os.environ.get("SARAHNET_RT_MAX_RECORDS", "20000") or 20000))
+SML_RT_ALLOWED_STATE_CLASSES = {"pose", "animation", "locomotion", "physics", "presence", "gaze", "gesture", "speech_timing", "spatial_audio"}
+_RT_LOCK = threading.RLock()
+_RT_LATEST: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+_RT_BROKER_SEQ = 0
 
 
 # ----------------------------- helpers ---------------------------------
@@ -318,6 +332,129 @@ def _table_has_column(cur, table: str, col: str) -> bool:
         return col in cols
     except Exception:
         return False
+
+
+
+def _rt_purge_locked(now: Optional[float] = None) -> int:
+    ts = float(now if now is not None else _now())
+    stale = [k for k, v in _RT_LATEST.items() if ts - float(v.get("server_ts") or 0.0) > SML_RT_TTL_SEC]
+    for k in stale:
+        _RT_LATEST.pop(k, None)
+    if len(_RT_LATEST) > SML_RT_MAX_RECORDS:
+        over = len(_RT_LATEST) - SML_RT_MAX_RECORDS
+        oldest = sorted(_RT_LATEST.items(), key=lambda kv: int(kv[1].get("broker_seq") or 0))[:over]
+        for k, _ in oldest:
+            _RT_LATEST.pop(k, None)
+    return len(stale)
+
+
+def _rt_load_active_lease(lease_id: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    if not _require_injected():
+        return None, "storage_not_configured"
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        cur.execute(
+            "SELECT identity,entity_id,world_id,region_id,permitted_state_classes_json,constraints_json,revocation_conditions_json,issuer_node,start_ts,expires_ts,status,signature "
+            "FROM net2_authority_leases WHERE lease_id=? LIMIT 1",
+            (lease_id,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None, "unknown_lease"
+        status = str(r[10] or "").lower()
+        if status != "active":
+            return None, f"lease_{status or 'inactive'}"
+        now = _now()
+        if float(r[8] or 0.0) > now:
+            return None, "lease_not_started"
+        if float(r[9] or 0.0) <= now:
+            try:
+                cur.execute("UPDATE net2_authority_leases SET status='expired' WHERE lease_id=? AND status='active'", (lease_id,))
+                con.commit()
+            except Exception:
+                pass
+            return None, "lease_expired"
+        # Region authority changes invalidate prior leases. This prevents old
+        # authorities from continuing to stream state after a handoff.
+        cur.execute("SELECT authority_node,status FROM net2_regions WHERE world_id=? AND region_id=? LIMIT 1", (r[2], r[3]))
+        region = cur.fetchone()
+        if not region:
+            return None, "region_missing"
+        if str(region[1] or "").lower() != "active":
+            return None, "region_inactive"
+        if str(region[0] or "") != str(r[7] or ""):
+            return None, "region_authority_changed"
+        try: classes = json.loads(r[4] or "[]")
+        except Exception: classes = []
+        try: constraints = json.loads(r[5] or "{}")
+        except Exception: constraints = {}
+        try: revocations = json.loads(r[6] or "[]")
+        except Exception: revocations = []
+        return {
+            "schema": "SarahNet.AuthorityLease/1.0-alpha",
+            "lease_id": lease_id,
+            "identity": r[0],
+            "entity_id": r[1],
+            "world_id": r[2],
+            "region_id": r[3],
+            "permitted_state_classes": classes,
+            "constraints": constraints,
+            "revocation_conditions": revocations,
+            "issuer_node": r[7],
+            "start_ts": r[8],
+            "expires_ts": r[9],
+            "status": status,
+            "signature": r[11] or "",
+            "execution_authority": False,
+        }, "ok"
+    except Exception as exc:
+        return None, f"lease_lookup_error:{exc}"
+    finally:
+        try:
+            if con: con.close()
+        except Exception:
+            pass
+
+
+def _rt_validate_envelope(data: Dict[str, Any], lease: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    try:
+        import SarahMemorySMLProtocol as _SML  # type: ignore
+        fn = getattr(_SML, "sml_validate_sarahnet_rt_envelope", None)
+        if callable(fn):
+            result = fn(data, lease=lease)
+            return bool(result.get("ok")), dict(result)
+    except Exception:
+        pass
+    issues = []
+    state_class = str(data.get("state_class") or "").strip().lower()
+    if str(data.get("profile") or "") != SML_RT_PROFILE:
+        issues.append("invalid profile")
+    if state_class not in SML_RT_ALLOWED_STATE_CLASSES:
+        issues.append("unsupported state class")
+    try:
+        seq = int(data.get("sequence_number") or 0)
+        if seq <= 0: raise ValueError
+    except Exception:
+        seq = 0
+        issues.append("invalid sequence")
+    for ek, lk in (("lease_id","lease_id"),("owner_identity","identity"),("entity_id","entity_id"),("world_id","world_id"),("region_id","region_id")):
+        if str(data.get(ek) or "") != str(lease.get(lk) or ""):
+            issues.append(f"lease mismatch: {ek}")
+    if state_class not in {str(x).lower() for x in (lease.get("permitted_state_classes") or [])}:
+        issues.append("state class not permitted")
+    delta = data.get("delta_payload") if isinstance(data.get("delta_payload"), dict) else {}
+    try: delta_size = len(json.dumps(delta, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    except Exception: delta_size = SML_RT_MAX_DELTA_BYTES + 1
+    if delta_size > SML_RT_MAX_DELTA_BYTES:
+        issues.append("delta too large")
+    normalized = dict(data)
+    normalized["state_class"] = state_class
+    normalized["sequence_number"] = seq
+    normalized["delta_payload"] = delta
+    normalized["execution_authority"] = False
+    return not issues, {"ok": not issues, "issues": issues, "normalized": normalized, "requires_full_sml": bool(issues), "execution_authority": False}
 
 
 def _ensure_tables() -> None:
@@ -1557,6 +1694,9 @@ def net_file_send_small():
 
 @bp.get("/api/net/file/poll")
 def net_file_poll_small():
+    raw = _body_bytes()
+    if not _verify_broker_auth(raw):
+        return _err("Unauthorized", 401)
     if not _require_injected():
         return _err("Broker storage not configured (META_DB).", 500)
 
@@ -1616,7 +1756,10 @@ def net_file_poll_small():
             else:
                 payload["data_b64"] = None
             out.append(payload)
-        return _ok(files=out, count=len(out))
+        # Backward-compatible alias: older SarahMemorySync builds consumed
+        # `items`; current broker clients consume `files`. Return both so the
+        # bridge contract remains stable across v9 patch levels.
+        return _ok(files=out, items=out, count=len(out))
     except Exception as e:
         return _err("DB error polling files", 500, detail=str(e))
     finally:
@@ -1707,7 +1850,7 @@ def net_file_ack_small():
 
     data = _j()
     to_node = (data.get("to_node") or "").strip()
-    fid = (data.get("id") or "").strip()
+    fid = (data.get("id") or data.get("file_id") or "").strip()
     if not to_node or not fid:
         return _err("Missing to_node/id")
 
@@ -2099,6 +2242,95 @@ def net_file_finish():
 
 
 # ---------------------------------------------------------------------
+# SML-RT bounded real-time state lane
+# ---------------------------------------------------------------------
+
+@bp.post("/api/net/rt/publish")
+def net_rt_publish():
+    """Publish one already-authorized ephemeral SarahNet state delta.
+
+    This endpoint cannot mint authority, mutate ownership/wallets/permissions,
+    or write the Ledger. appnet2 must have issued the referenced active lease.
+    """
+    raw = _body_bytes()
+    if not _verify_broker_auth(raw):
+        return _err("Unauthorized", 401)
+    if not _require_injected():
+        return _err("Broker storage not configured (META_DB).", 500)
+    if _arile_check_request("/api/net/rt/publish", risk="medium") == "deny":
+        return _err("ARILE boundary denied real-time state update", 403)
+    data = _j()
+    lease_id = str(data.get("lease_id") or "").strip()
+    if not lease_id:
+        return _err("lease_id is required")
+    lease, lease_status = _rt_load_active_lease(lease_id)
+    if not lease:
+        return _err("Invalid or inactive authority lease", 403, lease_status=lease_status, requires_full_sml=True)
+    ok, validation = _rt_validate_envelope(data, lease)
+    if not ok:
+        _arile_api_emit("sml_rt_contract_violation", "Rejected SML-RT state update outside lease/semantic contract.", severity=0.72, issues=validation.get("issues"), lease_id=lease_id)
+        return _err("SML-RT validation failed", 409, validation=validation, requires_full_sml=True)
+    normalized = dict(validation.get("normalized") or data)
+    key = (str(normalized.get("world_id")), str(normalized.get("region_id")), str(normalized.get("entity_id")), str(normalized.get("state_class")))
+    seq = int(normalized.get("sequence_number") or 0)
+    global _RT_BROKER_SEQ
+    with _RT_LOCK:
+        _rt_purge_locked()
+        prior = _RT_LATEST.get(key)
+        if prior and seq <= int(prior.get("sequence_number") or 0):
+            return _err("Out-of-order or replayed SML-RT sequence", 409, expected_gt=int(prior.get("sequence_number") or 0), received=seq)
+        _RT_BROKER_SEQ += 1
+        broker_seq = _RT_BROKER_SEQ
+        record = {
+            **normalized,
+            "broker_seq": broker_seq,
+            "server_ts": _now(),
+            "lease_expires_ts": lease.get("expires_ts"),
+            "execution_authority": False,
+        }
+        _RT_LATEST[key] = record
+        _rt_purge_locked()
+    return _ok(accepted=True, profile=SML_RT_PROFILE, broker_seq=broker_seq, sequence_number=seq, state_class=record.get("state_class"), execution_authority=False)
+
+
+@bp.get("/api/net/rt/poll")
+def net_rt_poll():
+    raw = _body_bytes()
+    if not _verify_broker_auth(raw):
+        return _err("Unauthorized", 401)
+    world_id = str(request.args.get("world_id") or "").strip()
+    region_id = str(request.args.get("region_id") or "").strip()
+    if not world_id or not region_id:
+        return _err("world_id and region_id are required")
+    try: since_seq = max(0, int(request.args.get("since_seq") or 0))
+    except Exception: since_seq = 0
+    try: limit = max(1, min(1000, int(request.args.get("limit") or 250)))
+    except Exception: limit = 250
+    wanted = {x.strip().lower() for x in str(request.args.get("state_classes") or "").split(",") if x.strip()}
+    if wanted:
+        wanted &= SML_RT_ALLOWED_STATE_CLASSES
+    with _RT_LOCK:
+        _rt_purge_locked()
+        records = [dict(v) for v in _RT_LATEST.values() if str(v.get("world_id")) == world_id and str(v.get("region_id")) == region_id and int(v.get("broker_seq") or 0) > since_seq and (not wanted or str(v.get("state_class")) in wanted)]
+        records.sort(key=lambda x: int(x.get("broker_seq") or 0))
+        records = records[:limit]
+        latest_seq = max([since_seq] + [int(x.get("broker_seq") or 0) for x in records])
+    return _ok(profile=SML_RT_PROFILE, world_id=world_id, region_id=region_id, updates=records, count=len(records), latest_seq=latest_seq, execution_authority=False)
+
+
+@bp.get("/api/net/rt/status")
+def net_rt_status():
+    raw = _body_bytes()
+    if not _verify_broker_auth(raw):
+        return _err("Unauthorized", 401)
+    with _RT_LOCK:
+        purged = _rt_purge_locked()
+        count = len(_RT_LATEST)
+        broker_seq = _RT_BROKER_SEQ
+    return _ok(profile=SML_RT_PROFILE, mode="bounded_in_memory_latest_wins", records=count, broker_seq=broker_seq, ttl_sec=SML_RT_TTL_SEC, max_records=SML_RT_MAX_RECORDS, purged=purged, ledger_per_frame=False, authority_issuer="appnet2", execution_authority=False)
+
+
+# ---------------------------------------------------------------------
 # init_app (called by app.py ONCE)
 # ---------------------------------------------------------------------
 
@@ -2165,8 +2397,15 @@ def net_governance():
         api_domain="net",
         route_base="/api/net",
         governance={
-            "broker_model": "store_and_forward",
+            "broker_model": "store_and_forward_plus_bounded_sml_rt",
             "executes_remote_commands": False,
+            "sml_rt": {
+                "profile": SML_RT_PROFILE,
+                "authority_issuer": "appnet2",
+                "persistent_mutation_allowed": False,
+                "ledger_per_frame": False,
+                "state_classes": sorted(SML_RT_ALLOWED_STATE_CLASSES),
+            },
             "requires_auth_for_mutations": True,
             "file_transfer_policy": {
                 "mode": "brokered",
@@ -2219,7 +2458,7 @@ def net_ui_status():
         storage_path=bool(_META_DB),
         table_status=table_status,
         broker={
-            "mode": "ONE_WAY_STORE_AND_FORWARD",
+            "mode": "ONE_WAY_STORE_AND_FORWARD_PLUS_SML_RT",
             "executes_remote_commands": False,
             "direct_tool_execution_allowed": False,
             "remote_agent_authority": False,
@@ -2232,6 +2471,13 @@ def net_ui_status():
             "max_transfer_bytes": MAX_TRANSFER_BYTES,
             "max_poll_chunks": MAX_POLL_CHUNKS,
             "require_file_accept": REQUIRE_FILE_ACCEPT,
+        },
+        realtime={
+            "profile": SML_RT_PROFILE,
+            "mode": "bounded_in_memory_latest_wins",
+            "authority_issuer": "appnet2",
+            "ledger_per_frame": False,
+            "state_classes": sorted(SML_RT_ALLOWED_STATE_CLASSES),
         },
         interop={
             "mcp": "adapter_only",
@@ -2412,10 +2658,10 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
-    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
+    "capabilities": ['api_bridge', 'transport', 'network_broker', 'sml_rt_relay', 'sml_bridge_candidate'],
+    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics', 'Network'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
-    "required_authority": ['Read'],
+    "required_authority": ['Read', 'Network'],
     "priority": 58,
     "trust_level": "api_bridge_integrated",
     "internal_only": False,

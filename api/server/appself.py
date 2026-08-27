@@ -155,6 +155,11 @@ except Exception:
     _CogSelf = None
 
 try:
+    import SarahMemoryCognitiveThinker as _CogThinker  # type: ignore
+except Exception:
+    _CogThinker = None
+
+try:
     import SarahMemorySelfAware as _SelfAware  # type: ignore
 except Exception:
     _SelfAware = None
@@ -4043,6 +4048,278 @@ def _govern_action_concept(ticket: Dict[str, Any], rem_candidate: Dict[str, Any]
     return {"available": True, "decision": "DEFER", "reason": "No compatible govern_request function"}
 
 
+
+# -----------------------------------------------------------------------------
+# Identity / Embodiment Court helpers
+# -----------------------------------------------------------------------------
+# appself.py owns API-side identity/self/embodiment evidence.  app.py may call
+# run_self_identity_query(), but app.py must not own identity facts.
+
+def _identity_registry_path() -> Path:
+    return _migrate_legacy_json_once(
+        (_settings_dir() / "identity.json").resolve(),
+        (_legacy_registry_dir() / "identity.json").resolve(),
+    )
+
+
+def _avatar_manifest_candidates() -> List[Path]:
+    return [
+        (_settings_dir() / "avatar_identity.json").resolve(),
+        (_settings_dir() / "avatar_manifest.json").resolve(),
+        (_data_dir() / "avatar" / "active_avatar_manifest.json").resolve(),
+        (_data_dir() / "avatar" / "avatar_manifest.json").resolve(),
+        (_data_dir() / "avatars" / "active_avatar_manifest.json").resolve(),
+    ]
+
+
+def _read_first_json(paths: Iterable[Path]) -> Tuple[Dict[str, Any], str]:
+    for path in paths:
+        try:
+            obj = _read_json_file(path)
+            if obj:
+                return obj, str(path)
+        except Exception:
+            continue
+    return {}, ""
+
+
+def _cognitive_identity_record() -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    try:
+        if _CogSelf is not None:
+            fn = getattr(_CogSelf, "resolve_active_identity", None)
+            if callable(fn):
+                val = fn({})
+                if isinstance(val, dict):
+                    out.update(val)
+    except Exception as exc:
+        out["cognitive_self_error"] = f"{type(exc).__name__}:{exc}"
+    return out
+
+
+def _default_identity_record() -> Dict[str, Any]:
+    return {
+        "canonical_project_name": "SarahMemory AiOS",
+        "system_identity": "SarahMemory AiOS Governed Cognitive Runtime",
+        "active_name": "Sarah",
+        "canonical_system_name": "SarahMemory",
+        "creator": "Brian Lee Baros",
+        "organization": "SOFTDEV0 LLC",
+        "version": PROJECT_VERSION,
+        "configurable_name": True,
+        "identity_authority": "appself.IdentityCourt + CognitiveSelf + identity registry",
+    }
+
+
+def _build_identity_record() -> Dict[str, Any]:
+    base = _default_identity_record()
+    registry = _read_json_file(_identity_registry_path())
+    cog = _cognitive_identity_record()
+    for src in (registry, cog):
+        if not isinstance(src, dict):
+            continue
+        for key in (
+            "active_name", "name", "display_name", "canonical_system_name", "system_name",
+            "canonical_project_name", "platform", "creator", "organization", "aliases",
+            "previous_names", "identity_history", "version",
+        ):
+            if src.get(key) not in (None, "", [], {}):
+                mapped = "active_name" if key in {"name", "display_name"} else ("canonical_system_name" if key == "system_name" else ("canonical_project_name" if key == "platform" else key))
+                base[mapped] = src.get(key)
+    base["sources"] = {
+        "default_bootstrap": True,
+        "identity_registry_path": str(_identity_registry_path()),
+        "identity_registry_present": bool(registry),
+        "cognitive_self_present": bool(cog),
+    }
+    return _json_safe(base)
+
+
+def _read_avatar_manifest() -> Dict[str, Any]:
+    manifest, path = _read_first_json(_avatar_manifest_candidates())
+    if manifest:
+        manifest.setdefault("manifest_path", path)
+        manifest.setdefault("active", True)
+        manifest.setdefault("runtime_authority", "avatar_manifest")
+        return _json_safe(manifest)
+    return {
+        "active": False,
+        "available": False,
+        "manifest_path": "",
+        "avatar_id": "unverified_active_avatar",
+        "type": "unknown",
+        "visual_description": {},
+        "runtime_state": {},
+        "limits": {
+            "appearance_not_verified": True,
+            "do_not_invent_visual_details": True,
+            "expected_sources": [str(p) for p in _avatar_manifest_candidates()],
+        },
+    }
+
+
+def _clock_context_for_identity(claim: str = "") -> Dict[str, Any]:
+    try:
+        import importlib.util as _importlib_util
+        server_dir = Path(__file__).resolve().parent
+        appsys_path = server_dir / "appsys.py"
+        if appsys_path.exists():
+            module_name = f"_sarahmemory_appsys_identity_{int(time.time() * 1000)}"
+            spec = _importlib_util.spec_from_file_location(module_name, str(appsys_path))
+            if spec is not None and spec.loader is not None:
+                mod = _importlib_util.module_from_spec(spec)
+                spec.loader.exec_module(mod)  # type: ignore[union-attr]
+                fn = getattr(mod, "run_clock_court_query", None)
+                if callable(fn):
+                    return fn(claim=claim or "identity runtime context", source="appself.identity")
+    except Exception as exc:
+        return {"ok": False, "error": f"clock_context_unavailable:{type(exc).__name__}:{exc}"}
+    return {"ok": False, "error": "clock_context_unavailable"}
+
+
+def _identity_query_kind(claim: str = "") -> str:
+    t = _safe_str(claim, MAX_CLAIM_CHARS).lower().replace("what's", "what is")
+    if any(x in t for x in ("look like", "2d model", "3d model", "avatar", "mascot", "appearance", "body look")):
+        return "avatar_appearance"
+    if any(x in t for x in ("who made", "who created", "creator", "who built", "engineer", "designed")):
+        return "creator_identity"
+    if "version" in t:
+        return "system_version"
+    if any(x in t for x in ("where are you", "location", "timezone", "time zone", "what time", "what date", "what year")):
+        return "runtime_context"
+    if any(x in t for x in ("what are you", "describe yourself", "tell me about yourself", "who are you")):
+        return "system_identity"
+    if "name" in t or "naem" in t or "nmae" in t:
+        return "active_name"
+    return "identity_summary"
+
+
+def build_identity_embodiment_packet(claim: str = "", *, include_clock: bool = True) -> Dict[str, Any]:
+    identity = _build_identity_record()
+    avatar = _read_avatar_manifest()
+    cog_status = _cognitive_self_status()
+    clock = _clock_context_for_identity(claim) if include_clock else {}
+    evidence = [
+        {"source": "appself.default_identity_bootstrap", "authority": "bootstrap", "trusted_for": ["canonical_project_name", "fallback_active_name"]},
+        {"source": "identity_registry", "path": str(_identity_registry_path()), "authority": "high_if_present", "present": bool(_read_json_file(_identity_registry_path()))},
+        {"source": "SarahMemoryCognitiveSelf", "authority": "high", "present": bool(_CogSelf is not None)},
+        {"source": "avatar_manifest", "authority": "high_if_present", "present": bool(avatar.get("available", avatar.get("active"))), "path": avatar.get("manifest_path")},
+        {"source": "appsys.clock_court", "authority": "claim_specific", "present": bool(clock.get("ok"))},
+    ]
+    return _json_safe({
+        "ok": True,
+        "packet_type": "SarahMemoryIdentityEmbodimentPacket",
+        "version": "2026-08-22.B05",
+        "claim": _safe_str(claim, MAX_CLAIM_CHARS),
+        "query_kind": _identity_query_kind(claim),
+        "identity": identity,
+        "embodiment": {
+            "avatar": avatar,
+            "active_avatar_verified": bool(avatar.get("available", avatar.get("active"))) and not bool((avatar.get("limits") or {}).get("appearance_not_verified") if isinstance(avatar.get("limits"), dict) else False),
+            "do_not_invent_appearance": True,
+        },
+        "runtime_context": {
+            "clock_court": clock,
+            "cognitive_self_status": cog_status,
+        },
+        "evidence": evidence,
+        "limits": {
+            "read_only": True,
+            "model_memory_authority_for_identity": False,
+            "app_py_identity_owner": False,
+            "avatar_appearance_requires_manifest": True,
+            "time_location_delegated_to_clock_court": True,
+        },
+        "ts_iso": _iso(),
+    })
+
+
+def _identity_presentation_text(packet: Dict[str, Any]) -> str:
+    identity = packet.get("identity") if isinstance(packet.get("identity"), dict) else {}
+    emb = packet.get("embodiment") if isinstance(packet.get("embodiment"), dict) else {}
+    avatar = emb.get("avatar") if isinstance(emb.get("avatar"), dict) else {}
+    clock = ((packet.get("runtime_context") or {}).get("clock_court") if isinstance(packet.get("runtime_context"), dict) else {})
+    kind = str(packet.get("query_kind") or "identity_summary")
+    active_name = _safe_str(identity.get("active_name") or identity.get("canonical_system_name") or "Sarah", 120)
+    project = _safe_str(identity.get("canonical_project_name") or "SarahMemory AiOS", 160)
+    if kind == "active_name":
+        return f"My active configured name is {active_name}. My canonical system/project identity is {project}."
+    if kind == "creator_identity":
+        return f"{project} was created by {_safe_str(identity.get('creator') or 'Brian Lee Baros', 160)} under {_safe_str(identity.get('organization') or 'SOFTDEV0 LLC', 160)}."
+    if kind == "system_version":
+        return f"My active name is {active_name}. {project} runtime version: {_safe_str(identity.get('version') or PROJECT_VERSION, 80)}."
+    if kind == "avatar_appearance":
+        visual = avatar.get("visual_description") if isinstance(avatar.get("visual_description"), dict) else {}
+        if visual:
+            parts = []
+            for key in ("style", "face", "hair", "eyes", "clothing", "colors", "pose"):
+                if visual.get(key) not in (None, "", [], {}):
+                    parts.append(f"{key}: {_safe_str(visual.get(key), 240)}")
+            if parts:
+                return "My active avatar is described by the loaded avatar manifest: " + "; ".join(parts[:8]) + "."
+        return "I have an avatar/embodiment route, but no verified active avatar appearance manifest is loaded in appself yet. I will not invent what my 2D or 3D model looks like."
+    if kind == "runtime_context":
+        text = _safe_str(clock.get("presentation_text") if isinstance(clock, dict) else "", 1000)
+        return text or "Runtime context is delegated to Clock/Location Court, but no verified packet was returned."
+    if kind == "system_identity":
+        return f"I am {active_name}, the active identity interface for {project}: a governed, local-first cognitive operating system where models are replaceable reasoning organs, not final authority."
+    return f"I am {active_name}, the active identity interface for {project}. Identity, self-state, time, location, and avatar embodiment are governed through appself, CognitiveSelf, avatar manifests, and Clock Court."
+
+
+def run_self_identity_query(*, claim: str, kind: str = "", source: str = "api_chat", meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    packet = build_identity_embodiment_packet(claim, include_clock=True)
+    if kind:
+        packet["query_kind"] = _safe_str(kind, 120)
+    answer = _identity_presentation_text(packet)
+    return _json_safe({
+        "ok": True,
+        "decision": "IDENTITY_PACKET_READY",
+        "source": source,
+        "kind": packet.get("query_kind"),
+        "presentation_text": answer,
+        "identity_packet": packet,
+        "meta": meta or {},
+        "execution_authority": False,
+        "read_only": True,
+    })
+
+
+@bp.route("/api/self/identity/query", methods=["POST", "OPTIONS"])
+def api_self_identity_query():
+    if request.method == "OPTIONS":
+        return _ok()
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+    data = _j()
+    claim = _safe_str(data.get("claim") or data.get("question") or data.get("text") or "Who are you?", MAX_CLAIM_CHARS)
+    kind = _safe_str(data.get("kind") or "", 120)
+    return _ok(run_self_identity_query(claim=claim, kind=kind, source=_safe_str(data.get("source") or "api.self.identity.query", 120), meta=data.get("meta") if isinstance(data.get("meta"), dict) else {}))
+
+
+@bp.route("/api/self/embodiment", methods=["GET", "OPTIONS"])
+def api_self_embodiment():
+    if request.method == "OPTIONS":
+        return _ok()
+    packet = build_identity_embodiment_packet("describe embodiment", include_clock=True)
+    return _ok(embodiment=packet.get("embodiment"), identity_packet=packet)
+
+
+@bp.route("/api/self/avatar", methods=["GET", "OPTIONS"])
+def api_self_avatar():
+    if request.method == "OPTIONS":
+        return _ok()
+    packet = build_identity_embodiment_packet("describe avatar", include_clock=False)
+    return _ok(avatar=(packet.get("embodiment") or {}).get("avatar") if isinstance(packet.get("embodiment"), dict) else {}, identity_packet=packet)
+
+
+@bp.route("/api/self/avatar/manifest", methods=["GET", "OPTIONS"])
+def api_self_avatar_manifest():
+    if request.method == "OPTIONS":
+        return _ok()
+    return _ok(avatar_manifest=_read_avatar_manifest(), candidates=[str(p) for p in _avatar_manifest_candidates()])
+
+
 # -----------------------------------------------------------------------------
 # Routes
 # -----------------------------------------------------------------------------
@@ -4449,23 +4726,63 @@ def init_app(app, connect_sqlite=None, meta_db_path=None, api_key_auth_ok=None, 
     return True
 
 
-# --- SM V8.0 TRI-LAYER PATCH 2026-05-20 ---
-@bp.route("/identity", methods=["GET", "POST"])
+# --- SM B05 IDENTITY / EMBODIMENT CANONICAL ROUTE + LEGACY ALIAS ---
+@bp.route("/api/self/identity", methods=["GET", "POST", "OPTIONS"])
+@bp.route("/identity", methods=["GET", "POST", "OPTIONS"])
 def api_self_identity():
-    """Read or update runtime identity override through CognitiveSelf. POST requires explicit approved=true."""
+    """Read or update runtime identity through appself/CognitiveSelf.
+
+    GET is read-only. POST requires approved=true and a non-empty name.
+    The canonical public namespace is /api/self/identity; /identity remains a
+    compatibility alias until frontend callers are verified.
+    """
+    if request.method == "OPTIONS":
+        return _ok()
     try:
-        import SarahMemoryCognitiveSelf as _CogSelf  # type: ignore
         if request.method == "POST":
+            body = _body_bytes()
+            if not _verify_auth(body):
+                return _err("unauthorized", 401)
             payload = _j()
             if not bool(payload.get("approved")):
-                return jsonify({"ok": False, "error": "approval_required", "hint": "POST {name, approved:true}"}), 400
-            name = str(payload.get("name") or payload.get("active_name") or "").strip()
-            result = _CogSelf.set_runtime_identity_name(name, approved_by=str(payload.get("approved_by") or "user"), source="appself.api")
-            return jsonify(_json_safe(result))
-        fn = getattr(_CogSelf, "resolve_active_identity", None)
-        return jsonify(_json_safe({"ok": True, "identity": fn({}) if callable(fn) else {}}))
+                return _err("approval_required", 400, hint="POST {name, approved:true}")
+            name = _safe_str(payload.get("name") or payload.get("active_name") or "", 120)
+            if not name:
+                return _err("name_required", 400)
+            result: Dict[str, Any] = {"ok": True, "updated": False, "active_name": name}
+            if _CogSelf is not None:
+                fn = getattr(_CogSelf, "set_runtime_identity_name", None)
+                if callable(fn):
+                    maybe = fn(name, approved_by=str(payload.get("approved_by") or "user"), source="appself.api")
+                    result = maybe if isinstance(maybe, dict) else {"ok": True, "updated": True, "active_name": name, "cognitive_self_result": maybe}
+                else:
+                    result["warning"] = "CognitiveSelf set_runtime_identity_name unavailable; registry update only."
+            else:
+                result["warning"] = "CognitiveSelf unavailable; registry update only."
+            try:
+                current = _read_json_file(_identity_registry_path())
+                current.update({
+                    "active_name": name,
+                    "updated_at": _iso(),
+                    "updated_by": _safe_str(payload.get("approved_by") or "user", 120),
+                    "source": "appself.api",
+                    "configurable_name": True,
+                })
+                _identity_registry_path().parent.mkdir(parents=True, exist_ok=True)
+                tmp = _identity_registry_path().with_suffix(_identity_registry_path().suffix + ".tmp")
+                tmp.write_text(json.dumps(_json_safe(current), indent=2, sort_keys=True, ensure_ascii=False), encoding="utf-8")
+                os.replace(str(tmp), str(_identity_registry_path()))
+                result["registry_updated"] = True
+                result["identity_registry_path"] = str(_identity_registry_path())
+            except Exception as exc:
+                result["registry_updated"] = False
+                result["registry_error"] = f"{type(exc).__name__}:{exc}"
+            packet = build_identity_embodiment_packet("identity update", include_clock=False)
+            return _ok(result=result, identity_packet=packet)
+        packet = build_identity_embodiment_packet("Who are you?", include_clock=True)
+        return _ok(identity=packet.get("identity"), identity_packet=packet, presentation_text=_identity_presentation_text(packet))
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _err(str(e), 500)
 
 # ====================================================================
 # END OF appself.py v9.0.0

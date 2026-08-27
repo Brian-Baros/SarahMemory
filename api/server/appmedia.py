@@ -71,6 +71,7 @@ import re
 import time
 import uuid
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple, List
@@ -136,6 +137,8 @@ DOWNLOAD_TOKEN = (os.environ.get("MEDIA_DOWNLOAD_TOKEN") or "").strip()
 _LIVE_AVATAR_LOCK = threading.RLock()
 _LIVE_AVATAR_CONTROLLER: Any = None
 _LIVE_AVATAR_CANVAS: Any = None
+_AVATAR_EVENT_LOCK = threading.RLock()
+_AVATAR_EVENT_STREAM: Any = deque(maxlen=240)
 
 def _live_avatar_runtime() -> Tuple[Any, Any]:
     global _LIVE_AVATAR_CONTROLLER, _LIVE_AVATAR_CANVAS
@@ -147,6 +150,50 @@ def _live_avatar_runtime() -> Tuple[Any, Any]:
             from SarahMemoryCanvasStudio import CanvasStudio  # type: ignore
             _LIVE_AVATAR_CANVAS = CanvasStudio()
         return _LIVE_AVATAR_CONTROLLER, _LIVE_AVATAR_CANVAS
+
+
+def _media_clean_text(value: Any, default: str = "") -> str:
+    text = str(value if value is not None else default).strip().replace("\x00", "")
+    return text[:500]
+
+
+def run_avatar_event_packet(
+    event: Dict[str, Any],
+    *,
+    source: str = "api.media.avatar.event",
+    meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build and apply a governed avatar event packet.
+
+    appmedia owns API presentation/embodiment transport.  It does not decide
+    mission truth and does not execute apps, trades, devices, shell, or installs.
+    """
+    raw_event = dict(event or {})
+    meta = dict(meta or {})
+    raw_event.setdefault("source", source)
+    try:
+        from SarahMemorySMLProtocol import sml_build_avatar_event_packet  # type: ignore
+        packet = sml_build_avatar_event_packet(raw_event, context={"source": source, **meta})
+    except Exception as exc:
+        return {"ok": False, "schema": "SarahMemory.api.media.avatar_event.B08", "error": f"sml_avatar_event_packet_failed:{exc}", "execution_authority": False}
+    try:
+        from SarahMemoryAvatar import apply_sml_avatar_event_packet  # type: ignore
+        applied = apply_sml_avatar_event_packet(packet, source=source)
+    except Exception as exc:
+        applied = {"ok": False, "schema": "SarahMemory.avatar.event_apply.B08", "error": f"avatar_apply_failed:{exc}", "execution_authority": False}
+    record = {
+        "ok": bool(applied.get("ok")) if isinstance(applied, dict) else False,
+        "schema": "SarahMemory.api.media.avatar_event.B08",
+        "event_id": f"avevt_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}",
+        "ts": _iso(),
+        "source": _media_clean_text(source, "unknown"),
+        "packet": packet,
+        "applied": applied,
+        "execution_authority": False,
+    }
+    with _AVATAR_EVENT_LOCK:
+        _AVATAR_EVENT_STREAM.append(record)
+    return record
 
 
 # ---------------------------
@@ -1062,6 +1109,47 @@ def media_job_manifest():
     return _send_file_compat(mp, as_attachment=False, download_name="manifest.json", mimetype="application/json")
 
 
+@bp.route("/api/media/avatar/event", methods=["POST"])
+def media_avatar_event():
+    """Accept a verified/runtime event and embody it through the avatar.
+
+    The endpoint is presentation-only.  It records/apply avatar state changes but
+    grants no execution, trade, install, hardware, or model authority.
+    """
+    payload = _j()
+    if not isinstance(payload, dict) or not payload:
+        return _err("missing_event_payload", 400, execution_authority=False)
+    event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
+    if not isinstance(event, dict):
+        return _err("event_must_be_object", 400, execution_authority=False)
+    source = _media_clean_text(payload.get("source") or event.get("source") or "api.media.avatar.event", "api.media.avatar.event")
+    out = run_avatar_event_packet(event, source=source, meta={"route": "/api/media/avatar/event"})
+    if not bool(out.get("ok")):
+        return _err("avatar_event_not_applied", 409, avatar_event=out, execution_authority=False)
+    return _ok(avatar_event=out, execution_authority=False)
+
+
+@bp.get("/api/media/avatar/events")
+def media_avatar_events():
+    """Return recent avatar embodiment events for UI/diagnostics."""
+    try:
+        limit = max(1, min(240, int(request.args.get("limit") or 40)))
+    except Exception:
+        limit = 40
+    with _AVATAR_EVENT_LOCK:
+        events = list(_AVATAR_EVENT_STREAM)[-limit:]
+    return _ok(schema="SarahMemory.api.media.avatar_events.B08", count=len(events), events=events, execution_authority=False)
+
+
+@bp.get("/api/media/avatar/event/status")
+def media_avatar_event_status():
+    """Read-only status for the B08 avatar event stream."""
+    with _AVATAR_EVENT_LOCK:
+        count = len(_AVATAR_EVENT_STREAM)
+        last_event = list(_AVATAR_EVENT_STREAM)[-1] if count else None
+    return _ok(schema="SarahMemory.api.media.avatar_event_status.B08", event_count=count, last_event=last_event, execution_authority=False)
+
+
 @bp.get("/api/media/avatar/live/status")
 def media_avatar_live_status():
     """Read-only status for the persistent embodied-state renderer."""
@@ -1196,7 +1284,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
+    "capabilities": ['api_bridge', 'transport', 'avatar_event_stream', 'sml_bridge_candidate'],
     "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
     "required_authority": ['Read'],
