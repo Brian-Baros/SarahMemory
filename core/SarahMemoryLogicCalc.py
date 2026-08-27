@@ -1195,6 +1195,108 @@ def get_element(symbol_or_name: str) -> Optional[Dict[str, Any]]:
             return {**rec, "symbol": sym}
     return None
 
+
+
+def interpret_atom_count_composition(query: str) -> Optional[Dict[str, Any]]:
+    """Interpret simple atom-count composition questions deterministically.
+
+    This is a formula/composition parser, not a static factual answer pool. It
+    converts explicit counts such as "2 O elements and 1 H element" into a
+    molecular formula candidate and basic molar-mass proof. It does not claim
+    that every parsed formula is a stable isolatable compound.
+    """
+    raw = str(query or "")
+    if not raw.strip():
+        return None
+    low = raw.lower()
+    if not re.search(r"\b(compound|formula|molecule|mix|combine|combining|formed|make|get)\b", low):
+        return None
+    if not re.search(r"\d+", low):
+        return None
+
+    name_to_symbol = {str(rec.get("name") or "").lower(): sym for sym, rec in PERIODIC_TABLE.items()}
+    tokens: List[Tuple[str, int]] = []
+    patterns = [
+        # Match long element names before 1-2 letter symbols so "oxygen" is
+        # not truncated to "ox". Symbols are still normalized below.
+        r"(\d+)\s*(?:atoms?\s+of\s+|elements?\s+of\s+)?([A-Za-z]+)\s*(?:atoms?|atom|elements?|element)?",
+        r"([A-Za-z]+)\s*(?:atoms?|atom|elements?|element)?\s*[:=x]\s*(\d+)",
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, raw, flags=re.I):
+            if m.group(1).isdigit():
+                count_s, token = m.group(1), m.group(2)
+            else:
+                token, count_s = m.group(1), m.group(2)
+            try:
+                count = int(count_s)
+            except Exception:
+                continue
+            if count <= 0 or count > 999:
+                continue
+            token_clean = str(token or "").strip().strip(".,;:()[]{}")
+            if not token_clean:
+                continue
+            symbol = None
+            if len(token_clean) <= 2:
+                candidate = token_clean[0].upper() + (token_clean[1:].lower() if len(token_clean) > 1 else "")
+                if candidate in PERIODIC_TABLE:
+                    symbol = candidate
+            if symbol is None:
+                symbol = name_to_symbol.get(token_clean.lower())
+            if symbol:
+                tokens.append((symbol, count))
+    if not tokens:
+        return None
+
+    counts: Dict[str, int] = {}
+    for sym, count in tokens:
+        counts[sym] = counts.get(sym, 0) + count
+    if not counts or len(counts) < 1:
+        return None
+
+    def hill_order(sym: str) -> Tuple[int, str]:
+        if "C" in counts:
+            if sym == "C":
+                return (0, sym)
+            if sym == "H":
+                return (1, sym)
+            return (2, sym)
+        # In simple inorganic/hydrogen examples, keep H first when present so
+        # explicit H/O formula questions display as H2O or HO2 rather than OH2/O2H.
+        if sym == "H":
+            return (0, sym)
+        return (1, sym)
+
+    ordered = sorted(counts.keys(), key=hill_order)
+    formula = "".join(sym + (str(counts[sym]) if counts[sym] != 1 else "") for sym in ordered)
+    molar_mass = 0.0
+    parts = []
+    for sym in ordered:
+        rec = PERIODIC_TABLE.get(sym, {})
+        aw = float(rec.get("aw") or 0.0)
+        molar_mass += aw * counts[sym]
+        parts.append({"symbol": sym, "name": rec.get("name"), "count": counts[sym], "atomic_weight": aw})
+
+    known_name = None
+    caution = "Formula derived from explicit atom counts; stability/common compound identity is not assumed."
+    if counts == {"H": 2, "O": 1}:
+        known_name = "water"
+        caution = "This atom-count formula corresponds to water."
+    elif counts == {"H": 1, "O": 2}:
+        caution = "This is HO₂ by atom count, not water. Water is H₂O: two hydrogen atoms and one oxygen atom."
+
+    return {
+        "formula": formula,
+        "counts": dict(counts),
+        "ordered_symbols": ordered,
+        "parts": parts,
+        "molar_mass": molar_mass,
+        "known_name": known_name,
+        "caution": caution,
+    }
+
+
 # =============================================================================
 # FORMULA LIBRARY (HARD-CODED SCIENCE / ENGINEERING KNOWLEDGE)
 # =============================================================================
@@ -2081,10 +2183,32 @@ def _numeric_candidate_from_text(text: str) -> Optional[Dict[str, Any]]:
     if m:
         return {"token": m.group(1), "digits": m.group(1).replace("+", "").replace("-", "")[2:], "base": 8, "base_source": "prefix_0o", "signed_literal": m.group(1).startswith("-")}
 
-    # Explicit base words allow a bare candidate token. Choose the first valid
-    # token for the declared base and reject invalid digits deterministically.
+    # B10: requests like "what is 011000111001 in decimal, hexadecimal, and octal"
+    # name desired output representations, not the input radix. A bare 0/1-only
+    # dense token should therefore be interpreted as binary unless the user
+    # explicitly says the input itself is octal/decimal/hex.
     tokens = re.findall(r"(?<![A-Za-z0-9_])([+-]?[0-9A-Fa-f][0-9A-Fa-f_]*)(?![A-Za-z0-9_])", raw)
-    if explicit_base is not None:
+    output_multi_format = bool(
+        re.search(r"\b(in|to|as)\s+decimal\b", t)
+        and re.search(r"\b(hex|hexadecimal)\b", t)
+        and re.search(r"\boctal\b", t)
+    )
+    explicit_input_base = bool(re.search(r"\b(as|from|input|interpreting|interpret|treat)\s+(?:a\s+)?(binary|bin|octal|oct|hex|hexadecimal|decimal|base\s*(?:2|8|10|16)|radix\s*(?:2|8|10|16))\b", t))
+    if output_multi_format and not explicit_input_base:
+        binary_candidates = []
+        for tok in tokens:
+            body = _strip_numeric_separators(tok).lstrip("+-")
+            if re.match(r"^[01]{4,}$", body):
+                binary_candidates.append((tok, body))
+        if binary_candidates:
+            binary_candidates.sort(key=lambda item: (0 if item[1].startswith("0") else 1, -len(item[1])))
+            tok, body = binary_candidates[0]
+            return {"token": tok, "digits": body, "base": 2, "base_source": "inferred_binary_from_01_digits_and_output_format_request", "signed_literal": tok.startswith("-"), "ambiguous_without_context": True}
+
+    # Explicit base words allow a bare candidate token only when the base is
+    # being asserted as the input interpretation rather than merely listed as an
+    # output representation.
+    if explicit_base is not None and not (output_multi_format and not explicit_input_base):
         for tok in tokens:
             body = _strip_numeric_separators(tok).lstrip("+-")
             if not body:
@@ -2273,8 +2397,12 @@ class ReasoningEngine:
         )
 
     def _looks_like_chemistry(self, ql: str) -> bool:
-        keywords = ["ph", "acid", "base", "molar", "mole", "element", "atomic weight", "atomic mass", "ideal gas", "pv=nrt", "gas law"]
-        return any(k in ql for k in keywords)
+        keywords = ["ph", "acid", "base", "molar", "mole", "element", "atomic weight", "atomic mass", "ideal gas", "pv=nrt", "gas law", "what atom is", "what element is", "atomic symbol", "compound", "molecule", "formula"]
+        if any(k in ql for k in keywords):
+            return True
+        if re.search(r"\b(mix|combine|combining|formed|get)\b", ql) and re.search(r"\b\d+\s*[a-z]{1,2}\s*(?:atoms?|elements?)?\b", ql):
+            return True
+        return False
 
     def _looks_like_nuclear(self, ql: str) -> bool:
         keywords = ["nuclear", "decay", "half-life", "halflife", "lambda", "e=mc", "emc2", "mass energy", "radioactive"]
@@ -2947,14 +3075,34 @@ class ReasoningEngine:
         q = _norm_space(query)
         ql = _lower(q)
 
+        # 0.5) Explicit atom-count composition, e.g. "2 O elements and 1 H element".
+        composition = interpret_atom_count_composition(q)
+        if composition:
+            formula = composition.get("formula")
+            molar = composition.get("molar_mass")
+            caution = str(composition.get("caution") or "").strip()
+            parts = composition.get("parts") if isinstance(composition.get("parts"), list) else []
+            part_text = ", ".join(f"{p.get('count')} {p.get('name')} ({p.get('symbol')})" for p in parts if isinstance(p, dict))
+            mg.add("atom_count_formula", [Term("formula", "concept", formula), Term("molar_mass", "number", molar)], parts=parts)
+            text = f"The explicit atom-count formula is {formula}."
+            if part_text:
+                text += f" Counts: {part_text}."
+            if molar is not None:
+                text += f" Approximate molar mass: {float(molar):.3f} g/mol."
+            if caution:
+                text += f" {caution}"
+            return SolveResult(ok=True, kind="chemistry", value=composition, text=text, meaning=mg, meta={"deterministic": True, "source": "logiccalc_atom_count_formula_interpreter", "network_used": False, "execution_authority": False})
+
         # 1) Periodic table lookups
-        m_el = re.search(r"(?:element|atomic weight of|atomic mass of|molar mass of)\s+([A-Za-z]{1,2}|[A-Za-z]+)", ql)
+        m_el = re.search(r"(?:what\s+atom\s+is|what\s+element\s+is|element|atomic weight of|atomic mass of|molar mass of|symbol for|atomic symbol)\s+([A-Za-z]{1,2}|[A-Za-z]+)", ql)
         if m_el:
             token = m_el.group(1).strip()
             # Try symbol first (case sensitive symbol set), then name
             rec = get_element(token.capitalize()) or get_element(token)
             if rec:
-                sym = token.capitalize() if token.capitalize() in PERIODIC_TABLE else rec.get("symbol", token)
+                sym = token[0].upper() + (token[1:].lower() if len(token) > 1 else "")
+                if sym not in PERIODIC_TABLE:
+                    sym = rec.get("symbol", token)
                 mg.add("element_lookup", [Term(sym, "entity"), Term("atomic_weight", "concept", rec.get("aw"))], Z=rec.get("Z"))
                 aw = rec.get("aw")
                 return SolveResult(ok=True, kind="chemistry", value=rec,

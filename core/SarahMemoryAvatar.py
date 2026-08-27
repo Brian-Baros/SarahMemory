@@ -179,6 +179,93 @@ def queue_live_avatar_event(event_type: str, *, intensity: float = 1.0, duration
         return _LIVE_AVATAR_STATE.to_dict()
 
 
+
+def _avatar_event_float(value: Any, default: float = 0.0, low: float = 0.0, high: float = 1.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = float(default)
+    if out < low:
+        return float(low)
+    if out > high:
+        return float(high)
+    return float(out)
+
+
+def _avatar_event_clean(value: Any, default: str = "") -> str:
+    text = str(value if value is not None else default).strip()
+    text = text.replace("\x00", "")
+    return text[:240]
+
+
+def apply_sml_avatar_event_packet(packet: Dict[str, Any], *, source: str = "SarahMemoryAvatar.apply_sml_avatar_event_packet") -> Dict[str, Any]:
+    """Apply a B08 SML avatar event packet to presentation-owned avatar state.
+
+    The avatar is an embodiment layer.  It may express verified runtime state,
+    but this function grants no device, trade, install, run, shell, filesystem,
+    or cognitive authority.  Claims remain owned by their originating event
+    artifacts and SML/Compare validation.
+    """
+    if not isinstance(packet, dict):
+        return {"ok": False, "schema": "SarahMemory.avatar.event_apply.B08", "error": "packet_not_dict", "execution_authority": False}
+    directive = packet.get("avatar_directive") if isinstance(packet.get("avatar_directive"), dict) else {}
+    event = packet.get("event") if isinstance(packet.get("event"), dict) else {}
+    if not directive:
+        return {"ok": False, "schema": "SarahMemory.avatar.event_apply.B08", "error": "missing_avatar_directive", "execution_authority": False}
+
+    expression = _avatar_event_clean(directive.get("expression"), "attentive").lower() or "attentive"
+    attention = _avatar_event_clean(directive.get("attention"), "event_source").lower() or "event_source"
+    gesture = _avatar_event_clean(directive.get("gesture"), "subtle_acknowledge").lower() or "subtle_acknowledge"
+    reaction_class = _avatar_event_clean(directive.get("reaction_class"), "runtime_observation").lower()
+    intensity = _avatar_event_float(directive.get("intensity", directive.get("arousal", 0.35)), 0.35, 0.0, 1.0)
+    duration = _avatar_event_float(directive.get("duration_seconds", 2.25), 2.25, 0.25, 12.0)
+
+    updates: Dict[str, Any] = {
+        "expression": expression,
+        "attention": attention,
+        "gesture": gesture,
+        "emotional_energy": intensity,
+        "neon_intensity": max(0.20, min(1.0, 0.25 + intensity * 0.55)),
+        "thinking": reaction_class in {"mission_progress", "runtime_observation"},
+        "listening": attention in {"user", "event_source"},
+    }
+    if expression in {"surprised", "alert_focused"}:
+        updates.update({"brow_left": 0.45, "brow_right": 0.45, "eyelid_left": 0.25, "eyelid_right": 0.25, "head_pitch": -2.0})
+    elif expression in {"concerned"}:
+        updates.update({"brow_left": -0.25, "brow_right": -0.25, "head_pitch": 2.0})
+    elif expression in {"pleased"}:
+        updates.update({"brow_left": 0.15, "brow_right": 0.15, "head_pitch": -1.0})
+
+    state = update_live_avatar_state(updates)
+    event_type = _avatar_event_clean(event.get("event_type"), "runtime_event").lower().replace(" ", "_") or "runtime_event"
+    queued = queue_live_avatar_event(
+        event_type,
+        intensity=intensity,
+        duration_seconds=duration,
+        metadata={
+            "source": _avatar_event_clean(source, "unknown"),
+            "packet_schema": packet.get("schema"),
+            "reaction_class": reaction_class,
+            "source_verified": bool(event.get("source_verified")),
+            "speech_allowed": bool(directive.get("speech_allowed")),
+            "speech_text": _avatar_event_clean(directive.get("speech_text"), ""),
+        },
+    )
+    try:
+        log_avatar_event("SML Avatar Event B08", f"event={event_type}; expression={expression}; source={source}; verified={bool(event.get('source_verified'))}")
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "schema": "SarahMemory.avatar.event_apply.B08",
+        "event_type": event_type,
+        "reaction_class": reaction_class,
+        "applied_expression": expression,
+        "state": state,
+        "queued_state": queued,
+        "execution_authority": False,
+    }
+
 def prune_live_avatar_events(now_monotonic: Optional[float] = None) -> Dict[str, Any]:
     now = float(now_monotonic if now_monotonic is not None else time.monotonic())
     with _AVATAR_STATE_LOCK:
@@ -823,7 +910,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['avatar', 'execution'],
+    "capabilities": ['avatar', 'avatar_event_stream', 'execution'],
     "supported_missions": ['Conversation', 'Execution'],
     "supported_omega": ['Ω001', 'Ω070', 'Ω100'],
     "required_authority": ['Execute', 'Read'],

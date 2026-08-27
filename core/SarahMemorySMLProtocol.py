@@ -1,9 +1,19 @@
 """--==The SarahMemory Project==--
 File: SarahMemorySMLProtocol.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
-Version: v9.0.0-alpha-sml-0.2-unpl
+Version: v9.0.0
 Date: 2026-08-16
+Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
+www.linkedin.com/in/brian-baros-29962a176
+https://www.facebook.com/bbaros
+brian.baros@sarahmemory.com
+'The SarahMemory Companion AI-Bot Platform, SarahMemory AiOS, and all Parts of the SarahMemory Project are property of SOFTDEV0 LLC., & Brian Lee Baros'
+https://www.sarahmemory.com
+https://api.sarahmemory.com
+https://ai.sarahmemory.com
+https://store.sarahmemory.com
+
 
 ===============================================================================
 SarahMemory SML/QSML Universal Natural Programming Language / Governed Cognitive Substrate
@@ -2728,7 +2738,7 @@ class SarahMemorySMLProtocol:
             MissionType.DIAGNOSTICS.value: ["diagnostic", "health", "test", "validate", "verify", "smoke"],
             MissionType.REPAIR.value: ["repair", "fix", "recover", "rollback"],
             MissionType.EXECUTION.value: ["run", "execute", "launch", "start", "open", "shutdown"],
-            MissionType.NETWORK.value: ["network", "internet", "api", "http", "web"],
+            MissionType.NETWORK.value: ["network", "internet", "api", "http", "web", "sarahnet", "sml-rt", "xr", "vr", "augmented reality", "virtual reality", "world fabric", "region", "authority lease"],
             MissionType.VISION.value: ["image", "vision", "screenshot", "photo"],
             MissionType.VOICE.value: ["voice", "audio", "speech"],
             MissionType.LEARNING.value: ["learn", "train", "optimize", "evolve"],
@@ -3987,6 +3997,780 @@ def sml_resolve_safe_cognitive_answer(
 
 
 
+
+
+def _sml_question_operator(text: str) -> str:
+    t = _normalize_token(str(text or "").split(" ", 1)[0] if str(text or "").strip() else "")
+    aliases = {"whats": "what", "what_s": "what", "who_s": "who", "hows": "how"}
+    t = aliases.get(t, t)
+    for op in ("who", "what", "when", "where", "why", "how", "if", "make", "create", "build", "open", "run", "write", "summarize", "compare", "verify"):
+        if t == op:
+            return op.upper()
+    low = str(text or "").strip().lower()
+    if low.startswith(("hey sarah make", "make ", "create ", "build ")):
+        return "MAKE"
+    return "UNKNOWN"
+
+
+def sml_build_dynamic_claim_vector(text: str, *, context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Build a dynamic claim vector for Court routing.
+
+    This is protocol grammar, not an answer pool. It avoids infinite static
+    labels such as CURRENT_NEWS/CURRENT_WEATHER by separating stable axes from
+    dynamic values: operator, temporal scope, domain, subject, role, execution,
+    freshness, authority, validation, and rollback.
+    """
+    raw = str(text or "").strip()
+    low = re.sub(r"\s+", " ", raw.lower()).strip()
+    ctx = dict(context or {})
+    op = _sml_question_operator(raw)
+
+    historical_terms = ("founder", "founded", "invented", "created originally", "first ", "former", "was ", "served", "in 19", "in 20")
+    explicit_current_terms = ("current", "currently", "today", "now", "latest", "this year", "right now", "as of")
+    active_role_terms = ("ceo", "president", "prime minister", "leader", "head of", "chair", "chairman", "chairwoman", "director", "owner", "governor", "mayor")
+    live_state_terms = ("weather", "forecast", "stock", "market", "price", "schedule", "calendar", "news", "headlines", "war", "election", "score", "version")
+    self_terms = ("who are you", "what are you", "your name", "what is your name", "look like", "avatar", "2d model", "3d model", "how do you feel", "your state", "your status")
+    clock_terms = ("what year", "what time", "what date", "timezone", "time zone", "date is it", "time is it", "year is it")
+    execution_terms = ("open", "run", "launch", "start", "turn on", "turn off", "set ", "delete", "move", "write file", "install")
+    creation_terms = ("make", "create", "build", "generate", "code", "write")
+    software_build_terms = ("app", "application", "program", "software", "game", "addon", "add-on", "addons", "plugin", "tool", "dashboard", "tracker", "website", "web app", "panel", "widget", "playable", "launcher", "simulator")
+
+    temporal_scope = "TIMELESS_OR_UNKNOWN"
+    if any(x in low for x in explicit_current_terms):
+        temporal_scope = "CURRENT_EXPLICIT"
+    elif any(x in low for x in active_role_terms + live_state_terms) or any(x in low for x in clock_terms):
+        temporal_scope = "CURRENT_IMPLICIT"
+    if any(x in low for x in historical_terms) and not any(x in low for x in explicit_current_terms):
+        temporal_scope = "HISTORICAL"
+
+    is_software_creation = any(x in low for x in creation_terms) and any(x in low for x in software_build_terms)
+
+    domain = "general"
+    if any(x in low for x in self_terms):
+        domain = "identity_self_embodiment"
+    elif any(x in low for x in clock_terms):
+        domain = "temporal_locality"
+    elif is_software_creation:
+        domain = "creative_build_mission"
+    elif any(x in low for x in ("stock", "market", "ticker", "portfolio", "trade", "buy", "sell")):
+        domain = "finance_market"
+    elif any(x in low for x in ("weather", "forecast", "rain", "temperature outside")):
+        domain = "weather"
+    elif any(x in low for x in ("schedule", "calendar", "appointment", "meeting")):
+        domain = "personal_schedule"
+    elif any(x in low for x in ("news", "headline", "war", "election", "current events")):
+        domain = "public_events"
+    elif any(x in low for x in active_role_terms):
+        domain = "active_role_holder"
+    elif any(x in low for x in ("capslock", "caps lock", "num lock", "keyboard", "rgb", "light")):
+        domain = "local_device_control"
+
+    claim_type = "GENERAL_CLAIM"
+    if domain == "temporal_locality":
+        claim_type = "LIVE_TEMPORAL_OR_LOCALITY_STATE"
+    elif domain == "identity_self_embodiment":
+        claim_type = "IDENTITY_SELF_EMBODIMENT_STATE"
+    elif domain == "active_role_holder":
+        claim_type = "ROLE_HOLDER" if temporal_scope != "HISTORICAL" else "HISTORICAL_ROLE_OR_FOUNDER_FACT"
+    elif domain in {"public_events", "weather", "finance_market", "personal_schedule"}:
+        claim_type = "LIVE_OR_FRESHNESS_SENSITIVE_STATE"
+    elif domain == "creative_build_mission":
+        claim_type = "CREATE_VALIDATE_INSTALL_OR_EXECUTE_ARTIFACT"
+    elif domain == "local_device_control":
+        claim_type = "LOCAL_DEVICE_ACTION"
+
+    freshness_required = temporal_scope in {"CURRENT_EXPLICIT", "CURRENT_IMPLICIT"} or domain in {"temporal_locality", "weather", "finance_market", "personal_schedule", "public_events"}
+    execution_required = any(x in low for x in execution_terms) or domain in {"creative_build_mission", "local_device_control"}
+    requires_user_confirmation = execution_required and domain not in {"temporal_locality", "identity_self_embodiment"}
+    model_final_authority = not freshness_required and domain not in {"temporal_locality", "identity_self_embodiment", "local_device_control", "creative_build_mission"}
+
+    preferred_sources: List[str] = []
+    if domain == "temporal_locality":
+        preferred_sources = ["appsys.ClockCourt", "system_clock", "configured_timezone"]
+    elif domain == "identity_self_embodiment":
+        preferred_sources = ["appself.IdentityCourt", "CognitiveSelf", "IdentityRegistry", "AvatarManifest", "ClockCourt"]
+    elif domain == "personal_schedule":
+        preferred_sources = ["ClockCourt", "CalendarOrScheduleSource", "SarahMemoryAPI"]
+    elif domain in {"public_events", "active_role_holder"}:
+        preferred_sources = ["SarahMemoryResearch", "SarahMemoryAPI", "RSS", "Terminal"]
+    elif domain == "weather":
+        preferred_sources = ["WeatherAPI", "Research", "ClockLocationCourt"]
+    elif domain == "finance_market":
+        preferred_sources = ["MarketDataAPI", "SarahMemoryAPI", "Research", "BrokerReadOnlyIfConnected"]
+    elif domain == "creative_build_mission":
+        preferred_sources = ["SMLProtocol", "Research", "SarahMemoryAPI", "LocalModels", "appsdk.run_governed_creation_mission", "SarahMemoryNAILDE", "Compare", "AssuranceGate", "appstore.ADDONRegistry", "Ledger"]
+    elif domain == "local_device_control":
+        preferred_sources = ["appdrivers.run_governed_device_intent", "OperatorCore", "SecurityGovernor", "AssuranceGate", "DriverVerification", "Ledger"]
+    else:
+        preferred_sources = ["LocalMemory", "LocalLLM", "Compare"]
+
+    return {
+        "schema": "SarahMemory.sml.dynamic_claim_vector.B09",
+        "raw_text": raw,
+        "operator": op,
+        "intent_family": "CREATE_OR_EXECUTE" if execution_required else ("QUESTION" if op in {"WHO", "WHAT", "WHEN", "WHERE", "WHY", "HOW", "IF", "UNKNOWN"} else "REQUEST"),
+        "domain": domain,
+        "subject": raw,
+        "role_or_target": "dynamic_extracted_from_text",
+        "temporal_scope": temporal_scope,
+        "claim_type": claim_type,
+        "freshness_required": bool(freshness_required),
+        "execution_required": bool(execution_required),
+        "requires_user_confirmation": bool(requires_user_confirmation),
+        "model_final_authority": bool(model_final_authority),
+        "source_authority_needed": bool(freshness_required or not model_final_authority),
+        "preferred_sources": preferred_sources,
+        "forbidden_final_sources": ["model_memory", "static_demo_facts"] if not model_final_authority else ["static_demo_facts"],
+        "validation": {
+            "compare_required": True,
+            "freshness_check_required": bool(freshness_required),
+            "artifact_required": bool(freshness_required or execution_required),
+            "rollback_required": bool(execution_required),
+            "post_execution_verification_required": bool(execution_required),
+            "domain_owner_required": "appdrivers.py" if domain == "local_device_control" else ("appsdk.py/SarahMemoryNAILDE.py" if domain == "creative_build_mission" else "dynamic_by_mission"),
+            "sandbox_first_required": bool(domain == "creative_build_mission"),
+            "live_install_or_run_requires_explicit_user_approval": bool(domain == "creative_build_mission"),
+        },
+        "context": ctx,
+    }
+
+
+def sml_build_source_authority_court_packet(text: str, *, context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    vector = sml_build_dynamic_claim_vector(text, context=context)
+    model_allowed = bool(vector.get("model_final_authority"))
+    return {
+        "schema": "SarahMemory.sml.source_authority_court_packet.B09",
+        "court": "SML_SOURCE_AUTHORITY_COURT",
+        "claim_vector": vector,
+        "court_1": {
+            "decision": "REQUIRE_EVIDENCE_ARTIFACTS" if not model_allowed else "ALLOW_MODEL_AS_CANDIDATE_WITH_COMPARE",
+            "preferred_sources": vector.get("preferred_sources", []),
+            "forbidden_final_sources": vector.get("forbidden_final_sources", []),
+            "model_memory_final_authority": model_allowed,
+        },
+        "court_2": {
+            "pending": True,
+            "rule": "Returned artifacts must be compared for authority, freshness, confidence, and conflicts before Reply.",
+        },
+        "execution_authority": False,
+        "read_only": not bool(vector.get("execution_required")),
+        "ts": _utc_now(),
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# B09 Evidence Artifact normalization and Court-2 adjudication
+# ---------------------------------------------------------------------------
+
+def _sml_float01(value: Any, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = float(default)
+    if out < 0.0:
+        return 0.0
+    if out > 1.0:
+        return 1.0
+    return out
+
+
+def _sml_evidence_source_value(source: Any) -> str:
+    try:
+        if hasattr(source, "value"):
+            return str(getattr(source, "value"))
+    except Exception:
+        pass
+    return str(source or "unknown_source").strip().lower() or "unknown_source"
+
+
+def _sml_provider_from_source(source_name: str, raw: Mapping[str, Any], metadata: Mapping[str, Any]) -> str:
+    provider = str(raw.get("provider") or raw.get("model_provider") or metadata.get("provider") or metadata.get("original_source") or "").strip().lower()
+    if provider in {"llama", "llama_api", "meta_ai", "meta.ai"}:
+        return "meta"
+    if provider:
+        return provider
+    s = _sml_evidence_source_value(source_name)
+    for prefix in ("api_", "provider_"):
+        if s.startswith(prefix):
+            return s[len(prefix):]
+    if s in {"openai", "meta", "claude", "anthropic", "mistral", "gemini", "huggingface", "deepseek", "groq", "cohere", "ollama", "local_llm", "mesh"}:
+        return "meta" if s in {"llama", "meta_ai", "meta.ai"} else s
+    return ""
+
+
+def _sml_evidence_family(source_name: str, metadata: Mapping[str, Any], provider: str = "") -> str:
+    s = _sml_evidence_source_value(source_name)
+    lane = str(metadata.get("lane") or "").strip().lower()
+    method = str(metadata.get("method") or "").strip().lower()
+    if "rss" in s or "rss" in lane or "rss" in method:
+        return "rss_feed"
+    if s.startswith("web_") or any(x in s for x in ("wikipedia", "duckduckgo", "dictionary", "openlibrary", "stackoverflow", "reddit", "wikihow", "quora", "archive")):
+        return "web_research"
+    if s.startswith("api_") or provider in {"openai", "meta", "claude", "anthropic", "mistral", "gemini", "huggingface", "deepseek", "groq", "cohere", "ollama", "mesh"}:
+        return "api_provider"
+    if s in {"local_llm", "local_llm_ensemble", "model_catalog", "ollama"} or "llm" in s:
+        return "local_model"
+    if "static" in s:
+        return "static_demo"
+    if s.startswith("local_") or lane.startswith("local") or "sqlite" in s or "cache" in s or "dataset" in s or "vector" in s or "memory" in s:
+        return "local_knowledge"
+    if "terminal" in s or "agent" in s:
+        return "terminal_agent"
+    if "clock" in s or "time" in s or "system_clock" in s:
+        return "system_runtime"
+    return "unknown"
+
+
+def _sml_authority_for_family(family: str, provider: str, metadata: Mapping[str, Any]) -> Tuple[str, float, bool, List[str]]:
+    fam = str(family or "unknown").strip().lower()
+    reasons: List[str] = []
+    if fam == "system_runtime":
+        return "direct_runtime_evidence", 0.95, True, ["system/runtime source is authoritative only for its owned runtime claim class"]
+    if fam in {"weather_api", "market_data_api", "broker_readonly"}:
+        return "domain_api_evidence", 0.88, True, ["domain API can be final evidence when claim type matches and freshness is valid"]
+    if fam == "web_research":
+        return "retrieved_source_evidence", 0.76, True, ["retrieved web source can support current/public claims when freshness and source relevance are adequate"]
+    if fam == "rss_feed":
+        return "polling_current_source_evidence", 0.70, True, ["RSS is polling-based current-source evidence, not realtime truth by itself"]
+    if fam == "terminal_agent":
+        return "observed_tool_evidence", 0.66, True, ["terminal/agent observation may support claims only inside scoped task truth"]
+    if fam == "local_knowledge":
+        return "local_memory_or_dataset_evidence", 0.58, False, ["local knowledge may be stale for current public claims"]
+    if fam == "api_provider":
+        p = provider or str(metadata.get("provider") or "")
+        label = f"provider candidate reasoning ({p})" if p else "provider candidate reasoning"
+        return "candidate_reasoning", 0.46, False, [label, "model/provider output is evidence, not final authority"]
+    if fam == "local_model":
+        return "candidate_reasoning", 0.34, False, ["local model output is candidate reasoning, not final authority for live facts"]
+    if fam == "static_demo":
+        return "demo_fixture", 0.0, False, ["static/demo facts are not production runtime authority"]
+    return "unknown_authority", 0.18, False, ["source authority could not be classified"]
+
+
+def sml_normalize_evidence_artifact(
+    raw: Any,
+    *,
+    query: str = "",
+    claim_vector: Optional[Mapping[str, Any]] = None,
+    source_hint: str = "",
+    provider_hint: str = "",
+    family_hint: str = "",
+    observed_at: str = "",
+) -> Dict[str, Any]:
+    """Normalize arbitrary source output into one Court-ready evidence object.
+
+    B09 does not decide truth here. It gives SML Court 2 a single auditable
+    shape for Research, RSS, SarahMemoryAPI/provider responses, local DB/model
+    output, Terminal observations, system runtime probes, and future organs.
+    """
+    if isinstance(raw, Mapping):
+        src = dict(raw)
+    else:
+        src = {"data": raw}
+    metadata = src.get("metadata") if isinstance(src.get("metadata"), Mapping) else {}
+    text = str(src.get("data") or src.get("content") or src.get("snippet") or src.get("answer") or src.get("summary") or "").strip()
+    source_name = _sml_evidence_source_value(source_hint or src.get("source") or metadata.get("source_label") or metadata.get("source") or "unknown_source")
+    provider = str(provider_hint or _sml_provider_from_source(source_name, src, metadata)).strip().lower()
+    if provider in {"llama", "llama_api", "meta_ai", "meta.ai"}:
+        provider = "meta"
+    family = str(family_hint or src.get("source_family") or metadata.get("source_family") or _sml_evidence_family(source_name, metadata, provider)).strip().lower()
+    authority_class, authority_score, final_possible, authority_notes = _sml_authority_for_family(family, provider, metadata)
+    confidence = _sml_float01(src.get("confidence", metadata.get("confidence", 0.0)), 0.0)
+    if confidence <= 0.0 and text:
+        confidence = 0.50 if family not in {"static_demo", "unknown"} else 0.15
+    cv = dict(claim_vector or {}) if isinstance(claim_vector, Mapping) else {}
+    freshness_required = bool(cv.get("freshness_required"))
+    temporal_scope = str(cv.get("temporal_scope") or "TIMELESS_OR_UNKNOWN")
+    supports_current = bool(final_possible and family in {"system_runtime", "weather_api", "market_data_api", "broker_readonly", "web_research", "rss_feed", "terminal_agent"})
+    runtime_authority = bool(final_possible)
+    if family == "api_provider":
+        runtime_authority = False
+    if family == "static_demo":
+        runtime_authority = False
+    stale_risk = bool(freshness_required and not supports_current)
+    freshness_class = "freshness_unknown"
+    if family == "system_runtime":
+        freshness_class = "live_runtime"
+    elif family in {"web_research", "rss_feed", "weather_api", "market_data_api", "broker_readonly"}:
+        freshness_class = "current_source_candidate"
+    elif family in {"api_provider", "local_model"}:
+        freshness_class = "model_or_provider_response_time_only"
+    elif family == "local_knowledge":
+        freshness_class = "local_cache_or_dataset_age_unknown"
+    elif family == "static_demo":
+        freshness_class = "demo_not_production"
+    artifact = {
+        "schema": "SarahMemory.sml.evidence_artifact.B09",
+        "artifact_id": "ev_" + _sha256_obj({
+            "query": query,
+            "source": source_name,
+            "provider": provider,
+            "family": family,
+            "content_hash": _sha256_text(text[:4096]),
+        })[:24],
+        "query": str(query or src.get("query") or ""),
+        "claim_vector": cv,
+        "source": source_name,
+        "source_family": family,
+        "provider": provider,
+        "model": str(src.get("model_used") or src.get("model") or metadata.get("model") or "").strip(),
+        "content": _bounded_text(text, 4096),
+        "content_hash": _sha256_text(text) if text else "",
+        "confidence": confidence,
+        "authority_class": authority_class,
+        "authority_score": authority_score,
+        "final_authority_possible": bool(final_possible),
+        "runtime_authority": bool(runtime_authority),
+        "supports_current_claim": bool(supports_current),
+        "freshness_class": freshness_class,
+        "freshness_required": freshness_required,
+        "temporal_scope": temporal_scope,
+        "stale_for_current_claim_risk": bool(stale_risk),
+        "observed_at": str(observed_at or src.get("observed_at") or src.get("timestamp") or metadata.get("observed_at") or _utc_now()),
+        "latency_ms": src.get("latency_ms", metadata.get("latency_ms", 0)),
+        "limitations": list(authority_notes),
+        "metadata": {
+            "source_metadata": dict(metadata) if isinstance(metadata, Mapping) else {},
+            "raw_source": source_name,
+            "raw_provider": provider,
+            "b09_note": "Evidence artifact is an input to SML Court 2; it is not truth by itself.",
+        },
+    }
+    return artifact
+
+
+def sml_normalize_evidence_artifacts(
+    raw_items: Any,
+    *,
+    query: str = "",
+    claim_vector: Optional[Mapping[str, Any]] = None,
+    source_hint: str = "",
+) -> List[Dict[str, Any]]:
+    """Normalize one or many raw source results into EvidenceArtifact objects."""
+    if raw_items is None:
+        return []
+    if isinstance(raw_items, Mapping):
+        # Prefer existing normalized artifacts if present.
+        existing = raw_items.get("evidence_artifacts")
+        if isinstance(existing, list) and existing:
+            out: List[Dict[str, Any]] = []
+            for item in existing:
+                if isinstance(item, Mapping) and str(item.get("schema") or "").endswith("evidence_artifact.B09"):
+                    out.append(dict(item))
+                else:
+                    out.append(sml_normalize_evidence_artifact(item, query=query, claim_vector=claim_vector, source_hint=source_hint))
+            return out
+        one = raw_items.get("evidence_artifact")
+        if isinstance(one, Mapping):
+            if str(one.get("schema") or "").endswith("evidence_artifact.B09"):
+                return [dict(one)]
+            return [sml_normalize_evidence_artifact(one, query=query, claim_vector=claim_vector, source_hint=source_hint)]
+        return [sml_normalize_evidence_artifact(raw_items, query=query, claim_vector=claim_vector, source_hint=source_hint)]
+    if isinstance(raw_items, (list, tuple, set)):
+        out = []
+        for item in raw_items:
+            out.extend(sml_normalize_evidence_artifacts(item, query=query, claim_vector=claim_vector, source_hint=source_hint))
+        # De-duplicate by artifact ID while preserving order.
+        seen: Set[str] = set()
+        deduped: List[Dict[str, Any]] = []
+        for art in out:
+            aid = str(art.get("artifact_id") or "")
+            if aid and aid not in seen:
+                seen.add(aid)
+                deduped.append(art)
+        return deduped
+    return [sml_normalize_evidence_artifact(raw_items, query=query, claim_vector=claim_vector, source_hint=source_hint)]
+
+
+def _sml_score_evidence_for_claim(artifact: Mapping[str, Any], vector: Mapping[str, Any]) -> Tuple[float, List[str], bool]:
+    """Return (score, reasons, rejected) for one artifact under one claim vector."""
+    reasons: List[str] = []
+    content = str(artifact.get("content") or "").strip()
+    if not content:
+        return 0.0, ["empty_content"], True
+    family = str(artifact.get("source_family") or "unknown")
+    authority = _sml_float01(artifact.get("authority_score", 0.0), 0.0)
+    confidence = _sml_float01(artifact.get("confidence", 0.0), 0.0)
+    freshness_required = bool(vector.get("freshness_required"))
+    domain = str(vector.get("domain") or "general")
+    supports_current = bool(artifact.get("supports_current_claim"))
+    runtime_authority = bool(artifact.get("runtime_authority"))
+    score = (authority * 0.62) + (confidence * 0.38)
+    if freshness_required and not supports_current:
+        score = min(score, 0.44)
+        reasons.append("not_authoritative_for_current_or_freshness_sensitive_claim")
+    if family == "static_demo":
+        score = 0.0
+        reasons.append("static_demo_fixture_rejected_for_production_truth")
+    if family in {"api_provider", "local_model"}:
+        reasons.append("model_or_provider_candidate_not_final_authority")
+    if freshness_required and domain in {"public_events", "active_role_holder", "finance_market", "weather"} and not runtime_authority:
+        reasons.append("requires_retrieved_or_domain_source_before_final_answer")
+    rejected = bool(score <= 0.0 or (freshness_required and not supports_current))
+    return max(0.0, min(1.0, score)), reasons, rejected
+
+
+def sml_adjudicate_evidence_artifacts(
+    query: str,
+    artifacts: Any,
+    *,
+    claim_vector: Optional[Mapping[str, Any]] = None,
+    context: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Court 2: sort and adjudicate normalized evidence artifacts.
+
+    This is not majority vote and it does not fabricate missing facts. It uses
+    claim-specific authority, freshness, confidence, and source-family limits to
+    accept the best currently supported artifact or require more evidence.
+    """
+    cv = dict(claim_vector or sml_build_dynamic_claim_vector(query, context=context))
+    normalized = sml_normalize_evidence_artifacts(artifacts, query=query, claim_vector=cv)
+    rows: List[Dict[str, Any]] = []
+    accepted_candidates: List[Dict[str, Any]] = []
+    for art in normalized:
+        score, reasons, rejected = _sml_score_evidence_for_claim(art, cv)
+        row = dict(art)
+        row["court_score"] = score
+        row["court_reasons"] = list(reasons)
+        row["court_rejected"] = bool(rejected)
+        rows.append(row)
+        if not rejected:
+            accepted_candidates.append(row)
+    rows.sort(key=lambda x: float(x.get("court_score") or 0.0), reverse=True)
+    accepted_candidates.sort(key=lambda x: float(x.get("court_score") or 0.0), reverse=True)
+    freshness_required = bool(cv.get("freshness_required"))
+    threshold = 0.65 if freshness_required else 0.52
+    accepted = accepted_candidates[0] if accepted_candidates and float(accepted_candidates[0].get("court_score") or 0.0) >= threshold else None
+    if accepted:
+        verdict = "ACCEPT_BEST_AVAILABLE_ARTIFACT"
+    elif normalized:
+        verdict = "REQUIRE_ADDITIONAL_EVIDENCE"
+    else:
+        verdict = "NO_EVIDENCE_ARTIFACTS_PROVIDED"
+    return {
+        "ok": bool(accepted),
+        "schema": "SarahMemory.sml.evidence_court_verdict.B09",
+        "court": "SML_EVIDENCE_REALITY_COURT",
+        "query": str(query or ""),
+        "claim_vector": cv,
+        "artifact_count": len(normalized),
+        "accepted_artifact": accepted,
+        "accepted_content": str(accepted.get("content") or "") if isinstance(accepted, Mapping) else "",
+        "ranked_artifacts": rows[:12],
+        "rejected_artifacts": [r for r in rows if bool(r.get("court_rejected"))][:12],
+        "verdict": verdict,
+        "threshold": threshold,
+        "rule": "Truth is claim-specific. Authority is source-specific. Freshness is time-specific. No provider/model/static artifact is final authority by itself for current public facts.",
+        "execution_authority": False,
+        "ts": _utc_now(),
+    }
+
+
+def sml_build_evidence_court_packet(
+    text: str,
+    raw_artifacts: Any,
+    *,
+    context: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build the full B09 source-authority + evidence-adjudication court packet."""
+    source_court = sml_build_source_authority_court_packet(text, context=context)
+    vector = source_court.get("claim_vector") if isinstance(source_court, Mapping) else {}
+    verdict = sml_adjudicate_evidence_artifacts(text, raw_artifacts, claim_vector=vector if isinstance(vector, Mapping) else None, context=context)
+    return {
+        "ok": bool(verdict.get("ok")),
+        "schema": "SarahMemory.sml.evidence_court_packet.B09",
+        "court": "SML_TWO_COURT_EVIDENCE_PIPELINE",
+        "court_1": source_court,
+        "court_2": verdict,
+        "accepted_content": verdict.get("accepted_content", ""),
+        "execution_authority": False,
+        "ts": _utc_now(),
+    }
+
+
+def _sml_extract_reference_descriptor(text: str) -> str:
+    """Extract a non-authoritative style/reference descriptor for research planning.
+
+    This is dynamic grammar, not a prompt-specific template. The returned text is
+    used only to ask Research/NAILDE what concepts need evidence before synthesis.
+    """
+    raw = str(text or "").strip()
+    low = raw.lower()
+    patterns = [
+        r"\b([a-z0-9][a-z0-9 ._\-]{1,80})\s*[- ]?like\b",
+        r"\blike\s+(?:a|an|the)?\s*([a-z0-9][a-z0-9 ._\-]{1,80})(?:\s+(?:game|app|application|tool|style|system)|[?.!,]|$)",
+        r"\b([a-z0-9][a-z0-9 ._\-]{1,80})\s+style\b",
+        r"\binspired\s+by\s+([a-z0-9][a-z0-9 ._\-]{1,80})(?:[?.!,]|$)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, low, flags=re.I)
+        if m:
+            value = re.sub(r"\s+", " ", m.group(1)).strip(" .,_-")
+            if value and value not in {"make me", "create", "build", "game", "app", "application"}:
+                return _bounded_text(value, 240)
+    return ""
+
+
+def sml_build_creation_mission_contract(text: str, *, context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Build the non-executing QSML/NAILDE creation mission contract.
+
+    This is B07's generalized create/build/app/addon pipeline. It does not
+    hardcode any example application. It compiles the user's request into a
+    governed mission packet, records required research/abstraction/build phases,
+    and states the boundary: NAILDE may stage sandbox artifacts, but install/run
+    remains a separate explicit approval path.
+    """
+    ctx = dict(context or {})
+    raw = str(text or "").strip()
+    vector = sml_build_dynamic_claim_vector(raw, context={**ctx, "target": ctx.get("target") or "nailde"})
+    if str(vector.get("domain") or "") != "creative_build_mission":
+        return {
+            "ok": False,
+            "schema": "SarahMemory.sml.creation_mission_contract.B07",
+            "error": "not_a_creation_build_mission",
+            "claim_vector": vector,
+            "execution_authority": False,
+        }
+    compile_result: Dict[str, Any]
+    try:
+        compile_result = sml_compile_natural_program(
+            raw,
+            context={**ctx, "target": "nailde", "sandbox_only": True, "source": ctx.get("source") or "sml_creation_contract"},
+            target="nailde",
+            collect_external_evidence=bool(ctx.get("collect_external_evidence", True)),
+        )
+    except Exception as exc:
+        compile_result = {"status": "FAILED", "error": _redact_sensitive_text(str(exc))[:500], "execution_authority": False}
+    reference = _sml_extract_reference_descriptor(raw)
+    research_questions = [
+        "What problem or experience is the user asking the system to create?",
+        "What are the core mechanics, inputs, outputs, and success conditions?",
+        "What constraints prevent unsafe execution, live-core mutation, credential access, or self-approval?",
+        "What local implementation architecture best satisfies the request inside the ADDON/NAILDE sandbox?",
+        "What validation, static tests, package-integrity checks, and rollback evidence are required before install/run?",
+    ]
+    if reference:
+        research_questions.insert(1, f"What are the recognizable high-level concepts of the reference descriptor '{reference}' without copying protected names, assets, or branding?")
+        research_questions.insert(2, "Which mechanics/style elements can be transformed into an original local implementation?")
+    phases = [
+        {"id": "observe", "owner": "app.py", "output": "raw user request routed into SML packet"},
+        {"id": "compile", "owner": "SarahMemorySMLProtocol", "output": "dynamic claim vector + QSML program"},
+        {"id": "research", "owner": "SarahMemoryResearch/SarahMemoryAPI/Terminal as authorized", "output": "evidence artifacts and reference abstraction plan"},
+        {"id": "design", "owner": "SarahMemoryNAILDE", "output": "application blueprint"},
+        {"id": "synthesize", "owner": "LocalModels via SarahMemoryAPI", "output": "sandbox source files"},
+        {"id": "package", "owner": "SarahMemoryNAILDE", "output": "ADDON package ABI under workspace sandbox"},
+        {"id": "validate", "owner": "Compare/NAILDE/static validation", "output": "syntax, manifest, integrity, safety, static run-readiness"},
+        {"id": "install_plan", "owner": "appstore/ADDONRegistry", "output": "copy/install plan only; no auto-run"},
+        {"id": "await_user", "owner": "Human operator", "output": "explicit install/run approval or cancellation"},
+    ]
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sml.creation_mission_contract.B07",
+        "court": "SML_CREATION_MISSION_COURT",
+        "claim_vector": vector,
+        "reference_descriptor": reference,
+        "qsml_compile": compile_result,
+        "court_1": {
+            "decision": "SANDBOX_BUILD_PIPELINE_ALLOWED_BY_EXPLICIT_CREATE_REQUEST",
+            "route_owner": "appsdk.py",
+            "synthesis_owner": "SarahMemoryNAILDE.py",
+            "activation_owner": "SarahMemoryNeuron.py",
+            "install_owner": "appstore.py",
+            "model_final_authority": False,
+            "preferred_sources": vector.get("preferred_sources", []),
+        },
+        "research_plan": {
+            "required": True,
+            "questions": research_questions,
+            "source_policy": "Use local/project sources first; use Research/API/Terminal only when authorized by SML and user/network policy.",
+            "ip_boundary": "Extract mechanics and high-level style; do not copy protected assets, logos, or direct branded implementation.",
+        },
+        "pipeline": phases,
+        "authority": {
+            "sandbox_workspace_write": True,
+            "live_core_write": False,
+            "addon_install": "requires_separate_explicit_user_confirmation",
+            "addon_run": "requires_separate_explicit_user_confirmation",
+            "network_access": "only_if_authorized",
+            "execution_authority": False,
+        },
+        "validation": {
+            "compare_required": True,
+            "static_validation_required": True,
+            "manifest_validation_required": True,
+            "package_integrity_required": True,
+            "rollback_required_for_install": True,
+            "ledger_receipt_required": True,
+        },
+        "ts": _utc_now(),
+        "execution_authority": False,
+    }
+
+
+
+# ---------------------------------------------------------------------------
+# B08 Avatar embodiment event packets
+# ---------------------------------------------------------------------------
+
+def _sml_event_text_blob(event: Mapping[str, Any]) -> str:
+    """Return bounded lower-case text for semantic event-axis detection."""
+    parts: List[str] = []
+    for key in ("event_type", "type", "name", "status", "state", "domain", "source", "message", "summary", "reason", "action"):
+        val = event.get(key)
+        if val is not None:
+            parts.append(str(val))
+    return re.sub(r"\s+", " ", " ".join(parts)).strip().lower()[:2000]
+
+
+def _sml_event_float(value: Any, default: float = 0.0, low: float = 0.0, high: float = 1.0) -> float:
+    try:
+        out = float(value)
+    except Exception:
+        out = float(default)
+    if out < low:
+        return float(low)
+    if out > high:
+        return float(high)
+    return float(out)
+
+
+def _sml_event_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "verified", "accepted", "ok", "success"}
+
+
+def sml_build_avatar_event_packet(event: Union[str, Mapping[str, Any]], *, context: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Compile an arbitrary verified/runtime event into an avatar embodiment packet.
+
+    B08 establishes the avatar as an event-driven presentation organ.  This
+    function does not hardcode any application domain.  It maps generic event
+    axes (success/failure/alert/progress/observation) into a governed avatar
+    directive.  Claims such as market movement, game state, or app status remain
+    owned by their source artifacts; the avatar may embody the event only after
+    SML records source/verification metadata.
+    """
+    ctx = dict(context or {})
+    if isinstance(event, Mapping):
+        raw_event = dict(event)
+        raw_text = str(raw_event.get("event_text") or raw_event.get("message") or raw_event.get("summary") or raw_event.get("event_type") or raw_event.get("type") or "runtime_event").strip()
+    else:
+        raw_text = str(event or "runtime_event").strip()
+        raw_event = {"event_text": raw_text, "event_type": "runtime_event"}
+    raw_text = _bounded_text(raw_text or "runtime_event", 800)
+    blob = _sml_event_text_blob(raw_event)
+    event_type = _bounded_text(str(raw_event.get("event_type") or raw_event.get("type") or raw_event.get("name") or "runtime_event"), 96).lower().replace(" ", "_")
+    source = _bounded_text(str(raw_event.get("source") or ctx.get("source") or "unknown_source"), 160)
+    domain = _bounded_text(str(raw_event.get("domain") or ctx.get("domain") or raw_event.get("source_subsystem") or "runtime"), 96)
+    severity = _sml_event_float(raw_event.get("severity", raw_event.get("intensity", ctx.get("severity", 0.35))), 0.35, 0.0, 1.0)
+    source_verified = _sml_event_bool(raw_event.get("source_verified", raw_event.get("verified", ctx.get("source_verified", False))))
+    validation_state = str(raw_event.get("validation_state") or ctx.get("validation_state") or "unknown").strip().lower()
+    if validation_state in {"verified", "accepted", "validated", "passed"}:
+        source_verified = True
+    factual_claim = bool(raw_event.get("claim") or raw_event.get("fact") or raw_event.get("market_data") or raw_event.get("telemetry") or raw_event.get("score") or raw_event.get("price"))
+
+    failure_words = ("fail", "failed", "failure", "error", "crash", "crashed", "collision", "blocked", "denied", "rejected", "stopped", "lost", "game_over", "game over")
+    success_words = ("success", "succeeded", "complete", "completed", "ready", "installed", "validated", "passed", "filled", "done")
+    progress_words = ("start", "started", "running", "launch", "launched", "building", "research", "synthes", "validating", "working", "thinking")
+    alert_words = ("alert", "threshold", "crossed", "changed", "movement", "moved", "spike", "drop", "up", "down", "warning", "notice")
+
+    if any(w in blob for w in failure_words):
+        reaction_class = "runtime_interrupt_or_failure"
+        expression = "surprised" if any(w in blob for w in ("crash", "collision", "game_over", "game over")) else "concerned"
+        attention = "event_source"
+        gesture = "alert_recoil" if expression == "surprised" else "look_concerned"
+        valence = -0.55
+        arousal = max(0.65, severity)
+    elif any(w in blob for w in success_words):
+        reaction_class = "runtime_success_or_completion"
+        expression = "pleased"
+        attention = "user"
+        gesture = "confirming_nod"
+        valence = 0.55
+        arousal = max(0.35, severity)
+    elif any(w in blob for w in alert_words):
+        reaction_class = "verified_attention_alert"
+        expression = "alert_focused"
+        attention = "event_source"
+        gesture = "attention_wave"
+        valence = 0.05
+        arousal = max(0.55, severity)
+    elif any(w in blob for w in progress_words):
+        reaction_class = "mission_progress"
+        expression = "focused"
+        attention = "workspace"
+        gesture = "working_focus"
+        valence = 0.15
+        arousal = max(0.30, severity)
+    else:
+        reaction_class = "runtime_observation"
+        expression = "attentive"
+        attention = "event_source"
+        gesture = "subtle_acknowledge"
+        valence = 0.0
+        arousal = max(0.20, severity)
+
+    # External claims require verified artifacts before avatar speech may assert them.
+    speech_requested = _sml_event_bool(raw_event.get("speech_requested", ctx.get("speech_requested", False)))
+    speech_allowed = bool(speech_requested and (source_verified or not factual_claim))
+    message = _bounded_text(str(raw_event.get("user_visible_message") or raw_event.get("message") or ""), 220)
+    speech_text = message if speech_allowed else ""
+
+    return {
+        "ok": True,
+        "schema": "SarahMemory.sml.avatar_event_packet.B08",
+        "packet_role": "AVATAR_EMBODIMENT_EVENT",
+        "event": {
+            "event_type": event_type,
+            "source": source,
+            "domain": domain,
+            "raw_text": raw_text,
+            "source_verified": bool(source_verified),
+            "validation_state": validation_state,
+            "factual_claim_present": bool(factual_claim),
+            "observed_at": _utc_now(),
+        },
+        "six_question_axes": {
+            "WHO": str(raw_event.get("actor") or ctx.get("actor") or source),
+            "WHAT": raw_text,
+            "WHY": str(raw_event.get("purpose") or ctx.get("purpose") or "embody_verified_runtime_state"),
+            "HOW": "event_packet_to_avatar_directive",
+            "WHERE": str(raw_event.get("where") or raw_event.get("subsystem") or ctx.get("subsystem") or domain),
+            "WHEN": str(raw_event.get("when") or _utc_now()),
+        },
+        "avatar_directive": {
+            "reaction_class": reaction_class,
+            "expression": expression,
+            "attention": attention,
+            "gesture": gesture,
+            "valence": valence,
+            "arousal": arousal,
+            "intensity": max(0.05, min(1.0, arousal)),
+            "duration_seconds": max(0.25, min(12.0, _sml_event_float(raw_event.get("duration_seconds", 2.25), 2.25, 0.25, 12.0))),
+            "speech_allowed": bool(speech_allowed),
+            "speech_text": speech_text,
+        },
+        "authority": {
+            "avatar_presentation_only": True,
+            "execution_authority": False,
+            "device_control_authority": False,
+            "trade_authority": False,
+            "install_or_run_authority": False,
+        },
+        "validation": {
+            "claims_must_be_verified_before_speech": True,
+            "source_verified": bool(source_verified),
+            "factual_claim_present": bool(factual_claim),
+            "avatar_may_express_without_claiming_truth": True,
+            "compare_required_for_external_claims": bool(factual_claim),
+        },
+        "context": ctx,
+        "execution_authority": False,
+    }
+
 def sml_apply_cognitive_grammar(
     packet: Union[SMLPacket, Mapping[str, Any]],
     *,
@@ -4267,6 +5051,248 @@ def sml_gcop_self_test() -> Dict[str, Any]:
 
 
 # =============================================================================
+# SarahNet semantic contracts — Full SML authority + bounded SML-RT state
+# =============================================================================
+
+SARAHNET_RT_PROFILE = "SML-RT/1.0-alpha"
+SARAHNET_AUTHORITY_LEASE_SCHEMA = "SarahNet.AuthorityLease/1.0-alpha"
+SARAHNET_WORLD_CONTEXT_SCHEMA = "SarahNet.WorldContext/1.0-alpha"
+SARAHNET_RT_MAX_DELTA_BYTES = 64 * 1024
+
+# SML-RT is intentionally limited to ephemeral/temporary state. Consequential
+# mutations must leave the real-time lane and return to Full SML governance.
+SARAHNET_RT_STATE_CLASSES = {
+    "pose",
+    "animation",
+    "locomotion",
+    "physics",
+    "presence",
+    "gaze",
+    "gesture",
+    "speech_timing",
+    "spatial_audio",
+}
+
+SARAHNET_RT_FORBIDDEN_DELTA_KEYS = {
+    "wallet", "balance", "token", "tokens", "ownership", "owner_change",
+    "permission", "permissions", "authority", "grant", "revoke", "ledger",
+    "persistent_create", "persistent_delete", "core_patch", "filesystem_write",
+    "device_control", "physical_control", "model_authority",
+}
+
+SARAHNET_REALITY_CLASSES = {
+    "PHYSICAL", "OBSERVED", "EXTERNAL", "MIRRORED", "USER_CREATED",
+    "AI_GENERATED", "SIMULATED", "FORKED", "FICTIONAL", "UNKNOWN",
+}
+
+
+def sml_build_sarahnet_world_context(
+    packet: Union[SMLPacket, Mapping[str, Any]],
+    *,
+    world_id: str,
+    region_id: str = "",
+    entity_id: str = "",
+    reality_class: str = "UNKNOWN",
+    provenance: Optional[Mapping[str, Any]] = None,
+) -> SMLPacket:
+    """Attach SarahNet semantic coordinates without performing network I/O.
+
+    This function only extends packet semantics. It does not grant authority,
+    issue a lease, create a world, or synchronize state.
+    """
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    rc = str(reality_class or "UNKNOWN").upper()
+    if rc not in SARAHNET_REALITY_CLASSES:
+        rc = "UNKNOWN"
+    ext = dict(pkt.extensions.get("sarahnet") or {})
+    ext.update({
+        "schema": SARAHNET_WORLD_CONTEXT_SCHEMA,
+        "world_id": str(world_id or "").strip(),
+        "region_id": str(region_id or "").strip(),
+        "entity_id": str(entity_id or "").strip(),
+        "reality_class": rc,
+        "provenance": dict(provenance or {}),
+        "execution_authority": False,
+    })
+    pkt.extensions["sarahnet"] = ext
+    pkt.add_history(MODULE_NAME, "attach_sarahnet_world_context", pkt.current_omega, f"world={ext['world_id']};region={ext['region_id']}")
+    pkt.seal()
+    return pkt
+
+
+def sml_build_sarahnet_authority_lease_contract(
+    *,
+    identity: str,
+    entity_id: str,
+    world_id: str,
+    region_id: str,
+    permitted_state_classes: Sequence[str],
+    start_ts: Optional[float] = None,
+    expires_ts: Optional[float] = None,
+    constraints: Optional[Mapping[str, Any]] = None,
+    revocation_conditions: Optional[Sequence[str]] = None,
+    lease_id: str = "",
+    issuer_node: str = "",
+) -> Dict[str, Any]:
+    """Build a non-authorizing lease *contract candidate* for governance review.
+
+    The returned object is not a granted lease. appnet2/governance owns issuance;
+    this protocol helper only normalizes semantic fields and marks the candidate
+    as execution_authority=False.
+    """
+    now = float(start_ts if start_ts is not None else time.time())
+    expiry = float(expires_ts if expires_ts is not None else (now + 300.0))
+    classes = sorted({str(x or "").strip().lower() for x in permitted_state_classes if str(x or "").strip().lower() in SARAHNET_RT_STATE_CLASSES})
+    return {
+        "schema": SARAHNET_AUTHORITY_LEASE_SCHEMA,
+        "lease_id": str(lease_id or "").strip(),
+        "identity": str(identity or "").strip(),
+        "entity_id": str(entity_id or "").strip(),
+        "world_id": str(world_id or "").strip(),
+        "region_id": str(region_id or "").strip(),
+        "permitted_state_classes": classes,
+        "constraints": dict(constraints or {}),
+        "start_ts": now,
+        "expires_ts": expiry,
+        "revocation_conditions": [str(x) for x in (revocation_conditions or []) if str(x).strip()],
+        "issuer_node": str(issuer_node or "").strip(),
+        "status": "candidate",
+        "signature": "",
+        "execution_authority": False,
+    }
+
+
+def sml_validate_sarahnet_authority_lease(lease: Mapping[str, Any], *, at_time: Optional[float] = None) -> Dict[str, Any]:
+    """Validate lease semantics only; cryptographic identity remains external."""
+    data = dict(lease or {})
+    issues: List[str] = []
+    now = float(at_time if at_time is not None else time.time())
+    schema = str(data.get("schema") or "")
+    if schema and schema != SARAHNET_AUTHORITY_LEASE_SCHEMA:
+        issues.append("unsupported lease schema")
+    for field_name in ("lease_id", "identity", "entity_id", "world_id", "region_id"):
+        if not str(data.get(field_name) or "").strip():
+            issues.append(f"missing {field_name}")
+    status = str(data.get("status") or "").strip().lower()
+    if status not in ("active", "candidate"):
+        issues.append("lease is not active/candidate")
+    try:
+        start_ts = float(data.get("start_ts") or 0.0)
+        expires_ts = float(data.get("expires_ts") or 0.0)
+    except Exception:
+        start_ts = 0.0
+        expires_ts = 0.0
+        issues.append("invalid lease timestamps")
+    if start_ts and now < start_ts:
+        issues.append("lease has not started")
+    if not expires_ts or now >= expires_ts:
+        issues.append("lease expired")
+    classes = {str(x or "").strip().lower() for x in (data.get("permitted_state_classes") or [])}
+    if not classes:
+        issues.append("no permitted state classes")
+    unsupported = sorted(classes - SARAHNET_RT_STATE_CLASSES)
+    if unsupported:
+        issues.append("unsupported state classes: " + ",".join(unsupported))
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "lease_id": str(data.get("lease_id") or ""),
+        "state_classes": sorted(classes & SARAHNET_RT_STATE_CLASSES),
+        "requires_full_sml": bool(issues),
+        "execution_authority": False,
+    }
+
+
+def sml_validate_sarahnet_rt_envelope(
+    envelope: Mapping[str, Any],
+    *,
+    lease: Optional[Mapping[str, Any]] = None,
+    at_time: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Lightweight deterministic SML-RT structural/lease validation.
+
+    This is deliberately not the Full SML pipeline. It verifies that an already
+    authorized real-time update remains inside the bounded state contract.
+    """
+    data = dict(envelope or {})
+    issues: List[str] = []
+    profile = str(data.get("profile") or data.get("protocol_profile") or "")
+    if profile != SARAHNET_RT_PROFILE:
+        issues.append("invalid SML-RT profile")
+    for field_name in ("world_id", "region_id", "entity_id", "owner_identity", "lease_id", "state_class"):
+        if not str(data.get(field_name) or "").strip():
+            issues.append(f"missing {field_name}")
+    state_class = str(data.get("state_class") or "").strip().lower()
+    if state_class not in SARAHNET_RT_STATE_CLASSES:
+        issues.append("state class requires Full SML or is unsupported")
+    try:
+        seq = int(data.get("sequence_number"))
+        if seq <= 0:
+            raise ValueError
+    except Exception:
+        seq = 0
+        issues.append("invalid sequence_number")
+    delta = data.get("delta_payload")
+    if not isinstance(delta, Mapping):
+        issues.append("delta_payload must be an object")
+        delta_map: Dict[str, Any] = {}
+    else:
+        delta_map = dict(delta)
+    forbidden = sorted({str(k).strip().lower() for k in delta_map.keys()} & SARAHNET_RT_FORBIDDEN_DELTA_KEYS)
+    if forbidden:
+        issues.append("consequential fields require Full SML: " + ",".join(forbidden))
+    try:
+        delta_size = len(json.dumps(delta_map, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+    except Exception:
+        delta_size = SARAHNET_RT_MAX_DELTA_BYTES + 1
+    if delta_size > SARAHNET_RT_MAX_DELTA_BYTES:
+        issues.append("delta_payload exceeds SML-RT size limit")
+
+    lease_result: Dict[str, Any] = {"ok": True, "issues": []}
+    if lease is not None:
+        lease_data = dict(lease or {})
+        lease_result = sml_validate_sarahnet_authority_lease(lease_data, at_time=at_time)
+        if not lease_result.get("ok"):
+            issues.extend([f"lease: {x}" for x in (lease_result.get("issues") or [])])
+        pairs = (
+            ("lease_id", "lease_id"),
+            ("owner_identity", "identity"),
+            ("entity_id", "entity_id"),
+            ("world_id", "world_id"),
+            ("region_id", "region_id"),
+        )
+        for env_key, lease_key in pairs:
+            if str(data.get(env_key) or "") != str(lease_data.get(lease_key) or ""):
+                issues.append(f"lease mismatch: {env_key}")
+        permitted = {str(x or "").strip().lower() for x in (lease_data.get("permitted_state_classes") or [])}
+        if state_class and state_class not in permitted:
+            issues.append("state class not permitted by lease")
+
+    normalized = {
+        "profile": SARAHNET_RT_PROFILE,
+        "world_id": str(data.get("world_id") or "").strip(),
+        "region_id": str(data.get("region_id") or "").strip(),
+        "entity_id": str(data.get("entity_id") or "").strip(),
+        "owner_identity": str(data.get("owner_identity") or "").strip(),
+        "lease_id": str(data.get("lease_id") or "").strip(),
+        "sequence_number": seq,
+        "timestamp": float(data.get("timestamp") or data.get("ts") or (at_time if at_time is not None else time.time())),
+        "state_class": state_class,
+        "delta_payload": delta_map,
+        "integrity_tag": str(data.get("integrity_tag") or ""),
+        "execution_authority": False,
+    }
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "normalized": normalized,
+        "lease": lease_result,
+        "requires_full_sml": bool(issues),
+        "execution_authority": False,
+    }
+
+
+# =============================================================================
 # Singleton and compatibility façade
 # =============================================================================
 
@@ -4392,6 +5418,14 @@ __all__ = [
     "sml_touch_packet",
     "sml_attach_bundle_meta",
     "sml_resolve_safe_cognitive_answer",
+    "sml_build_dynamic_claim_vector",
+    "sml_build_source_authority_court_packet",
+    "sml_normalize_evidence_artifact",
+    "sml_normalize_evidence_artifacts",
+    "sml_adjudicate_evidence_artifacts",
+    "sml_build_evidence_court_packet",
+    "sml_build_creation_mission_contract",
+    "sml_build_avatar_event_packet",
     "sml_apply_cognitive_grammar",
     "sml_compile_natural_program",
     "sml_evaluate_qmath",
@@ -4399,6 +5433,15 @@ __all__ = [
     "sml_application_blueprint_schema",
     "sml_validate_application_blueprint",
     "sml_compile_application_blueprint",
+    "SARAHNET_RT_PROFILE",
+    "SARAHNET_AUTHORITY_LEASE_SCHEMA",
+    "SARAHNET_WORLD_CONTEXT_SCHEMA",
+    "SARAHNET_RT_STATE_CLASSES",
+    "SARAHNET_REALITY_CLASSES",
+    "sml_build_sarahnet_world_context",
+    "sml_build_sarahnet_authority_lease_contract",
+    "sml_validate_sarahnet_authority_lease",
+    "sml_validate_sarahnet_rt_envelope",
     "get_protocol",
     "create_sml_packet",
     "register_sml_organ",

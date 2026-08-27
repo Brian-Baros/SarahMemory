@@ -299,15 +299,18 @@ reply_pools_data = [
     {"category":"fallback_pool","intent":"unknown","response":"Give me a moment to reflect on that...","emotion":"neutral"},
 ]
 
+# Demo/static factual fixtures are kept for first-run/dry-run testing only.
+# They must not be treated as production knowledge. Runtime code should ignore
+# this category unless SARAHMEMORY_DEMO_STATIC_FACTS is explicitly enabled.
 web_static_data = [
-    {"category":"webster_static","intent":"fact","response":"Pi is approximately 3.14159.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Microsoft is a major software company founded by Bill Gates.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Elon Musk is associated with Tesla and SpaceX leadership.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"SpaceX is a private aerospace company.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Bill Gates co-founded Microsoft and is a philanthropist.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Python is a high-level programming language known for readability.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Bitcoin is a decentralized digital cryptocurrency.","emotion":"neutral"},
-    {"category":"webster_static","intent":"fact","response":"Starlink is a satellite internet constellation.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Pi is approximately 3.14159.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Microsoft is a major software company founded by Bill Gates.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Elon Musk is associated with Tesla and SpaceX leadership.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"SpaceX is a private aerospace company.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Bill Gates co-founded Microsoft and is a philanthropist.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Python is a high-level programming language known for readability.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Bitcoin is a decentralized digital cryptocurrency.","emotion":"neutral"},
+    {"category":"demo_webster_static","intent":"fact","response":"Starlink is a satellite internet constellation.","emotion":"neutral"},
 ]
 
 # ──────────────────────── Schemas ────────────────────────

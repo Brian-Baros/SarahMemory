@@ -4315,6 +4315,69 @@ def run_game(context=None):
             "execution_authority": False,
         }
 
+    def _build_synthesis_research_plan(self, top_prompt: str, details_prompt: str = "", compiled: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Create the dynamic research/decomposition plan for a build mission.
+
+        This method defines the thinking path for arbitrary app/addon/game/tool
+        synthesis. It does not research or hardcode a specific example. Evidence
+        acquisition remains owned by Research/API/Terminal when SML authorizes it.
+        """
+        source = "\n".join(x for x in (str(top_prompt or "").strip(), str(details_prompt or "").strip()) if x).strip()
+        low = source.lower()
+        reference = ""
+        for pat in (
+            r"\b([a-z0-9][a-z0-9 ._\-]{1,80})\s*[- ]?like\b",
+            r"\blike\s+(?:a|an|the)?\s*([a-z0-9][a-z0-9 ._\-]{1,80})(?:\s+(?:game|app|application|tool|style|system)|[?.!,]|$)",
+            r"\b([a-z0-9][a-z0-9 ._\-]{1,80})\s+style\b",
+            r"\binspired\s+by\s+([a-z0-9][a-z0-9 ._\-]{1,80})(?:[?.!,]|$)",
+        ):
+            m = re.search(pat, low, flags=re.I)
+            if m:
+                candidate = re.sub(r"\s+", " ", m.group(1)).strip(" .,_-")
+                if candidate and candidate not in {"make me", "create", "build", "game", "app", "application"}:
+                    reference = candidate[:240]
+                    break
+        project_terms = []
+        for label, terms in (
+            ("gameplay", ("game", "playable", "score", "level", "collision", "keyboard")),
+            ("finance", ("stock", "market", "ticker", "portfolio", "trade")),
+            ("dashboard", ("dashboard", "tracker", "chart", "graph")),
+            ("addon", ("addon", "add-on", "plugin", "addons")),
+            ("local_app", ("app", "application", "program", "software", "tool")),
+        ):
+            if any(term in low for term in terms):
+                project_terms.append(label)
+        compiled_program = {}
+        try:
+            compiled_program = (((compiled or {}).get("compiled") or {}).get("program") or {}) if isinstance(compiled, dict) else {}
+        except Exception:
+            compiled_program = {}
+        build_spec = compiled_program.get("build_spec") if isinstance(compiled_program.get("build_spec"), dict) else {}
+        questions = [
+            "What is the requested artifact and which user-visible behavior proves it works?",
+            "What objects, controls, data, screens, and runtime states does the artifact need?",
+            "What local-only/sandbox-only constraints prevent live core write, shell abuse, credential access, device mutation, or self-approval?",
+            "What files, manifest fields, UI contract, addon runtime mode, and integrity records are required?",
+            "What static validation, Compare checks, package verification, and rollback/install plan are required before the user can run it?",
+        ]
+        if reference:
+            questions.insert(1, f"What are the high-level mechanics, visual/style traits, and user expectations of the reference descriptor '{reference}'?")
+            questions.insert(2, "How can those traits be transformed into an original non-infringing implementation rather than copied assets/branding?")
+        return {
+            "schema": "SarahMemory.nailde.synthesis_research_plan.B07",
+            "source_prompt_sha256": _sha256_text(source),
+            "reference_descriptor": reference,
+            "dynamic_project_terms": project_terms,
+            "qsml_program_id": str(compiled_program.get("program_id") or ""),
+            "build_spec": {k: build_spec.get(k) for k in ("application_name", "project_kind", "features", "requested_capabilities", "constraints") if k in build_spec},
+            "questions": questions,
+            "evidence_sources": ["local_project_context", "SarahMemoryResearch_if_authorized", "SarahMemoryAPI_local_models", "Terminal_if_authorized"],
+            "source_policy": "Acquire evidence only through SML-authorized sources; do not let the language model be final authority for reference facts.",
+            "implementation_policy": "Generate original local sandbox artifacts; package for ADDONs only after validation; install/run require separate user approval.",
+            "execution_authority": False,
+        }
+
+
     # ------------------------------------------------------------------
     # Novice-to-enterprise Natural Language Auto-Build Pipeline
     # ------------------------------------------------------------------
@@ -4434,6 +4497,13 @@ def run_game(context=None):
                 "execution_authority": False,
             }
         spec = self._expand_qsml_program(compiled, top_prompt, details_prompt)
+        mission_research_plan = self._build_synthesis_research_plan(top_prompt, details_prompt, compiled)
+        spec["mission_research_plan"] = mission_research_plan
+        research_plan_saved = self.save_workspace_file({
+            "workspace_id": workspace_id,
+            "path": "sandbox/RESEARCH_PLAN.md",
+            "content": "# NAILDE Research / Decomposition Plan\n\n```json\n" + json.dumps(mission_research_plan, indent=2, sort_keys=True, ensure_ascii=False) + "\n```\n",
+        })
         synthesis = self._universal_synthesize_spec(spec, payload)
         if not synthesis.get("ok"):
             receipt = self._record_receipt(
@@ -4452,6 +4522,8 @@ def run_game(context=None):
                 "project_seed_hash": seed_hash,
                 "spec": spec,
                 "qsml": compiled,
+                "mission_research_plan": mission_research_plan,
+                "research_plan_saved": research_plan_saved,
                 "synthesis": synthesis,
                 "receipt": receipt,
                 "message": "NAILDE did not fall back to a different application. Resolve the reported local synthesis/model issue and retry.",
@@ -4535,6 +4607,8 @@ def run_game(context=None):
             "project_seed_hash": seed_hash,
             "spec": spec,
             "qsml": compiled,
+            "mission_research_plan": mission_research_plan,
+            "research_plan_saved": research_plan_saved,
             "synthesis": synthesis,
             "addon_package": addon_package,
             "battle_plan": plan,

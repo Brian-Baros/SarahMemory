@@ -703,32 +703,9 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
                 detected_tags.append((category, obj))
                 break
 
-    medical_flags = {
-        "condition: mole": "Possible melanoma",
-        "expression: slouched": "Posture anomaly / neuro issue",
-        "face-point: landmark_2349": "Right eye droop — stroke warning",
-        "skin tone: uneven": "Skin cancer check",
-    }
-    for tag in detected_tags:
-        if tag in medical_flags:
-            alert_medical(tag)
-
-    # Legacy offline/demo fallback vocabulary. This keeps SarahMemory operational
-    # without a selected vision model, but model detections are preferred when present.
-    synthetic_count = 500
-    prefixes = ["modular", "adaptive", "quantum", "neural", "precision", "bio-active", "liquid-cooled", "synthetic"]
-    nouns = ["transmitter", "oscillator", "stabilizer", "inverter", "thruster", "sensor", "valve", "core"]
-    suffixes = ["array", "hub", "grid", "cell", "interface", "matrix", "system", "scanner"]
-    synthetic_terms = [
-        f"{random.choice(prefixes)} {random.choice(nouns)} {random.choice(suffixes)}"
-        for _ in range(synthetic_count)
-    ]
-
-    all_objects = []
-    for category, terms in domains.items():
-        for term in terms:
-            all_objects.append(f"{category}: {term}")
-    all_objects.extend(synthetic_terms)
+    # Medical diagnosis/warning mappings are not valid perception output. SOBJE may
+    # report observed labels, boxes, colors, motion, and confidence; medical
+    # interpretation belongs to a separate governed medical/safety workflow.
 
     selected = []
     for obs in observations[:8]:
@@ -738,14 +715,6 @@ def ultra_detect_objects(frame: np.ndarray) -> list:
             item = f"{domain}: {label}"
             if item not in selected:
                 selected.append(item)
-    if len(selected) < 3 and all_objects:
-        random.shuffle(all_objects)
-        target_count = random.randint(3, 12)
-        for item in all_objects:
-            if item not in selected:
-                selected.append(item)
-            if len(selected) >= target_count:
-                break
 
     if _vision_observation_logging_enabled() and selected:
         try:

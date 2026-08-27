@@ -67,6 +67,7 @@ from __future__ import annotations
 # --- SARAHMETA END ---
 
 import re
+import os
 import html
 import logging
 import math
@@ -122,7 +123,20 @@ def _sm_websym_query_variants(query: str) -> list:
 # CONSTANTS & STATIC DATA
 # ============================================================================
 
-# Expanded static fallback definitions for common queries
+def _websym_demo_static_facts_enabled() -> bool:
+    """Return True only for explicit dry-run/demo static Webster tests."""
+    try:
+        val = str(os.getenv("SARAHMEMORY_DEMO_STATIC_FACTS", "")).strip().lower()
+        if val in {"1", "true", "yes", "on", "dryrun", "demo"}:
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(getattr(config, "DEMO_STATIC_FACTS_ENABLED", False))
+    except Exception:
+        return False
+
+# Expanded static fallback definitions for common queries. DRYRUN/DEMO only.
 WEBSTER_STATIC = {
     "pi": "Pi (π) is approximately 3.14159265358979323846...",
     "e": "Euler's number (e) is approximately 2.71828182845904523536...",
@@ -422,12 +436,13 @@ class WebSemanticSynthesizer:
             if compressed:
                 return compressed[0]
         
-        # Fallback to static definitions
-        # SARAHMEMORY_PATCH_NOTE 2026-06-28:
-        # Try normalized subject keys after local DB lookup and content synthesis.
-        for lookup_key in _sm_websym_query_variants(query):
-            if lookup_key in WEBSTER_STATIC:
-                return WEBSTER_STATIC[lookup_key]
+        # Fallback to static definitions only in explicit dry-run/demo mode.
+        # Production knowledge routes through SML source selection, DB/model/research,
+        # and validation instead of Webster static shortcuts.
+        if _websym_demo_static_facts_enabled():
+            for lookup_key in _sm_websym_query_variants(query):
+                if lookup_key in WEBSTER_STATIC:
+                    return WEBSTER_STATIC[lookup_key]
         
         research_path_logger.info("Webster_Static failure")
         return "I couldn't find reliable information to return right now."

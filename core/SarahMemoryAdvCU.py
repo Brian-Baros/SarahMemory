@@ -3212,6 +3212,21 @@ def classify_intent_contextual(
 _SM_ADVCU_FAST_ANSWER_SCHEMA = "SarahMemory.AdvCU.local_fast_answer.v1"
 
 
+def _advcu_demo_static_facts_enabled() -> bool:
+    """Return True only for explicit dry-run/demo static concept tests."""
+    try:
+        val = str(os.getenv("SARAHMEMORY_DEMO_STATIC_FACTS", "")).strip().lower()
+        if val in {"1", "true", "yes", "on", "dryrun", "demo"}:
+            return True
+    except Exception:
+        pass
+    try:
+        import SarahMemoryGlobals as _cfg  # type: ignore
+        return bool(getattr(_cfg, "DEMO_STATIC_FACTS_ENABLED", False))
+    except Exception:
+        return False
+
+
 _SM_ADVCU_CORE_CONCEPTS = {
     "api": "An API, or application programming interface, is a defined way for software systems to communicate. It exposes rules, requests, responses, and data formats so one program can safely ask another program or service to do something or provide information.",
     "application programming interface": "An application programming interface, or API, is a defined contract that lets software systems communicate through agreed requests, responses, and data formats.",
@@ -3252,6 +3267,8 @@ def _advcu_extract_definition_subject(text: str) -> str:
 
 
 def _advcu_candidate_from_core_concepts(query: str) -> Optional[Dict[str, Any]]:
+    if not _advcu_demo_static_facts_enabled():
+        return None
     subject = _advcu_extract_definition_subject(query)
     keys = []
     if subject:
@@ -3274,7 +3291,9 @@ def _advcu_candidate_from_core_concepts(query: str) -> Optional[Dict[str, Any]]:
         if ans and _advcu_answer_quality_ok(ans):
             return {
                 "answer": ans,
-                "source": "local_advcu_core_concept",
+                "source": "demo_advcu_core_concept",
+                "runtime_authority": False,
+                "dryrun_only": True,
                 "db": None,
                 "table": None,
                 "confidence": 0.91,

@@ -1972,11 +1972,19 @@ def _sm_exact_short_query_hit(cur, table_name: str, text_cols: list, query: str,
         pass
     try:
         if not rows and "category" in lower_cols and "content" in lower_cols:
-            ccat = lower_cols["category"]
-            ccontent = lower_cols["content"]
-            sql = f"SELECT {_sm_quote_identifier(ccat)}, {_sm_quote_identifier(ccontent)} FROM {_sm_quote_identifier(table_name)} WHERE lower({_sm_quote_identifier(ccat)}) IN (?, ?, ?) LIMIT ?"
-            cur.execute(sql, (topic, f"definition:{topic}", "webster_static", int(limit)))
-            rows.extend(([ccat, ccontent], r) for r in cur.fetchall())
+            # Production runtime must not answer real questions from static/demo
+            # Webster facts. Enable only for explicit dry-run/demo harnesses.
+            demo_static = False
+            try:
+                demo_static = str(os.getenv("SARAHMEMORY_DEMO_STATIC_FACTS", "")).strip().lower() in {"1", "true", "yes", "on", "dryrun", "demo"}
+            except Exception:
+                demo_static = False
+            if demo_static:
+                ccat = lower_cols["category"]
+                ccontent = lower_cols["content"]
+                sql = f"SELECT {_sm_quote_identifier(ccat)}, {_sm_quote_identifier(ccontent)} FROM {_sm_quote_identifier(table_name)} WHERE lower({_sm_quote_identifier(ccat)}) IN (?, ?, ?) LIMIT ?"
+                cur.execute(sql, (topic, f"definition:{topic}", "webster_static", int(limit)))
+                rows.extend(([ccat, ccontent], r) for r in cur.fetchall())
     except Exception:
         pass
     return rows[:int(limit)]

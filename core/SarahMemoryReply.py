@@ -807,9 +807,10 @@ def _looks_like_math(text: str) -> bool:
     return all(c in _MATH_ALLOWED for c in t)
 
 def _eval_safe_math(expr: str) -> Optional[str]:
-    """
-    Ultra-safe evaluator: supports + - * / % and parentheses.
-    No names, no functions, no pow operator to avoid surprises.
+    """Delegate deterministic math to SarahMemoryLogicCalc.
+
+    Reply owns presentation only. It must not evaluate math with Python eval() or
+    duplicate the math engine.
     """
     try:
         clean = (expr or "").strip()
@@ -818,14 +819,20 @@ def _eval_safe_math(expr: str) -> Optional[str]:
         clean = clean.replace("=", "").strip().rstrip("?")
         if not clean or not _looks_like_math(clean):
             return None
-        # Disallow exponent to keep it modest
-        if "^" in clean or "**" in clean:
+        from SarahMemoryLogicCalc import LogicCalc  # type: ignore
+        routed = LogicCalc.route(clean) if hasattr(LogicCalc, "route") else None
+        if not isinstance(routed, dict) or not routed.get("ok"):
             return None
-        # Evaluate in empty builtins
-        result = eval(clean, {"__builtins__": {}}, {})
-        return f"{clean} = {result}"
+        hint = str(routed.get("presentation_hint") or "").strip()
+        if hint:
+            return hint
+        text = str(routed.get("text") or "").strip()
+        if text:
+            return text
+        value = routed.get("canonical_answer", routed.get("value"))
+        return f"{clean} = {value}"
     except Exception as e:
-        logger.debug("Math eval error: %s", e)
+        logger.debug("LogicCalc math route error: %s", e)
         return None
 
 _IMG_TRIGGERS = ("show me a photo of ", "show me an image of ", "image of ", "picture of ", "show me ", "display ")

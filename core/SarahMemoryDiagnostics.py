@@ -152,6 +152,7 @@ REQUIRED_FILES = [
     _core_file("SarahMemorySelfAware.py"),
     _core_file("SarahMemorySi.py"),
     _core_file("SarahMemorySoftwareResearch.py"),
+    _core_file("SarahMemorySMLProtocol.py"),
     _core_file("SarahMemorySynapes.py"),
     _core_file("SarahMemorySync.py"),
     _core_file("SarahMemorySystemIndexer.py"),

@@ -254,6 +254,26 @@ MAX_CONCURRENT_API_REQUESTS = 3
 # ENHANCED STATIC KNOWLEDGE BASE
 # ============================================================================
 
+def _demo_static_facts_enabled() -> bool:
+    """Return True only for explicit dry-run/demo static fact tests.
+
+    Production knowledge must route through SML knowledge sources, local model,
+    SQLite/memory/research, and validation. These static facts are retained only
+    as development fixtures.
+    """
+    try:
+        val = str(os.getenv("SARAHMEMORY_DEMO_STATIC_FACTS", "")).strip().lower()
+        if val in {"1", "true", "yes", "on", "dryrun", "demo"}:
+            return True
+    except Exception:
+        pass
+    try:
+        import SarahMemoryGlobals as _cfg  # type: ignore
+        return bool(getattr(_cfg, "DEMO_STATIC_FACTS_ENABLED", False))
+    except Exception:
+        return False
+
+
 STATIC_FACTS = {
     # Physics & Constants
     "what is the speed of light": "The speed of light in a vacuum is approximately 299,792,458 meters per second (about 186,282 miles per second).",
@@ -323,10 +343,13 @@ class ResearchSource(Enum):
     WEB_QUORA = "web_quora"
     WEB_ARCHIVE = "web_archive"
     API_OPENAI = "api_openai"
+    API_META = "api_meta"
     API_CLAUDE = "api_claude"
     API_MISTRAL = "api_mistral"
     API_GEMINI = "api_gemini"
     API_HUGGINGFACE = "api_huggingface"
+    API_PROVIDER = "api_provider"
+    WEB_RSS = "web_rss"
     NONE = "none"
 
 
@@ -343,9 +366,15 @@ class ResearchResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for backward compatibility."""
-        return {
-            "source": self.source.value if isinstance(self.source, ResearchSource) else self.source,
+        """Convert to dictionary format for backward compatibility.
+
+        B09 also attaches a normalized SML EvidenceArtifact so the caller can
+        route the result through Court 2 without reverse-engineering which organ
+        produced it. This preserves the legacy data/snippet fields.
+        """
+        source_value = self.source.value if isinstance(self.source, ResearchSource) else str(self.source)
+        out = {
+            "source": source_value,
             "intent": self.intent,
             "data": self.content,
             "snippet": self.content,  # Backward compatibility
@@ -353,6 +382,19 @@ class ResearchResult:
             "latency_ms": self.latency_ms,
             "metadata": self.metadata
         }
+        try:
+            artifact = _sml_evidence_artifact_from_research_dict(out, query=self.query or "")
+            raw_artifacts = []
+            try:
+                raw_artifacts = list((self.metadata or {}).get("raw_source_artifacts") or []) if isinstance(self.metadata, dict) else []
+            except Exception:
+                raw_artifacts = []
+            out["evidence_artifact"] = artifact
+            out["evidence_artifacts"] = [artifact, *[a for a in raw_artifacts if isinstance(a, dict)]]
+            out["sml_evidence_schema"] = "SarahMemory.sml.evidence_artifact.B09"
+        except Exception:
+            pass
+        return out
 
 
 @dataclass
@@ -370,11 +412,15 @@ class ResearchMetrics:
     def record_success(self, source: ResearchSource, latency_ms: int):
         """Record successful query."""
         self.total_queries += 1
-        if source.value.startswith("local"):
+        try:
+            source_value = source.value if hasattr(source, "value") else str(source)
+        except Exception:
+            source_value = "unknown"
+        if source_value.startswith("local"):
             self.local_successes += 1
-        elif source.value.startswith("web"):
+        elif source_value.startswith("web"):
             self.web_successes += 1
-        elif source.value.startswith("api"):
+        elif source_value.startswith("api"):
             self.api_successes += 1
         
         # Update average latency (exponential moving average)
@@ -705,6 +751,71 @@ def _research_source_label(result: "ResearchResult", lane: str) -> "ResearchResu
     except Exception:
         pass
     return result
+
+def _sml_evidence_artifact_from_research_dict(result: Dict[str, Any], *, query: str = "") -> Dict[str, Any]:
+    """Return a B09 SML EvidenceArtifact for a legacy research result dict."""
+    try:
+        import SarahMemorySMLProtocol as _SMSML  # type: ignore
+        fn = getattr(_SMSML, "sml_normalize_evidence_artifact", None)
+        if callable(fn):
+            return fn(result, query=query or str(result.get("query") or ""))
+    except Exception:
+        pass
+    # Fail-safe local envelope. This keeps legacy callers from breaking when the
+    # SML module is unavailable, while marking the artifact as non-final.
+    content = str(result.get("data") or result.get("snippet") or result.get("content") or "")
+    source = str(result.get("source") or "unknown_source")
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    return {
+        "schema": "SarahMemory.sml.evidence_artifact.B09.compat",
+        "artifact_id": "ev_compat_" + hashlib.sha256(f"{query}|{source}|{content[:512]}".encode("utf-8", errors="ignore")).hexdigest()[:24],
+        "query": query or str(result.get("query") or ""),
+        "source": source,
+        "source_family": str(metadata.get("source_family") or "unknown"),
+        "provider": str(metadata.get("provider") or ""),
+        "content": content[:4096],
+        "confidence": float(result.get("confidence") or 0.0),
+        "authority_class": "unknown_compatibility_artifact",
+        "final_authority_possible": False,
+        "runtime_authority": False,
+        "supports_current_claim": False,
+        "limitations": ["SML normalizer unavailable; compatibility artifact only"],
+        "metadata": {"source_metadata": metadata},
+    }
+
+
+def _sml_evidence_court_for_results(query: str, results: List["ResearchResult"]) -> Optional[Dict[str, Any]]:
+    """Run SML Evidence Court over ResearchResult candidates when available."""
+    if not results:
+        return None
+    try:
+        import SarahMemorySMLProtocol as _SMSML  # type: ignore
+        court_fn = getattr(_SMSML, "sml_build_evidence_court_packet", None)
+        if not callable(court_fn):
+            return None
+        raw_items = [r.to_dict() for r in results if isinstance(r, ResearchResult)]
+        return court_fn(query, raw_items, context={"source": "SarahMemoryResearch.parallel_research"})
+    except Exception:
+        return None
+
+
+def _research_result_for_accepted_artifact(results: List["ResearchResult"], accepted_artifact: Dict[str, Any]) -> Optional["ResearchResult"]:
+    """Map a Court-accepted artifact back to its ResearchResult owner."""
+    if not isinstance(accepted_artifact, dict):
+        return None
+    accepted_id = str(accepted_artifact.get("artifact_id") or "")
+    accepted_hash = str(accepted_artifact.get("content_hash") or "")
+    for result in results:
+        try:
+            artifact = result.to_dict().get("evidence_artifact") or {}
+            if accepted_id and str(artifact.get("artifact_id") or "") == accepted_id:
+                return result
+            if accepted_hash and str(artifact.get("content_hash") or "") == accepted_hash:
+                return result
+        except Exception:
+            continue
+    return None
+
 
 # ============================================================================
 # LOCAL RESEARCH ENGINE
@@ -1157,25 +1268,25 @@ class LocalResearch:
     
     @staticmethod
     def _search_static(query: str, intent: str) -> Optional[ResearchResult]:
-        """Search static fallback knowledge base."""
+        """Search static fallback knowledge base only in explicit dry-run/demo mode."""
         try:
+            if not _demo_static_facts_enabled():
+                return None
             lookup = _normalize_static_lookup_query(query)
             static_fact = STATIC_FACTS.get(lookup) or STATIC_FACTS.get(str(query or "").lower().strip())
             if static_fact:
-                logger.info("[Class 1] Static fallback match found")
-                research_debug_logger.debug(f"[STATIC HIT] Query: {query}")
-                
+                logger.info("[Class 1] Static dry-run fallback match found")
+                research_debug_logger.debug(f"[STATIC DRYRUN HIT] Query: {query}")
                 return ResearchResult(
                     source=ResearchSource.LOCAL_STATIC,
                     content=static_fact,
                     confidence=1.0,
                     query=query,
                     intent=intent,
-                    metadata={"type": "hardcoded_fact"}
+                    metadata={"type": "demo_static_fact", "runtime_authority": False, "dryrun_only": True}
                 )
         except Exception as e:
             research_debug_logger.debug(f"[STATIC ERROR] {str(e)}")
-        
         return None
 
 
@@ -1348,6 +1459,18 @@ class WebResearch:
             if synthesized_response and "still researching" not in synthesized_response.lower():
                 latency_ms = int((time.time() - start_time) * 1000)
                 
+                raw_source_artifacts = []
+                try:
+                    for _src_name, _src_content in raw.items():
+                        raw_source_artifacts.append(_sml_evidence_artifact_from_research_dict({
+                            "source": f"web_{str(_src_name).strip().lower()}",
+                            "data": _src_content,
+                            "confidence": 0.72,
+                            "metadata": {"source_family": "web_research", "raw_source_name": _src_name, "method": "web_fetch"}
+                        }, query=query))
+                except Exception:
+                    raw_source_artifacts = []
+
                 result = ResearchResult(
                     source=ResearchSource.WEB_WIKIPEDIA,  # Primary source
                     content=synthesized_response,
@@ -1355,7 +1478,7 @@ class WebResearch:
                     query=query,
                     intent="research",
                     latency_ms=latency_ms,
-                    metadata={"sources": list(raw.keys()), "raw_count": len(raw)}
+                    metadata={"sources": list(raw.keys()), "raw_count": len(raw), "raw_source_artifacts": raw_source_artifacts, "source_family": "web_research"}
                 )
                 
                 # Cache the result
@@ -1375,7 +1498,7 @@ class WebResearch:
                         query=query,
                         intent="research",
                         latency_ms=latency_ms,
-                        metadata={"sources": list(raw.keys())}
+                        metadata={"sources": list(raw.keys()), "source_family": "web_research"}
                     )
                     
                     return result
@@ -1693,16 +1816,20 @@ class APIResearch:
                     if result and result.get("data"):
                         latency_ms = int((time.time() - start_time) * 1000)
                         
-                        # Map provider to ResearchSource
+                        # Map provider to ResearchSource. Unknown providers remain
+                        # normalized as api_<provider> strings and are converted into
+                        # EvidenceArtifact objects by B09; they are not truth authority.
                         source_map = {
                             "openai": ResearchSource.API_OPENAI,
+                            "meta": ResearchSource.API_META,
                             "claude": ResearchSource.API_CLAUDE,
+                            "anthropic": ResearchSource.API_CLAUDE,
                             "mistral": ResearchSource.API_MISTRAL,
                             "gemini": ResearchSource.API_GEMINI,
-                            "huggingface": ResearchSource.API_HUGGINGFACE
+                            "huggingface": ResearchSource.API_HUGGINGFACE,
                         }
                         
-                        source = source_map.get(provider, ResearchSource.API_OPENAI)
+                        source = source_map.get(provider, f"api_{provider}")
                         
                         research_result = ResearchResult(
                             source=source,
@@ -1713,7 +1840,11 @@ class APIResearch:
                             latency_ms=latency_ms,
                             metadata={
                                 "provider": provider,
-                                "original_source": result.get("source", provider)
+                                "model": result.get("model_used"),
+                                "original_source": result.get("source", provider),
+                                "source_family": "api_provider",
+                                "authority_class": "candidate_reasoning",
+                                "final_authority": False,
                             }
                         )
                         
@@ -1738,15 +1869,52 @@ class APIResearch:
     
     @staticmethod
     def _get_provider_priority() -> List[str]:
-        """Get list of enabled providers in priority order."""
-        priority_order = ["openai", "claude", "mistral", "gemini", "huggingface"]
-        enabled = []
-        
-        for provider in priority_order:
-            config_key = f"{provider.upper()}_API"
-            if hasattr(config, config_key) and getattr(config, config_key):
-                enabled.append(provider)
-        
+        """Get enabled providers from the global provider registry, not a static five-provider list.
+
+        B09 intentionally does not edit SarahMemoryAPI.py or SarahMemoryGlobals.py.
+        It reads their provider configuration and normalizes aliases such as
+        llama/meta.ai to the Meta provider lane before calling send_to_api().
+        """
+        enabled: List[str] = []
+
+        def _add_provider(name: str) -> None:
+            n = str(name or "").strip().lower()
+            if n in ("llama", "llama_api", "meta_ai", "meta.ai"):
+                n = "meta"
+            if not n or n in {"local", "local_llm"}:
+                return
+            if n not in enabled:
+                enabled.append(n)
+
+        try:
+            # Prefer the orchestration module's own priority list because it is
+            # the provider dispatcher that actually knows how to call providers.
+            import SarahMemoryAPI as _SMAPI  # type: ignore
+            for provider in getattr(_SMAPI, "PROVIDER_PRIORITY", []) or []:
+                flag_map = getattr(config, "API_PROVIDER_FLAGS", {}) or {}
+                key = str(provider or "").strip().lower()
+                flag_value = flag_map.get(key, getattr(config, f"{key.upper()}_API", False))
+                if flag_value:
+                    _add_provider(key)
+        except Exception:
+            pass
+
+        try:
+            for provider, flag_value in (getattr(config, "API_PROVIDER_FLAGS", {}) or {}).items():
+                if flag_value:
+                    _add_provider(provider)
+        except Exception:
+            pass
+
+        # Deterministic fallback order if the registry is unavailable.
+        for provider in ("openai", "meta", "claude", "anthropic", "mistral", "gemini", "huggingface", "deepseek", "groq", "cohere", "ollama", "mesh"):
+            try:
+                attr = f"{provider.upper()}_API"
+                if bool(getattr(config, attr, False)):
+                    _add_provider(provider)
+            except Exception:
+                pass
+
         return enabled
 
 
@@ -1828,11 +1996,36 @@ async def parallel_research(query: str) -> ResearchResult:
             elif result and isinstance(result, ResearchResult):
                 valid_results.append(result)
         
-        # Select best result based on confidence and source priority
+        # Select best result through SML Evidence Court when available. This is
+        # claim-specific authority selection, not simple confidence sorting.
         if valid_results:
-            # Sort by confidence (descending)
-            valid_results.sort(key=lambda r: r.confidence, reverse=True)
-            best_result = _research_source_label(valid_results[0], "parallel_research")
+            evidence_court = _sml_evidence_court_for_results(query, valid_results)
+            best_result = None
+            if isinstance(evidence_court, dict):
+                accepted = ((evidence_court.get("court_2") or {}) if isinstance(evidence_court.get("court_2"), dict) else {}).get("accepted_artifact")
+                if isinstance(accepted, dict):
+                    best_result = _research_result_for_accepted_artifact(valid_results, accepted)
+                # Fresh/current claims must not fall back to model/API confidence
+                # alone if Court 2 rejects all artifacts.
+                vector = (((evidence_court.get("court_1") or {}) if isinstance(evidence_court.get("court_1"), dict) else {}).get("claim_vector") or {})
+                if best_result is None and bool(vector.get("freshness_required")):
+                    total_latency = int((time.time() - start_time) * 1000)
+                    return ResearchResult(
+                        source=ResearchSource.NONE,
+                        content="Current-source evidence was required, but SML Evidence Court did not accept any returned artifact as final authority.",
+                        confidence=0.0,
+                        query=query,
+                        intent=intent,
+                        latency_ms=total_latency,
+                        metadata={"evidence_court": evidence_court, "method": "b09_evidence_court_rejected_all"}
+                    )
+            if best_result is None:
+                # Backward-compatible fallback for timeless/general queries.
+                valid_results.sort(key=lambda r: r.confidence, reverse=True)
+                best_result = valid_results[0]
+            best_result = _research_source_label(best_result, "parallel_research")
+            if isinstance(best_result.metadata, dict) and isinstance(evidence_court, dict):
+                best_result.metadata.setdefault("evidence_court", evidence_court)
             
             # Calculate total latency
             total_latency = int((time.time() - start_time) * 1000)
@@ -1844,11 +2037,12 @@ async def parallel_research(query: str) -> ResearchResult:
             # Cache result
             cache_result(query, best_result)
             
-            logger.info(f"[RESEARCH SUCCESS] Source: {best_result.source.value}, "
+            _src_value = best_result.source.value if hasattr(best_result.source, "value") else str(best_result.source)
+            logger.info(f"[RESEARCH SUCCESS] Source: {_src_value}, "
                        f"Confidence: {best_result.confidence:.2f}, "
                        f"Latency: {total_latency}ms")
             
-            research_debug_logger.debug(f"[PARALLEL COMPLETE] Best source: {best_result.source.value}")
+            research_debug_logger.debug(f"[PARALLEL COMPLETE] Best source: {_src_value}")
             
             return best_result
         

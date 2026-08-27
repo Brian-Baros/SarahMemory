@@ -324,6 +324,12 @@ class NetworkNode:
     _BATCH_BYTES_SOFT  = 32_768
     _BATCH_LATENCY_MS  = 60
     _UDP_CHUNK         = 1200
+    # Shared transport KDF context. The previous implementation mixed the *local*
+    # node id into the key, causing two valid peers with the same configured
+    # SarahNet secret to derive different keys and fail AEAD verification. Peer
+    # identity/authority remains a control-plane concern; SMNP transport derives
+    # one interoperable network key from the configured shared secret.
+    _TRANSPORT_KDF_INFO = b"sarah-net-smnp-v1"
 
     def __init__(self,
                  node_id: str,
@@ -332,7 +338,7 @@ class NetworkNode:
                  prefer_tcp: bool = True,
                  allow_udp: bool  = True):
         self.node_id = node_id
-        self.shared_key = SarahNetCrypto.hkdf_256(shared_secret, info=b"sarah-net-"+node_id.encode())
+        self.shared_key = SarahNetCrypto.hkdf_256(shared_secret, info=self._TRANSPORT_KDF_INFO)
         self.bind_addr = bind
         self.prefer_tcp = prefer_tcp
         self.allow_udp  = allow_udp
@@ -458,7 +464,12 @@ class NetworkNode:
                 # Acknowledge (best-effort)
                 try:
                     ack = NetworkProtocol.pack_message(NetworkProtocol.T_ACK, b"", {"ok":"1","mid": meta.get("mid","")}, flags=NetworkProtocol.F_ACK)
-                    ct_ack = SarahNetCrypto.seal(self.shared_key, ack, aad=meta.get("ts","").encode())
+                    # AAD must be knowable before decrypting. The former timestamp
+                    # AAD lived only inside the encrypted SMNP frame, so a receiver
+                    # could not reproduce it. SMNP/1 therefore authenticates the full
+                    # encrypted frame with empty external AAD until an explicit outer
+                    # authenticated header is standardized.
+                    ct_ack = SarahNetCrypto.seal(self.shared_key, ack, aad=b"")
                     conn.sendall(struct.pack("!I", len(ct_ack)) + ct_ack)
                 except Exception:
                     pass
@@ -510,12 +521,10 @@ class NetworkNode:
                 pass
             else:
                 try:
-                    try:
-                        _, meta, payload, flags, _ = NetworkProtocol.unpack_message(blob)
-                        aad = meta.get("ts","").encode()
-                    except Exception:
-                        aad = b""
-                    ct = SarahNetCrypto.seal(self.shared_key, blob, aad=aad)
+                    # Keep AEAD associated data symmetrical with the receive path.
+                    # Packet timestamp remains integrity-protected inside the sealed
+                    # SMNP frame rather than being used as unavailable outer AAD.
+                    ct = SarahNetCrypto.seal(self.shared_key, blob, aad=b"")
                 except Exception:
                     self._log("[crypto] seal failed; dropping")
                     ct = None
@@ -1728,8 +1737,8 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['input', 'network'],
-    "supported_missions": ['Conversation', 'Network', 'Research'],
+    "capabilities": ['input', 'network', 'transport', 'sml_rt_transport'],
+    "supported_missions": ['Conversation', 'Network', 'Research', 'Execution'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004'],
     "required_authority": ['Network', 'Read'],
     "priority": 60,

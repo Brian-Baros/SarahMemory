@@ -2015,7 +2015,7 @@ LOCAL_DATASET_POOL_MAX_ROWS_PER_TABLE = int(os.getenv("SARAH_LOCAL_DATASET_POOL_
 LOCAL_VECTOR_SEARCH_ENABLED = _env_flag("SARAH_LOCAL_VECTOR_SEARCH_ENABLED", "true")
 LOCAL_IMPORTED_DATA_SCAN_ENABLED = _env_flag("SARAH_LOCAL_IMPORTED_DATA_SCAN_ENABLED", "false")
 # SARAHMEMORY_PATCH_NOTE: default routing is Local to preserve offline operation; UI can select Web/API when user arms it.
-ROUTE_MODE = os.getenv("SARAH_ROUTE_MODE", "Local").strip() or "Local"  # Options: "Any", "Local", "Web", "API"
+ROUTE_MODE = os.getenv("SARAH_ROUTE_MODE", "Any").strip() or "Any"  # Options: "Any", "Local", "Web", "API"
 # SARAHMEMORY_PATCH_NOTE: web research is disabled by default; the UI/user must explicitly arm online research.
 WEB_RESEARCH_ENABLED = _env_flag("SARAH_WEB_RESEARCH_ENABLED", "false") # True = allow governed web research when user/session permits it.
 # Web Homepage This will be the HomePage in which is seen when the SarahMemoryGUI.py interface is loaded.
@@ -2054,6 +2054,8 @@ DEEPSEEK_API    = False
 GROQ_API        = False
 COHERE_API      = False
 OLLAMA_API      = False
+META_API        = True  # META LLAMA API - Native Meta Llama 4 Maverick/Scout, Llama 3.3 etc - https://api.llama.com
+LLAMA_API       = True  # Alias for META_API - legacy name, keep both True for compatibility
 
 LOCAL_LLM_API   = True # LOCAL_LLM_API When 'True' All Requests/Responses are Ran from the Auto/Manual-Selected 3rd Party MODEL_CATELOG NO NEED FOR EXTERNAL API CALLS
 LOCAL_API       = True # LOCAL_API is the LOCAL SYSTEM ITSELF NOT A 3rd Party API it is the Local .DB Vectored System
@@ -2068,6 +2070,8 @@ API_PROVIDER_FLAGS = {
     "local_llm":  LOCAL_LLM_API, # Needs to be the AUTO or MANUAL SELECTED Local MODEL 
     "local":       LOCAL_API,
     "openai":      OPEN_AI_API,
+    "meta":        META_API,        # META LLAMA API - Native Llama 4 Maverick/Scout, Llama 3.3
+    "llama":       LLAMA_API,       # Alias - same as meta
     "claude":      CLAUDE_API,
     "anthropic":   ANTHROPIC_API,
     "mistral":     MISTRAL_API,
@@ -4674,8 +4678,8 @@ def _sm_get_default_settings():
 
     # Research
     "LOCAL_DATA_ENABLED": True,
-    "WEB_RESEARCH_ENABLED": False,
-    "API_RESEARCH_ENABLED": False,
+    "WEB_RESEARCH_ENABLED": True,
+    "API_RESEARCH_ENABLED": True,
     "ROUTE_MODE": "Any",
     "WIKIPEDIA_RESEARCH_ENABLED": True,
     "DUCKDUCKGO_RESEARCH_ENABLED": False,
@@ -4694,6 +4698,7 @@ def _sm_get_default_settings():
     "LOCAL_LLM_API": True,
     "LOCAL_API": True,
     "MESH_API": True,
+    "META_API": True,
     "API_TIMEOUT": 20,
 
     # Models (aligned to Top Menu DEFAULTS)

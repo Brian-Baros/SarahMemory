@@ -55,10 +55,25 @@ from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
-import spacy
-from langdetect import detect
-from docx import Document as DocxDocument
-import PyPDF2
+try:
+    import spacy
+except Exception:
+    spacy = None
+try:
+    from langdetect import detect
+except Exception:
+    def detect(text):
+        # Optional dependency fallback: do not kill SystemLearn import.
+        # Treat non-empty text as acceptable for bounded local learning filters.
+        return 'en' if str(text or '').strip() else 'unknown'
+try:
+    from docx import Document as DocxDocument
+except Exception:
+    DocxDocument = None
+try:
+    import PyPDF2
+except Exception:
+    PyPDF2 = None
 import subprocess
 import threading
 import importlib
@@ -84,7 +99,7 @@ except Exception:
     def is_offline() -> bool:
         return False
 
-config.LEARNING_PHASE_ACTIVE = True  # Only TRUE during indexing/learning
+config.LEARNING_PHASE_ACTIVE = False  # TRUE only inside explicit bounded learning cycles
 # Initialize FAISS and SentenceTransformer
 from SarahMemoryGlobals import MODEL_CONFIG, MULTI_MODEL
 
@@ -248,25 +263,31 @@ def memory_autocorrect():
 # ---------------------------------------------------------------------------
 def process_files(files, use_mammoth=True, use_antiword=True, learn_registry=False):
     log(f"📁 Processing {len(files)} files from index...")
+    previous_learning_state = bool(getattr(config, "LEARNING_PHASE_ACTIVE", False))
+    config.LEARNING_PHASE_ACTIVE = True
     total = 0
-    for file_path, file_type in files:
-        if _path_is_excluded(file_path):
-            continue
-        if not os.path.exists(file_path):
-            continue
-        # Call extract_text with proper flags
-        content = extract_text(file_path, use_mammoth=use_mammoth, use_antiword=use_antiword)
-        if not content and not file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-            continue
-        if content and not is_clean_content(content):
-            log(f"🧹 Skipped low-quality or non-English content: {file_path}")
-            continue
-        category = categorize_text_by_path_or_content(file_path, content or "")
-        if not entry_already_learned(category, content or "", file_path):
-            if insert_to_database(category, content or "", filepath=file_path):
-                total += 1
-                log(f"✅ {file_path} => {category}")
-    log(f"✅ Completed processing {total} files.")
+    try:
+        for file_path, file_type in files:
+            if _path_is_excluded(file_path):
+                continue
+            if not os.path.exists(file_path):
+                continue
+            # Call extract_text with proper flags
+            content = extract_text(file_path, use_mammoth=use_mammoth, use_antiword=use_antiword)
+            if not content and not file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
+                continue
+            if content and not is_clean_content(content):
+                log(f"🧹 Skipped low-quality or non-English content: {file_path}")
+                continue
+            category = categorize_text_by_path_or_content(file_path, content or "")
+            if not entry_already_learned(category, content or "", file_path):
+                if insert_to_database(category, content or "", filepath=file_path):
+                    total += 1
+                    log(f"✅ {file_path} => {category}")
+        log(f"✅ Completed processing {total} files.")
+        return total
+    finally:
+        config.LEARNING_PHASE_ACTIVE = previous_learning_state
 
 # ---------------------------------------------------------------------------
 # GUI
@@ -508,7 +529,19 @@ def get_available_drives():
 # # Define antiword path globally from tools directory
 ANTIWORD_PATH = os.path.join(TOOLS_DIR, "antiword", "antiword.exe")
 
-nlp = spacy.load("en_core_web_sm")
+class _SystemLearnBlankNLP:
+    max_length = 1000000000
+    def __call__(self, text):
+        class _Doc:
+            ents = []
+            def __iter__(self):
+                return iter([])
+        return _Doc()
+
+try:
+    nlp = spacy.load("en_core_web_sm") if spacy is not None else _SystemLearnBlankNLP()
+except Exception:
+    nlp = _SystemLearnBlankNLP()
 nlp.max_length = 1000000000  # Allows up to 2 million characters
 # DB Paths
 PERSONALITY_DB = os.path.join(config.DATASETS_DIR, "personality1.db")
@@ -675,6 +708,8 @@ def detect_language(text):
 def extract_doc_metadata(file_path):
     try:
         if file_path.endswith(".pdf"):
+            if PyPDF2 is None:
+                return {}
             with open(file_path, "rb") as f:
                 pdf = PyPDF2.PdfReader(f)
                 meta = pdf.metadata
@@ -683,6 +718,8 @@ def extract_doc_metadata(file_path):
                     "author": meta.get('/Author', '')
                 }
         elif file_path.endswith(".docx"):
+            if DocxDocument is None:
+                return {}
             doc = DocxDocument(file_path)
             core_props = doc.core_properties
             return {

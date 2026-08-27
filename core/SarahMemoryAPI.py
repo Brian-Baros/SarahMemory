@@ -2,7 +2,7 @@
 File: SarahMemoryAPI.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.0.0
-Date: 2026-07-11
+Date: 2026-08-24
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -24,7 +24,7 @@ SarahMemoryAPI is the central API orchestration layer for SarahMemory with multi
 It manages connections to multiple AI providers including Local Downloaded Models,
 API keys must be set in the .env file or system enviorments, API providers must be selected
 to 'True' in the SarahMemoryGlobals.py file approx line number (1446-1466)
-(OpenAI, Claude, Mistral,Gemini, HuggingFace, etc.)
+(OpenAI, Claude, Mistral,Gemini, HuggingFace, META, etc.)
 and provides intelligent failover, caching,
 and context-aware prompt building.
 
@@ -36,7 +36,7 @@ KEY CAPABILITIES:
 - Mistral AI (mistral-large, mistral-medium, etc.)
 - Google Gemini (gemini-pro, gemini-1.5-pro, etc.)
 - HuggingFace Inference API
-- DeepSeek, Groq, Cohere, ollama, and more
+- DeepSeek, Groq, Cohere, ollama, Meta and more
 
 2. INTELLIGENT ROUTING
 - Automatic provider selection based on intent
@@ -524,6 +524,7 @@ API_KEYS: Dict[str, Optional[str]] = {
     "local": os.getenv("LOCAL_BRAIN"),
     "local_llm": os.getenv("LOCAL_LLM_API"),
     "mesh": os.getenv("MESH_API"),
+    "meta": os.getenv("META_API_KEY") or os.getenv("LLAMA_API_KEY") or os.getenv("META_LLAMA_API_KEY"),
 }
 
 # OpenAI endpoint selection (honor custom endpoint if valid)
@@ -549,6 +550,7 @@ API_URLS: Dict[str, str] = {
     "local": "http://127.0.0.1:8000/api/local/chat",
     "local_llm": "local-runtime",
     "mesh": "https://api.sarahmemory.com/api/chat",
+    "meta": "https://api.llama.com/compat/v1/chat/completions",
 }
 
 # Default models for each provider
@@ -566,14 +568,16 @@ DEFAULT_MODELS: Dict[str, str] = {
     "local": "synapses-micro-brain",
     "local_llm": "auto",  # auto-selected local model
     "mesh": "auto",
+    "meta": "Llama-4-Maverick-17B-128E-Instruct-FP8",
 }
 
 # Provider priority for fallback
 PROVIDER_PRIORITY: List[str] = [
     "local",        # SarahMemory AiOS Synapses/Neuron micro-brain fully local .db files, LM (deterministic + retrieval + tool routing)
     "local_llm",    # Local 3rd Party LLM MODEL runtime
-    "openai",       #OPEN AI API, Set API key in either .env or Local system enviorment settings
-    "claude",       #CLAUDE AI API, Set API key in either .env or local system enviorment settings
+    "openai",       #OPEN AI API
+    "meta",         #META LLAMA API - Llama 4 Maverick/Scout, Llama 3.3 etc - Native Meta endpoint
+    "claude",       #CLAUDE AI API
     "mistral",      #MISTRAL AI API
     "gemini",       #GOOGLE GEMINI AI API
     "deepseek",     #DEEPSEEK AI API
@@ -1012,6 +1016,9 @@ def _provider_flag_attr(provider: str) -> Optional[str]:
         "local_llm": "LOCAL_LLM_API",
         "local": "LOCAL_API",
         "mesh": "MESH_API",
+        "meta": "META_API",
+        "llama": "META_API",
+        "llama_api": "META_API",
     }.get(p)
 
 def _sm_local_llm_auto_available() -> bool:
@@ -1460,6 +1467,66 @@ def _call_openai(
 
     except Exception as e:
         return None, str(e)
+
+
+
+def _call_meta(prompt: str, model: str, key: Optional[str], max_tokens: int = 800, temperature: float = 1.0) -> Tuple[Optional[str], Optional[str]]:
+    """
+    META LLAMA API - Native Meta Llama API (OpenAI-compatible)
+    Supports Llama-4-Maverick, Llama-4-Scout, Llama-3.3-70B, etc.
+    Endpoint: https://api.llama.com/compat/v1/chat/completions
+    Uses same OpenAI-compatible format as OpenAI/Groq
+    """
+    if not _HAS_REQUESTS:
+        return None, "requests library not available"
+    if not key:
+        return None, "META API key missing (set META_API_KEY or LLAMA_API_KEY in .env)"
+
+    # Model fallback mapping for Meta
+    meta_model_map = {
+        "Llama-4-Maverick-17B-128E-Instruct-FP8": "Llama-4-Maverick-17B-128E-Instruct-FP8",
+        "Llama-4-Scout-17B-16E-Instruct-FP8": "Llama-4-Scout-17B-16E-Instruct-FP8",
+        "Llama-3.3-70B-Instruct": "Llama-3.3-70B-Instruct",
+        "Llama-3.1-405B-Instruct": "Llama-3.1-405B-Instruct",
+        "Llama-3.1-70B-Instruct": "Llama-3.1-70B-Instruct",
+        "Llama-3.1-8B-Instruct": "Llama-3.1-8B-Instruct",
+    }
+    api_model = meta_model_map.get(model, model)
+
+    url = API_URLS.get("meta", "https://api.llama.com/compat/v1/chat/completions")
+
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": api_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": int(max_tokens),
+        "temperature": float(temperature),
+    }
+
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            # OpenAI-compatible response
+            if "choices" in data and len(data["choices"]) > 0:
+                choice = data["choices"][0]
+                content = choice.get("message", {}).get("content") or choice.get("text", "")
+                if content:
+                    return content.strip(), None
+            # Fallback for non-compat format
+            if "completion_message" in data:
+                content = data["completion_message"].get("content", {}).get("text", "")
+                if content:
+                    return content.strip(), None
+            return None, f"Unexpected META response format: {str(data)[:500]}"
+        else:
+            return None, f"META API error {resp.status_code}: {resp.text[:800]}"
+    except Exception as e:
+        return None, f"META API call failed: {e}"
 
 
 def _call_claude(
@@ -2651,7 +2718,7 @@ def send_to_api(
     # NOTE: This flag is intended to gate *external* research/API calls. Local lanes are always allowed.
     if not getattr(config, 'API_RESEARCH_ENABLED', True):
         req = (provider or "").strip().lower()
-        if req in ("openai","claude","anthropic","mistral","gemini","huggingface","deepseek","groq","cohere","mesh"):
+        if req in ("openai","meta","claude","anthropic","mistral","gemini","huggingface","deepseek","groq","cohere","mesh"):
             logger.warning("[BLOCKED] API research disabled in Globals (external provider blocked).")
             return {
                 "source": req,
@@ -2805,6 +2872,8 @@ def send_to_api(
     try:
         if provider == "openai":
             content, error = _call_openai(prompt, model, key, max_tokens, temperature)
+        elif provider == "meta":
+            content, error = _call_meta(prompt, model, key, max_tokens, temperature)
         elif provider in ("claude", "anthropic"):
             content, error = _call_claude(prompt, model, key, max_tokens)
         elif provider == "mistral":

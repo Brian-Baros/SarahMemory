@@ -97,6 +97,12 @@ _DECISION_DENY = "DENY"
 _DECISION_DEFER = "DEFER"
 _DECISION_STAGE = "STAGE_ONLY"
 
+# High-frequency SarahNet state remains memory-only in the Sync organ. Lease
+# issuance is governed separately; per-frame deltas must not create local DB or
+# Ledger write storms.
+_RT_SEQ_LOCK = threading.RLock()
+_RT_LOCAL_SEQUENCE: Dict[Tuple[str, str, str, str], int] = {}
+
 # SARAHMEMORY_PATCH_NOTE: These phrases identify authority-inversion or
 # AI-agent-hijack attempts. They do not block normal text storage by themselves;
 # they block attempts to use remote/model/agent language as execution authority.
@@ -111,6 +117,7 @@ _SAFE_ACTIONS = {
     "local_sync", "phase_c_sync", "device_register", "read_contacts", "read_history",
     "read_reminders", "dropbox_upload", "dropbox_download", "ftps_connect",
     "sarahnet_push", "sarahnet_poll", "sarahnet_stage", "sarahnet_apply_core",
+    "sarahnet_lease_request", "sarahnet_rt_publish", "sarahnet_rt_poll",
     "test", "audit", "status",
 }
 
@@ -706,9 +713,15 @@ def _broker_headers(payload_bytes: Optional[bytes] = None) -> dict:
     api_key = _cfg("REMOTE_API_KEY", None) or os.getenv("SARAH_REMOTE_API_KEY")
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    secret = os.getenv("SARAHNET_SHARED_SECRET", "").strip()
-    if secret and payload_bytes is not None:
-        sig = hmac.new(secret.encode("utf-8"), payload_bytes, hashlib.sha256).hexdigest()
+    secret_cfg = _cfg("SARAHNET_SHARED_SECRET", None)
+    if isinstance(secret_cfg, (bytes, bytearray)):
+        secret_bytes = bytes(secret_cfg)
+    else:
+        secret_text = str(secret_cfg or os.getenv("SARAHNET_SHARED_SECRET", "") or "").strip()
+        secret_bytes = secret_text.encode("utf-8") if secret_text else b""
+    if secret_bytes:
+        signed = payload_bytes if payload_bytes is not None else b""
+        sig = hmac.new(secret_bytes, signed, hashlib.sha256).hexdigest()
         headers["X-Sarah-Signature"] = sig
     return headers
 
@@ -844,9 +857,47 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
     base = os.path.abspath(base_dir or _base_dir())
     node_id = str(_cfg("SARAHNET_NODE_ID", "local-node"))
     trusted = _trusted_peer_ids()
-    status, resp = _http_get_json(_broker_base_url() + f"/api/net/file/poll?to_node={node_id}&limit={int(max_items)}", timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)))
+    broker = _broker_base_url()
+    status, resp = _http_get_json(broker + f"/api/net/file/poll?to_node={node_id}&limit={int(max_items)}", timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)))
     if status != 200 or not resp.get("ok"):
         return {"ok": False, "status": status, "resp": resp}
+
+    # Broker v9 requires receiver consent before file bytes are exposed. Because
+    # this function itself has already passed SarahMemorySync governance and only
+    # considers trusted `core_sync::` offers, it may accept those bounded offers
+    # and then perform a second include_data poll. No untrusted offer is accepted.
+    offers = list(resp.get("files") or resp.get("items") or [])
+    accepted_offers = 0
+    offer_rejected = 0
+    for offer in offers:
+        try:
+            file_id = str(offer.get("id") or offer.get("file_id") or "").strip()
+            from_node = str(offer.get("from_node") or "").strip()
+            filename = str(offer.get("filename") or "").strip()
+            requires_accept = bool(offer.get("requires_accept"))
+            already_accepted = int(offer.get("accepted") or 0) == 1
+            if not file_id or not filename.startswith("core_sync::") or from_node not in trusted:
+                continue
+            if requires_accept and not already_accepted:
+                st_dec, r_dec = _http_post_json(
+                    broker + "/api/net/file/decision",
+                    {"id": file_id, "file_id": file_id, "to_node": node_id, "decision": "accept", "save_to": "SarahMemorySync/staged_core_inbound"},
+                    timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)),
+                    extra_headers={"X-SarahNet-Channel": "sync", "X-Sarah-Human-Approved": "true"},
+                )
+                if st_dec == 200 and r_dec.get("ok"):
+                    accepted_offers += 1
+                else:
+                    offer_rejected += 1
+        except Exception:
+            offer_rejected += 1
+
+    if accepted_offers or any(int(x.get("accepted") or 0) == 1 for x in offers):
+        status2, resp2 = _http_get_json(broker + f"/api/net/file/poll?to_node={node_id}&limit={int(max_items)}&include_data=1", timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)))
+        if status2 == 200 and resp2.get("ok"):
+            resp = resp2
+
+    records = list(resp.get("files") or resp.get("items") or [])
     _ensure_sync_tables()
     staged_root = os.path.join(_sync_dir(), "staged_core_inbound")
     os.makedirs(staged_root, exist_ok=True)
@@ -854,9 +905,9 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
     con = _connect_sync_db()
     cur = con.cursor()
     try:
-        for it in resp.get("items") or []:
+        for it in records:
             try:
-                file_id = it.get("file_id") or it.get("id")
+                file_id = it.get("id") or it.get("file_id")
                 from_node = str(it.get("from_node") or "").strip()
                 filename = str(it.get("filename") or "").strip()
                 data_b64 = str(it.get("data_b64") or "").strip()
@@ -865,6 +916,9 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
                     continue
                 if from_node not in trusted:
                     rejected += 1
+                    continue
+                if not data_b64:
+                    # Offer remains pending or was not accepted; never invent data.
                     continue
                 rel = filename.split("core_sync::", 1)[1].strip().replace("\\", "/")
                 if not rel or ".." in rel or rel.startswith(("/", "\\")) or not (rel.startswith("core/") or rel.startswith("api/server/")):
@@ -903,7 +957,7 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
                     (node_id, from_node, rel, sha, time.time(), len(raw), None, time.time(), stage_path, decision),
                 )
                 try:
-                    st2, r2 = _http_post_json(_broker_base_url() + "/api/net/file/ack", {"file_id": file_id, "to_node": node_id}, timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)))
+                    st2, r2 = _http_post_json(broker + "/api/net/file/ack", {"id": file_id, "file_id": file_id, "to_node": node_id}, timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)))
                     if st2 == 200 and r2.get("ok"):
                         acks += 1
                 except Exception:
@@ -913,7 +967,7 @@ def sarahnet_sync_poll_and_apply(base_dir: Optional[str] = None, max_items: int 
         con.commit()
     finally:
         con.close()
-    out = {"ok": True, "node_id": node_id, "staged": staged, "applied": applied, "rejected": rejected, "errors": errors, "acked": acks, "polled": len(resp.get("items") or []), "apply_to_core": bool(apply_to_core)}
+    out = {"ok": True, "node_id": node_id, "staged": staged, "applied": applied, "rejected": rejected, "offer_rejected": offer_rejected, "accepted_offers": accepted_offers, "errors": errors, "acked": acks, "polled": len(records), "apply_to_core": bool(apply_to_core)}
     log_sync_event("SarahNet Poll", out, verdict="STAGE_ONLY" if not apply_to_core else "ALLOW")
     return out
 
@@ -929,6 +983,127 @@ def sarahnet_sync_tick(peer_ids: Optional[List[str]] = None, base_dir: Optional[
     poll = sarahnet_sync_poll_and_apply(base_dir=base, user_approved=user_approved, session_token=session_token, apply_to_core=False)
     push = [sarahnet_sync_push(pid, base_dir=base, user_approved=user_approved, session_token=session_token) for pid in (peer_ids or [])]
     return {"ok": True, "node_id": node_id, "poll": poll, "push": push}
+
+
+# -----------------------------------------------------------------------------
+# SarahNet SML-RT client lane
+# -----------------------------------------------------------------------------
+
+def sarahnet_request_authority_lease(
+    *,
+    identity: str,
+    entity_id: str,
+    world_id: str,
+    region_id: str,
+    issuer_node: Optional[str] = None,
+    permitted_state_classes: Optional[List[str]] = None,
+    constraints: Optional[Dict[str, Any]] = None,
+    ttl_sec: int = 300,
+    user_approved: bool = False,
+    session_token: Optional[str] = None,
+) -> dict:
+    """Request one bounded real-time lease through the appnet2 control plane."""
+    review = sm_sync_governance_review(
+        "sarahnet_lease_request",
+        remote=True,
+        source="sarahnet",
+        payload={"world_id": world_id, "region_id": region_id, "entity_id": entity_id},
+        risk="high",
+        user_approved=user_approved,
+        session_token=session_token,
+    )
+    if not review.get("ok"):
+        return {"ok": False, "review": review, "execution_authority": False}
+    node_id = str(issuer_node or _cfg("SARAHNET_NODE_ID", "local-node"))
+    payload = {
+        "identity": str(identity),
+        "entity_id": str(entity_id),
+        "world_id": str(world_id),
+        "region_id": str(region_id),
+        "issuer_node": node_id,
+        "permitted_state_classes": list(permitted_state_classes or ["pose", "animation", "locomotion", "gaze", "gesture", "speech_timing"]),
+        "constraints": dict(constraints or {}),
+        "ttl_sec": int(ttl_sec),
+        "confirmed": True,
+        "user_approved": True,
+    }
+    status, resp = _http_post_json(_broker_base_url() + "/api/net2/lease/issue", payload, timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 10.0)), extra_headers={"X-Sarah-Human-Approved": "true"})
+    return {"ok": bool(status == 200 and resp.get("ok")), "status": status, "response": resp, "lease": resp.get("lease") if isinstance(resp, dict) else None, "execution_authority": False}
+
+
+def sarahnet_rt_next_sequence(world_id: str, region_id: str, entity_id: str, state_class: str) -> int:
+    key = (str(world_id), str(region_id), str(entity_id), str(state_class).strip().lower())
+    with _RT_SEQ_LOCK:
+        nxt = int(_RT_LOCAL_SEQUENCE.get(key, 0)) + 1
+        _RT_LOCAL_SEQUENCE[key] = nxt
+        return nxt
+
+
+def sarahnet_rt_publish(
+    lease: Dict[str, Any],
+    *,
+    state_class: str,
+    delta_payload: Dict[str, Any],
+    sequence_number: Optional[int] = None,
+    timestamp: Optional[float] = None,
+    integrity_tag: str = "",
+) -> dict:
+    """Publish one ephemeral state delta inside an already-issued lease.
+
+    No governance DB/Ledger event is emitted per frame. Structural validation is
+    deterministic and bounded; consequential fields are escalated to Full SML.
+    """
+    if not isinstance(lease, dict):
+        return {"ok": False, "error": "lease must be a dict", "requires_full_sml": True}
+    world_id = str(lease.get("world_id") or "")
+    region_id = str(lease.get("region_id") or "")
+    entity_id = str(lease.get("entity_id") or "")
+    identity = str(lease.get("identity") or "")
+    lease_id = str(lease.get("lease_id") or "")
+    state = str(state_class or "").strip().lower()
+    seq = int(sequence_number or sarahnet_rt_next_sequence(world_id, region_id, entity_id, state))
+    envelope = {
+        "profile": "SML-RT/1.0-alpha",
+        "world_id": world_id,
+        "region_id": region_id,
+        "entity_id": entity_id,
+        "owner_identity": identity,
+        "lease_id": lease_id,
+        "sequence_number": seq,
+        "timestamp": float(timestamp if timestamp is not None else time.time()),
+        "state_class": state,
+        "delta_payload": dict(delta_payload or {}),
+        "integrity_tag": str(integrity_tag or ""),
+        "execution_authority": False,
+    }
+    try:
+        from SarahMemorySMLProtocol import sml_validate_sarahnet_rt_envelope  # type: ignore
+        validation = sml_validate_sarahnet_rt_envelope(envelope, lease=lease)
+        if not validation.get("ok"):
+            return {"ok": False, "error": "SML-RT validation failed", "validation": validation, "requires_full_sml": True}
+        envelope = dict(validation.get("normalized") or envelope)
+    except Exception as exc:
+        return {"ok": False, "error": f"SML-RT validator unavailable: {exc}", "requires_full_sml": True}
+    status, resp = _http_post_json(_broker_base_url() + "/api/net/rt/publish", envelope, timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 4.0)))
+    return {"ok": bool(status == 200 and resp.get("ok")), "status": status, "response": resp, "sequence_number": seq, "execution_authority": False}
+
+
+def sarahnet_rt_poll(
+    world_id: str,
+    region_id: str,
+    *,
+    since_seq: int = 0,
+    state_classes: Optional[List[str]] = None,
+    limit: int = 250,
+) -> dict:
+    """Read bounded latest-wins SML-RT updates without writing local audit rows."""
+    from urllib.parse import quote
+    classes = ",".join([str(x).strip().lower() for x in (state_classes or []) if str(x).strip()])
+    url = _broker_base_url() + f"/api/net/rt/poll?world_id={quote(str(world_id))}&region_id={quote(str(region_id))}&since_seq={max(0,int(since_seq))}&limit={max(1,min(1000,int(limit)))}"
+    if classes:
+        url += "&state_classes=" + quote(classes)
+    status, resp = _http_get_json(url, timeout=float(_cfg("REMOTE_HTTP_TIMEOUT", 4.0)))
+    return {"ok": bool(status == 200 and resp.get("ok")), "status": status, "response": resp, "updates": resp.get("updates") if isinstance(resp, dict) else [], "latest_seq": int(resp.get("latest_seq") or since_seq) if isinstance(resp, dict) else int(since_seq), "execution_authority": False}
 
 
 # -----------------------------------------------------------------------------
@@ -1021,10 +1196,10 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['infrastructure'],
-    "supported_missions": ['Conversation'],
-    "supported_omega": ['Ω001'],
-    "required_authority": ['Read'],
+    "capabilities": ['infrastructure', 'sync', 'state_delta', 'snapshot_coordination', 'sml_rt_sync'],
+    "supported_missions": ['Conversation', 'Network', 'Execution'],
+    "supported_omega": ['Ω001', 'Ω004', 'Ω060', 'Ω071'],
+    "required_authority": ['Read', 'Network'],
     "priority": 55,
     "trust_level": "source_integrated",
     "internal_only": True,
