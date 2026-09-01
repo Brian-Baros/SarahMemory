@@ -5051,12 +5051,99 @@ def sml_gcop_self_test() -> Dict[str, Any]:
 
 
 # =============================================================================
+# Governed Cognitive AI Operating System (GCAIOS) semantic profile
+# =============================================================================
+
+GCAIOS_PROFILE = "SarahMemory.GCAIOS/1.0-alpha"
+
+
+def sml_gcaios_manifest() -> Dict[str, Any]:
+    """Return the declared GCAIOS ownership map; this grants no runtime authority."""
+    return {
+        "ok": True,
+        "schema": GCAIOS_PROFILE,
+        "operating_model": "Persistent Governed Cognitive Operation",
+        "human_authority": "highest",
+        "authority_chain": [
+            "UserInstructions",
+            "SafetyRequirements",
+            "EngineeringConstitution",
+            "CognitiveServices",
+            "CognitiveCompass",
+            "AssuranceGate",
+            "SecurityGovernor",
+            "OperatorCore",
+        ],
+        "planes": {
+            "semantic_control": {
+                "owner": "SarahMemorySMLProtocol",
+                "responsibilities": ["mission packets", "QSML operators", "routing contracts", "state transition legality"],
+                "executes_actions": False,
+            },
+            "cognitive_continuity": {
+                "owner": "SarahMemoryCognitiveServices",
+                "activation_owner": "SarahMemoryNeuron",
+                "profile": "GCOP/1.0",
+                "executes_actions": False,
+            },
+            "adaptive_compute": {
+                "passport_owner": "SarahMemoryAdaptive",
+                "budget_owner": "SarahMemoryEnergetics",
+                "execution_owner": "SarahMemoryOperatorCore",
+                "clock_mutation_allowed": False,
+            },
+            "execution": {
+                "owner": "SarahMemoryOperatorCore",
+                "required_gates": ["CognitiveServices", "SecurityGovernor", "AssuranceGate", "Energetics"],
+                "verification_and_rollback_required": True,
+            },
+            "audit": {
+                "owner": "SarahMemoryLedger",
+                "authority": False,
+                "frame_by_frame_logging": False,
+            },
+            "spatial_fabric": {
+                "semantic_owner": "SarahMemorySMLProtocol",
+                "control_plane_owner": "api.server.appnet2",
+                "data_plane_owner": "api.server.appnet",
+                "coherence_owner": "SarahMemorySync",
+                "transport_owner": "SarahMemoryNetwork",
+                "rendering_owner": "client embodiment renderer",
+            },
+        },
+        "state_classes": {
+            "ephemeral": "bounded in-memory real-time state",
+            "operational": "GCOP continuity and active mission state",
+            "persistent": "user-controlled durable memory and world state",
+            "ledger_proven": "meaningful consequential transition receipts",
+        },
+        "local_first_order": [
+            "deterministic_logic",
+            "local_memory",
+            "local_models",
+            "approved_network_resources",
+            "approved_cloud_models",
+            "governed_fallback",
+        ],
+        "doctrine": {
+            "llm_is_authority": False,
+            "model_is_replaceable_organ": True,
+            "discovery_is_activation": False,
+            "simulation_equals_physical_execution": False,
+            "human_authority_remains_above_system": True,
+        },
+        "execution_authority": False,
+    }
+
+
+# =============================================================================
 # SarahNet semantic contracts — Full SML authority + bounded SML-RT state
 # =============================================================================
 
 SARAHNET_RT_PROFILE = "SML-RT/1.0-alpha"
 SARAHNET_AUTHORITY_LEASE_SCHEMA = "SarahNet.AuthorityLease/1.0-alpha"
 SARAHNET_WORLD_CONTEXT_SCHEMA = "SarahNet.WorldContext/1.0-alpha"
+SARAHNET_ENTITY_SCHEMA = "SarahNet.Entity/1.0-alpha"
 SARAHNET_RT_MAX_DELTA_BYTES = 64 * 1024
 
 # SML-RT is intentionally limited to ephemeral/temporary state. Consequential
@@ -5084,6 +5171,107 @@ SARAHNET_REALITY_CLASSES = {
     "PHYSICAL", "OBSERVED", "EXTERNAL", "MIRRORED", "USER_CREATED",
     "AI_GENERATED", "SIMULATED", "FORKED", "FICTIONAL", "UNKNOWN",
 }
+
+SARAHNET_PERSISTENCE_CLASSES = {
+    "EPHEMERAL", "SESSION", "CACHED", "PERSISTENT", "LEDGER_PROVEN", "ARCHIVAL",
+}
+
+SARAHNET_ENTITY_STATUSES = {"active", "suspended", "archived", "tombstoned"}
+
+
+def sml_build_sarahnet_entity_contract(
+    *,
+    entity_id: str,
+    entity_type: str,
+    world_id: str,
+    region_id: str,
+    owner_identity: str,
+    creator_identity: str,
+    owner_node: str,
+    semantic_type: str = "object",
+    parent_entity: str = "",
+    persistence_class: str = "PERSISTENT",
+    reality_class: str = "USER_CREATED",
+    transform: Optional[Mapping[str, Any]] = None,
+    permissions: Optional[Mapping[str, Any]] = None,
+    asset_references: Optional[Sequence[str]] = None,
+    state: Optional[Mapping[str, Any]] = None,
+    state_version: int = 1,
+    authority_region: str = "",
+    ledger_reference: str = "",
+    provenance: Optional[Mapping[str, Any]] = None,
+    status: str = "active",
+) -> Dict[str, Any]:
+    """Normalize a persistent SarahNet entity candidate without storing or authorizing it."""
+    try:
+        normalized_version = max(1, int(state_version or 1))
+    except (TypeError, ValueError):
+        normalized_version = 1
+    return {
+        "schema": SARAHNET_ENTITY_SCHEMA,
+        "entity_id": str(entity_id or "").strip(),
+        "entity_type": str(entity_type or "").strip().lower(),
+        "world_id": str(world_id or "").strip(),
+        "region_id": str(region_id or "").strip(),
+        "owner_identity": str(owner_identity or "").strip(),
+        "creator_identity": str(creator_identity or "").strip(),
+        "owner_node": str(owner_node or "").strip(),
+        "semantic_type": str(semantic_type or "object").strip().lower(),
+        "parent_entity": str(parent_entity or "").strip(),
+        "transform": dict(transform or {}),
+        "permissions": dict(permissions or {}),
+        "persistence_class": str(persistence_class or "PERSISTENT").strip().upper(),
+        "reality_class": str(reality_class or "USER_CREATED").strip().upper(),
+        "asset_references": [str(x).strip() for x in (asset_references or []) if str(x).strip()][:128],
+        "state": dict(state or {}),
+        "state_version": normalized_version,
+        "authority_region": str(authority_region or region_id or "").strip(),
+        "ledger_reference": str(ledger_reference or "").strip(),
+        "provenance": dict(provenance or {}),
+        "status": str(status or "active").strip().lower(),
+        "execution_authority": False,
+    }
+
+
+def sml_validate_sarahnet_entity_contract(entity: Mapping[str, Any]) -> Dict[str, Any]:
+    """Validate canonical entity semantics; database ownership checks remain in appnet2."""
+    data = dict(entity or {})
+    issues: List[str] = []
+    if str(data.get("schema") or "") != SARAHNET_ENTITY_SCHEMA:
+        issues.append("invalid entity schema")
+    for field_name in ("entity_id", "entity_type", "world_id", "region_id", "owner_identity", "creator_identity", "owner_node"):
+        if not str(data.get(field_name) or "").strip():
+            issues.append(f"missing {field_name}")
+    persistence = str(data.get("persistence_class") or "").strip().upper()
+    if persistence not in SARAHNET_PERSISTENCE_CLASSES:
+        issues.append("invalid persistence_class")
+    reality = str(data.get("reality_class") or "").strip().upper()
+    if reality not in SARAHNET_REALITY_CLASSES:
+        issues.append("invalid reality_class")
+    status = str(data.get("status") or "").strip().lower()
+    if status not in SARAHNET_ENTITY_STATUSES:
+        issues.append("invalid entity status")
+    for field_name in ("transform", "permissions", "state", "provenance"):
+        if not isinstance(data.get(field_name), Mapping):
+            issues.append(f"{field_name} must be an object")
+    if not isinstance(data.get("asset_references"), list):
+        issues.append("asset_references must be a list")
+    forbidden_state = sorted({str(key).strip().lower() for key in (data.get("state") or {}).keys()} & SARAHNET_RT_FORBIDDEN_DELTA_KEYS)
+    if forbidden_state:
+        issues.append("consequential state keys require dedicated Full SML transition: " + ",".join(forbidden_state))
+    try:
+        encoded_size = len(json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    except Exception:
+        encoded_size = 2 * 1024 * 1024
+    if encoded_size > 256 * 1024:
+        issues.append("entity contract exceeds 256 KiB limit")
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "normalized": data,
+        "requires_full_sml": True,
+        "execution_authority": False,
+    }
 
 
 def sml_build_sarahnet_world_context(
@@ -5433,11 +5621,18 @@ __all__ = [
     "sml_application_blueprint_schema",
     "sml_validate_application_blueprint",
     "sml_compile_application_blueprint",
+    "GCAIOS_PROFILE",
+    "sml_gcaios_manifest",
     "SARAHNET_RT_PROFILE",
     "SARAHNET_AUTHORITY_LEASE_SCHEMA",
     "SARAHNET_WORLD_CONTEXT_SCHEMA",
+    "SARAHNET_ENTITY_SCHEMA",
     "SARAHNET_RT_STATE_CLASSES",
     "SARAHNET_REALITY_CLASSES",
+    "SARAHNET_PERSISTENCE_CLASSES",
+    "SARAHNET_ENTITY_STATUSES",
+    "sml_build_sarahnet_entity_contract",
+    "sml_validate_sarahnet_entity_contract",
     "sml_build_sarahnet_world_context",
     "sml_build_sarahnet_authority_lease_contract",
     "sml_validate_sarahnet_authority_lease",

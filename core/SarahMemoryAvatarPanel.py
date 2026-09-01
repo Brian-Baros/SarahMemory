@@ -348,63 +348,6 @@ class AvatarPanelState:
         """Get current avatar emotion."""
         with self._lock:
             return self._current_emotion
-    
-    def _ensure_live_renderer(self) -> bool:
-        """Lazily connect the presentation surface to the persistent avatar pipeline.
-
-        AvatarPanel owns presentation only.  Persistent semantic state remains in
-        SarahMemoryAvatar, physical orchestration in UnifiedAvatarController, and
-        pixels in CanvasStudio.  Failure here falls back to the legacy local visual
-        renderer without granting execution authority.
-        """
-        if self._live_controller is not None and self._live_canvas is not None:
-            return True
-        if self._live_init_attempted:
-            return False
-        self._live_init_attempted = True
-        try:
-            from UnifiedAvatarController import UnifiedAvatarController  # type: ignore
-            from SarahMemoryCanvasStudio import CanvasStudio  # type: ignore
-            self._live_controller = UnifiedAvatarController()
-            self._live_canvas = CanvasStudio()
-            return True
-        except Exception as exc:
-            logger.debug(f"Persistent live avatar renderer unavailable; compatibility fallback retained: {exc}")
-            self._live_controller = None
-            self._live_canvas = None
-            return False
-
-    def _render_persistent_live_frame(self, width: int, height: int) -> Optional[Any]:
-        if not HAVE_PIL or not self._ensure_live_renderer():
-            return None
-        try:
-            controller = self._live_controller
-            canvas = self._live_canvas
-            avatar = getattr(controller, "avatar", None)
-            if avatar is not None and hasattr(avatar, "update_live_avatar_state"):
-                avatar.update_live_avatar_state({
-                    "expression": self._current_emotion,
-                    "speaking": bool(self._lip_sync_active),
-                    "speaking_energy": 0.45 if self._lip_sync_active else 0.0,
-                    "mouth_shape": "speech" if self._lip_sync_active else "neutral",
-                })
-            packet = controller.build_live_avatar_state_packet(now_monotonic=time.monotonic())
-            if not isinstance(packet, dict) or not packet.get("ok"):
-                return None
-            rendered = canvas.render_live_avatar_frame(
-                packet, width=max(64, int(width)), height=max(64, int(height)), use_temporal_history=True
-            )
-            if not isinstance(rendered, dict) or not rendered.get("ok"):
-                return None
-            rgba = rendered.get("frame_rgba")
-            if rgba is None:
-                return None
-            self._live_last_health = dict(rendered.get("render_health") or {})
-            self._frame_index = int(rendered.get("frame_id") or (self._frame_index + 1))
-            return Image.fromarray(rgba, mode="RGBA")
-        except Exception as exc:
-            logger.debug(f"Persistent live avatar frame failed; using compatibility fallback: {exc}")
-            return None
 
     def set_emotion(self, emotion: str) -> None:
         """Set avatar emotion."""
@@ -909,8 +852,128 @@ class AvatarAnimationEngine:
         self._live_canvas: Optional[Any] = None
         self._live_last_health: Dict[str, Any] = {}
         self._live_init_attempted = False
+        self._compute_plan: Dict[str, Any] = {}
+        self._compute_plan_at = 0.0
+        self._live_last_frame: Optional[Any] = None
+        self._live_last_frame_at = 0.0
+        self._live_last_frame_size: Tuple[int, int] = (0, 0)
         
         logger.info("AvatarAnimationEngine initialized")
+
+    def _adaptive_render_policy(self) -> Dict[str, Any]:
+        """Return a cached, bounded avatar plan without mutating hardware settings."""
+        now = time.monotonic()
+        if self._compute_plan and (now - self._compute_plan_at) < 5.0:
+            return self._compute_plan
+        fallback = {
+            "ok": False,
+            "mode": "SAFE_DISCOVERY",
+            "machine_class": "unknown",
+            "workloads": {"avatar": {"fps_cap": 12, "render_scale": 0.50, "temporal_history": False, "neon_effects": False}},
+            "execution_authority": False,
+        }
+        try:
+            import SarahMemoryAdaptive as adaptive  # type: ignore
+            build = getattr(adaptive, "build_compute_passport", None)
+            select = getattr(adaptive, "select_adaptive_compute_plan", None)
+            if callable(build) and callable(select):
+                passport = build(context={"source": "SarahMemoryAvatarPanel", "workload": "avatar"})
+                candidate = select("avatar", passport=passport, context={"source": "SarahMemoryAvatarPanel"})
+                if isinstance(candidate, dict):
+                    fallback = candidate
+        except Exception as exc:
+            logger.debug(f"Adaptive avatar plan unavailable; safe discovery budget retained: {exc}")
+        self._compute_plan = fallback
+        self._compute_plan_at = now
+        return self._compute_plan
+
+    def _ensure_live_renderer(self) -> bool:
+        """Lazily connect presentation to Avatar -> Controller -> CanvasStudio."""
+        if self._live_controller is not None and self._live_canvas is not None:
+            return True
+        if self._live_init_attempted:
+            return False
+        self._live_init_attempted = True
+        try:
+            from UnifiedAvatarController import UnifiedAvatarController  # type: ignore
+            from SarahMemoryCanvasStudio import CanvasStudio  # type: ignore
+            self._live_controller = UnifiedAvatarController()
+            self._live_canvas = CanvasStudio()
+            return True
+        except Exception as exc:
+            logger.debug(f"Persistent live avatar renderer unavailable; compatibility fallback retained: {exc}")
+            self._live_controller = None
+            self._live_canvas = None
+            return False
+
+    def _render_persistent_live_frame(self, width: int, height: int) -> Optional[Any]:
+        if not HAVE_PIL or not self._ensure_live_renderer():
+            return None
+        try:
+            output_width = max(64, min(4096, int(width)))
+            output_height = max(64, min(4096, int(height)))
+            plan = self._adaptive_render_policy()
+            avatar_budget = plan.get("workloads", {}).get("avatar", {}) if isinstance(plan.get("workloads"), dict) else {}
+            fps_cap = max(1, min(60, int(avatar_budget.get("fps_cap") or 12)))
+            render_scale = max(0.25, min(1.0, float(avatar_budget.get("render_scale") or 0.50)))
+            use_temporal = bool(avatar_budget.get("temporal_history", False))
+            now = time.monotonic()
+            if (
+                self._live_last_frame is not None
+                and self._live_last_frame_size == (output_width, output_height)
+                and (now - self._live_last_frame_at) < (1.0 / fps_cap)
+            ):
+                return self._live_last_frame.copy()
+
+            controller = self._live_controller
+            canvas = self._live_canvas
+            avatar = getattr(controller, "avatar", None)
+            if avatar is not None and hasattr(avatar, "update_live_avatar_state"):
+                avatar.update_live_avatar_state({
+                    "expression": self._current_emotion,
+                    "speaking": bool(self._lip_sync_active),
+                    "speaking_energy": 0.45 if self._lip_sync_active else 0.0,
+                    "mouth_shape": "speech" if self._lip_sync_active else "neutral",
+                })
+            packet = controller.build_live_avatar_state_packet(now_monotonic=now)
+            if not isinstance(packet, dict) or not packet.get("ok"):
+                return None
+            render_width = max(64, int(round(output_width * render_scale)))
+            render_height = max(64, int(round(output_height * render_scale)))
+            rendered = canvas.render_live_avatar_frame(
+                packet,
+                width=render_width,
+                height=render_height,
+                use_temporal_history=use_temporal,
+            )
+            if not isinstance(rendered, dict) or not rendered.get("ok"):
+                return None
+            rgba = rendered.get("frame_rgba")
+            if rgba is None:
+                return None
+            frame = Image.fromarray(rgba, mode="RGBA")
+            if frame.size != (output_width, output_height):
+                resampling = getattr(Image, "Resampling", Image)
+                frame = frame.resize((output_width, output_height), getattr(resampling, "LANCZOS"))
+            self._live_last_health = {
+                **dict(rendered.get("render_health") or {}),
+                "adaptive_compute": {
+                    "mode": plan.get("mode"),
+                    "machine_class": plan.get("machine_class"),
+                    "fps_cap": fps_cap,
+                    "render_scale": render_scale,
+                    "temporal_history": use_temporal,
+                    "execution_authority": False,
+                },
+            }
+            self._frame_index = int(rendered.get("frame_id") or (self._frame_index + 1))
+            self._live_last_frame = frame.copy()
+            self._live_last_frame_at = now
+            self._live_last_frame_size = (output_width, output_height)
+            return frame
+        except Exception as exc:
+            logger.debug(f"Persistent live avatar frame failed; using compatibility fallback: {exc}")
+            return None
     
     def set_emotion(self, emotion: str) -> None:
         """Set avatar emotion and trigger animation change."""
@@ -2691,4 +2754,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

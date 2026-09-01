@@ -1370,7 +1370,9 @@ class SarahMemoryOperatorCore:
 
         energetics = self._energetics_preflight(contract)
         trace["energetics"] = energetics
-        if str(energetics.get("decision") or "ALLOW").upper() in {"DENY", "DEFER"}:
+        energy_decision = str(energetics.get("decision") or "ALLOW").upper()
+        energy_blocks_apply = energy_decision == "REDUCE_MODE" and contract.execution_mode == MODE_APPLY
+        if energy_decision in {"DENY", "DEFER"} or energy_blocks_apply:
             self._transition(contract, STATE_FAILED, "Energetics reserve/power preflight blocked or deferred action.", meta=energetics)
             result = ActionResult(
                 contract_id=contract.contract_id,
@@ -1380,7 +1382,7 @@ class SarahMemoryOperatorCore:
                 execution_mode=contract.execution_mode,
                 executor_name=contract.executor_name,
                 summary="Energetics reserve/power preflight blocked action execution.",
-                decision=str(energetics.get("decision") or "ENERGETICS_DEFER"),
+                decision=energy_decision or "ENERGETICS_DEFER",
                 errors=[str(energetics.get("reason") or "energetics_preflight_failed")],
                 trace=trace,
                 started_ts=started_ts,
@@ -1388,6 +1390,9 @@ class SarahMemoryOperatorCore:
             )
             self._persist_action(contract, result)
             return result
+
+        if energy_decision == "REDUCE_MODE":
+            warnings.append("Energetics requested a reduced compute mode; draft/simulation may continue, but apply execution remains blocked.")
 
         governance = self._govern_contract(contract)
         trace["governance"] = governance
@@ -2084,4 +2089,3 @@ def sml_execution_gate(packet):
     allowed = decision == GovernanceDecision.APPROVED.value and required.issubset(granted | {Authority.READ.value})
     return {"ok": bool(allowed), "decision": decision, "required": sorted(required), "granted": sorted(granted), "packet_id": pkt.packet_id}
 # --- SML OPERATORCORE SPECIALIZATION END ---
-

@@ -98,6 +98,11 @@ try:
 except Exception:  # pragma: no cover
     _LogicCalc = None  # type: ignore
 
+try:
+    import SarahMemoryAdaptive as _Adaptive  # type: ignore
+except Exception:  # pragma: no cover
+    _Adaptive = None  # type: ignore
+
 MODULE_NAME = "SarahMemoryEnergetics"
 MODULE_VERSION = "9.0.0"
 
@@ -245,6 +250,39 @@ def _env_float(name: str, default: float) -> float:
         return _safe_float(os.environ.get(name), default)
     except Exception:
         return default
+
+
+def _adaptive_compute_evidence(context: Optional[Dict[str, Any]] = None, workload: str = "energetics") -> Dict[str, Any]:
+    """Read the local Compute Passport and plan without treating either as authority."""
+    if _Adaptive is None:
+        return {
+            "ok": False,
+            "passport": {"unknown_machine": True, "machine_class": "survival", "confidence": 0.0},
+            "plan": {"mode": "SAFE_DISCOVERY", "requires_energetics_preflight": True},
+            "reason": "SarahMemoryAdaptive compute passport unavailable",
+            "execution_authority": False,
+        }
+    try:
+        passport_fn = getattr(_Adaptive, "build_compute_passport", None)
+        plan_fn = getattr(_Adaptive, "select_adaptive_compute_plan", None)
+        if not callable(passport_fn) or not callable(plan_fn):
+            raise RuntimeError("compute passport/plan contract unavailable")
+        passport = passport_fn(context if isinstance(context, dict) else None)
+        plan = plan_fn(workload, passport=passport, context=context if isinstance(context, dict) else None)
+        return {
+            "ok": bool(passport.get("ok") and plan.get("ok")),
+            "passport": passport,
+            "plan": plan,
+            "execution_authority": False,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "passport": {"unknown_machine": True, "machine_class": "survival", "confidence": 0.0},
+            "plan": {"mode": "SAFE_DISCOVERY", "requires_energetics_preflight": True},
+            "reason": str(exc),
+            "execution_authority": False,
+        }
 
 
 @dataclass
@@ -565,6 +603,10 @@ class SarahMemoryEnergetics:
         safety_critical = emergency or action in {"emergency", "emergency_comms", "safe_stop", "stabilize", "controlled_landing"}
         scheduled = bool(ctx.get("scheduled") or phase_key in SCHEDULED_PHASES or action in SCHEDULED_PHASES)
         risk_level = str(ctx.get("risk_level") or active_task.get("risk_level") or constraints.get("risk_level") or "TIER_1").upper()
+        compute_evidence = _adaptive_compute_evidence(ctx, workload=phase_key or action)
+        compute_passport = compute_evidence.get("passport") if isinstance(compute_evidence.get("passport"), dict) else {}
+        compute_plan = compute_evidence.get("plan") if isinstance(compute_evidence.get("plan"), dict) else {}
+        unknown_machine = bool(compute_passport.get("unknown_machine", True))
 
         reasons: List[str] = []
         allowed_power_mode = requested
@@ -607,6 +649,29 @@ class SarahMemoryEnergetics:
         active_task_value = _safe_lower(active_task.get("operational_value") or active_task.get("value") or "")
         physical_active = bool(active_task.get("physical_control") or active_task.get("object_being_carried") or active_task.get("motion_active") or active_task.get("in_flight") or active_task.get("vehicle_moving"))
         hazard_external = bool(external_state.get("human_nearby") or external_state.get("hazard_detected") or external_state.get("terrain_unstable") or external_state.get("low_visibility") or external_state.get("high_wind"))
+        physical_action_tokens = {
+            "device", "driver", "robot", "robotic", "vehicle", "drone", "actuator",
+            "motor", "physical", "drive", "fly", "lift", "steer", "brake",
+        }
+        physical_action_requested = physical_active or any(token in action or token in phase_key for token in physical_action_tokens)
+
+        if unknown_machine and physical_action_requested and not safety_critical:
+            ok = False
+            decision = DECISION_DEFER
+            diagnostics_mode = "SAFE_DISCOVERY_ONLY"
+            allowed_power_mode = POWER_LOW
+            reasons.append("Compute Passport cannot identify the machine safely enough for physical/device execution.")
+        elif unknown_machine and requested in {POWER_ACTIVE, POWER_FULL} and not safety_critical:
+            decision = DECISION_REDUCE_MODE
+            allowed_power_mode = POWER_LOW
+            diagnostics_mode = "SAFE_DISCOVERY_ONLY"
+            reasons.append("Unknown-machine policy reduced the request to bounded safe-discovery compute.")
+
+        if str(compute_plan.get("mode") or "").upper() == "PRESSURE_RECOVERY" and not safety_critical:
+            decision = DECISION_REDUCE_MODE if ok else decision
+            allowed_power_mode = POWER_LOW
+            diagnostics_mode = "LIGHTWEIGHT_ONLY"
+            reasons.append("Adaptive Compute Fabric reports pressure recovery; concurrency and power mode must be reduced.")
 
         if scheduled and active_task and not safe_to_interrupt and not safety_critical:
             ok = False
@@ -692,6 +757,9 @@ class SarahMemoryEnergetics:
             "safety_policy_required": True,
             "smget_required": True,
             "scheduled_phases_are_proposals_not_commands": True,
+            "compute_passport_required_for_physical_action": True,
+            "unknown_machine": unknown_machine,
+            "adaptive_compute_mode": compute_plan.get("mode"),
         }
         constraints_out.update(constraints)
 
@@ -722,6 +790,15 @@ class SarahMemoryEnergetics:
                 "scheduled": scheduled,
                 "safety_critical": safety_critical,
                 "active_task_value": active_task_value,
+                "compute": {
+                    "passport_id": compute_passport.get("passport_id"),
+                    "machine_class": compute_passport.get("machine_class"),
+                    "unknown_machine": unknown_machine,
+                    "confidence": compute_passport.get("confidence"),
+                    "plan_id": compute_plan.get("plan_id"),
+                    "plan_mode": compute_plan.get("mode"),
+                    "execution_authority": False,
+                },
             },
         ).to_dict()
 
@@ -839,6 +916,7 @@ class SarahMemoryEnergetics:
         # It is not an arming signal and carries no execution authority.
         constitution = self._constitution_status(context if isinstance(context, dict) else {})
         snap = self.runtime_snapshot(context)
+        compute = _adaptive_compute_evidence(context, workload="energetics_status")
         return {
             "ok": True,
             "module": MODULE_NAME,
@@ -851,6 +929,7 @@ class SarahMemoryEnergetics:
             "lockout_active": bool(constitution.get("lockout_active", True)),
             "body_domain": (constitution.get("body_awareness") or {}).get("body_domain", self.default_body_domain) if isinstance(constitution.get("body_awareness"), dict) else self.default_body_domain,
             "body_profiles": sorted(self.body_profiles.keys()),
+            "compute": compute,
             "power_states": [POWER_OFF, POWER_LOW, POWER_READY, POWER_ACTIVE, POWER_FULL, POWER_RECOVERY],
             "clock_integrity_rule": {
                 "overclocking_allowed": False,
@@ -867,6 +946,11 @@ Energetics = SarahMemoryEnergetics()
 
 def get_energetics_status(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return Energetics.status(context)
+
+
+def get_compute_safety_envelope(context: Optional[Dict[str, Any]] = None, workload: str = "cognition") -> Dict[str, Any]:
+    """Expose the advisory compute evidence used by Energetics; never an arming token."""
+    return _adaptive_compute_evidence(context, workload=workload)
 
 
 def preflight_action(action_type: str, **kwargs: Any) -> Dict[str, Any]:
@@ -911,8 +995,8 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": [],
-    "supported_missions": ['Conversation'],
+    "capabilities": ['energetics', 'compute_budget_governance', 'unknown_machine_safety'],
+    "supported_missions": ['Conversation', 'Diagnostics', 'Execution', 'Planning'],
     "supported_omega": ['Ω001'],
     "required_authority": ['Read'],
     "priority": 40,
@@ -963,4 +1047,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

@@ -88,8 +88,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import datetime
+import hashlib
 import os
+import platform
 import random
+import shutil
 import time
 import json
 import math
@@ -132,6 +135,14 @@ except ImportError:
 # Database paths
 MEMORY_DB_PATH = os.path.join(config.DATASETS_DIR, "ai_learning.db")
 EMOTION_DB_PATH = os.path.join(config.DATASETS_DIR, "personality1.db")
+
+COMPUTE_PASSPORT_SCHEMA = "SarahMemory.ComputePassport/1.0-alpha"
+ADAPTIVE_COMPUTE_PLAN_SCHEMA = "SarahMemory.AdaptiveComputePlan/1.0-alpha"
+_COMPUTE_METRIC_KEYS = (
+    "cpu_count", "cpu_pct", "ram_total_mb", "ram_avail_mb",
+    "disk_free_gb", "disk_total_gb", "gpu_name",
+    "gpu_vram_total_mb", "gpu_vram_free_mb", "gpu_temp_c", "cpu_temp_c",
+)
 
 # Sentiment lexicons (expanded for better coverage)
 POSITIVE_KEYWORDS = frozenset([
@@ -1700,6 +1711,304 @@ def get_all_preferences() -> Dict[str, Any]:
 
 
 # ============================================================================
+# GCAIOS COMPUTE PASSPORT AND ADAPTIVE COMPUTE FABRIC
+# ============================================================================
+
+def _compute_number(value: Any, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _compute_int(value: Any, default: int = 0) -> int:
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _local_compute_metrics(context: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], List[str]]:
+    """Collect bounded local telemetry without device IDs, serials, MACs, or hostnames."""
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    metrics: Dict[str, Any] = {key: None for key in _COMPUTE_METRIC_KEYS}
+    sources: List[str] = []
+
+    try:
+        metrics_fn = getattr(config, "get_system_metrics", None)
+        if callable(metrics_fn):
+            observed = metrics_fn() or {}
+            if isinstance(observed, dict):
+                for key in _COMPUTE_METRIC_KEYS:
+                    if observed.get(key) is not None:
+                        metrics[key] = observed.get(key)
+                sources.append("SarahMemoryGlobals.get_system_metrics")
+    except Exception:
+        pass
+
+    if _HAS_PSUTIL and psutil is not None:
+        try:
+            metrics["cpu_count"] = metrics.get("cpu_count") or psutil.cpu_count(logical=True)
+            metrics["cpu_pct"] = psutil.cpu_percent(interval=None)
+            vm = psutil.virtual_memory()
+            metrics["ram_total_mb"] = metrics.get("ram_total_mb") or int(vm.total / (1024 * 1024))
+            metrics["ram_avail_mb"] = int(vm.available / (1024 * 1024))
+            root = str(getattr(config, "BASE_DIR", os.getcwd()) or os.getcwd())
+            du = psutil.disk_usage(root if os.path.exists(root) else os.getcwd())
+            metrics["disk_total_gb"] = metrics.get("disk_total_gb") or round(du.total / (1024 ** 3), 3)
+            metrics["disk_free_gb"] = round(du.free / (1024 ** 3), 3)
+            sources.append("psutil")
+        except Exception:
+            pass
+    else:
+        try:
+            metrics["cpu_count"] = metrics.get("cpu_count") or os.cpu_count()
+            usage = shutil.disk_usage(str(getattr(config, "BASE_DIR", os.getcwd()) or os.getcwd()))
+            metrics["disk_total_gb"] = round(usage.total / (1024 ** 3), 3)
+            metrics["disk_free_gb"] = round(usage.free / (1024 ** 3), 3)
+            sources.append("python_stdlib")
+        except Exception:
+            pass
+
+    # Context may fill genuinely unavailable evidence, but never overwrites local telemetry.
+    supplied = ctx.get("hardware_metrics") if isinstance(ctx.get("hardware_metrics"), dict) else {}
+    for key in _COMPUTE_METRIC_KEYS:
+        if metrics.get(key) is None and supplied.get(key) is not None:
+            metrics[key] = supplied.get(key)
+            if "runtime_context" not in sources:
+                sources.append("runtime_context")
+    return metrics, sources
+
+
+def build_compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a privacy-safe, non-authorizing machine capability passport.
+
+    The passport describes what the current body can safely attempt. It does not
+    identify the owner, arm hardware, select an executor, or mutate clocks.
+    """
+    ctx = dict(context or {}) if isinstance(context, dict) else {}
+    metrics, sources = _local_compute_metrics(ctx)
+    score: Optional[float] = None
+    tier = "unknown"
+    tier_rating = "Unknown"
+    try:
+        score_fn = getattr(config, "hardware_score", None)
+        if callable(score_fn):
+            scored = score_fn(metrics) or {}
+            if isinstance(scored, dict):
+                score = _compute_number(scored.get("score"), 0.0)
+                tier = str(scored.get("tier") or "unknown").strip().lower()
+                tier_rating = str(scored.get("tier_rating") or "Unknown").strip()
+                sources.append("SarahMemoryGlobals.hardware_score")
+    except Exception:
+        pass
+
+    logical_cpu = _compute_int(metrics.get("cpu_count"))
+    ram_total_mb = _compute_number(metrics.get("ram_total_mb"))
+    ram_available_mb = _compute_number(metrics.get("ram_avail_mb"))
+    disk_free_gb = _compute_number(metrics.get("disk_free_gb"), -1.0)
+    vram_total_mb = _compute_number(metrics.get("gpu_vram_total_mb"))
+    vram_available_mb = _compute_number(metrics.get("gpu_vram_free_mb"))
+    architecture = str(platform.machine() or "unknown").strip().lower()
+    operating_system = str(platform.system() or "unknown").strip()
+
+    evidence = {
+        "cpu_topology": logical_cpu > 0,
+        "memory_capacity": ram_total_mb > 0,
+        "storage_capacity": disk_free_gb >= 0,
+        "architecture": architecture not in {"", "unknown"},
+        "accelerator_capacity": vram_total_mb > 0,
+        "live_pressure": metrics.get("cpu_pct") is not None and metrics.get("ram_avail_mb") is not None,
+    }
+    essential = ("cpu_topology", "memory_capacity", "storage_capacity", "architecture")
+    missing = [name for name, present in evidence.items() if not present]
+    confidence = round(sum(1.0 for present in evidence.values() if present) / len(evidence), 4)
+    unknown_machine = any(not evidence[name] for name in essential)
+
+    if unknown_machine or ram_total_mb < 4096 or logical_cpu < 2:
+        machine_class = "survival"
+    elif ram_total_mb < 8192 or logical_cpu < 4:
+        machine_class = "constrained"
+    elif vram_total_mb >= 8192 and ram_total_mb >= 16384 and logical_cpu >= 6:
+        machine_class = "accelerated"
+    elif ram_total_mb >= 16384 and logical_cpu >= 4:
+        machine_class = "balanced"
+    else:
+        machine_class = "standard"
+
+    fingerprint_basis = {
+        "os": operating_system.lower(),
+        "arch": architecture,
+        "cpu_bucket": min(64, logical_cpu),
+        "ram_bucket_gb": int(max(0.0, ram_total_mb) // 4096) * 4,
+        "vram_bucket_gb": int(max(0.0, vram_total_mb) // 1024),
+    }
+    passport_id = "compute_" + hashlib.sha256(
+        json.dumps(fingerprint_basis, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:20]
+
+    return {
+        "ok": True,
+        "schema": COMPUTE_PASSPORT_SCHEMA,
+        "passport_id": passport_id,
+        "generated_at": _get_timestamp(),
+        "machine_class": machine_class,
+        "unknown_machine": bool(unknown_machine),
+        "confidence": confidence,
+        "hardware_score": score,
+        "tier": tier,
+        "tier_rating": tier_rating,
+        "platform": {
+            "operating_system": operating_system,
+            "architecture": architecture,
+            "python_bits": 64 if "64" in platform.architecture()[0] else 32,
+        },
+        "capacity": {
+            "logical_cpu": logical_cpu or None,
+            "ram_total_mb": round(ram_total_mb, 2) if ram_total_mb > 0 else None,
+            "ram_available_mb": round(ram_available_mb, 2) if ram_available_mb > 0 else None,
+            "disk_free_gb": round(disk_free_gb, 3) if disk_free_gb >= 0 else None,
+            "disk_total_gb": round(_compute_number(metrics.get("disk_total_gb")), 3) or None,
+            "gpu_name": str(metrics.get("gpu_name") or "")[:160] or None,
+            "vram_total_mb": round(vram_total_mb, 2) if vram_total_mb > 0 else None,
+            "vram_available_mb": round(vram_available_mb, 2) if vram_available_mb > 0 else None,
+        },
+        "pressure": {
+            "cpu_percent": round(_compute_number(metrics.get("cpu_pct")), 2) if metrics.get("cpu_pct") is not None else None,
+            "memory_percent": round(100.0 * (1.0 - (ram_available_mb / ram_total_mb)), 2) if ram_total_mb > 0 and ram_available_mb >= 0 else None,
+            "gpu_temp_c": round(_compute_number(metrics.get("gpu_temp_c")), 2) if metrics.get("gpu_temp_c") is not None else None,
+            "cpu_temp_c": round(_compute_number(metrics.get("cpu_temp_c")), 2) if metrics.get("cpu_temp_c") is not None else None,
+        },
+        "evidence": evidence,
+        "missing_evidence": missing,
+        "sources": sorted(set(sources)),
+        "privacy": {
+            "hostname_included": False,
+            "serial_numbers_included": False,
+            "mac_addresses_included": False,
+            "raw_device_ids_included": False,
+        },
+        "governance": {
+            "discovery_is_activation": False,
+            "unknown_machine_requires_safe_discovery": bool(unknown_machine),
+            "clock_mutation_allowed": False,
+            "execution_authority": False,
+            "authority_owner": "SarahMemoryOperatorCore",
+            "energy_budget_owner": "SarahMemoryEnergetics",
+        },
+        "execution_authority": False,
+    }
+
+
+def select_adaptive_compute_plan(
+    workload: str = "cognition",
+    *,
+    passport: Optional[Dict[str, Any]] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Select a bounded software workload plan; no hardware settings are changed."""
+    pp = dict(passport or build_compute_passport(context))
+    workload_key = str(workload or "cognition").strip().lower().replace(" ", "_")[:80] or "cognition"
+    machine_class = str(pp.get("machine_class") or "survival").lower()
+    unknown = bool(pp.get("unknown_machine", True))
+    pressure = pp.get("pressure") if isinstance(pp.get("pressure"), dict) else {}
+    cpu_pressure = _compute_number(pressure.get("cpu_percent"))
+    memory_pressure = _compute_number(pressure.get("memory_percent"))
+
+    profiles: Dict[str, Dict[str, Any]] = {
+        "survival": {"workers": 1, "model_budget_gb": 1.0, "avatar_fps": 12, "avatar_scale": 0.50, "xr_hz": 10, "batch": 1},
+        "constrained": {"workers": 1, "model_budget_gb": 2.0, "avatar_fps": 18, "avatar_scale": 0.65, "xr_hz": 15, "batch": 1},
+        "standard": {"workers": 2, "model_budget_gb": 4.0, "avatar_fps": 24, "avatar_scale": 0.75, "xr_hz": 20, "batch": 2},
+        "balanced": {"workers": 3, "model_budget_gb": 6.0, "avatar_fps": 30, "avatar_scale": 0.85, "xr_hz": 30, "batch": 2},
+        "accelerated": {"workers": 4, "model_budget_gb": 10.0, "avatar_fps": 45, "avatar_scale": 1.0, "xr_hz": 45, "batch": 4},
+    }
+    budget = dict(profiles.get(machine_class) or profiles["survival"])
+    reasons: List[str] = [f"Machine classified as {machine_class} from bounded local capability evidence."]
+    mode = "SAFE_DISCOVERY" if unknown else machine_class.upper()
+
+    if max(cpu_pressure, memory_pressure) >= 90.0:
+        budget.update(profiles["survival"])
+        mode = "PRESSURE_RECOVERY"
+        reasons.append("Live CPU or memory pressure is critical; workload reduced to survival profile.")
+    elif max(cpu_pressure, memory_pressure) >= 78.0:
+        budget["workers"] = 1
+        budget["batch"] = 1
+        budget["avatar_fps"] = min(int(budget["avatar_fps"]), 18)
+        budget["xr_hz"] = min(int(budget["xr_hz"]), 15)
+        budget["avatar_scale"] = min(float(budget["avatar_scale"]), 0.65)
+        mode = "PRESSURE_GUARDED"
+        reasons.append("Live CPU or memory pressure is elevated; concurrency and real-time rates reduced.")
+
+    if unknown:
+        budget.update(profiles["survival"])
+        reasons.append("Essential machine evidence is missing; safe discovery profile is mandatory.")
+
+    heavy_workload = workload_key in {"training", "fine_tuning", "rendering", "xr", "world_simulation", "evolution"}
+    if workload_key in {"background", "indexing", "sync", "diagnostics"}:
+        budget["workers"] = 1
+        budget["batch"] = 1
+        reasons.append("Background work is intentionally single-worker to protect foreground cognition.")
+
+    return {
+        "ok": True,
+        "schema": ADAPTIVE_COMPUTE_PLAN_SCHEMA,
+        "plan_id": "plan_" + hashlib.sha256(
+            f"{pp.get('passport_id')}:{workload_key}:{mode}:{budget}".encode("utf-8")
+        ).hexdigest()[:20],
+        "generated_at": _get_timestamp(),
+        "workload": workload_key,
+        "mode": mode,
+        "machine_class": machine_class,
+        "passport_id": pp.get("passport_id"),
+        "decision": "ALLOW_WITH_CONSTRAINTS",
+        "budgets": {
+            "max_concurrent_workers": int(budget["workers"]),
+            "max_batch_size": int(budget["batch"]),
+            "local_model_memory_budget_gb": float(budget["model_budget_gb"]),
+            "background_io_policy": "incremental_bounded",
+        },
+        "workloads": {
+            "avatar": {
+                "fps_cap": int(budget["avatar_fps"]),
+                "render_scale": float(budget["avatar_scale"]),
+                "temporal_history": machine_class not in {"survival", "constrained"} and mode not in {"PRESSURE_RECOVERY"},
+                "neon_effects": mode not in {"SAFE_DISCOVERY", "PRESSURE_RECOVERY"},
+            },
+            "sarahnet_rt": {
+                "target_state_hz": int(budget["xr_hz"]),
+                "poll_limit": max(50, int(budget["xr_hz"]) * 4),
+                "latest_wins": True,
+                "ledger_per_frame": False,
+            },
+        },
+        "requires_energetics_preflight": bool(heavy_workload or unknown),
+        "requires_operator_core_for_execution": True,
+        "clock_mutation_allowed": False,
+        "reasons": reasons,
+        "execution_authority": False,
+    }
+
+
+def adaptive_compute_self_test() -> Dict[str, Any]:
+    """Side-effect-free contract checks using synthetic capability evidence."""
+    base = {
+        "passport_id": "synthetic",
+        "pressure": {"cpu_percent": 10.0, "memory_percent": 20.0},
+        "execution_authority": False,
+    }
+    unknown_plan = select_adaptive_compute_plan("avatar", passport={**base, "machine_class": "survival", "unknown_machine": True})
+    fast_plan = select_adaptive_compute_plan("xr", passport={**base, "machine_class": "accelerated", "unknown_machine": False})
+    checks = [
+        {"name": "unknown_fails_safe", "passed": unknown_plan.get("mode") == "SAFE_DISCOVERY" and unknown_plan.get("budgets", {}).get("max_concurrent_workers") == 1},
+        {"name": "accelerated_is_bounded", "passed": 1 <= int(fast_plan.get("budgets", {}).get("max_concurrent_workers") or 0) <= 4},
+        {"name": "no_execution_authority", "passed": not unknown_plan.get("execution_authority") and not fast_plan.get("execution_authority")},
+        {"name": "no_clock_mutation", "passed": not unknown_plan.get("clock_mutation_allowed") and not fast_plan.get("clock_mutation_allowed")},
+    ]
+    return {"ok": all(item["passed"] for item in checks), "checks": checks, "execution_authority": False}
+
+
+# ============================================================================
 # DIAGNOSTICS AND TESTING
 # ============================================================================
 
@@ -1760,6 +2069,24 @@ def run_diagnostics() -> Dict[str, Any]:
         "numpy": _HAS_NUMPY,
         "psutil": _HAS_PSUTIL
     }
+
+    try:
+        passport = build_compute_passport()
+        plan = select_adaptive_compute_plan("diagnostics", passport=passport)
+        contract_test = adaptive_compute_self_test()
+        results["checks"]["adaptive_compute"] = {
+            "status": "ok" if contract_test.get("ok") else "error",
+            "passport_schema": passport.get("schema"),
+            "machine_class": passport.get("machine_class"),
+            "unknown_machine": passport.get("unknown_machine"),
+            "plan_mode": plan.get("mode"),
+            "contract_test": contract_test,
+        }
+        if not contract_test.get("ok"):
+            results["errors"].append("Adaptive compute contract self-test failed")
+    except Exception as e:
+        results["checks"]["adaptive_compute"] = {"status": "error", "message": str(e)}
+        results["errors"].append(f"Adaptive compute: {e}")
     
     # Overall status
     if results["errors"]:
@@ -1914,7 +2241,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['adaptive_state', 'reasoning'],
+    "capabilities": ['adaptive_state', 'reasoning', 'compute_passport', 'adaptive_compute_planning'],
     "supported_missions": ['Conversation', 'Knowledge', 'Planning', 'Programming'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω005', 'Ω010', 'Ω020', 'Ω030', 'Ω040'],
     "required_authority": ['Read'],
@@ -1974,4 +2301,3 @@ def sml_update_adaptive_packet(packet, vector=None):
     pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
     return get_protocol().update_adaptive(pkt, vector=vector or None)
 # --- SML ADAPTIVE SPECIALIZATION END ---
-
