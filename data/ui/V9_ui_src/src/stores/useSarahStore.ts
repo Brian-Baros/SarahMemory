@@ -110,6 +110,7 @@ const DEFAULT_TASKBAR_ITEMS = [
   "sarahnet",
   "media",
   "dlengine",
+  "device-manager",
   "addons",
   "settings",
 ];

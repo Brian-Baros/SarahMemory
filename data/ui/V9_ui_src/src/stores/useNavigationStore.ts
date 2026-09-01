@@ -15,6 +15,7 @@ export type MobileScreen =
   | "media"
   | "dlengine"
   | "nailde"
+  | "device-manager"
   | "terminal"
   | "addons"
   | "settings";
@@ -27,6 +28,7 @@ export type DesktopApp =
   | "studio"
   | "dlengine"
   | "nailde"
+  | "device-manager"
   | "terminal"
   | "history"
   | "addons"
@@ -41,6 +43,7 @@ export const SCREEN_ORDER: MobileScreen[] = [
   "files",
   "research",
   "dlengine",
+  "device-manager",
   "nailde",
   "terminal",
   "avatar",
@@ -142,6 +145,7 @@ export const useNavigationStore = create<NavigationState>()(
             studio: "studio",
             studios: "studio",
             dlengine: "dlengine",
+            "device-manager": "device-manager",
             nailde: "nailde",
             terminal: "terminal",
             history: "history",
@@ -188,6 +192,7 @@ export const useNavigationStore = create<NavigationState>()(
             research: "research",
             studio: "studio",
             dlengine: "dlengine",
+            "device-manager": "device-manager",
             nailde: "nailde",
             terminal: "terminal",
             history: "history",

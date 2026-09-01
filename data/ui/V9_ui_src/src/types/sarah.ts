@@ -118,4 +118,7 @@ export interface Settings {
   balance?: number;
   spatialAudio?: boolean;
   noiseSuppression?: boolean;
+  manualClockDate?: string;
+  manualClockTime?: string;
+  manualClockTimezone?: string;
 }

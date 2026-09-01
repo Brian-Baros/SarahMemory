@@ -12,6 +12,7 @@ export type WindowId =
   | "media"
   | "dlengine"
   | "nailde"
+  | "device-manager"
   | "addons"
   | "settings"
   | "terminal";
@@ -65,6 +66,7 @@ const WINDOW_DEFAULTS: Record<
   media: { id: "media", title: "Media Deck", icon: "play", width: 480, height: 420 },
   dlengine: { id: "dlengine", title: "Model Forge", icon: "cpu", width: 520, height: 460 },
   nailde: { id: "nailde", title: "NAILDE", icon: "monitor-cog", width: 1180, height: 720 },
+  "device-manager": { id: "device-manager", title: "Device Manager", icon: "monitor-cog", width: 940, height: 620 },
   terminal: { id: "terminal", title: "Operator Terminal", icon: "terminal", width: 620, height: 520 },
 
   addons: {
@@ -120,8 +122,8 @@ function clampWindowRect(x: number, y: number, width: number, height: number) {
 const WORKSPACE_PRESETS: Record<string, WindowId[]> = {
   chat: ["chat", "history", "avatar"],
   research: ["research", "files", "chat"],
-  operator: ["avatar", "sarahnet", "media", "settings"],
-  engineer: ["nailde", "terminal", "dlengine", "addons", "settings"],
+  operator: ["avatar", "sarahnet", "media", "device-manager", "settings"],
+  engineer: ["nailde", "terminal", "dlengine", "device-manager", "addons", "settings"],
   media: ["studio", "media", "files"],
 };
 

@@ -11,6 +11,7 @@ import { SarahNetScreen } from "@/components/screens/sarah-net/SarahNetScreen";
 import { MediaScreen } from "@/components/screens/media/MediaScreen";
 import { DLEngineScreen } from "@/components/screens/dl-engine/DLEngineScreen";
 import { SettingsScreen } from "@/components/screens/settings/SettingsScreen";
+import { DeviceManagerScreen } from "@/components/screens/device-manager/DeviceManagerScreen";
 import { AddonsScreen } from "@/components/screens/addons/AddonsScreen";
 import NAILDEScreen from "@/components/screens/nailde/NAILDEScreen";
 import TerminalScreen from "@/components/screens/terminal/TerminalScreen";
@@ -27,6 +28,7 @@ export type ShellFeatureArea =
   | "creation"
   | "network"
   | "media"
+  | "devices"
   | "settings";
 
 export type ShellFeatureDefinition = {
@@ -112,6 +114,14 @@ export const SHELL_FEATURES: ShellFeatureDefinition[] = [
     purpose: "DL runtime overview, REM, model governance weights, jobs, and traces.",
     sourceFile: "src/components/screens/dl-engine/DLEngineScreen.tsx",
     component: <DLEngineScreen />,
+  },
+  {
+    id: "device-manager",
+    title: "Device Manager",
+    area: "devices",
+    purpose: "Boot-detected hardware and driver configuration surface for network, audio, printer, storage, input, camera, and other devices.",
+    sourceFile: "src/components/screens/device-manager/DeviceManagerScreen.tsx",
+    component: <DeviceManagerScreen />,
   },
   {
     id: "nailde",

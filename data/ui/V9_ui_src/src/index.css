@@ -22,6 +22,7 @@
     /* Brand */
     --primary: 210 100% 60%;
     --primary-foreground: 220 20% 5%;
+    --primary-rgb: 51, 153, 255;
     --accent: 200 100% 50%;
     --accent-foreground: 220 20% 5%;
 
