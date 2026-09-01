@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { MessageSquare, Users, Phone, PhoneOff } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ContactsPanel } from '@/components/panels/ContactsPanel';
-import { DialerPanel } from '@/components/panels/DialerPanel';
+import { ContactsPanel } from '@/components/panels/contacts/ContactsPanel';
+import { DialerPanel } from '@/components/panels/dialer/DialerPanel';
 import { useSarahStore } from '@/stores/useSarahStore';
 import { usePreviewStore } from '@/stores/usePreviewStore';
 import { Button } from '@/components/ui/button';
