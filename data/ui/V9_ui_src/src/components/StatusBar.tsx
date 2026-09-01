@@ -27,11 +27,13 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { config } from "@/lib/config";
 import { api } from "@/lib/api";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { useWindowStore } from "@/stores/useWindowStore";
 import { AiOSShellCenter } from "@/components/shell/AiOSShellCenter";
+import { AudioMixerPanel } from "@/components/panels/audio-mixer/AudioMixerPanel";
 
 interface SystemStatus {
   local: boolean;
@@ -41,7 +43,7 @@ interface SystemStatus {
 }
 
 const MODE_LABELS: Record<string, { label: string; icon: typeof Zap }> = {
-  any: { label: "Any", icon: Zap },
+  any: { label: "Auto", icon: Zap },
   local: { label: "Local", icon: Database },
   web: { label: "Web", icon: Globe },
   api: { label: "API", icon: Cpu },
@@ -49,7 +51,8 @@ const MODE_LABELS: Record<string, { label: string; icon: typeof Zap }> = {
 
 const MODE_ORDER = ["any", "local", "web", "api"] as const;
 
-const TASKBAR_ORDER_KEY = "sm_taskbar_order_v1";
+const COMMAND_RAIL_ORDER_KEY = "sm_command_rail_order_v1";
+const LEGACY_TASKBAR_ORDER_KEY = "sm_taskbar_order_v1";
 
 const DEFAULT_TASKBAR_IDS = [
   "chat",
@@ -67,9 +70,9 @@ const DEFAULT_TASKBAR_IDS = [
   "settings",
 ] as const;
 
-type TaskbarId = (typeof DEFAULT_TASKBAR_IDS)[number] | string;
+type CommandRailId = (typeof DEFAULT_TASKBAR_IDS)[number] | string;
 
-function safeParseOrder(raw: string | null): TaskbarId[] | null {
+function safeParseOrder(raw: string | null): CommandRailId[] | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -80,8 +83,8 @@ function safeParseOrder(raw: string | null): TaskbarId[] | null {
   }
 }
 
-function uniqKeepOrder(ids: TaskbarId[]) {
-  const out: TaskbarId[] = [];
+function uniqKeepOrder(ids: CommandRailId[]) {
+  const out: CommandRailId[] = [];
   const seen = new Set<string>();
   for (const id of ids) {
     const k = String(id);
@@ -92,7 +95,7 @@ function uniqKeepOrder(ids: TaskbarId[]) {
   return out;
 }
 
-function mergeWithDefaults(userOrder: TaskbarId[] | null) {
+function mergeWithDefaults(userOrder: CommandRailId[] | null) {
   const base = userOrder && userOrder.length ? userOrder : [];
   return uniqKeepOrder([...base, ...DEFAULT_TASKBAR_IDS]);
 }
@@ -124,33 +127,33 @@ export function StatusBar() {
   const initialOrder = useMemo(() => {
     const s = settings as any;
     const fromSettings = Array.isArray(s?.taskbar?.items)
-      ? (s.taskbar.items as TaskbarId[]).map((x: any) => String(x))
+      ? (s.taskbar.items as CommandRailId[]).map((x: any) => String(x))
       : null;
 
     if (fromSettings && fromSettings.length) return mergeWithDefaults(fromSettings);
 
     const saved = safeParseOrder(
       typeof window !== "undefined"
-        ? window.localStorage.getItem(TASKBAR_ORDER_KEY)
+        ? window.localStorage.getItem(COMMAND_RAIL_ORDER_KEY) || window.localStorage.getItem(LEGACY_TASKBAR_ORDER_KEY)
         : null,
     );
     return mergeWithDefaults(saved);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [taskbarOrder, setTaskbarOrder] = useState<TaskbarId[]>(initialOrder);
+  const [commandRailOrder, setCommandRailOrder] = useState<CommandRailId[]>(initialOrder);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(TASKBAR_ORDER_KEY, JSON.stringify(taskbarOrder));
+      window.localStorage.setItem(COMMAND_RAIL_ORDER_KEY, JSON.stringify(commandRailOrder));
     } catch {}
-  }, [taskbarOrder]);
+  }, [commandRailOrder]);
 
   useEffect(() => {
     const s: any = settings as any;
     if (!s?.taskbar) return;
 
     const existing = Array.isArray(s.taskbar.items) ? s.taskbar.items.map(String) : [];
-    const desired = taskbarOrder.map(String);
+    const desired = commandRailOrder.map(String);
 
     const same =
       existing.length === desired.length &&
@@ -166,13 +169,13 @@ export function StatusBar() {
         },
       } as any);
     } catch {}
-  }, [taskbarOrder, settings, updateSettings]);
+  }, [commandRailOrder, settings, updateSettings]);
 
   const dragIdRef = useRef<string | null>(null);
 
   const moveItem = (fromId: string, toId: string) => {
     if (!fromId || !toId || fromId === toId) return;
-    setTaskbarOrder((prev) => {
+    setCommandRailOrder((prev) => {
       const next = [...prev];
       const fromIdx = next.findIndex((x) => String(x) === fromId);
       const toIdx = next.findIndex((x) => String(x) === toId);
@@ -236,8 +239,8 @@ export function StatusBar() {
   const currentModeId = (settings.mode || "any") as keyof typeof MODE_LABELS;
   const currentMode = MODE_LABELS[currentModeId] || MODE_LABELS.any;
   const ModeIcon = currentMode.icon;
-  const taskbarDock = String((settings as any)?.taskbar?.dock || "bottom");
-  const isVerticalDock = taskbarDock === "left" || taskbarDock === "right";
+  const commandRailDock = String((settings as any)?.taskbar?.dock || "bottom");
+  const isVerticalDock = commandRailDock === "left" || commandRailDock === "right";
 
   const nextModeId = useMemo(() => {
     const idx = MODE_ORDER.indexOf(currentModeId as any);
@@ -271,32 +274,32 @@ export function StatusBar() {
     { label: string; Icon: any; onClick: () => void }
   > = {
     chat: {
-      label: "Chat",
+      label: "Sarah Chat",
       Icon: MessageCircle,
       onClick: () => clickWindow("chat"),
     },
     history: {
-      label: "History",
+      label: "Memory Trail",
       Icon: Clock,
       onClick: () => clickWindow("history"),
     },
     files: {
-      label: "Files",
+      label: "File Cortex",
       Icon: Folder,
       onClick: () => clickWindow("files"),
     },
     research: {
-      label: "Research",
+      label: "Evidence Lens",
       Icon: Search,
       onClick: () => clickWindow("research"),
     },
     studio: {
-      label: "Studios",
+      label: "Creation Bay",
       Icon: Palette,
       onClick: () => clickWindow("studio"),
     },
     avatar: {
-      label: "Avatar",
+      label: "Avatar Core",
       Icon: User,
       onClick: () => clickWindow("avatar"),
     },
@@ -306,12 +309,12 @@ export function StatusBar() {
       onClick: () => clickWindow("sarahnet"),
     },
     media: {
-      label: "Media",
+      label: "Media Deck",
       Icon: Play,
       onClick: () => clickWindow("media"),
     },
     dlengine: {
-      label: "DL Engine",
+      label: "Model Forge",
       Icon: Cpu,
       onClick: () => clickWindow("dlengine"),
     },
@@ -321,7 +324,7 @@ export function StatusBar() {
       onClick: () => clickWindow("nailde"),
     },
     terminal: {
-      label: "Terminal",
+      label: "Operator Terminal",
       Icon: Terminal,
       onClick: () => clickWindow("terminal"),
     },
@@ -331,13 +334,13 @@ export function StatusBar() {
       onClick: () => clickWindow("addons"),
     },
     settings: {
-      label: "Settings",
+      label: "System Tuning",
       Icon: Settings,
       onClick: () => clickWindow("settings"),
     },
   };
 
-  const renderTaskbarButton = (id: string) => {
+  const renderCommandRailButton = (id: string) => {
     const entry = TASKBAR_ITEMS[id];
     if (!entry) return null;
 
@@ -371,7 +374,7 @@ export function StatusBar() {
           "focus:outline-none focus:ring-1 focus:ring-primary/40",
         )}
         aria-label={entry.label}
-        title={`${entry.label} (drag to reorder)`}
+        title={`${entry.label} - drag to reorder on command rail`}
       >
         <entry.Icon
           className={cn(
@@ -416,11 +419,12 @@ export function StatusBar() {
     <div
       ref={barRef}
       className={cn(
-        "h-full min-h-14 w-full shrink-0 border-border bg-card/95 backdrop-blur-sm",
+        "sarah-material h-full min-h-14 w-full shrink-0 border-border",
         isVerticalDock
           ? "flex flex-col items-stretch justify-start gap-3 overflow-y-auto px-2 py-3"
           : "flex items-center justify-between gap-3 px-3",
       )}
+      data-command-rail="true"
       data-taskbar="true"
     >
       <div className={cn("flex min-w-0", isVerticalDock ? "flex-col gap-2" : "items-center gap-3")}>
@@ -432,10 +436,10 @@ export function StatusBar() {
             "bg-secondary/40 hover:bg-secondary/60 transition-colors",
             "text-foreground/80 hover:text-foreground",
           )}
-          title={`Click to switch to ${MODE_LABELS[nextModeId].label}`}
-          aria-label="Toggle Mode"
+          title={`Switch execution lane to ${MODE_LABELS[nextModeId].label}`}
+          aria-label="Toggle execution lane"
         >
-          <span className="text-sm text-muted-foreground">MODE:</span>
+          <span className="text-sm text-muted-foreground">LANE:</span>
           <ModeIcon className="h-3.5 w-3.5 text-primary" />
           <span className="text-sm font-medium text-foreground">
             {currentMode.label}
@@ -449,13 +453,13 @@ export function StatusBar() {
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors truncate"
-          title="Backend Source: SarahMemory on GitHub"
+          title="SarahMemory source ledger"
         >
           <Github className="h-3.5 w-3.5 shrink-0" />
           <span className="hidden md:inline truncate">
-            Backend Source: SarahMemory on GitHub
+            Source Ledger
           </span>
-          <span className="md:hidden">GitHub</span>
+          <span className="md:hidden">Ledger</span>
           <ExternalLink className="h-3 w-3 shrink-0" />
         </a>
       </div>
@@ -467,16 +471,37 @@ export function StatusBar() {
             ? "grid w-full grid-cols-2 px-1.5 py-2"
             : "flex max-w-full items-center overflow-x-auto px-3 py-1.5",
         )}>
-          {taskbarOrder.map((id) => renderTaskbarButton(String(id)))}
+          {commandRailOrder.map((id) => renderCommandRailButton(String(id)))}
         </div>
       </div>
 
       <div className={cn("flex", isVerticalDock ? "flex-col gap-2" : "items-center gap-3")}>
         <div className={cn(
-          "flex items-center gap-2 rounded-md bg-secondary/30 px-2 py-1 text-muted-foreground",
+          "flex items-center gap-1 rounded-md bg-secondary/30 px-1.5 py-1 text-muted-foreground",
           isVerticalDock ? "justify-center" : "hidden md:flex",
         )}>
-          <Volume2 className="h-4 w-4" />
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex h-7 items-center gap-1 rounded-md px-1.5 transition hover:bg-secondary hover:text-foreground"
+                title="Open audio mixer"
+                aria-label="Open audio command deck"
+              >
+                <Volume2 className="h-4 w-4" />
+                <span className="hidden text-xs tabular-nums xl:inline">
+                  {Number((settings as any).masterVolume ?? 78)}%
+                </span>
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align={isVerticalDock ? "start" : "end"}
+              side={isVerticalDock ? "right" : "top"}
+              className="border-border/80 bg-popover/95 p-3 backdrop-blur-xl"
+            >
+              <AudioMixerPanel />
+            </PopoverContent>
+          </Popover>
           <Wifi className={cn("h-4 w-4", status.network ? "text-status-online" : "text-status-error")} />
         </div>
 
@@ -526,7 +551,7 @@ export function StatusBar() {
             isVerticalDock && "justify-center",
           )}
           title={statusTitle}
-          aria-label="System Status"
+          aria-label="Gate status"
         >
           <StatusIcon
             className={cn(

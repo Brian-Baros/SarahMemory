@@ -1,4 +1,4 @@
-import { useRef, useCallback, useEffect, useState, ReactNode } from "react";
+import { useRef, useCallback, useEffect, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
 import { X, Minus, Square, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWindowStore, type WindowState } from "@/stores/useWindowStore";
@@ -35,8 +35,9 @@ export function Window({ window: win, children }: WindowProps) {
 
   // Handle drag start
   const handleDragStart = useCallback(
-    (e: React.MouseEvent) => {
+    (e: ReactPointerEvent<HTMLDivElement>) => {
       if (win.isMaximized) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
       e.preventDefault();
       setIsDragging(true);
       setDragOffset({
@@ -50,8 +51,9 @@ export function Window({ window: win, children }: WindowProps) {
 
   // Handle resize start
   const handleResizeStart = useCallback(
-    (e: React.MouseEvent) => {
+    (e: ReactPointerEvent<HTMLDivElement>) => {
       if (win.isMaximized) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
       e.preventDefault();
       e.stopPropagation();
       setIsResizing(true);
@@ -66,11 +68,11 @@ export function Window({ window: win, children }: WindowProps) {
     [win.width, win.height, win.isMaximized, win.id, focusWindow],
   );
 
-  // Handle mouse move for drag/resize
+  // Handle pointer move for mouse, pen, and touch drag/resize.
   useEffect(() => {
     if (!isDragging && !isResizing) return;
 
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       if (isDragging) {
         const newX = Math.max(0, e.clientX - dragOffset.x);
         const newY = Math.max(0, e.clientY - dragOffset.y);
@@ -83,17 +85,19 @@ export function Window({ window: win, children }: WindowProps) {
       }
     };
 
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       setIsDragging(false);
       setIsResizing(false);
     };
 
-    document.addEventListener("mousemove", handleMouseMove);
-    document.addEventListener("mouseup", handleMouseUp);
+    document.addEventListener("pointermove", handlePointerMove);
+    document.addEventListener("pointerup", handlePointerUp);
+    document.addEventListener("pointercancel", handlePointerUp);
 
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove);
-      document.removeEventListener("mouseup", handleMouseUp);
+      document.removeEventListener("pointermove", handlePointerMove);
+      document.removeEventListener("pointerup", handlePointerUp);
+      document.removeEventListener("pointercancel", handlePointerUp);
     };
   }, [isDragging, isResizing, dragOffset, resizeStart, win.id, moveWindow, resizeWindow]);
 
@@ -133,48 +137,59 @@ export function Window({ window: win, children }: WindowProps) {
   return (
     <div
       ref={windowRef}
+      data-focus={isFocused ? "true" : "false"}
       className={cn(
         "sarah-workstation-card absolute flex flex-col overflow-hidden rounded-md",
-        "transition-shadow duration-150",
-        isFocused ? "ring-1 ring-primary/60 shadow-primary/10" : "opacity-95",
+        "transition-[box-shadow,border-color,opacity] duration-150",
+        isFocused ? "opacity-100" : "opacity-95",
         isDragging && "cursor-grabbing",
         isResizing && "cursor-se-resize",
       )}
       style={windowStyle}
-      onMouseDown={() => focusWindow(win.id)}
+      onPointerDown={() => focusWindow(win.id)}
     >
       {/* Title Bar */}
       <div
         className={cn(
-          "h-10 flex items-center justify-between px-3 shrink-0",
-          "bg-background/70 border-b border-border/80",
+          "sarah-window-bar h-10 flex items-center justify-between px-3 shrink-0",
+          "border-b border-border/80",
           "select-none",
-          !win.isMaximized && "cursor-grab",
+          !win.isMaximized && "touch-none cursor-grab",
         )}
-        onMouseDown={handleDragStart}
+        onPointerDown={handleDragStart}
         onDoubleClick={handleTitleDoubleClick}
       >
         <span className="flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
-          <span className={cn("h-2 w-2 rounded-full", isFocused ? "bg-primary" : "bg-muted-foreground/50")} />
+          <span
+            className={cn(
+              "h-2 w-2 rounded-full shadow-[0_0_10px_currentColor]",
+              isFocused ? "bg-primary text-primary" : "bg-muted-foreground/50 text-muted-foreground/50",
+            )}
+          />
           <span className="truncate">{win.title}</span>
+          <span className="hidden rounded border border-border/60 px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-[0.14em] text-muted-foreground lg:inline">
+            Fabric Surface
+          </span>
         </span>
 
         <div className="flex items-center gap-1">
           {/* Minimize */}
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               minimizeWindow(win.id);
             }}
-            className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-            aria-label="Minimize"
-            title="Minimize"
+            className="sarah-focus-ring p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+            aria-label="Minimize surface"
+            title="Minimize surface"
           >
             <Minus className="h-3.5 w-3.5" />
           </button>
 
           {/* Maximize/Restore */}
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               if (win.isMaximized) {
@@ -183,22 +198,23 @@ export function Window({ window: win, children }: WindowProps) {
                 maximizeWindow(win.id);
               }
             }}
-            className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
-            aria-label={win.isMaximized ? "Restore" : "Maximize"}
-            title={win.isMaximized ? "Restore" : "Maximize"}
+            className="sarah-focus-ring p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground transition-colors"
+            aria-label={win.isMaximized ? "Restore surface" : "Expand surface"}
+            title={win.isMaximized ? "Restore surface" : "Expand surface"}
           >
             {win.isMaximized ? <Square className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
           </button>
 
           {/* Close */}
           <button
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               closeWindow(win.id);
             }}
-            className="p-1 rounded hover:bg-destructive hover:text-destructive-foreground text-muted-foreground transition-colors"
-            aria-label="Close"
-            title="Close"
+            className="sarah-focus-ring p-1 rounded hover:bg-destructive hover:text-destructive-foreground text-muted-foreground transition-colors"
+            aria-label="Close surface"
+            title="Close surface"
           >
             <X className="h-3.5 w-3.5" />
           </button>
@@ -211,8 +227,8 @@ export function Window({ window: win, children }: WindowProps) {
       {/* Resize Handle (bottom-right corner) */}
       {!win.isMaximized && (
         <div
-          className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize z-50"
-          onMouseDown={handleResizeStart}
+          className="absolute bottom-0 right-0 z-50 h-6 w-6 touch-none cursor-se-resize"
+          onPointerDown={handleResizeStart}
           aria-label="Resize"
           title="Resize"
         >

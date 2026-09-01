@@ -62,9 +62,9 @@ function screenToDesktopApp(screen: string) {
 }
 
 /**
- * Bottom navigation bar
+ * Bottom command rail
  * - Mobile shell: drives MobileShell currentScreen
- * - Desktop shell mode: acts like a dock, drives activeDesktopApp
+ * - Desktop shell mode: drives activeDesktopApp
  *
  * Hook order must remain invariant. Do not return before all hooks execute.
  */
@@ -96,7 +96,7 @@ export function BottomNav() {
     if (!hasTerminal) {
       base.push({
         screen: "terminal",
-        label: "Terminal",
+        label: "Ops",
         icon: "terminal",
       } as any);
     }
@@ -124,7 +124,7 @@ export function BottomNav() {
             "mx-auto mb-2 h-[var(--dock-h,56px)] min-h-14",
             isDesktopDock ? "max-w-5xl" : "max-w-md",
             "rounded-2xl border border-border/60",
-            "bg-card/80 backdrop-blur-xl shadow-lg",
+            "sarah-material shadow-lg",
           )}
         >
           <div className="flex items-center justify-around h-full px-1 overflow-x-auto overscroll-x-contain">
@@ -146,7 +146,7 @@ export function BottomNav() {
                     }
                   }}
                   className={cn(
-                    "flex flex-col items-center justify-center flex-1 min-w-[48px] h-full py-1 transition-all touch-manipulation",
+                    "sarah-focus-ring flex flex-col items-center justify-center flex-1 min-w-[48px] h-full py-1 transition-all touch-manipulation",
                     isActive ? "text-primary" : "text-muted-foreground hover:text-foreground",
                   )}
                 >

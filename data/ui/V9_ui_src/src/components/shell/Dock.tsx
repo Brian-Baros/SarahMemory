@@ -32,22 +32,22 @@ interface DockItem {
 }
 
 const DOCK_ITEMS: DockItem[] = [
-  { id: "chat", label: "Chat", icon: <MessageCircle className="h-5 w-5" /> },
-  { id: "history", label: "History", icon: <Clock className="h-5 w-5" /> },
-  { id: "files", label: "Files", icon: <Folder className="h-5 w-5" /> },
-  { id: "research", label: "Research", icon: <Search className="h-5 w-5" /> },
-  { id: "studio", label: "Studios", icon: <Palette className="h-5 w-5" /> },
-  { id: "avatar", label: "Avatar", icon: <User className="h-5 w-5" /> },
+  { id: "chat", label: "Sarah Chat", icon: <MessageCircle className="h-5 w-5" /> },
+  { id: "history", label: "Memory Trail", icon: <Clock className="h-5 w-5" /> },
+  { id: "files", label: "File Cortex", icon: <Folder className="h-5 w-5" /> },
+  { id: "research", label: "Evidence Lens", icon: <Search className="h-5 w-5" /> },
+  { id: "studio", label: "Creation Bay", icon: <Palette className="h-5 w-5" /> },
+  { id: "avatar", label: "Avatar Core", icon: <User className="h-5 w-5" /> },
   { id: "sarahnet", label: "SarahNet", icon: <Network className="h-5 w-5" /> },
-  { id: "media", label: "Media", icon: <Play className="h-5 w-5" /> },
-  { id: "dlengine", label: "DL Engine", icon: <Cpu className="h-5 w-5" /> },
-  { id: "terminal", label: "Terminal", icon: <Terminal className="h-5 w-5" /> },
+  { id: "media", label: "Media Deck", icon: <Play className="h-5 w-5" /> },
+  { id: "dlengine", label: "Model Forge", icon: <Cpu className="h-5 w-5" /> },
+  { id: "terminal", label: "Operator Terminal", icon: <Terminal className="h-5 w-5" /> },
   { id: "addons", label: "Addons", icon: <LayoutGrid className="h-5 w-5" /> },
-  { id: "settings", label: "Settings", icon: <Settings className="h-5 w-5" /> },
+  { id: "settings", label: "System Tuning", icon: <Settings className="h-5 w-5" /> },
 ];
 
-type RouteMode = "Any" | "Local" | "Web" | "API";
-const ROUTE_MODES: RouteMode[] = ["Any", "Local", "Web", "API"];
+type RouteMode = "Auto" | "Local" | "Web" | "API";
+const ROUTE_MODES: RouteMode[] = ["Auto", "Local", "Web", "API"];
 
 export function Dock() {
   const barRef = useRef<HTMLDivElement>(null);
@@ -62,10 +62,10 @@ export function Dock() {
 
   const [routeMode, setRouteMode] = useState<RouteMode>(() => {
     try {
-      const v = (localStorage.getItem("route_mode") || "Any") as RouteMode;
-      return ROUTE_MODES.includes(v) ? v : "Any";
+      const v = (localStorage.getItem("route_mode") || "Auto") as RouteMode;
+      return ROUTE_MODES.includes(v) ? v : "Auto";
     } catch {
-      return "Any";
+      return "Auto";
     }
   });
 
@@ -134,7 +134,7 @@ export function Dock() {
     <div
       ref={barRef}
       className={cn(
-        "h-14 bg-card/80 backdrop-blur-md border-t border-border",
+        "h-14 sarah-material border-t border-border",
         "flex items-center px-3 gap-2"
       )}
     >
@@ -150,15 +150,15 @@ export function Dock() {
                   "bg-secondary/40 hover:bg-secondary/60 transition-colors",
                   "text-foreground/80 hover:text-foreground"
                 )}
-                aria-label="Toggle route mode"
-                title={`Click to switch to ${nextMode}`}
+                aria-label="Toggle execution lane"
+                title={`Switch execution lane to ${nextMode}`}
               >
-                <span className="font-mono">MODE:</span>
+                <span className="font-mono">LANE:</span>
                 <span className="font-semibold">{routeMode}</span>
               </button>
             </TooltipTrigger>
             <TooltipContent side="top" className="text-xs">
-              Click to cycle modes: Any → Local → Web → API
+              Cycle governed lanes: Auto, Local, Web, API
             </TooltipContent>
           </Tooltip>
 
@@ -169,9 +169,9 @@ export function Dock() {
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 hover:text-foreground transition-colors truncate"
-              title="Backend Source: SarahMemory on GitHub"
+              title="SarahMemory source ledger"
             >
-              <span className="truncate">Backend Source: SarahMemory on GitHub</span>
+              <span className="truncate">Source Ledger</span>
               <ExternalLink className="h-3 w-3 opacity-70" />
             </a>
             <span className="text-muted-foreground/70">|</span>

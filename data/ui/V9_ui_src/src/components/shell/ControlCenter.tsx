@@ -16,14 +16,7 @@ import { useSarahStore } from "@/stores/useSarahStore";
 import { cn } from "@/lib/utils";
 
 /**
- * ControlCenter
- *
- * A slide‑out panel providing quick access to global toggles and mode selectors
- * for the SarahMemory WebUI.  This component surfaces UI mode selection
- * (simple/operator/engineer), an offline/local only toggle and quick media
- * enable/disable controls (camera, microphone, voice).  It is implemented as
- * a Radix Sheet anchored to the right side of the viewport and can be
- * triggered via a button placed in the StatusBar.
+ * Command gate panel for global shell posture, locality, and media switches.
  */
 export function ControlCenter() {
   const {
@@ -52,23 +45,23 @@ export function ControlCenter() {
           variant="ghost"
           size="icon"
           className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
-          title="Control Center"
-          aria-label="Control Center"
+          title="Command Gates"
+          aria-label="Command Gates"
         >
           <LayoutGrid className="h-5 w-5" />
         </Button>
       </SheetTrigger>
       <SheetContent side="right" className="w-80 sm:w-96">
         <SheetHeader>
-          <SheetTitle>Control Center</SheetTitle>
+          <SheetTitle>Command Gates</SheetTitle>
           <SheetDescription>
-            Manage your SarahMemory operating environment.
+            Manage shell posture, locality, and media intent.
           </SheetDescription>
         </SheetHeader>
         <div className="py-4 space-y-6 overflow-y-auto">
           {/* UI Mode selector */}
           <div className="space-y-2">
-            <h3 className="text-base font-medium">UI Mode</h3>
+            <h3 className="text-base font-medium">Shell Posture</h3>
             <div className="flex gap-2">
               {(['simple', 'operator', 'engineer'] as const).map((mode) => {
                 const isActive = uiMode === mode;
@@ -80,41 +73,41 @@ export function ControlCenter() {
                     className="flex-1 capitalize"
                     onClick={() => setUiMode(mode)}
                   >
-                    {mode}
+                    {mode === "simple" ? "core" : mode === "engineer" ? "builder" : mode}
                   </Button>
                 );
               })}
             </div>
             <p className="text-xs text-muted-foreground">
-              Simple is streamlined; Operator enables SarahNet/Media; Engineer enables all panels including the developer terminal and DL Engine.
+              Core is streamlined; Operator enables network/media surfaces; Builder exposes governed terminal and model tooling.
             </p>
           </div>
 
           {/* Local Only Mode toggle */}
           <div className="space-y-2">
-            <h3 className="text-base font-medium">Offline / Local Only</h3>
+            <h3 className="text-base font-medium">Local-First Lock</h3>
             <div className="flex items-center justify-between px-1 py-2 rounded-md bg-secondary/40">
-              <span className="text-sm">Local Only Mode</span>
+              <span className="text-sm">Keep execution local where possible</span>
               <Switch checked={localOnly} onCheckedChange={toggleLocalOnly} />
             </div>
             <p className="text-xs text-muted-foreground">
-              When enabled, SarahMemory will avoid remote API calls and operate in a self‑contained offline mode.
+              When enabled, SarahMemory should prefer self-contained local lanes before remote services.
             </p>
           </div>
 
           {/* Media controls */}
           <div className="space-y-2">
-            <h3 className="text-base font-medium">Media</h3>
+            <h3 className="text-base font-medium">Embodiment Gates</h3>
             <div className="grid grid-cols-1 gap-3">
               <div className="flex items-center justify-between px-1 py-2 rounded-md bg-secondary/40">
                 <span className="flex items-center gap-2 text-sm">
-                  <Laptop2 className="h-4 w-4" /> Webcam
+                  <Laptop2 className="h-4 w-4" /> Camera Gate
                 </span>
                 <Switch checked={mediaState.webcamEnabled} onCheckedChange={toggleWebcam} />
               </div>
               <div className="flex items-center justify-between px-1 py-2 rounded-md bg-secondary/40">
                 <span className="flex items-center gap-2 text-sm">
-                  <Monitor className="h-4 w-4" /> Microphone
+                  <Monitor className="h-4 w-4" /> Microphone Gate
                 </span>
                 <Switch checked={mediaState.microphoneEnabled} onCheckedChange={toggleMicrophone} />
               </div>
@@ -126,7 +119,7 @@ export function ControlCenter() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">
-              Quickly enable or disable your camera, microphone, and voice output.
+              Quickly set camera, microphone, and voice-output intent without bypassing backend governance.
             </p>
           </div>
         </div>
