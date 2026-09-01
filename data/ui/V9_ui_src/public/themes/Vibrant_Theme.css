@@ -1,17 +1,78 @@
-/* SarahMemory Unified Theme — VIBRANT (v7.7.5) */
-:root{
-  --bg:#0f1016; --panel:#141829; --text:#f3f6ff; --muted:#98a2c3;
-  --accent:#ff7a45; --accent2:#7c7bff; --border:#262c46; --btn:#1a1f38; --btnText:#f3f6ff;
-  --bubble-user:#1a2a52; --bubble-sarah:#211c3a; --chip:#232c4a;
-}
-html,body{background:radial-gradient(1100px 500px at 85% -20%,rgba(124,123,255,.15),transparent 60%), var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Arial,sans-serif}
-a{color:var(--accent)}
-.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
-.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
-.btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#0b0f1a;border:0}
-.small,.muted{color:var(--muted)}
+/* SarahMemory Unified Theme - Vibrant */
+:root {
+  color-scheme: dark;
 
-.TFrame { background-color:#141829; }
-.TLabel { background-color:transparent; color:#f3f6ff; foreground:#f3f6ff; font-family:sans-serif,Arial,sans-serif; font-size:10pt; }
-.TButton{ background-color:#1a1f38; color:#f3f6ff; foreground:#f3f6ff; font-family:sans-serif,Arial,sans-serif; font-size:10pt; bordercolor:#2c355c; }
-.ChatText{ background-color:#0f1016; color:#f3f6ff; font-family:ui-monospace,"Noto Sans Mono","Courier New",monospace; font-size:10pt; }
+  --background: 230 19% 7%;
+  --foreground: 224 100% 98%;
+  --card: 228 35% 12%;
+  --card-foreground: 224 100% 98%;
+  --popover: 228 35% 11%;
+  --popover-foreground: 224 100% 98%;
+  --primary: 17 100% 64%;
+  --primary-foreground: 230 19% 7%;
+  --primary-rgb: 255, 122, 69;
+  --accent: 241 100% 75%;
+  --accent-foreground: 230 19% 7%;
+  --secondary: 229 36% 17%;
+  --secondary-foreground: 225 72% 91%;
+  --muted: 229 30% 18%;
+  --muted-foreground: 230 25% 72%;
+  --destructive: 0 82% 58%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 229 30% 25%;
+  --input: 229 30% 18%;
+  --ring: 17 100% 64%;
+  --bubble-user: 220 52% 21%;
+  --bubble-assistant: 252 35% 17%;
+  --status-online: 145 76% 43%;
+  --status-warning: 39 94% 56%;
+  --status-error: 0 82% 58%;
+  --status-info: 241 100% 75%;
+  --glow-primary: 17 100% 64%;
+  --glow-accent: 241 100% 75%;
+  --sidebar-background: 230 19% 7%;
+  --sidebar-foreground: 225 72% 91%;
+  --sidebar-primary: 17 100% 64%;
+  --sidebar-primary-foreground: 230 19% 7%;
+  --sidebar-accent: 229 36% 17%;
+  --sidebar-accent-foreground: 224 100% 98%;
+  --sidebar-border: 229 30% 25%;
+  --sidebar-ring: 17 100% 64%;
+  --sarah-material-alpha: 0.82;
+  --sarah-material-blur: 19px;
+  --sarah-material-border: 0.76;
+  --sarah-material-depth: 0 18px 44px rgb(0 0 0 / 0.34);
+  --sarah-glow-strength: 0.3;
+  --sarah-rail-halo: 17 100% 64%;
+
+  --bg: #0f1016;
+  --panel: #141829;
+  --text: #f3f6ff;
+  --muted-legacy: #98a2c3;
+  --accent-legacy: #ff7a45;
+  --accent2: #7c7bff;
+  --border-legacy: #262c46;
+  --btn: #1a1f38;
+  --btnText: #f3f6ff;
+  --bubble-user-legacy: #1a2a52;
+  --bubble-sarah: #211c3a;
+  --chip: #232c4a;
+}
+
+html,
+body {
+  background: radial-gradient(1100px 500px at 85% -20%, rgba(124,123,255,.15), transparent 60%), hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: ui-sans-serif, system-ui, Arial, sans-serif;
+}
+
+a { color: var(--accent-legacy); }
+.bubble.user { background: var(--bubble-user-legacy); border: 1px solid var(--border-legacy); }
+.bubble.sarah { background: var(--bubble-sarah); border: 1px solid var(--border-legacy); }
+.btn { background: linear-gradient(135deg, var(--accent-legacy), var(--accent2)); color: #0b0f1a; border: 0; }
+.small,.muted { color: hsl(var(--muted-foreground)); }
+
+.TFrame { background-color: #141829; }
+.TLabel { background-color: transparent; color: #f3f6ff; foreground: #f3f6ff; font-family: sans-serif, Arial, sans-serif; font-size: 10pt; }
+.TButton { background-color: #1a1f38; color: #f3f6ff; foreground: #f3f6ff; font-family: sans-serif, Arial, sans-serif; font-size: 10pt; bordercolor: #2c355c; }
+.ChatText { background-color: #0f1016; color: #f3f6ff; font-family: ui-monospace, "Noto Sans Mono", "Courier New", monospace; font-size: 10pt; }

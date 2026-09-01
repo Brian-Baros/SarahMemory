@@ -16,9 +16,18 @@ This workstation revision adds:
 - User-created shortcuts can be deleted from the shortcut itself or by dragging them onto Recovery Bin.
 - Desktop Trash icon that opens the Files panel Trash surface and activates real trash support when the API Bridge advertises it.
 - Audio mixer panel from the toolbar speaker icon with master/output/input volume, bass, treble, balance, voice, microphone, spatial audio, and noise suppression controls.
+- Nexus Power options for Power Down, Reboot, and Sleep Mode requests.
+- Sleep Mode requests REM / DL mode, blanks the screen, and wakes on keyboard, mouse, or touch input.
+- Clock/date popover from the command rail clock with editable date, time, and timezone/locality context.
+- Clock timezone control is now a dropdown with selected-timezone preview and constrained popover layout.
+- WiFi/network command rail button that opens Device Manager directly to network devices.
+- Device Manager screen for boot-detected governed drivers, network/audio/printer/storage/input/camera grouping, registry enable/autoload/trust controls, and driver configuration.
+- Device Manager dynamically normalizes driver bridge, manifest audit, self/body hardware, vision, and browser-visible inventory sources.
+- Ask Sarah context handoff moved into each window title bar so it no longer covers screen content.
 - Workspace presets for Chat, Research, Operator, Engineer, and Media modes.
 - Start/AiOS launcher polish with app search and quick settings.
 - Background brightness, dim overlay, blur, and panel opacity sliders.
+- All shipped themes now drive the current React shell tokens, material opacity, borders, status colors, popovers, inputs, sidebar, and glow variables.
 - Improved top/bottom/left/right taskbar handling.
 - Mobile portrait quick actions for Chat, Camera Vision, Voice, Audio, Files, Avatar, NAILDE, Models, Apps, and Settings.
 - Mobile All Apps launcher so every registered screen remains touch-accessible in V-View.

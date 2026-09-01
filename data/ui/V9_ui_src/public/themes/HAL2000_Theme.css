@@ -1,16 +1,75 @@
-/* SarahMemory Unified Theme — HAL2000 (v7.7.5) */
-:root{
-  --bg:#0d0d0f; --panel:#141417; --text:#ffd0c8; --muted:#ff9f90;
-  --accent:#ff3b2d; --border:#3a0f0e; --btn:#1a1515; --btnText:#ffd0c8;
-  --bubble-user:#1f1919; --bubble-sarah:#151114;
-}
-html,body{background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,Arial,sans-serif}
-.bubble.user{background:var(--bubble-user);border:1px solid var(--border)}
-.bubble.sarah{background:var(--bubble-sarah);border:1px solid var(--border)}
-.btn{background:var(--btn);color:var(--btnText);border:1px solid var(--border)}
-.small,.muted{color:var(--muted)}
+/* SarahMemory Unified Theme - HAL 2000 */
+:root {
+  color-scheme: dark;
 
-.TFrame { background-color:#141417; }
-.TLabel { background-color:transparent; color:#ff3b2d; foreground:#ff3b2d; font-family:sans-serif,Arial,sans-serif; font-size:12pt; }
-.TButton{ background-color:#1a1515; color:#ffd0c8; foreground:#ffd0c8; font-family:sans-serif,Arial,sans-serif; font-size:10pt; bordercolor:#3a0f0e; }
-.ChatText{ background-color:#0d0d0f; color:#ffd0c8; font-family:ui-monospace,"Noto Sans Mono","Courier New",monospace; font-size:11pt; }
+  --background: 240 7% 6%;
+  --foreground: 9 100% 90%;
+  --card: 240 7% 9%;
+  --card-foreground: 9 100% 90%;
+  --popover: 240 7% 8%;
+  --popover-foreground: 9 100% 90%;
+  --primary: 4 100% 59%;
+  --primary-foreground: 0 0% 100%;
+  --primary-rgb: 255, 59, 45;
+  --accent: 23 100% 61%;
+  --accent-foreground: 240 7% 6%;
+  --secondary: 0 9% 13%;
+  --secondary-foreground: 9 90% 86%;
+  --muted: 0 9% 14%;
+  --muted-foreground: 8 100% 78%;
+  --destructive: 0 82% 55%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 2 60% 20%;
+  --input: 0 9% 14%;
+  --ring: 4 100% 59%;
+  --bubble-user: 0 12% 13%;
+  --bubble-assistant: 330 11% 8%;
+  --status-online: 142 70% 42%;
+  --status-warning: 35 95% 55%;
+  --status-error: 4 100% 59%;
+  --status-info: 23 100% 61%;
+  --glow-primary: 4 100% 59%;
+  --glow-accent: 23 100% 61%;
+  --sidebar-background: 240 7% 6%;
+  --sidebar-foreground: 9 90% 86%;
+  --sidebar-primary: 4 100% 59%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 0 9% 13%;
+  --sidebar-accent-foreground: 9 100% 90%;
+  --sidebar-border: 2 60% 20%;
+  --sidebar-ring: 4 100% 59%;
+  --sarah-material-alpha: 0.86;
+  --sarah-material-blur: 18px;
+  --sarah-material-border: 0.84;
+  --sarah-material-depth: 0 18px 44px rgb(0 0 0 / 0.38);
+  --sarah-glow-strength: 0.3;
+  --sarah-rail-halo: 4 100% 59%;
+
+  --bg: #0d0d0f;
+  --panel: #141417;
+  --text: #ffd0c8;
+  --muted-legacy: #ff9f90;
+  --accent-legacy: #ff3b2d;
+  --border-legacy: #3a0f0e;
+  --btn: #1a1515;
+  --btnText: #ffd0c8;
+  --bubble-user-legacy: #1f1919;
+  --bubble-sarah: #151114;
+}
+
+html,
+body {
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: ui-sans-serif, system-ui, Arial, sans-serif;
+}
+
+.bubble.user { background: var(--bubble-user-legacy); border: 1px solid var(--border-legacy); }
+.bubble.sarah { background: var(--bubble-sarah); border: 1px solid var(--border-legacy); }
+.btn { background: var(--btn); color: var(--btnText); border: 1px solid var(--border-legacy); }
+.small,.muted { color: hsl(var(--muted-foreground)); }
+
+.TFrame { background-color: #141417; }
+.TLabel { background-color: transparent; color: #ff3b2d; foreground: #ff3b2d; font-family: sans-serif, Arial, sans-serif; font-size: 12pt; }
+.TButton { background-color: #1a1515; color: #ffd0c8; foreground: #ffd0c8; font-family: sans-serif, Arial, sans-serif; font-size: 10pt; bordercolor: #3a0f0e; }
+.ChatText { background-color: #0d0d0f; color: #ffd0c8; font-family: ui-monospace, "Noto Sans Mono", "Courier New", monospace; font-size: 11pt; }

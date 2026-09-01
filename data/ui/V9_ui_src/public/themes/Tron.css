@@ -1,16 +1,75 @@
-/* SarahMemory Unified Theme — TRON (v7.7.5) */
-:root{
-  --bg:#0b0f1a; --panel:#0f1422; --text:#e9fbff; --muted:#8ac7d8;
-  --accent:#19d4ff; --border:#1b2435; --btn:#102238; --btnText:#e9fbff;
-  --bubble-user:rgba(0,70,110,.55); --bubble-sarah:rgba(20,30,46,.75);
-}
-html,body{background:radial-gradient(ellipse at top,#0b0f1a,#070a12) fixed;color:var(--text);font-family:ui-sans-serif,system-ui,Arial,sans-serif}
-.bubble.user{background:var(--bubble-user);box-shadow:0 0 14px rgba(25,212,255,.12);border:1px solid var(--border)}
-.bubble.sarah{background:var(--bubble-sarah);box-shadow:0 0 16px rgba(25,212,255,.08);border:1px solid var(--border)}
-.btn{background:#103252;color:#e9fbff;border:1px solid #1e3b57}
-.small,.muted{color:var(--muted)}
+/* SarahMemory Unified Theme - Tron */
+:root {
+  color-scheme: dark;
 
-.TFrame { background-color:#0f1422; }
-.TLabel { background-color:transparent; color:#e9fbff; foreground:#e9fbff; font-family:sans-serif,Arial,sans-serif; font-size:10pt; }
-.TButton{ background-color:#103252; color:#e9fbff; foreground:#e9fbff; font-family:sans-serif,Arial,sans-serif; font-size:10pt; bordercolor:#1e3b57; }
-.ChatText{ background-color:#0b0f1a; color:#e9fbff; font-family:ui-monospace,"Noto Sans Mono","Courier New",monospace; font-size:10pt; }
+  --background: 225 45% 5%;
+  --foreground: 190 100% 96%;
+  --card: 224 38% 9%;
+  --card-foreground: 190 100% 96%;
+  --popover: 224 42% 8%;
+  --popover-foreground: 190 100% 96%;
+  --primary: 190 100% 55%;
+  --primary-foreground: 225 45% 5%;
+  --primary-rgb: 25, 212, 255;
+  --accent: 218 100% 64%;
+  --accent-foreground: 225 45% 5%;
+  --secondary: 215 42% 14%;
+  --secondary-foreground: 190 80% 84%;
+  --muted: 215 36% 15%;
+  --muted-foreground: 192 46% 70%;
+  --destructive: 0 72% 54%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 213 44% 24%;
+  --input: 214 42% 16%;
+  --ring: 190 100% 55%;
+  --bubble-user: 201 100% 16%;
+  --bubble-assistant: 218 38% 12%;
+  --status-online: 158 86% 45%;
+  --status-warning: 45 96% 56%;
+  --status-error: 0 82% 58%;
+  --status-info: 190 100% 55%;
+  --glow-primary: 190 100% 55%;
+  --glow-accent: 218 100% 64%;
+  --sidebar-background: 225 45% 5%;
+  --sidebar-foreground: 190 80% 84%;
+  --sidebar-primary: 190 100% 55%;
+  --sidebar-primary-foreground: 225 45% 5%;
+  --sidebar-accent: 215 42% 14%;
+  --sidebar-accent-foreground: 190 100% 96%;
+  --sidebar-border: 213 44% 24%;
+  --sidebar-ring: 190 100% 55%;
+  --sarah-material-alpha: 0.78;
+  --sarah-material-blur: 20px;
+  --sarah-material-border: 0.86;
+  --sarah-material-depth: 0 20px 48px rgb(0 0 0 / 0.38);
+  --sarah-glow-strength: 0.34;
+  --sarah-rail-halo: 190 100% 55%;
+
+  --bg: #0b0f1a;
+  --panel: #0f1422;
+  --text: #e9fbff;
+  --muted-legacy: #8ac7d8;
+  --accent-legacy: #19d4ff;
+  --border-legacy: #1b2435;
+  --btn: #103252;
+  --btnText: #e9fbff;
+  --bubble-user-legacy: rgba(0,70,110,.55);
+  --bubble-sarah: rgba(20,30,46,.75);
+}
+
+html,
+body {
+  background: radial-gradient(ellipse at top, #0b0f1a, #070a12) fixed;
+  color: hsl(var(--foreground));
+  font-family: ui-sans-serif, system-ui, Arial, sans-serif;
+}
+
+.bubble.user { background: var(--bubble-user-legacy); box-shadow: 0 0 14px rgba(25,212,255,.12); border: 1px solid var(--border-legacy); }
+.bubble.sarah { background: var(--bubble-sarah); box-shadow: 0 0 16px rgba(25,212,255,.08); border: 1px solid var(--border-legacy); }
+.btn { background: #103252; color: #e9fbff; border: 1px solid #1e3b57; }
+.small,.muted { color: hsl(var(--muted-foreground)); }
+
+.TFrame { background-color: #0f1422; }
+.TLabel { background-color: transparent; color: #e9fbff; foreground: #e9fbff; font-family: sans-serif, Arial, sans-serif; font-size: 10pt; }
+.TButton { background-color: #103252; color: #e9fbff; foreground: #e9fbff; font-family: sans-serif, Arial, sans-serif; font-size: 10pt; bordercolor: #1e3b57; }
+.ChatText { background-color: #0b0f1a; color: #e9fbff; font-family: ui-monospace, "Noto Sans Mono", "Courier New", monospace; font-size: 10pt; }

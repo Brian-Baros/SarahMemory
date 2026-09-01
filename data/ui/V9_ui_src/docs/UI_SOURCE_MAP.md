@@ -18,12 +18,14 @@ This package keeps the functional old V9 UI as the base. The source is organized
 | Area | File | Purpose |
 | --- | --- | --- |
 | Feature registry | `src/features/featureRegistry.tsx` | Single source of truth mapping app/screen IDs to components and owner files. |
-| Panel-to-Chat bridge | `src/components/shell/PanelChatBridge.tsx` | Adds the universal Ask Sarah context handoff to every registered non-Chat screen. |
+| Panel-to-Chat context | `src/components/shell/PanelChatBridge.tsx`, `src/components/shell/Window.tsx` | Keeps per-screen context metadata and renders Ask Sarah in the window title bar so it does not cover panel content. |
 | Desktop shell | `src/components/shell/DesktopShell.tsx` | Desktop workspace, wallpaper, movable shortcuts, custom shortcut deletion, add-shortcut panel, Trash handoff, dock/taskbar placement. |
 | Window manager | `src/components/shell/WindowManager.tsx` | Opens registered panels in draggable/resizable windows and reclamps bounds on resize/orientation changes. |
 | Window chrome | `src/components/shell/Window.tsx` | Generic AiOS window frame with pointer-based mouse/pen/touch movement and resizing. |
 | Mobile shell | `src/components/shell/MobileShell.tsx` | Mobile screen host with swipe navigation, portrait quick actions, audio panel, and All Apps launcher. |
 | Bottom navigation | `src/components/shell/BottomNav.tsx` | Primary mobile nav and desktop app shortcuts. |
+| System clock panel | `src/components/panels/system-clock/SystemClockPanel.tsx` | Clock/date controls, timezone dropdown, selected-timezone preview, Clock Court read authority, and saved local context. |
+| Device Manager | `src/components/screens/device-manager/DeviceManagerScreen.tsx` | Dynamic inventory from driver bridge, manifest audit, hardware topology, body map/capabilities, vision devices, and browser-visible devices; category grouping, registry enable/autoload/trust controls, connect/disconnect, discover/status, and network-style configuration. |
 | Dock/control center | `src/components/shell/Dock.tsx`, `src/components/shell/ControlCenter.tsx` | Desktop dock and quick controls. |
 | Status/taskbar | `src/components/StatusBar.tsx` | Clock, readiness, launcher, app buttons, and system status. |
 | Window state | `src/stores/useWindowStore.ts` | Window IDs, defaults, positions, presets, and UI control bus. |
@@ -56,6 +58,7 @@ This package keeps the functional old V9 UI as the base. The source is organized
 | Control | Owner file | Notes |
 | --- | --- | --- |
 | Real logo asset | `src/assets/smaios-logo.jpg` | Used by desktop shell, Start/AiOS center, and mobile header. |
+| Nexus Power Options | `src/components/shell/AiOSShellCenter.tsx`, `src/components/shell/DesktopShell.tsx` | Power Down/Reboot queue governed power requests; Sleep requests REM / DL mode, blanks the screen, and wakes on input. |
 | Movable desktop shortcuts | `src/components/shell/DesktopShell.tsx` | Opens registered panels through `useWindowStore.openWindow`; pointer-drag positions persist in settings. |
 | Add Shortcut panel | `src/components/shell/DesktopShell.tsx` | Adds user-created app or URL shortcuts to the desktop and removes them through the delete control or Recovery Bin drop target. |
 | Desktop Trash | `src/components/shell/DesktopShell.tsx`, `src/components/screens/files/FilesScreen.tsx` | Opens Files and dispatches `files_open_trash`; real listing activates when backend trash endpoints exist. |
