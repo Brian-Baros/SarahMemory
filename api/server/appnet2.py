@@ -315,6 +315,35 @@ def _ensure_tables() -> None:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_regions_authority ON net2_regions(authority_node,updated_ts)")
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS net2_entities (
+                entity_id TEXT PRIMARY KEY,
+                world_id TEXT NOT NULL,
+                region_id TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                semantic_type TEXT NOT NULL,
+                owner_identity TEXT NOT NULL,
+                creator_identity TEXT NOT NULL,
+                owner_node TEXT NOT NULL,
+                parent_entity TEXT,
+                persistence_class TEXT NOT NULL,
+                reality_class TEXT NOT NULL,
+                transform_json TEXT,
+                permissions_json TEXT,
+                asset_references_json TEXT,
+                state_json TEXT,
+                state_version INTEGER NOT NULL DEFAULT 1,
+                authority_node TEXT NOT NULL,
+                ledger_reference TEXT,
+                status TEXT NOT NULL,
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL,
+                provenance_json TEXT
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_entities_region ON net2_entities(world_id,region_id,status,updated_ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_entities_owner ON net2_entities(owner_identity,owner_node,updated_ts)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_net2_entities_parent ON net2_entities(parent_entity,updated_ts)")
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS net2_authority_leases (
                 lease_id TEXT PRIMARY KEY,
                 identity TEXT NOT NULL,
@@ -957,6 +986,66 @@ def _region_row(cur, world_id: str, region_id: str):
     return cur.fetchone()
 
 
+def _entity_row(cur, entity_id: str):
+    cur.execute(
+        "SELECT entity_id,world_id,region_id,entity_type,semantic_type,owner_identity,creator_identity,owner_node,parent_entity,"
+        "persistence_class,reality_class,transform_json,permissions_json,asset_references_json,state_json,state_version,"
+        "authority_node,ledger_reference,status,created_ts,updated_ts,provenance_json FROM net2_entities WHERE entity_id=? LIMIT 1",
+        (entity_id,),
+    )
+    return cur.fetchone()
+
+
+def _json_object(raw: Any) -> Dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _json_array(raw: Any) -> list:
+    if isinstance(raw, list):
+        return list(raw)
+    try:
+        parsed = json.loads(raw or "[]")
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def _entity_record(row) -> Dict[str, Any]:
+    return {
+        "schema": "SarahNet.Entity/1.0-alpha",
+        "entity_id": row[0],
+        "world_id": row[1],
+        "region_id": row[2],
+        "entity_type": row[3],
+        "semantic_type": row[4],
+        "owner_identity": row[5],
+        "creator_identity": row[6],
+        "owner_node": row[7],
+        "parent_entity": row[8] or "",
+        "persistence_class": row[9],
+        "reality_class": row[10],
+        "transform": _json_object(row[11]),
+        "permissions": _json_object(row[12]),
+        "asset_references": _json_array(row[13]),
+        "state": _json_object(row[14]),
+        "state_version": int(row[15] or 1),
+        "authority_node": row[16],
+        "authority_region": row[2],
+        "ledger_reference": row[17] or "",
+        "status": row[18],
+        "created_ts": row[19],
+        "updated_ts": row[20],
+        "provenance": _json_object(row[21]),
+        "execution_authority": False,
+    }
+
+
 @bp2.post("/api/net2/world/register")
 def net2_world_register():
     raw = _body_bytes()
@@ -1135,6 +1224,250 @@ def net2_region_list():
             pass
 
 
+@bp2.post("/api/net2/entity/upsert")
+def net2_entity_upsert():
+    """Create or revise a persistent semantic entity through Full SML control."""
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    data = _j()
+    if not _confirmed(data):
+        return _err("Explicit user approval required", 403, execution_authority=False)
+    if not _require_injected():
+        return _err("Storage not configured (META_DB).", 500)
+
+    entity_id = str(data.get("entity_id") or _new_id("entity")).strip()[:180]
+    world_id = str(data.get("world_id") or "").strip()[:180]
+    region_id = str(data.get("region_id") or "").strip()[:180]
+    issuer_node = str(data.get("issuer_node") or "").strip()[:180]
+    owner_node = str(data.get("owner_node") or issuer_node).strip()[:180]
+    owner_identity = str(data.get("owner_identity") or "").strip()[:240]
+    creator_identity = str(data.get("creator_identity") or owner_identity).strip()[:240]
+    entity_type = str(data.get("entity_type") or "object").strip()[:120]
+    semantic_type = str(data.get("semantic_type") or entity_type).strip()[:160]
+    parent_entity = str(data.get("parent_entity") or "").strip()[:180]
+    if not all((entity_id, world_id, region_id, issuer_node, owner_node, owner_identity, creator_identity)):
+        return _err("entity_id, world_id, region_id, issuer_node, owner_node, owner_identity, and creator_identity are required")
+
+    sml = _sarahnet_sml_module()
+    build_contract = getattr(sml, "sml_build_sarahnet_entity_contract", None) if sml else None
+    validate_contract = getattr(sml, "sml_validate_sarahnet_entity_contract", None) if sml else None
+    if not callable(build_contract) or not callable(validate_contract):
+        return _err("Full SML entity governance unavailable", 503, execution_authority=False)
+
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        world = _world_row(cur, world_id)
+        region = _region_row(cur, world_id, region_id)
+        if not world:
+            return _err("Unknown world", 404)
+        if not region:
+            return _err("Unknown region", 404)
+        if str(region[2]) != issuer_node:
+            return _err("Only current region authority may govern persistent entity state", 403)
+        if not _node_exists(cur, owner_node):
+            return _err("owner_node must be registered", 409)
+
+        existing = _entity_row(cur, entity_id)
+        if existing:
+            immutable = {
+                "world_id": (str(existing[1]), world_id),
+                "region_id": (str(existing[2]), region_id),
+                "owner_identity": (str(existing[5]), owner_identity),
+                "creator_identity": (str(existing[6]), creator_identity),
+                "owner_node": (str(existing[7]), owner_node),
+            }
+            changed = sorted(name for name, values in immutable.items() if values[0] != values[1])
+            if changed:
+                return _err(
+                    "Ownership, creator, world, and region transitions require a dedicated Full SML transfer contract",
+                    409,
+                    fields=changed,
+                    execution_authority=False,
+                )
+            state_version = int(existing[15] or 1) + 1
+            created_ts = float(existing[19] or _now())
+        else:
+            state_version = 1
+            created_ts = _now()
+
+        if parent_entity:
+            parent = _entity_row(cur, parent_entity)
+            if not parent:
+                return _err("Unknown parent_entity", 404)
+            if str(parent[1]) != world_id or str(parent[2]) != region_id:
+                return _err("parent_entity must belong to the same world and region", 409)
+
+        provenance = data.get("provenance") if isinstance(data.get("provenance"), dict) else {}
+        provenance = {**provenance, "governed_by": "Full SML", "issuer_node": issuer_node}
+        entity = build_contract(
+            entity_id=entity_id,
+            entity_type=entity_type,
+            semantic_type=semantic_type,
+            world_id=world_id,
+            region_id=region_id,
+            owner_identity=owner_identity,
+            creator_identity=creator_identity,
+            owner_node=owner_node,
+            parent_entity=parent_entity,
+            persistence_class=str(data.get("persistence_class") or "PERSISTENT"),
+            reality_class=str(data.get("reality_class") or world[3] or "USER_CREATED"),
+            transform=data.get("transform") if isinstance(data.get("transform"), dict) else {},
+            permissions=data.get("permissions") if isinstance(data.get("permissions"), dict) else {},
+            asset_references=data.get("asset_references") if isinstance(data.get("asset_references"), list) else [],
+            state=data.get("state") if isinstance(data.get("state"), dict) else {},
+            state_version=state_version,
+            authority_region=region_id,
+            ledger_reference=str(data.get("ledger_reference") or "")[:240],
+            provenance=provenance,
+            status=str(data.get("status") or "active"),
+        )
+        validation = validate_contract(entity)
+        if not bool(validation.get("ok")):
+            return _err("Entity contract rejected by Full SML", 400, issues=validation.get("issues") or [], execution_authority=False)
+
+        now = _now()
+        cur.execute(
+            "INSERT INTO net2_entities(entity_id,world_id,region_id,entity_type,semantic_type,owner_identity,creator_identity,owner_node,parent_entity,"
+            "persistence_class,reality_class,transform_json,permissions_json,asset_references_json,state_json,state_version,authority_node,ledger_reference,status,created_ts,updated_ts,provenance_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(entity_id) DO UPDATE SET "
+            "entity_type=excluded.entity_type,semantic_type=excluded.semantic_type,parent_entity=excluded.parent_entity,persistence_class=excluded.persistence_class,"
+            "reality_class=excluded.reality_class,transform_json=excluded.transform_json,permissions_json=excluded.permissions_json,"
+            "asset_references_json=excluded.asset_references_json,state_json=excluded.state_json,state_version=excluded.state_version,"
+            "authority_node=excluded.authority_node,ledger_reference=excluded.ledger_reference,status=excluded.status,updated_ts=excluded.updated_ts,provenance_json=excluded.provenance_json",
+            (
+                entity_id, world_id, region_id, entity["entity_type"], entity["semantic_type"], owner_identity, creator_identity, owner_node,
+                parent_entity, entity["persistence_class"], entity["reality_class"], json.dumps(entity["transform"], ensure_ascii=False),
+                json.dumps(entity["permissions"], ensure_ascii=False), json.dumps(entity["asset_references"], ensure_ascii=False),
+                json.dumps(entity["state"], ensure_ascii=False), state_version, issuer_node, entity["ledger_reference"], entity["status"],
+                created_ts, now, json.dumps(entity["provenance"], ensure_ascii=False),
+            ),
+        )
+        con.commit()
+        persisted = _entity_row(cur, entity_id)
+        _sarahnet_control_receipt(
+            "ENTITY_UPSERT",
+            entity_id,
+            "APPROVED",
+            "Persistent SarahNet semantic entity committed through Full SML.",
+            {"world_id": world_id, "region_id": region_id, "issuer_node": issuer_node, "state_version": state_version},
+        )
+        return _ok(entity=_entity_record(persisted), requires_full_sml=True, execution_authority=False)
+    except Exception as exc:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+        return _err("Entity upsert failed", 500, detail=str(exc), execution_authority=False)
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+@bp2.get("/api/net2/entity/list")
+def net2_entity_list():
+    raw = _body_bytes()
+    if not _verify_auth(raw):
+        return _err("Authentication required", 401)
+    world_id = str(request.args.get("world_id") or "").strip()
+    region_id = str(request.args.get("region_id") or "").strip()
+    owner_identity = str(request.args.get("owner_identity") or "").strip()
+    try:
+        limit = max(1, min(500, int(request.args.get("limit") or 100)))
+    except Exception:
+        limit = 100
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        conditions = []
+        params: list = []
+        if world_id:
+            conditions.append("world_id=?")
+            params.append(world_id)
+        if region_id:
+            conditions.append("region_id=?")
+            params.append(region_id)
+        if owner_identity:
+            conditions.append("owner_identity=?")
+            params.append(owner_identity)
+        query = "SELECT entity_id,world_id,region_id,entity_type,semantic_type,owner_identity,creator_identity,owner_node,parent_entity,persistence_class,reality_class,transform_json,permissions_json,asset_references_json,state_json,state_version,authority_node,ledger_reference,status,created_ts,updated_ts,provenance_json FROM net2_entities"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY updated_ts DESC LIMIT ?"
+        params.append(limit)
+        cur.execute(query, tuple(params))
+        entities = [_entity_record(row) for row in (cur.fetchall() or [])]
+        return _ok(entities=entities, count=len(entities), filters={"world_id": world_id, "region_id": region_id, "owner_identity": owner_identity}, execution_authority=False)
+    except Exception as exc:
+        return _err("Entity listing failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+@bp2.get("/api/net2/fabric/status")
+def net2_fabric_status():
+    """Read-only semantic fabric inventory; rendering remains client subjective."""
+    if not _verify_auth(b""):
+        return _err("Authentication required", 401)
+    _ensure_tables()
+    con = None
+    try:
+        con = _CONNECT_SQLITE(_META_DB)  # type: ignore[misc]
+        cur = con.cursor()
+        now = _now()
+        cur.execute("UPDATE net2_authority_leases SET status='expired' WHERE status='active' AND expires_ts<=?", (now,))
+        con.commit()
+        counts = {}
+        for key, table in (("nodes", "net2_nodes"), ("worlds", "net2_worlds"), ("regions", "net2_regions"), ("entities", "net2_entities")):
+            counts[key] = int(cur.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
+        counts["active_leases"] = int(cur.execute("SELECT COUNT(*) FROM net2_authority_leases WHERE status='active' AND expires_ts>?", (now,)).fetchone()[0] or 0)
+        worlds = []
+        for row in cur.execute("SELECT world_id,owner_node,name,reality_class,status,updated_ts FROM net2_worlds ORDER BY updated_ts DESC LIMIT 50").fetchall() or []:
+            worlds.append({"world_id": row[0], "owner_node": row[1], "name": row[2], "reality_class": row[3], "status": row[4], "updated_ts": row[5]})
+        regions = []
+        for row in cur.execute("SELECT world_id,region_id,authority_node,version,status,updated_ts FROM net2_regions ORDER BY updated_ts DESC LIMIT 100").fetchall() or []:
+            regions.append({"world_id": row[0], "region_id": row[1], "authority_node": row[2], "version": int(row[3] or 1), "status": row[4], "updated_ts": row[5]})
+        entities = []
+        for row in cur.execute("SELECT entity_id,world_id,region_id,entity_type,semantic_type,owner_identity,reality_class,persistence_class,state_version,status,updated_ts FROM net2_entities ORDER BY updated_ts DESC LIMIT 100").fetchall() or []:
+            entities.append({"entity_id": row[0], "world_id": row[1], "region_id": row[2], "entity_type": row[3], "semantic_type": row[4], "owner_identity": row[5], "reality_class": row[6], "persistence_class": row[7], "state_version": int(row[8] or 1), "status": row[9], "updated_ts": row[10]})
+        return _ok(
+            profile="SarahNet.SemanticFabric/1.0-alpha",
+            counts=counts,
+            worlds=worlds,
+            regions=regions,
+            entities=entities,
+            doctrine={
+                "full_sml_for_consequential_state": True,
+                "sml_rt_for_bounded_ephemeral_state": True,
+                "rendering_is_subjective": True,
+                "ledger_per_frame": False,
+                "transport_grants_authority": False,
+            },
+            execution_authority=False,
+        )
+    except Exception as exc:
+        return _err("Fabric status failed", 500, detail=str(exc))
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
 @bp2.post("/api/net2/lease/issue")
 def net2_lease_issue():
     raw = _body_bytes()
@@ -1171,6 +1504,13 @@ def net2_lease_issue():
             return _err("Unknown region", 404)
         if str(region[2]) != issuer_node:
             return _err("Only current region authority may issue an SML-RT authority lease", 403)
+        entity = _entity_row(cur, entity_id)
+        if not entity:
+            return _err("Unknown entity; persistent semantic identity must exist before SML-RT authority is issued", 404)
+        if str(entity[1]) != world_id or str(entity[2]) != region_id:
+            return _err("Entity does not belong to the requested world and region", 409)
+        if str(entity[18]) != "active":
+            return _err("Entity is not active", 409, entity_status=str(entity[18]))
         now = _now()
         lease_id = str(data.get("lease_id") or _new_id("lease"))[:200]
         expires = now + ttl_sec
@@ -1732,12 +2072,15 @@ def net2_governance():
                 "tunnel_session_metadata",
                 "world_registry",
                 "region_authority",
+                "persistent_semantic_entities",
+                "fabric_status",
                 "bounded_sml_rt_authority_leases",
             ],
             "safety_notes": [
                 "net2 is a control-plane API, not an OS VPN driver.",
                 "Tunnel issue/status routes create governed metadata only unless a separate approved transport implements runtime data movement.",
                 "World/region control is persistent control-plane state; SML-RT frame data belongs to appnet and is not written here per frame.",
+                "Persistent entities are validated by Full SML; ownership and cross-region transfers require a separate governed contract.",
                 "Authority leases cannot change ownership, wallet state, permissions, or physical devices; those require Full SML governance.",
             ],
         },
@@ -1803,7 +2146,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'network_control_plane', 'world_registry', 'region_authority', 'authority_lease', 'sml_bridge_candidate'],
+    "capabilities": ['api_bridge', 'transport', 'network_control_plane', 'world_registry', 'region_authority', 'semantic_entities', 'fabric_status', 'authority_lease', 'sml_bridge_candidate'],
     "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics', 'Network', 'Governance'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
     "required_authority": ['Read', 'Network'],
@@ -1822,4 +2165,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appnet2', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-

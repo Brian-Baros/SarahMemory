@@ -284,6 +284,16 @@ try:
 except Exception:
     _Adaptive = None
 
+try:
+    import SarahMemoryEnergetics as _Energetics  # type: ignore
+except Exception:
+    _Energetics = None
+
+try:
+    import SarahMemorySMLProtocol as _SMLProtocol  # type: ignore
+except Exception:
+    _SMLProtocol = None
+
 # -----------------------------------------------------------------------------
 # Response/auth helpers
 # -----------------------------------------------------------------------------
@@ -3985,7 +3995,9 @@ def _module_matrix() -> Dict[str, Dict[str, Any]]:
         "SarahMemoryMSDC": {"available": _MSDC is not None, "role": "motor/device manager witness for eyes/camera driver"},
         "SarahMemoryAiFunctions": {"available": _AiFunctions is not None, "role": "agent/context witness"},
         "SarahMemoryDL": {"available": _DL is not None, "role": "learning/model support witness"},
-        "SarahMemoryAdaptive": {"available": _Adaptive is not None, "role": "adaptive behavior/emotion witness"},
+        "SarahMemoryAdaptive": {"available": _Adaptive is not None, "role": "adaptive behavior, compute passport, and bounded workload planning witness"},
+        "SarahMemoryEnergetics": {"available": _Energetics is not None, "role": "power and adaptive compute safety budget governor"},
+        "SarahMemorySMLProtocol": {"available": _SMLProtocol is not None, "role": "GCAIOS semantic control and protocol authority"},
         "SarahMemoryCognitiveServices": {"available": _CogServices is not None, "role": "judge/governor"},
         "SarahMemorySafetyPolicies": {"available": _SafetyPolicies is not None, "role": "constitutional policy"},
         "SarahMemorySecurityGovernor": {"available": _SecurityGovernor is not None, "role": "trust boundary"},
@@ -4663,6 +4675,133 @@ def self_reports_latest():
     return _ok({"reports": _list_selfaware_reports(limit=limit)})
 
 
+def _compute_passport(context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if _Adaptive is None:
+        return {"ok": False, "unknown_machine": True, "confidence": 0.0, "reason": "SarahMemoryAdaptive unavailable", "execution_authority": False}
+    fn = getattr(_Adaptive, "build_compute_passport", None)
+    if not callable(fn):
+        return {"ok": False, "unknown_machine": True, "confidence": 0.0, "reason": "compute passport unavailable", "execution_authority": False}
+    try:
+        result = fn(context=context or {"source": "appself.compute"})
+        return result if isinstance(result, dict) else {"ok": False, "unknown_machine": True, "reason": "invalid compute passport", "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "unknown_machine": True, "confidence": 0.0, "reason": str(exc), "execution_authority": False}
+
+
+def _compute_plan(workload: str, passport: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    if _Adaptive is None:
+        return {"ok": False, "mode": "safe_discovery", "workload": workload, "reason": "SarahMemoryAdaptive unavailable", "execution_authority": False}
+    fn = getattr(_Adaptive, "select_adaptive_compute_plan", None)
+    if not callable(fn):
+        return {"ok": False, "mode": "safe_discovery", "workload": workload, "reason": "adaptive compute planner unavailable", "execution_authority": False}
+    try:
+        result = fn(workload, passport=passport, context=context or {"source": "appself.compute_plan"})
+        return result if isinstance(result, dict) else {"ok": False, "mode": "safe_discovery", "workload": workload, "reason": "invalid compute plan", "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "mode": "safe_discovery", "workload": workload, "reason": str(exc), "execution_authority": False}
+
+
+def _gcaios_status(workload: str = "cognition") -> Dict[str, Any]:
+    safe_workload = re.sub(r"[^a-zA-Z0-9_.:-]+", "_", str(workload or "cognition"))[:96] or "cognition"
+    context = {"source": "appself.gcaios.status", "workload": safe_workload}
+    passport = _compute_passport(context)
+    plan = _compute_plan(safe_workload, passport=passport, context=context)
+
+    manifest: Dict[str, Any] = {"ok": False, "schema": "SarahMemory.GCAIOS/1.0-alpha", "reason": "SML manifest unavailable", "execution_authority": False}
+    if _SMLProtocol is not None:
+        try:
+            fn = getattr(_SMLProtocol, "sml_gcaios_manifest", None)
+            if callable(fn):
+                candidate = fn()
+                if isinstance(candidate, dict):
+                    manifest = candidate
+        except Exception as exc:
+            manifest["reason"] = str(exc)
+
+    gcop: Dict[str, Any] = {"available": False, "decision": "DEFER", "execution_authority": False}
+    if _CogServices is not None:
+        try:
+            fn = getattr(_CogServices, "gcop_continuity_status", None)
+            if callable(fn):
+                status = fn()
+                gcop = {"available": True, "status": status, "execution_authority": False}
+        except Exception as exc:
+            gcop["reason"] = str(exc)
+
+    energetics: Dict[str, Any] = {"available": False, "lockout_active": True, "execution_authority": False}
+    if _Energetics is not None:
+        try:
+            fn = getattr(_Energetics, "get_energetics_status", None)
+            if callable(fn):
+                status = fn(context)
+                energetics = {"available": True, "status": status, "lockout_active": bool((status or {}).get("lockout_active", True)), "execution_authority": False}
+        except Exception as exc:
+            energetics["reason"] = str(exc)
+
+    executors: Dict[str, Any] = {"available": False, "count": 0, "registered": [], "execution_authority": False}
+    if _OperatorCore is not None:
+        try:
+            fn = getattr(_OperatorCore, "executor_registry_snapshot", None)
+            snapshot = fn() if callable(fn) else {}
+            if isinstance(snapshot, dict):
+                executors = {"available": True, "count": len(snapshot), "registered": sorted(snapshot.keys()), "execution_authority": False}
+        except Exception as exc:
+            executors["reason"] = str(exc)
+
+    readiness = {
+        "semantic_control": bool(manifest.get("ok")),
+        "cognitive_continuity": bool(gcop.get("available")),
+        "compute_evidence": bool(passport.get("ok")),
+        "compute_budget": bool(plan.get("ok")),
+        "energetics_governor": bool(energetics.get("available")),
+        "operator_core": bool(executors.get("available")),
+        "security_governor": _SecurityGovernor is not None,
+        "assurance_gate": _AssuranceGate is not None,
+    }
+    return {
+        "ok": all(readiness.values()),
+        "profile": "SarahMemory.GCAIOS/1.0-alpha",
+        "workload": safe_workload,
+        "readiness": readiness,
+        "manifest": manifest,
+        "gcop": gcop,
+        "compute": {"passport": passport, "plan": plan},
+        "energetics": energetics,
+        "operator_core": executors,
+        "limits": {
+            "model_is_authority": False,
+            "discovery_is_activation": False,
+            "clock_or_voltage_mutation": False,
+            "physical_execution_from_status_api": False,
+        },
+        "execution_authority": False,
+    }
+
+
+@bp.route("/api/self/compute/passport", methods=["GET", "OPTIONS"])
+def api_self_compute_passport():
+    if request.method == "OPTIONS":
+        return _ok()
+    return _ok(_compute_passport({"source": "appself.compute.passport"}))
+
+
+@bp.route("/api/self/compute/plan", methods=["GET", "OPTIONS"])
+def api_self_compute_plan():
+    if request.method == "OPTIONS":
+        return _ok()
+    workload = _safe_str(request.args.get("workload") or "cognition", 96)
+    passport = _compute_passport({"source": "appself.compute.plan", "workload": workload})
+    return _ok(_compute_plan(workload, passport=passport, context={"source": "appself.compute.plan", "workload": workload}))
+
+
+@bp.route("/api/self/gcaios/status", methods=["GET", "OPTIONS"])
+def api_self_gcaios_status():
+    if request.method == "OPTIONS":
+        return _ok()
+    workload = _safe_str(request.args.get("workload") or "cognition", 96)
+    return _ok(_gcaios_status(workload))
+
+
 @bp.route("/api/self/gcop/continuity", methods=["GET", "OPTIONS"])
 def api_self_gcop_continuity():
     """Read-only persistent governed cognitive continuity status."""
@@ -4699,6 +4838,13 @@ def api_self_gcop_event():
             return jsonify({"ok": False, "decision": "DEFER", "reason": "run_gcop_event unavailable", "execution_authority": False}), 503
         event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
         context = payload.get("context") if isinstance(payload.get("context"), dict) else {"source": "appself.gcop_event"}
+        context = dict(context)
+        workload = _safe_str(context.get("workload") or event.get("workload") or "cognition", 96) if isinstance(event, dict) else "cognition"
+        passport = _compute_passport({**context, "source": "appself.gcop_event", "workload": workload})
+        context["compute"] = {
+            "passport": passport,
+            "plan": _compute_plan(workload, passport=passport, context={**context, "source": "appself.gcop_event"}),
+        }
         result = fn(event, context=context)
         if isinstance(result, dict):
             result["execution_authority"] = False
@@ -4797,8 +4943,8 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['api_bridge', 'transport', 'sml_bridge_candidate'],
-    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics'],
+    "capabilities": ['api_bridge', 'transport', 'gcaios_status', 'gcop_continuity', 'compute_passport', 'adaptive_compute_plan', 'sml_bridge_candidate'],
+    "supported_missions": ['Conversation', 'Execution', 'Knowledge', 'Diagnostics', 'Governance', 'Network'],
     "supported_omega": ['Ω001', 'Ω002', 'Ω004', 'Ω020'],
     "required_authority": ['Read'],
     "priority": 58,
@@ -4816,4 +4962,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appself', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-
