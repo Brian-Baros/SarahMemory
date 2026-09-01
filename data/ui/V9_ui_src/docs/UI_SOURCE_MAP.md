@@ -19,10 +19,10 @@ This package keeps the functional old V9 UI as the base. The source is organized
 | --- | --- | --- |
 | Feature registry | `src/features/featureRegistry.tsx` | Single source of truth mapping app/screen IDs to components and owner files. |
 | Panel-to-Chat bridge | `src/components/shell/PanelChatBridge.tsx` | Adds the universal Ask Sarah context handoff to every registered non-Chat screen. |
-| Desktop shell | `src/components/shell/DesktopShell.tsx` | Desktop workspace, wallpaper, dock/taskbar placement. |
-| Window manager | `src/components/shell/WindowManager.tsx` | Opens registered panels in draggable/resizable windows. |
-| Window chrome | `src/components/shell/Window.tsx` | Generic AiOS window frame. |
-| Mobile shell | `src/components/shell/MobileShell.tsx` | Mobile screen host with swipe navigation and portrait quick actions. |
+| Desktop shell | `src/components/shell/DesktopShell.tsx` | Desktop workspace, wallpaper, movable shortcuts, custom shortcut deletion, add-shortcut panel, Trash handoff, dock/taskbar placement. |
+| Window manager | `src/components/shell/WindowManager.tsx` | Opens registered panels in draggable/resizable windows and reclamps bounds on resize/orientation changes. |
+| Window chrome | `src/components/shell/Window.tsx` | Generic AiOS window frame with pointer-based mouse/pen/touch movement and resizing. |
+| Mobile shell | `src/components/shell/MobileShell.tsx` | Mobile screen host with swipe navigation, portrait quick actions, audio panel, and All Apps launcher. |
 | Bottom navigation | `src/components/shell/BottomNav.tsx` | Primary mobile nav and desktop app shortcuts. |
 | Dock/control center | `src/components/shell/Dock.tsx`, `src/components/shell/ControlCenter.tsx` | Desktop dock and quick controls. |
 | Status/taskbar | `src/components/StatusBar.tsx` | Clock, readiness, launcher, app buttons, and system status. |
@@ -36,33 +36,37 @@ This package keeps the functional old V9 UI as the base. The source is organized
 | Chat | `src/components/chat/ChatPanel.tsx` | `src/lib/api.ts` chat/voice/avatar APIs |
 | Chat composer | `src/components/chat/ChatComposer.tsx` | Sends text/files into ChatPanel handlers |
 | Chat message | `src/components/chat/ChatMessage.tsx` | Renders response cards/actions |
-| History | `src/components/screens/HistoryScreen.tsx` | Conversation/session history |
-| Files | `src/components/screens/FilesScreen.tsx` | Filesystem and local file APIs |
-| Research | `src/components/screens/ResearchScreen.tsx` | Research/evidence APIs through `apiFetch` |
-| Studios | `src/components/screens/StudiosScreen.tsx` | Creative modules in `src/components/modules/*` |
-| Avatar | `src/components/screens/AvatarScreen.tsx` | Avatar surface wrapper |
-| SarahNet | `src/components/screens/SarahNetScreen.tsx` | Broker/node/interop/readiness endpoints |
+| History | `src/components/screens/history/HistoryScreen.tsx` | Conversation/session history |
+| Files | `src/components/screens/files/FilesScreen.tsx` | Filesystem, upload, selection, Trash surface, and local file APIs |
+| Research | `src/components/screens/research/ResearchScreen.tsx` | Research/evidence APIs through `apiFetch` |
+| Studios | `src/components/screens/studios/StudiosScreen.tsx` | Creative modules in `src/components/modules/*` |
+| Avatar | `src/components/screens/avatar/AvatarScreen.tsx` | Avatar surface wrapper |
+| SarahNet | `src/components/screens/sarah-net/SarahNetScreen.tsx` | Broker/node/interop/readiness endpoints |
 | MCP connections | `src/components/network/MCPConnectionsPanel.tsx` | MCP initialize, tools/resources/prompts discovery, governed calls, receipts, and passive interop evidence. |
-| Media | `src/components/screens/MediaScreen.tsx` | Media player/library |
-| DL Engine | `src/components/screens/DLEngineScreen.tsx` | DL runtime, REM, weights, jobs, traces |
-| NAILDE | `src/components/screens/NAILDEScreen.tsx` | Governed development workbench |
-| Terminal | `src/components/screens/TerminalScreen.tsx` | Governed terminal request UI |
-| Addons | `src/components/screens/AddonsScreen.tsx` | Addon registry and install visibility |
-| Settings | `src/components/screens/SettingsScreen.tsx` | Runtime/theme/voice/model/device settings |
-| Camera Vision HUD | `src/components/screens/VisionScreen.tsx` | Mobile/desktop camera HUD, frame submit, analysis trigger, target overlays |
+| Media | `src/components/screens/media/MediaScreen.tsx` | Media player/library |
+| DL Engine | `src/components/screens/dl-engine/DLEngineScreen.tsx` | DL runtime, REM, weights, jobs, traces |
+| NAILDE | `src/components/screens/nailde/NAILDEScreen.tsx` | Governed development workbench |
+| Terminal | `src/components/screens/terminal/TerminalScreen.tsx` | Governed terminal request UI |
+| Addons | `src/components/screens/addons/AddonsScreen.tsx` | Addon registry and install visibility |
+| Settings | `src/components/screens/settings/SettingsScreen.tsx` | Runtime/theme/voice/model/device/audio settings |
+| Camera Vision HUD | `src/components/screens/vision/VisionScreen.tsx` | Mobile/desktop camera HUD, frame submit, analysis trigger, target overlays |
 
 ## Workstation shell controls
 
 | Control | Owner file | Notes |
 | --- | --- | --- |
 | Real logo asset | `src/assets/smaios-logo.jpg` | Used by desktop shell, Start/AiOS center, and mobile header. |
-| Desktop shortcuts | `src/components/shell/DesktopShell.tsx` | Opens registered panels through `useWindowStore.openWindow`. |
+| Movable desktop shortcuts | `src/components/shell/DesktopShell.tsx` | Opens registered panels through `useWindowStore.openWindow`; pointer-drag positions persist in settings. |
+| Add Shortcut panel | `src/components/shell/DesktopShell.tsx` | Adds user-created app or URL shortcuts to the desktop and removes them through the delete control or Recovery Bin drop target. |
+| Desktop Trash | `src/components/shell/DesktopShell.tsx`, `src/components/screens/files/FilesScreen.tsx` | Opens Files and dispatches `files_open_trash`; real listing activates when backend trash endpoints exist. |
+| Audio mixer | `src/components/panels/audio-mixer/AudioMixerPanel.tsx`, `src/components/StatusBar.tsx`, `src/components/shell/MobileShell.tsx` | Toolbar/mobile audio panel with volume, input, EQ, spatial audio, and driver/AppSys event contract. |
 | Workspace presets | `src/components/shell/DesktopShell.tsx`, `src/components/shell/AiOSShellCenter.tsx` | Opens curated panel groups without changing backend authority. |
 | Start/AiOS center | `src/components/shell/AiOSShellCenter.tsx` | App search, permissions, runtime activity, workspaces, appearance controls. |
 | Taskbar/tray | `src/components/StatusBar.tsx` | Mode switch, app dock, clock, sound/network indicators, API readiness. |
-| Background sliders | `src/components/screens/SettingsScreen.tsx`, `src/components/shell/AiOSShellCenter.tsx` | Persisted through `useSarahStore`; applied in `DesktopShell`. |
-| Mobile portrait quick actions | `src/components/shell/MobileShell.tsx` | Chat, Camera Vision, Voice, Files, Avatar, NAILDE, Models, Settings. |
-| Camera Vision mobile HUD | `src/components/screens/VisionScreen.tsx` | Uses `/api/vision/frame/submit`, `/api/vision/analyze`, `/api/vision/hud/packet`, and `/api/vision/frame/status`. |
+| Background sliders | `src/components/screens/settings/SettingsScreen.tsx`, `src/components/shell/AiOSShellCenter.tsx` | Persisted through `useSarahStore`; applied in `DesktopShell`. |
+| Mobile portrait quick actions | `src/components/shell/MobileShell.tsx` | Chat, Camera Vision, Voice, Audio, Files, Avatar, NAILDE, Models, Apps, Settings. |
+| Mobile All Apps | `src/components/shell/MobileShell.tsx`, `src/features/featureRegistry.tsx` | Touch launcher exposing every registered panel in V-View. |
+| Camera Vision mobile HUD | `src/components/screens/vision/VisionScreen.tsx` | Uses `/api/vision/frame/submit`, `/api/vision/analyze`, `/api/vision/hud/packet`, and `/api/vision/frame/status`. |
 
 ## Avatar stack
 
@@ -81,7 +85,7 @@ NAILDE is intentionally modeled as a Visual Studio Code plus Visual Basic 6.0 wo
 
 | Panel | NAILDE window ID | Purpose |
 | --- | --- | --- |
-| Activity rail | `ACTIVITY_TO_WINDOW` in `src/components/screens/NAILDEScreen.tsx` | VS Code-style side launcher. |
+| Activity rail | `ACTIVITY_TO_WINDOW` in `src/components/screens/nailde/NAILDEScreen.tsx` | VS Code-style side launcher. |
 | Menu bar | `menus` state loaded from backend SDK/status | File/Edit/View/Run-style command access. |
 | Project Explorer | `explorer` | Sandbox workspace files. |
 | Natural Language Prompt | `prompt` | Top-level app/build intent. |

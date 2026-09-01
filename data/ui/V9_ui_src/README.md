@@ -11,13 +11,20 @@ This revision also adds universal panel-to-Chat context handoff, governed file u
 This workstation revision adds:
 
 - Real SarahMemory logo in the launcher and mobile header.
-- Desktop shortcuts for the main panels.
+- Movable persisted desktop shortcuts for main panels.
+- User-created desktop shortcuts for registered apps or URLs.
+- User-created shortcuts can be deleted from the shortcut itself or by dragging them onto Recovery Bin.
+- Desktop Trash icon that opens the Files panel Trash surface and activates real trash support when the API Bridge advertises it.
+- Audio mixer panel from the toolbar speaker icon with master/output/input volume, bass, treble, balance, voice, microphone, spatial audio, and noise suppression controls.
 - Workspace presets for Chat, Research, Operator, Engineer, and Media modes.
 - Start/AiOS launcher polish with app search and quick settings.
 - Background brightness, dim overlay, blur, and panel opacity sliders.
 - Improved top/bottom/left/right taskbar handling.
-- Mobile portrait quick actions for Chat, Camera Vision, Voice, Files, Avatar, NAILDE, Models, and Settings.
+- Mobile portrait quick actions for Chat, Camera Vision, Voice, Audio, Files, Avatar, NAILDE, Models, Apps, and Settings.
+- Mobile All Apps launcher so every registered screen remains touch-accessible in V-View.
 - Camera Vision mobile route using the existing `/vision` HUD and existing `/api/vision/*` backend contracts.
+- Pointer-based window movement/resizing so desktop windows work with mouse, pen, and touch.
+- Screen and panel owner directories under `src/components/screens/*` and `src/components/panels/*`.
 
 ## Run on Windows
 
@@ -93,6 +100,8 @@ Start here:
 
 - `docs/UI_SOURCE_MAP.md`
 - `src/features/featureRegistry.tsx`
+- `src/components/screens/README.md`
+- `src/components/panels/README.md`
 - `docs/FUNCTIONAL_FIXES.md`
 - `docs/LOCAL_BUILD_WINDOWS.md`
 - `docs/VALIDATION_REPORT.md`

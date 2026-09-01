@@ -14,8 +14,8 @@ Fixed files:
 
 - `src/components/chat/ChatPanel.tsx`
 - `src/components/avatar/WebcamOverlay.tsx`
-- `src/components/screens/NAILDEScreen.tsx`
-- `src/components/screens/DLEngineScreen.tsx`
+- `src/components/screens/nailde/NAILDEScreen.tsx`
+- `src/components/screens/dl-engine/DLEngineScreen.tsx`
 
 Those now route through `src/lib/config.ts` and `apiFetch`, or use `config.apiBaseUrl` for multipart upload.
 
@@ -50,6 +50,8 @@ Those now route through `src/lib/config.ts` and `apiFetch`, or use `config.apiBa
 Added:
 
 - `src/features/featureRegistry.tsx`
+- `src/components/screens/README.md`
+- `src/components/panels/README.md`
 - `docs/UI_SOURCE_MAP.md`
 - `docs/LOCAL_BUILD_WINDOWS.md`
 - `docs/FUNCTIONAL_FIXES.md`
@@ -59,6 +61,9 @@ Added:
 - rebuilt `REBUILD_V9_UI.bat`
 
 Desktop and mobile shells now use one feature registry instead of duplicated import/switch logic.
+
+Registered screens now live in owner directories under `src/components/screens/*`.
+Shared panels now live in owner directories under `src/components/panels/*`.
 
 ## Workstation UI revamp
 
@@ -70,9 +75,16 @@ Desktop and mobile shells now use one feature registry instead of duplicated imp
   - background blur
   - panel opacity
 - Routed the slider values through `useSarahStore`, `DesktopShell`, `SettingsScreen`, and `AiOSShellCenter`.
+- Added persisted draggable desktop shortcuts in `DesktopShell`.
+- Added a desktop shortcut manager for user-created app and URL shortcuts.
+- Added a Trash desktop shortcut wired through the UI control bus to the Files Trash surface.
+- Added a shared Audio Mixer panel under `src/components/panels/audio-mixer`.
+- The audio mixer emits `sarah:audio` events so a future driver/AppSys backend bridge can bind to the same frontend contract.
 - Improved taskbar behavior for bottom/top/left/right docks.
 - Fixed the window manager taskbar double-subtraction issue so maximized windows fill the real workspace area.
-- Added mobile portrait quick actions for Chat, Camera Vision, Voice, Files, Avatar, NAILDE, Models, and Settings.
+- Added pointer-based window movement/resizing for mouse, pen, and touch.
+- Added mobile portrait quick actions for Chat, Camera Vision, Voice, Audio, Files, Avatar, NAILDE, Models, Apps, and Settings.
+- Added a mobile All Apps launcher so every registered panel is accessible in V-View.
 - Updated Camera Vision HUD layout for mobile portrait/landscape readability while keeping the existing `/api/vision/*` contracts.
 
 ## Build/package fixes
