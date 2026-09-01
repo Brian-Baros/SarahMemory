@@ -10,6 +10,7 @@ import {
   Cpu,
   Terminal,
   MonitorCog,
+  Network,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ const iconMap: Record<string, React.ElementType> = {
   cpu: Cpu,
   terminal: Terminal,
   "monitor-cog": MonitorCog,
+  network: Network,
 };
 
 // Map MobileScreen -> DesktopApp (desktop shell mode)
@@ -42,6 +44,8 @@ function screenToDesktopApp(screen: string) {
       return "research";
     case "dlengine":
       return "dlengine";
+    case "device-manager":
+      return "device-manager";
     case "nailde":
       return "nailde";
     case "terminal":

@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from "react";
 import { useWindowStore } from "@/stores/useWindowStore";
 import { Window } from "./Window";
-import { getFeatureComponent } from "@/features/featureRegistry";
+import { getFeatureComponent, SHELL_FEATURE_BY_ID } from "@/features/featureRegistry";
 
 export function WindowManager() {
   const { windows, moveWindow, resizeWindow } = useWindowStore();
@@ -47,7 +47,7 @@ export function WindowManager() {
   return (
     <div ref={workspaceRef} style={workspaceStyle}>
       {windows.map((w) => (
-        <Window key={w.id} window={w}>
+        <Window key={w.id} window={w} featureContext={SHELL_FEATURE_BY_ID[w.id]}>
           {getFeatureComponent(w.id)}
         </Window>
       ))}

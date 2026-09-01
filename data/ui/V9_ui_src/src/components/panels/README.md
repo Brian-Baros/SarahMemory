@@ -11,4 +11,5 @@ folder when it has state, backend contracts, or non-trivial controls.
 | Dialer | `dialer/DialerPanel.tsx` | Phone/keypad style communication controls. |
 | Reminders | `reminders/RemindersPanel.tsx` | Reminder creation and completion controls. |
 | Settings Modal | `settings-modal/SettingsModal.tsx` | Modal settings entry point. |
+| System Clock | `system-clock/SystemClockPanel.tsx` | Command rail clock/date/timezone controls and Clock Court authority display. |
 | Terminal | `terminal/TerminalPanel.tsx` | Embedded terminal panel controls. |

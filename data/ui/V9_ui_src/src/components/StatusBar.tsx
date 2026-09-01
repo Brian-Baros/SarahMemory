@@ -34,6 +34,7 @@ import { useSarahStore } from "@/stores/useSarahStore";
 import { useWindowStore } from "@/stores/useWindowStore";
 import { AiOSShellCenter } from "@/components/shell/AiOSShellCenter";
 import { AudioMixerPanel } from "@/components/panels/audio-mixer/AudioMixerPanel";
+import { SystemClockPanel } from "@/components/panels/system-clock/SystemClockPanel";
 
 interface SystemStatus {
   local: boolean;
@@ -64,6 +65,7 @@ const DEFAULT_TASKBAR_IDS = [
   "sarahnet",
   "media",
   "dlengine",
+  "device-manager",
   "nailde",
   "terminal",
   "addons",
@@ -269,6 +271,18 @@ export function StatusBar() {
     }
   };
 
+  const openDeviceManager = (tab: "network" | "all" = "network") => {
+    try {
+      window.sessionStorage.setItem("sarahmemory:device-manager:tab", tab);
+    } catch {
+      // non-fatal launch hint
+    }
+    clickWindow("device-manager");
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("sarah:device-manager", { detail: { tab, source: "statusbar" } }));
+    }, 80);
+  };
+
   const TASKBAR_ITEMS: Record<
     string,
     { label: string; Icon: any; onClick: () => void }
@@ -317,6 +331,11 @@ export function StatusBar() {
       label: "Model Forge",
       Icon: Cpu,
       onClick: () => clickWindow("dlengine"),
+    },
+    "device-manager": {
+      label: "Device Manager",
+      Icon: MonitorCog,
+      onClick: () => clickWindow("device-manager"),
     },
     nailde: {
       label: "NAILDE",
@@ -497,26 +516,47 @@ export function StatusBar() {
             <PopoverContent
               align={isVerticalDock ? "start" : "end"}
               side={isVerticalDock ? "right" : "top"}
-              className="border-border/80 bg-popover/95 p-3 backdrop-blur-xl"
+              className="w-auto max-w-[calc(100vw-1rem)] border-border/80 bg-popover/95 p-3 backdrop-blur-xl"
             >
               <AudioMixerPanel />
             </PopoverContent>
           </Popover>
-          <Wifi className={cn("h-4 w-4", status.network ? "text-status-online" : "text-status-error")} />
+          <button
+            type="button"
+            className="flex h-7 items-center gap-1 rounded-md px-1.5 transition hover:bg-secondary hover:text-foreground"
+            title="Open Network Device Manager"
+            aria-label="Open Network Device Manager"
+            onClick={() => openDeviceManager("network")}
+          >
+            <Wifi className={cn("h-4 w-4", status.network ? "text-status-online" : "text-status-error")} />
+          </button>
         </div>
 
-        <div
-          className={cn(
-            "items-center gap-2 px-2 py-1 rounded-md bg-secondary/30",
-            isVerticalDock ? "flex justify-center" : "hidden sm:flex",
-          )}
-          title={now.toLocaleString()}
-        >
-          <Clock className="h-4 w-4 text-muted-foreground" />
-          <span className="text-sm text-muted-foreground tabular-nums">
-            {formatClock(now)}
-          </span>
-        </div>
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                "items-center gap-2 px-2 py-1 rounded-md bg-secondary/30 transition hover:bg-secondary hover:text-foreground",
+                isVerticalDock ? "flex justify-center" : "hidden sm:flex",
+              )}
+              title={`Open system clock: ${now.toLocaleString()}`}
+              aria-label="Open system clock and date settings"
+            >
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm text-muted-foreground tabular-nums">
+                {formatClock(now)}
+              </span>
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align={isVerticalDock ? "start" : "end"}
+            side={isVerticalDock ? "right" : "top"}
+            className="w-auto max-w-[calc(100vw-1rem)] border-border/80 bg-popover/95 p-3 backdrop-blur-xl"
+          >
+            <SystemClockPanel />
+          </PopoverContent>
+        </Popover>
 
         <AiOSShellCenter status={status} />
 

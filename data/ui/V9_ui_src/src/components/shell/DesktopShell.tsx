@@ -25,6 +25,7 @@ import { StatusBar } from "@/components/StatusBar";
 import { WindowManager } from "./WindowManager";
 import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
 import { useSarahStore } from "@/stores/useSarahStore";
+import { api } from "@/lib/api";
 import type { DesktopShortcut } from "@/types/sarah";
 import { cn } from "@/lib/utils";
 import sarahLogoUrl from "@/assets/smaios-logo.jpg";
@@ -39,6 +40,7 @@ const WINDOW_IDS: WindowId[] = [
   "sarahnet",
   "media",
   "dlengine",
+  "device-manager",
   "nailde",
   "terminal",
   "addons",
@@ -53,6 +55,7 @@ const DEFAULT_DESKTOP_SHORTCUTS: DesktopShortcut[] = [
   { id: "desktop_trash", label: "Recovery Bin", kind: "trash", windowId: "files", icon: "trash" },
   { id: "desktop_research", label: "Evidence Lens", kind: "app", windowId: "research", icon: "research" },
   { id: "desktop_dlengine", label: "Model Forge", kind: "app", windowId: "dlengine", icon: "dlengine" },
+  { id: "desktop_devices", label: "Device Manager", kind: "app", windowId: "device-manager", icon: "devices" },
   { id: "desktop_sarahnet", label: "SarahNet", kind: "app", windowId: "sarahnet", icon: "sarahnet" },
   { id: "desktop_studio", label: "Creation Bay", kind: "app", windowId: "studio", icon: "studio" },
   { id: "desktop_terminal", label: "Operator Terminal", kind: "app", windowId: "terminal", icon: "terminal" },
@@ -68,6 +71,8 @@ const DESKTOP_ICON_MAP: Record<string, LucideIcon> = {
   trash: Trash2,
   research: Search,
   dlengine: Cpu,
+  devices: MonitorCog,
+  "device-manager": MonitorCog,
   sarahnet: Network,
   media: Play,
   studio: Palette,
@@ -143,6 +148,7 @@ export function DesktopShell() {
   } | null>(null);
   const [draggingShortcutId, setDraggingShortcutId] = useState<string | null>(null);
   const [trashDropActive, setTrashDropActive] = useState(false);
+  const [sleepModeActive, setSleepModeActive] = useState(false);
   const [shortcutManagerOpen, setShortcutManagerOpen] = useState(false);
   const [newShortcutLabel, setNewShortcutLabel] = useState("");
   const [newShortcutTarget, setNewShortcutTarget] = useState<WindowId | "url">("chat");
@@ -182,6 +188,38 @@ export function DesktopShell() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const enterSleepMode = () => setSleepModeActive(true);
+    window.addEventListener("sarah:system-sleep", enterSleepMode);
+    return () => window.removeEventListener("sarah:system-sleep", enterSleepMode);
+  }, []);
+
+  useEffect(() => {
+    if (!sleepModeActive) return;
+    const wake = () => {
+      setSleepModeActive(false);
+      try {
+        window.localStorage.setItem("sarahmemory:power:lastWake", String(Date.now()));
+      } catch {
+        // non-fatal local wake marker
+      }
+      void api.proxy.call("/api/avatar/rem/stop", {
+        method: "POST",
+        body: { reason: "frontend_sleep_wake_input", source: "frontend:desktop_shell" },
+      });
+    };
+    window.addEventListener("keydown", wake, { once: true });
+    window.addEventListener("pointermove", wake, { once: true });
+    window.addEventListener("pointerdown", wake, { once: true });
+    window.addEventListener("touchstart", wake, { once: true });
+    return () => {
+      window.removeEventListener("keydown", wake);
+      window.removeEventListener("pointermove", wake);
+      window.removeEventListener("pointerdown", wake);
+      window.removeEventListener("touchstart", wake);
+    };
+  }, [sleepModeActive]);
 
   // ---- Command rail layout state (stored under settings.taskbar for V9 compatibility)
   const dock = (settings as any)?.taskbar?.dock || "bottom";
@@ -750,6 +788,15 @@ export function DesktopShell() {
 
       {/* Docked command rail last (bottom/right). */}
       {!commandRailFirst && CommandRailContainer}
+
+      {sleepModeActive && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black text-center text-foreground">
+          <div className="space-y-2 px-6">
+            <div className="text-sm font-semibold uppercase tracking-[0.22em] text-primary">Sleep Mode</div>
+            <div className="text-xs text-muted-foreground">REM / DL mode requested. Press any key, click, tap, or move input focus to wake.</div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

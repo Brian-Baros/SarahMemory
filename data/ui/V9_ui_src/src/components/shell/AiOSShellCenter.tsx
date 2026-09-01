@@ -10,10 +10,14 @@ import {
   Gauge,
   Image as ImageIcon,
   LayoutGrid,
+  Loader2,
   MessageCircle,
   MonitorCog,
+  Moon,
   Palette,
+  Power,
   PlayCircle,
+  RotateCcw,
   Search,
   Shield,
   SlidersHorizontal,
@@ -44,6 +48,7 @@ const APPS: { id: WindowId; label: string; icon: any; mode: "simple" | "operator
   { id: "media", label: "Media Deck", icon: PlayCircle, mode: "operator" },
   { id: "studio", label: "Creation Bay", icon: Palette, mode: "operator" },
   { id: "dlengine", label: "Model Forge", icon: Cpu, mode: "engineer" },
+  { id: "device-manager", label: "Device Manager", icon: MonitorCog, mode: "operator" },
   { id: "terminal", label: "Operator Terminal", icon: Terminal, mode: "engineer" },
   { id: "addons", label: "Addons", icon: LayoutGrid, mode: "engineer" },
   { id: "settings", label: "System Tuning", icon: SlidersHorizontal, mode: "simple" },
@@ -52,8 +57,8 @@ const APPS: { id: WindowId; label: string; icon: any; mode: "simple" | "operator
 const WORKSPACES = [
   { id: "chat", label: "Dialogue Field", windows: "Sarah Chat + Memory Trail + Avatar Core" },
   { id: "research", label: "Evidence Field", windows: "Evidence Lens + File Cortex + Sarah Chat" },
-  { id: "operator", label: "Operator Field", windows: "Avatar Core + SarahNet + Media Deck + System Tuning" },
-  { id: "engineer", label: "Builder Field", windows: "Operator Terminal + Model Forge + Addons + System Tuning" },
+  { id: "operator", label: "Operator Field", windows: "Avatar Core + SarahNet + Media Deck + Device Manager + System Tuning" },
+  { id: "engineer", label: "Builder Field", windows: "Operator Terminal + Model Forge + Device Manager + Addons + System Tuning" },
   { id: "media", label: "Media Field", windows: "Creation Bay + Media Deck + File Cortex" },
 ] as const;
 
@@ -75,6 +80,8 @@ export function AiOSShellCenter({ status }: { status?: any }) {
   const [query, setQuery] = useState("");
   const [contracts, setContracts] = useState<any>(null);
   const [runtime, setRuntime] = useState<any>(null);
+  const [powerBusy, setPowerBusy] = useState<string | null>(null);
+  const [powerStatus, setPowerStatus] = useState("System power commands are governed and require backend bridge authority.");
 
   const uiMode = settings.uiMode || "simple";
   const localOnly = Boolean(settings.localOnlyMode);
@@ -109,6 +116,59 @@ export function AiOSShellCenter({ status }: { status?: any }) {
     applyWorkspacePreset(preset);
   };
 
+  const requestPowerAction = async (action: "power_down" | "reboot" | "sleep") => {
+    const label = action === "power_down" ? "Power Down" : action === "reboot" ? "Reboot" : "Sleep Mode";
+    if (action !== "sleep" && !window.confirm(`${label} requests control of the local SarahMemory runtime. Continue?`)) return;
+
+    setPowerBusy(action);
+    setPowerStatus(`${label} request started.`);
+    const payload = {
+      action,
+      label,
+      source: "frontend:nexus_power_options",
+      user_confirmed: true,
+      operator_confirmed: true,
+      requested_at: new Date().toISOString(),
+    };
+
+    try {
+      window.localStorage.setItem("sarahmemory:power:lastRequest", JSON.stringify(payload));
+    } catch {
+      // non-fatal local audit hint
+    }
+
+    if (action === "sleep") {
+      const rem = await api.proxy.call("/api/avatar/rem/start", {
+        method: "POST",
+        body: { reason: "nexus_sleep_mode", ...payload },
+      });
+      window.dispatchEvent(new CustomEvent("sarah:system-sleep", { detail: { ...payload, rem } }));
+      setPowerStatus("Sleep Mode engaged. REM / DL mode requested; screen blanks until keyboard, mouse, or touch input is sensed.");
+      setPowerBusy(null);
+      return;
+    }
+
+    const queued = await api.proxy.call("/api/ui/actions", {
+      method: "POST",
+      body: {
+        source: "frontend:nexus_power_options",
+        target: "webui",
+        actions: [
+          {
+            type: "system.power.request",
+            payload,
+          },
+        ],
+      },
+    });
+    setPowerStatus(
+      (queued as any)?.ok
+        ? `${label} request queued for governed backend handling.`
+        : `${label} requires a backend system-power bridge before hardware/runtime shutdown can execute.`,
+    );
+    setPowerBusy(null);
+  };
+
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
@@ -123,12 +183,13 @@ export function AiOSShellCenter({ status }: { status?: any }) {
           <SheetDescription>Launch surfaces, inspect gate state, tune the shell, and switch work fields.</SheetDescription>
         </SheetHeader>
         <Tabs defaultValue="launcher" className="flex flex-col h-[calc(100dvh-92px)]">
-          <TabsList className="grid grid-cols-5 rounded-none border-b border-border bg-background/80 h-11">
+          <TabsList className="grid grid-cols-6 rounded-none border-b border-border bg-background/80 h-11">
             <TabsTrigger value="launcher">Launch</TabsTrigger>
             <TabsTrigger value="activity">Pulse</TabsTrigger>
             <TabsTrigger value="permissions">Gates</TabsTrigger>
             <TabsTrigger value="workspaces">Fields</TabsTrigger>
             <TabsTrigger value="appearance">Skin</TabsTrigger>
+            <TabsTrigger value="power">Power</TabsTrigger>
           </TabsList>
           <ScrollArea className="flex-1">
             <TabsContent value="launcher" className="m-0 p-4 space-y-4">
@@ -237,6 +298,40 @@ export function AiOSShellCenter({ status }: { status?: any }) {
               </div>
               <div className="rounded-xl border p-3 bg-card/60 text-xs text-muted-foreground">
                 Themes remain loaded through the existing theme registry. This pass adds shell-level material tuning without replacing the current theme system.
+              </div>
+            </TabsContent>
+            <TabsContent value="power" className="m-0 p-4 space-y-3">
+              <div className="rounded-xl border border-border bg-card/60 p-3">
+                <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
+                  <Power className="h-4 w-4 text-primary" />
+                  Power Options
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  These controls request governed runtime power actions. The browser UI can blank/wake Sleep Mode; hardware shutdown and reboot require backend system authority.
+                </p>
+              </div>
+              {[
+                ["power_down", "Power Down", "Exit SarahMemory and request local system shutdown.", Power],
+                ["reboot", "Reboot", "Restart SarahMemory and request local system restart.", RotateCcw],
+                ["sleep", "Sleep Mode", "Start REM / DL mode and blank the screen until input is sensed.", Moon],
+              ].map(([action, label, description, Icon]: any) => (
+                <Button
+                  key={action}
+                  type="button"
+                  variant={action === "power_down" ? "destructive" : "outline"}
+                  className="h-auto w-full justify-start gap-3 py-3"
+                  onClick={() => void requestPowerAction(action)}
+                  disabled={powerBusy !== null}
+                >
+                  {powerBusy === action ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
+                  <span className="text-left">
+                    <span className="block text-sm font-semibold">{label}</span>
+                    <span className="block text-xs opacity-75">{description}</span>
+                  </span>
+                </Button>
+              ))}
+              <div className="rounded-xl border border-border bg-background/70 p-3 text-xs text-muted-foreground">
+                {powerStatus}
               </div>
             </TabsContent>
           </ScrollArea>

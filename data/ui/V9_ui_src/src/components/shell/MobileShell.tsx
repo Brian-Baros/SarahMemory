@@ -62,6 +62,7 @@ export function MobileShell({ className }: MobileShellProps) {
       sarahnet: Network,
       media: Play,
       dlengine: Bot,
+      "device-manager": MonitorCog,
       nailde: MonitorCog,
       terminal: Terminal,
       addons: LayoutGrid,
@@ -80,6 +81,7 @@ export function MobileShell({ className }: MobileShellProps) {
               { label: "Vision", icon: Camera, action: () => window.open("/vision", "_self") },
               { label: "Voice", icon: Mic, action: toggleMicrophone, active: mediaState.microphoneEnabled },
               { label: "Audio", icon: Volume2, action: () => setAudioMixerOpen((open) => !open), active: audioMixerOpen },
+              { label: "Devices", icon: MonitorCog, action: () => setCurrentScreen("device-manager") },
               { label: "Files", icon: Files, action: () => setCurrentScreen("files") },
               { label: "Avatar", icon: User, action: () => setCurrentScreen("avatar") },
               { label: "NAILDE", icon: MonitorCog, action: () => setCurrentScreen("nailde") },
@@ -92,6 +94,7 @@ export function MobileShell({ className }: MobileShellProps) {
                 ("active" in item && item.active) ||
                 currentScreen.toLowerCase() === item.label.toLowerCase() ||
                 (item.label === "Models" && currentScreen === "dlengine") ||
+                (item.label === "Devices" && currentScreen === "device-manager") ||
                 (item.label === "Tuning" && currentScreen === "settings");
               return (
                 <Button

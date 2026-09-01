@@ -1,16 +1,19 @@
 import { useRef, useCallback, useEffect, useState, type ReactNode, type PointerEvent as ReactPointerEvent } from "react";
-import { X, Minus, Square, Maximize2 } from "lucide-react";
+import { MessageCircle, X, Minus, Square, Maximize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWindowStore, type WindowState } from "@/stores/useWindowStore";
+import type { ShellFeatureDefinition } from "@/features/featureRegistry";
 
 interface WindowProps {
   window: WindowState;
+  featureContext?: ShellFeatureDefinition;
   children: ReactNode;
 }
 
-export function Window({ window: win, children }: WindowProps) {
+export function Window({ window: win, featureContext, children }: WindowProps) {
   const {
     focusWindow,
+    openWindow,
     closeWindow,
     minimizeWindow,
     maximizeWindow,
@@ -110,6 +113,23 @@ export function Window({ window: win, children }: WindowProps) {
     }
   }, [win.id, win.isMaximized, restoreWindow, maximizeWindow]);
 
+  const sendToChat = useCallback(() => {
+    const title = featureContext?.title || win.title;
+    const purpose = featureContext?.purpose || `${win.title} surface context.`;
+    const draft = `[Panel context: ${title}]\n${purpose}\n\nHelp me with: `;
+    try {
+      window.sessionStorage.setItem("sarah:chat-pending-draft", draft);
+    } catch {
+      // non-fatal context handoff
+    }
+    window.dispatchEvent(
+      new CustomEvent("sarah:chat-draft", {
+        detail: { draft, featureId: featureContext?.id || win.id, title, purpose, ts: Date.now() },
+      }),
+    );
+    openWindow("chat");
+  }, [featureContext, openWindow, win.id, win.title]);
+
   // Don't render minimized windows
   if (win.isMinimized) return null;
 
@@ -172,7 +192,23 @@ export function Window({ window: win, children }: WindowProps) {
           </span>
         </span>
 
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-1">
+          {win.id !== "chat" && (
+            <button
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                sendToChat();
+              }}
+              className="sarah-focus-ring mr-1 hidden h-7 items-center gap-1.5 rounded-md border border-border/70 bg-background/70 px-2 text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground sm:flex"
+              aria-label={`Ask Sarah about ${win.title}`}
+              title={`Send ${win.title} context to Sarah Chat`}
+            >
+              <MessageCircle className="h-3.5 w-3.5" />
+              Ask Sarah
+            </button>
+          )}
+
           {/* Minimize */}
           <button
             onPointerDown={(e) => e.stopPropagation()}
