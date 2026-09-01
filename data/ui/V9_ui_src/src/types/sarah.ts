@@ -73,6 +73,22 @@ export interface SystemStatus {
   mode: string;
 }
 
+export type DesktopShortcutKind = 'app' | 'trash' | 'url' | 'custom';
+
+export interface DesktopShortcut {
+  id: string;
+  label: string;
+  kind: DesktopShortcutKind;
+  windowId?: string;
+  url?: string;
+  icon?: string;
+}
+
+export interface DesktopShortcutPosition {
+  x: number;
+  y: number;
+}
+
 export interface Settings {
   selectedVoice: string;
   selectedTheme: string;
@@ -92,5 +108,14 @@ export interface Settings {
   panelOpacity?: number;
   shellDensity?: 'compact' | 'comfortable' | 'operator';
   activeWorkspace?: 'chat' | 'research' | 'operator' | 'engineer' | 'media';
+  desktopShortcuts?: DesktopShortcut[];
+  desktopShortcutPositions?: Record<string, DesktopShortcutPosition>;
+  masterVolume?: number;
+  outputVolume?: number;
+  inputVolume?: number;
+  bassLevel?: number;
+  trebleLevel?: number;
+  balance?: number;
+  spatialAudio?: boolean;
+  noiseSuppression?: boolean;
 }
-

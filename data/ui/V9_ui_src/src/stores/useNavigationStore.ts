@@ -2,9 +2,7 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 /**
- * Mobile navigation screens - swipe map (Concept 2 aligned):
- * LEFT → RIGHT:
- *   History → Chat → Files → Research → DL Engine → Assistant (Avatar) → Studios
+ * Mobile navigation screens - SarahMemory swipe-field map.
  */
 export type MobileScreen =
   | "history"
@@ -36,7 +34,7 @@ export type DesktopApp =
   | "sarahnet"
   | "avatar";
 
-// Screen order for swipe navigation (left to right)
+// Screen order for swipe-field navigation.
 export const SCREEN_ORDER: MobileScreen[] = [
   "history",
   "chat",
@@ -53,13 +51,13 @@ export const SCREEN_ORDER: MobileScreen[] = [
   "settings",
 ];
 
-// Bottom nav items (5 max)
+// Bottom command rail items.
 export const BOTTOM_NAV_ITEMS: { screen: MobileScreen; label: string; icon: string }[] = [
   { screen: "chat", label: "Chat", icon: "message-circle" },
-  { screen: "history", label: "History", icon: "clock" },
+  { screen: "history", label: "Trail", icon: "clock" },
   { screen: "files", label: "Files", icon: "folder" },
-  { screen: "research", label: "Research", icon: "search" },
-  { screen: "avatar", label: "Assistant", icon: "user" },
+  { screen: "research", label: "Evidence", icon: "search" },
+  { screen: "avatar", label: "Avatar", icon: "user" },
 ];
 
 export type UiAction = { type: string; payload?: any };

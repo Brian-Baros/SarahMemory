@@ -1,10 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-/* SarahMemory Design System - Dark Enterprise Theme */
+/* SarahMemory Interface Fabric - local-first shell skin */
 
 /* =========================================================
    BASE LAYER – CSS VARIABLES + GLOBAL RESETS
@@ -68,6 +66,14 @@
     --sidebar-accent-foreground: 210 15% 85%;
     --sidebar-border: 220 15% 15%;
     --sidebar-ring: 210 100% 60%;
+
+    /* SarahMemory material parameters */
+    --sarah-material-alpha: 0.82;
+    --sarah-material-blur: 18px;
+    --sarah-material-border: 0.72;
+    --sarah-material-depth: 0 18px 42px rgb(0 0 0 / 0.32);
+    --sarah-glow-strength: 0.22;
+    --sarah-rail-halo: 210 100% 60%;
   }
 
   * {
@@ -76,7 +82,7 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Noto Sans", Arial, sans-serif;
   }
 }
 
@@ -114,6 +120,28 @@
 
   .glass-strong {
     @apply bg-card/90 backdrop-blur-2xl border border-border/60;
+  }
+
+  .sarah-material {
+    background: hsl(var(--card) / var(--sarah-material-alpha));
+    border: 1px solid hsl(var(--border) / var(--sarah-material-border));
+    box-shadow: var(--sarah-material-depth);
+    backdrop-filter: blur(var(--sarah-material-blur)) saturate(1.12);
+  }
+
+  .sarah-material-quiet {
+    background: hsl(var(--card) / 0.62);
+    border: 1px solid hsl(var(--border) / 0.5);
+    backdrop-filter: blur(14px) saturate(1.08);
+  }
+
+  .sarah-command-chip {
+    @apply rounded-md border border-border/70 bg-secondary/45 px-2 py-1 text-xs text-muted-foreground;
+  }
+
+  .sarah-command-chip[data-state="active"] {
+    @apply border-primary/70 bg-primary/15 text-primary;
+    box-shadow: 0 0 18px hsl(var(--primary) / 0.12);
   }
 
   /* Glow */
@@ -175,6 +203,10 @@
     box-shadow: 0 4px 12px hsl(var(--background) / 0.5);
   }
 
+  .sarah-focus-ring {
+    @apply outline-none focus-visible:ring-2 focus-visible:ring-primary/70 focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+  }
+
   /* Typing indicator */
   .typing-dot {
     @apply w-2 h-2 rounded-full bg-muted-foreground;
@@ -221,7 +253,7 @@
 
   /* Monospace */
   .font-mono {
-    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-family: ui-monospace, "Noto Sans Mono", "Courier New", monospace;
   }
 }
 
@@ -232,6 +264,30 @@
   * {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --border: 210 28% 42%;
+    --muted-foreground: 210 18% 74%;
+    --sarah-material-alpha: 0.96;
+    --sarah-material-border: 0.95;
+    --sarah-glow-strength: 0.08;
+  }
+}
+
+@media (forced-colors: active) {
+  * {
+    forced-color-adjust: auto;
+  }
+
+  .sarah-workstation-card,
+  .sarah-material,
+  .sarah-shell-ribbon {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+    backdrop-filter: none;
   }
 }
 
@@ -282,9 +338,10 @@ body {
 
 .sarah-desktop-ambient {
   background:
-    radial-gradient(circle at 18% 12%, hsl(var(--primary) / 0.18), transparent 28%),
-    radial-gradient(circle at 82% 18%, hsl(var(--accent) / 0.12), transparent 26%),
-    linear-gradient(135deg, hsl(218 28% 7%) 0%, hsl(213 30% 9%) 46%, hsl(202 28% 10%) 100%);
+    radial-gradient(circle at 12% 18%, hsl(var(--primary) / 0.18), transparent 30%),
+    radial-gradient(circle at 86% 12%, hsl(var(--accent) / 0.1), transparent 28%),
+    radial-gradient(circle at 50% 98%, hsl(184 100% 48% / 0.08), transparent 34%),
+    linear-gradient(135deg, hsl(222 28% 6%) 0%, hsl(216 32% 8%) 46%, hsl(204 30% 9%) 100%);
 }
 
 .sarah-desktop-wallpaper {
@@ -305,9 +362,55 @@ body {
 
 .sarah-workstation-card {
   background: var(--panel-bg, hsl(var(--card) / 0.82));
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(var(--sarah-material-blur)) saturate(1.12);
   border: 1px solid hsl(var(--border) / 0.72);
-  box-shadow: 0 18px 42px rgb(0 0 0 / 0.32);
+  box-shadow: var(--sarah-material-depth);
+}
+
+.sarah-workstation-card[data-focus="true"] {
+  border-color: hsl(var(--primary) / 0.55);
+  box-shadow:
+    var(--sarah-material-depth),
+    0 0 0 1px hsl(var(--primary) / 0.18),
+    0 0 34px hsl(var(--primary) / var(--sarah-glow-strength));
+}
+
+.sarah-window-bar {
+  background:
+    linear-gradient(90deg, hsl(var(--background) / 0.78), hsl(var(--card) / 0.64)),
+    linear-gradient(180deg, hsl(var(--foreground) / 0.06), transparent);
+}
+
+.sarah-desktop-beacon {
+  background:
+    linear-gradient(135deg, hsl(var(--card) / 0.78), hsl(var(--secondary) / 0.54)),
+    radial-gradient(circle at 0% 0%, hsl(var(--primary) / 0.18), transparent 42%);
+}
+
+.sarah-orbit-field::before,
+.sarah-orbit-field::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border: 1px solid hsl(var(--primary) / 0.08);
+  border-radius: 999px;
+  inset: 8%;
+  transform: rotate(-8deg);
+}
+
+.sarah-orbit-field::after {
+  inset: 16% 6%;
+  border-color: hsl(var(--accent) / 0.07);
+  transform: rotate(12deg);
+}
+
+.sarah-shell-ribbon {
+  background:
+    linear-gradient(90deg, hsl(var(--primary) / 0.12), transparent 28%, hsl(var(--accent) / 0.1)),
+    hsl(var(--card) / 0.76);
+  border: 1px solid hsl(var(--border) / 0.7);
+  backdrop-filter: blur(16px) saturate(1.12);
+  box-shadow: 0 14px 34px rgb(0 0 0 / 0.26);
 }
 
 @media (max-width: 767px) and (orientation: portrait) {
@@ -323,6 +426,40 @@ body {
 
   .sarah-desktop-grid {
     background-size: 32px 32px;
+  }
+
+  .sarah-mobile-screen-content {
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .sarah-mobile-screen-content > * {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .sarah-mobile-screen-content [role="tablist"],
+  .sarah-mobile-screen-content nav,
+  .sarah-mobile-screen-content .overflow-x-auto {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  .sarah-mobile-screen-content table,
+  .sarah-mobile-screen-content pre {
+    max-width: 100%;
+  }
+
+  .sarah-mobile-screen-content input,
+  .sarah-mobile-screen-content select,
+  .sarah-mobile-screen-content textarea,
+  .sarah-mobile-screen-content button {
+    min-height: 36px;
+  }
+
+  .sarah-mobile-screen-content .fixed.inset-0 {
+    padding: max(0.5rem, var(--safe-top)) max(0.5rem, var(--safe-right))
+      max(0.5rem, var(--safe-bottom)) max(0.5rem, var(--safe-left));
   }
 }
 

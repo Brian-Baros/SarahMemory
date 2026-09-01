@@ -12,9 +12,9 @@ export type WindowId =
   | "media"
   | "dlengine"
   | "nailde"
-  | "addons"   // ✅ ADDED (Apps/Addons launcher)
-  | "settings" // ✅ ADDED
-  | "terminal"; // 🚀 Added terminal window type
+  | "addons"
+  | "settings"
+  | "terminal";
 
 export interface WindowState {
   id: WindowId;
@@ -55,19 +55,18 @@ const WINDOW_DEFAULTS: Record<
   WindowId,
   Omit<WindowState, "x" | "y" | "zIndex" | "isMinimized" | "isMaximized">
 > = {
-  chat: { id: "chat", title: "Chat", icon: "message-circle", width: 520, height: 620 },
-  history: { id: "history", title: "History", icon: "clock", width: 460, height: 520 },
-  files: { id: "files", title: "Files", icon: "folder", width: 520, height: 480 },
-  research: { id: "research", title: "Research", icon: "search", width: 560, height: 540 },
-  studio: { id: "studio", title: "Studios", icon: "palette", width: 620, height: 560 },
-  avatar: { id: "avatar", title: "Avatar", icon: "user", width: 420, height: 520 },
+  chat: { id: "chat", title: "Sarah Chat", icon: "message-circle", width: 520, height: 620 },
+  history: { id: "history", title: "Memory Trail", icon: "clock", width: 460, height: 520 },
+  files: { id: "files", title: "File Cortex", icon: "folder", width: 520, height: 480 },
+  research: { id: "research", title: "Evidence Lens", icon: "search", width: 560, height: 540 },
+  studio: { id: "studio", title: "Creation Bay", icon: "palette", width: 620, height: 560 },
+  avatar: { id: "avatar", title: "Avatar Core", icon: "user", width: 420, height: 520 },
   sarahnet: { id: "sarahnet", title: "SarahNet", icon: "network", width: 540, height: 500 },
-  media: { id: "media", title: "Media", icon: "play", width: 480, height: 420 },
-  dlengine: { id: "dlengine", title: "DL Engine", icon: "cpu", width: 520, height: 460 },
+  media: { id: "media", title: "Media Deck", icon: "play", width: 480, height: 420 },
+  dlengine: { id: "dlengine", title: "Model Forge", icon: "cpu", width: 520, height: 460 },
   nailde: { id: "nailde", title: "NAILDE", icon: "monitor-cog", width: 1180, height: 720 },
-  terminal: { id: "terminal", title: "Terminal", icon: "terminal", width: 620, height: 520 },
+  terminal: { id: "terminal", title: "Operator Terminal", icon: "terminal", width: 620, height: 520 },
 
-  // ✅ ADDONS LAUNCHER WINDOW
   addons: {
     id: "addons",
     title: "Addons",
@@ -76,10 +75,9 @@ const WINDOW_DEFAULTS: Record<
     height: 520,
   },
 
-  // ✅ SETTINGS WINDOW
   settings: {
     id: "settings",
-    title: "Settings",
+    title: "System Tuning",
     icon: "settings",
     width: 640,
     height: 560,

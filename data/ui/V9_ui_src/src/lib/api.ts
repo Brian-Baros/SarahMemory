@@ -42,7 +42,7 @@ export interface ChatResponse {
   reason?: string | null;
   reply?: string;
   content: string;
-  source: "sarah_backend" | "lovable_ai";
+  source: "sarah_backend" | "governed_remote_fallback";
   task_id?: string;
   task_truth_hash?: string;
   receipt_ids?: string[];
@@ -858,7 +858,7 @@ export const chatApi = {
         return {
           ok: false,
           content: "I'm having trouble connecting to the backend. Please try again.",
-          source: "lovable_ai",
+          source: "governed_remote_fallback",
           error: String(error),
         };
       }

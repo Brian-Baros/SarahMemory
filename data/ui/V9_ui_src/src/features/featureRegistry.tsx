@@ -2,18 +2,18 @@ import type { WindowId } from "@/stores/useWindowStore";
 import type { MobileScreen } from "@/stores/useNavigationStore";
 
 import { ChatPanel } from "@/components/chat/ChatPanel";
-import { HistoryScreen } from "@/components/screens/HistoryScreen";
-import { FilesScreen } from "@/components/screens/FilesScreen";
-import { ResearchScreen } from "@/components/screens/ResearchScreen";
-import { StudiosScreen } from "@/components/screens/StudiosScreen";
-import { AvatarScreen } from "@/components/screens/AvatarScreen";
-import { SarahNetScreen } from "@/components/screens/SarahNetScreen";
-import { MediaScreen } from "@/components/screens/MediaScreen";
-import { DLEngineScreen } from "@/components/screens/DLEngineScreen";
-import { SettingsScreen } from "@/components/screens/SettingsScreen";
-import { AddonsScreen } from "@/components/screens/AddonsScreen";
-import NAILDEScreen from "@/components/screens/NAILDEScreen";
-import TerminalScreen from "@/components/screens/TerminalScreen";
+import { HistoryScreen } from "@/components/screens/history/HistoryScreen";
+import { FilesScreen } from "@/components/screens/files/FilesScreen";
+import { ResearchScreen } from "@/components/screens/research/ResearchScreen";
+import { StudiosScreen } from "@/components/screens/studios/StudiosScreen";
+import { AvatarScreen } from "@/components/screens/avatar/AvatarScreen";
+import { SarahNetScreen } from "@/components/screens/sarah-net/SarahNetScreen";
+import { MediaScreen } from "@/components/screens/media/MediaScreen";
+import { DLEngineScreen } from "@/components/screens/dl-engine/DLEngineScreen";
+import { SettingsScreen } from "@/components/screens/settings/SettingsScreen";
+import { AddonsScreen } from "@/components/screens/addons/AddonsScreen";
+import NAILDEScreen from "@/components/screens/nailde/NAILDEScreen";
+import TerminalScreen from "@/components/screens/terminal/TerminalScreen";
 import { PanelChatBridge } from "@/components/shell/PanelChatBridge";
 
 export type ShellFeatureId = WindowId | MobileScreen | "studios";
@@ -42,7 +42,7 @@ export type ShellFeatureDefinition = {
 export const SHELL_FEATURES: ShellFeatureDefinition[] = [
   {
     id: "chat",
-    title: "Chat",
+    title: "Sarah Chat",
     area: "conversation",
     purpose: "Main Sarah conversation, backend chat calls, avatar speaking events, file ingestion.",
     sourceFile: "src/components/chat/ChatPanel.tsx",
@@ -50,43 +50,43 @@ export const SHELL_FEATURES: ShellFeatureDefinition[] = [
   },
   {
     id: "history",
-    title: "History",
+    title: "Memory Trail",
     area: "conversation",
     purpose: "Conversation history and session recall surface.",
-    sourceFile: "src/components/screens/HistoryScreen.tsx",
+    sourceFile: "src/components/screens/history/HistoryScreen.tsx",
     component: <HistoryScreen />,
   },
   {
     id: "files",
-    title: "Files",
+    title: "File Cortex",
     area: "files",
     purpose: "Local-first file browser and file action UI.",
-    sourceFile: "src/components/screens/FilesScreen.tsx",
+    sourceFile: "src/components/screens/files/FilesScreen.tsx",
     component: <FilesScreen />,
   },
   {
     id: "research",
-    title: "Research",
+    title: "Evidence Lens",
     area: "research",
     purpose: "Research lane, web/local evidence gathering, and source review.",
-    sourceFile: "src/components/screens/ResearchScreen.tsx",
+    sourceFile: "src/components/screens/research/ResearchScreen.tsx",
     component: <ResearchScreen />,
   },
   {
     id: "studio",
     aliases: ["studios"],
-    title: "Studios",
+    title: "Creation Bay",
     area: "creation",
     purpose: "Creative media generation modules and studio tabs.",
-    sourceFile: "src/components/screens/StudiosScreen.tsx",
+    sourceFile: "src/components/screens/studios/StudiosScreen.tsx",
     component: <StudiosScreen />,
   },
   {
     id: "avatar",
-    title: "Avatar",
+    title: "Avatar Core",
     area: "assistant",
     purpose: "2D/3D avatar, local camera overlay, voice state, mirror/media modes.",
-    sourceFile: "src/components/screens/AvatarScreen.tsx",
+    sourceFile: "src/components/screens/avatar/AvatarScreen.tsx",
     component: <AvatarScreen />,
   },
   {
@@ -94,23 +94,23 @@ export const SHELL_FEATURES: ShellFeatureDefinition[] = [
     title: "SarahNet",
     area: "network",
     purpose: "SarahNet broker, store-and-forward, node trust, and XR contract readiness.",
-    sourceFile: "src/components/screens/SarahNetScreen.tsx",
+    sourceFile: "src/components/screens/sarah-net/SarahNetScreen.tsx",
     component: <SarahNetScreen />,
   },
   {
     id: "media",
-    title: "Media",
+    title: "Media Deck",
     area: "media",
     purpose: "Media player/library panel.",
-    sourceFile: "src/components/screens/MediaScreen.tsx",
+    sourceFile: "src/components/screens/media/MediaScreen.tsx",
     component: <MediaScreen />,
   },
   {
     id: "dlengine",
-    title: "DL Engine",
+    title: "Model Forge",
     area: "operator",
     purpose: "DL runtime overview, REM, model governance weights, jobs, and traces.",
-    sourceFile: "src/components/screens/DLEngineScreen.tsx",
+    sourceFile: "src/components/screens/dl-engine/DLEngineScreen.tsx",
     component: <DLEngineScreen />,
   },
   {
@@ -118,15 +118,15 @@ export const SHELL_FEATURES: ShellFeatureDefinition[] = [
     title: "NAILDE",
     area: "operator",
     purpose: "VS Code plus VB6-style governed development workbench.",
-    sourceFile: "src/components/screens/NAILDEScreen.tsx",
+    sourceFile: "src/components/screens/nailde/NAILDEScreen.tsx",
     component: <NAILDEScreen />,
   },
   {
     id: "terminal",
-    title: "Terminal",
+    title: "Operator Terminal",
     area: "operator",
     purpose: "Governed terminal request surface.",
-    sourceFile: "src/components/screens/TerminalScreen.tsx",
+    sourceFile: "src/components/screens/terminal/TerminalScreen.tsx",
     component: <TerminalScreen />,
   },
   {
@@ -134,15 +134,15 @@ export const SHELL_FEATURES: ShellFeatureDefinition[] = [
     title: "Addons",
     area: "creation",
     purpose: "Addon registry and sandbox install visibility.",
-    sourceFile: "src/components/screens/AddonsScreen.tsx",
+    sourceFile: "src/components/screens/addons/AddonsScreen.tsx",
     component: <AddonsScreen />,
   },
   {
     id: "settings",
-    title: "Settings",
+    title: "System Tuning",
     area: "settings",
     purpose: "Runtime, theme, voice, model, device, and advanced configuration.",
-    sourceFile: "src/components/screens/SettingsScreen.tsx",
+    sourceFile: "src/components/screens/settings/SettingsScreen.tsx",
     component: <SettingsScreen />,
   },
 ];

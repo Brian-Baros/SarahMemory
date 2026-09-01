@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Header } from "@/components/layout/Header";
 import { MobileDrawers } from "@/components/layout/MobileDrawers";
-import { SettingsModal } from "@/components/panels/SettingsModal";
+import { SettingsModal } from "@/components/panels/settings-modal/SettingsModal";
 import { useSarahStore } from "@/stores/useSarahStore";
 import { api } from "@/lib/api";
 import { useViewportProfile } from "@/hooks/use-mobile";

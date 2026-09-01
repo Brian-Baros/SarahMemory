@@ -9,8 +9,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 
 import Index from "@/pages/Index";
 import NotFound from "@/pages/NotFound";
-import { VisionScreen } from "@/components/screens/VisionScreen";
-import NAILDEScreen from "@/components/screens/NAILDEScreen";
+import { VisionScreen } from "@/components/screens/vision/VisionScreen";
+import NAILDEScreen from "@/components/screens/nailde/NAILDEScreen";
 
 import { api } from "@/lib/api";
 import { apiFetch } from "@/lib/config";

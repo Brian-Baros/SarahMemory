@@ -96,10 +96,9 @@ function deriveThreadTitle(firstText: string): string {
   return clean.length > 54 ? `${clean.slice(0, 54).trim()}…` : clean;
 }
 // ------------------------------------------------------------
-// Taskbar settings (kept inside Settings for now)
-// We do NOT modify @/types/sarah in this patch; we safely extend at runtime.
+// Command Rail settings. The persisted field remains "taskbar" for V9 layout compatibility.
 // ------------------------------------------------------------
-type TaskbarDock = "bottom" | "top" | "left" | "right";
+type CommandRailDock = "bottom" | "top" | "left" | "right";
 
 const DEFAULT_TASKBAR_ITEMS = [
   "chat",
@@ -116,9 +115,20 @@ const DEFAULT_TASKBAR_ITEMS = [
 ];
 
 const DEFAULT_TASKBAR = {
-  dock: "bottom" as TaskbarDock,
+  dock: "bottom" as CommandRailDock,
   rows: 1,
   items: DEFAULT_TASKBAR_ITEMS,
+};
+
+const DEFAULT_AUDIO_SETTINGS = {
+  masterVolume: 78,
+  outputVolume: 82,
+  inputVolume: 70,
+  bassLevel: 0,
+  trebleLevel: 0,
+  balance: 0,
+  spatialAudio: false,
+  noiseSuppression: true,
 };
 
 function clampNumber(value: any, fallback: number, min: number, max: number): number {
@@ -127,8 +137,8 @@ function clampNumber(value: any, fallback: number, min: number, max: number): nu
   return Math.max(min, Math.min(max, Math.round(parsed)));
 }
 
-function ensureTaskbarSettings(s: any): any {
-  // s is Settings-like
+function ensureCommandRailSettings(s: any): any {
+  // s is Settings-like; preserve the existing persisted "taskbar" key.
   const next = { ...(s || {}) };
 
   if (!next.taskbar || typeof next.taskbar !== "object") {
@@ -142,7 +152,7 @@ function ensureTaskbarSettings(s: any): any {
   }
 
   // Sanitize known fields (defensive)
-  const dock = String(next.taskbar.dock || "bottom") as TaskbarDock;
+  const dock = String(next.taskbar.dock || "bottom") as CommandRailDock;
   if (!["bottom", "top", "left", "right"].includes(dock)) {
     next.taskbar.dock = "bottom";
   }
@@ -160,6 +170,44 @@ function ensureTaskbarSettings(s: any): any {
   next.backgroundOverlay = clampNumber(next.backgroundOverlay, 42, 0, 85);
   next.backgroundBlur = clampNumber(next.backgroundBlur, 0, 0, 18);
   next.panelOpacity = clampNumber(next.panelOpacity, 82, 45, 100);
+  next.masterVolume = clampNumber(next.masterVolume, DEFAULT_AUDIO_SETTINGS.masterVolume, 0, 100);
+  next.outputVolume = clampNumber(next.outputVolume, DEFAULT_AUDIO_SETTINGS.outputVolume, 0, 100);
+  next.inputVolume = clampNumber(next.inputVolume, DEFAULT_AUDIO_SETTINGS.inputVolume, 0, 100);
+  next.bassLevel = clampNumber(next.bassLevel, DEFAULT_AUDIO_SETTINGS.bassLevel, -12, 12);
+  next.trebleLevel = clampNumber(next.trebleLevel, DEFAULT_AUDIO_SETTINGS.trebleLevel, -12, 12);
+  next.balance = clampNumber(next.balance, DEFAULT_AUDIO_SETTINGS.balance, -50, 50);
+  next.spatialAudio = coerceBool(next.spatialAudio, DEFAULT_AUDIO_SETTINGS.spatialAudio);
+  next.noiseSuppression = coerceBool(next.noiseSuppression, DEFAULT_AUDIO_SETTINGS.noiseSuppression);
+
+  if (!Array.isArray(next.desktopShortcuts)) {
+    next.desktopShortcuts = [];
+  } else {
+    next.desktopShortcuts = next.desktopShortcuts
+      .filter((item: any) => item && typeof item === "object")
+      .map((item: any) => ({
+        id: safeString(item.id || `shortcut_${Math.random().toString(36).slice(2, 9)}`),
+        label: safeString(item.label || "Shortcut").slice(0, 48),
+        kind: safeString(item.kind || "custom") || "custom",
+        windowId: item.windowId ? safeString(item.windowId) : undefined,
+        url: item.url ? safeString(item.url) : undefined,
+        icon: item.icon ? safeString(item.icon) : undefined,
+      }))
+      .filter((item: any) => item.id && item.label);
+  }
+
+  if (!next.desktopShortcutPositions || typeof next.desktopShortcutPositions !== "object" || Array.isArray(next.desktopShortcutPositions)) {
+    next.desktopShortcutPositions = {};
+  } else {
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const [id, pos] of Object.entries(next.desktopShortcutPositions as Record<string, any>)) {
+      if (!pos || typeof pos !== "object") continue;
+      positions[String(id)] = {
+        x: clampNumber((pos as any).x, 16, 0, 5000),
+        y: clampNumber((pos as any).y, 16, 0, 5000),
+      };
+    }
+    next.desktopShortcutPositions = positions;
+  }
 
   return next;
 }
@@ -520,7 +568,7 @@ export const useSarahStore = create<SarahState>()(
         })),
 
       // Settings
-      settings: ensureTaskbarSettings({
+      settings: ensureCommandRailSettings({
         selectedVoice: "sarahvoice",
         selectedTheme: "default",
         autoSpeak: true,
@@ -539,10 +587,13 @@ export const useSarahStore = create<SarahState>()(
         panelOpacity: 82,
         shellDensity: "comfortable",
         activeWorkspace: "chat",
+        desktopShortcuts: [],
+        desktopShortcutPositions: {},
+        ...DEFAULT_AUDIO_SETTINGS,
       }),
       updateSettings: (updates) =>
         set((state) => ({
-          settings: ensureTaskbarSettings({ ...state.settings, ...updates }),
+          settings: ensureCommandRailSettings({ ...state.settings, ...updates }),
         })),
 
       // Fallback options
@@ -891,11 +942,11 @@ export const useSarahStore = create<SarahState>()(
       onRehydrateStorage: () => (state, error) => {
         if (error) return;
 
-        // Ensure settings has taskbar defaults after rehydrate
+        // Ensure settings has command rail defaults after rehydrate.
         try {
           const s: any = (state as any)?.settings;
           if (state && (state as any).updateSettings) {
-            const ensured = ensureTaskbarSettings(s);
+            const ensured = ensureCommandRailSettings(s);
             if (JSON.stringify(ensured?.taskbar) !== JSON.stringify(s?.taskbar)) {
               (state as any).updateSettings({ taskbar: ensured.taskbar } as any);
             }
