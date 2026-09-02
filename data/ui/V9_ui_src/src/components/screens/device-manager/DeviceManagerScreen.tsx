@@ -14,15 +14,20 @@ import {
   SlidersHorizontal,
   Speaker,
   Wifi,
+  Monitor,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-type DeviceTab = "all" | "network" | "audio" | "printers" | "storage" | "input" | "camera" | "other";
+type DeviceTab = "all" | "network" | "audio" | "printers" | "storage" | "input" | "camera" | "display" | "other";
 
 type DriverItem = {
   id: string;
@@ -48,6 +53,227 @@ type InventorySource = {
   detail: string;
 };
 
+type SettingKind = "text" | "password" | "textarea" | "select" | "switch" | "slider" | "number";
+
+type SettingField = {
+  key: string;
+  label: string;
+  kind: SettingKind;
+  section: string;
+  placeholder?: string;
+  options?: string[];
+  min?: number;
+  max?: number;
+  step?: number;
+  unit?: string;
+  defaultValue?: string | number | boolean;
+  wide?: boolean;
+};
+
+type DeviceProfile = {
+  title: string;
+  description: string;
+  fields: SettingField[];
+};
+
+const NETWORK_FIELDS: SettingField[] = [
+  { key: "adapter_alias", label: "Adapter Alias", kind: "text", section: "Identity", placeholder: "Office LAN / Workshop WiFi" },
+  { key: "network_name", label: "Network Name", kind: "text", section: "Identity" },
+  { key: "ssid", label: "SSID", kind: "text", section: "Wireless" },
+  { key: "security_mode", label: "Security Mode", kind: "select", section: "Wireless", options: ["Auto", "Open", "WPA2 Personal", "WPA3 Personal", "Enterprise", "Hidden Network"], defaultValue: "Auto" },
+  { key: "password", label: "Password / Passphrase", kind: "password", section: "Wireless", placeholder: "Stored only through authorized driver bridge" },
+  { key: "band_preference", label: "Band Preference", kind: "select", section: "Wireless", options: ["Auto", "2.4 GHz", "5 GHz", "6 GHz"], defaultValue: "Auto" },
+  { key: "auto_connect", label: "Auto Connect", kind: "switch", section: "Wireless", defaultValue: true },
+  { key: "metered_connection", label: "Metered Connection", kind: "switch", section: "Wireless" },
+  { key: "mac_randomization", label: "Random Hardware Address", kind: "switch", section: "Wireless" },
+  { key: "roaming_aggression", label: "Roaming Aggression", kind: "slider", section: "Wireless", min: 0, max: 100, step: 5, unit: "%", defaultValue: 50 },
+  { key: "ip_assignment", label: "IP Assignment", kind: "select", section: "TCP/IP", options: ["DHCP", "Manual IPv4", "Manual IPv6", "Static Dual Stack"], defaultValue: "DHCP" },
+  { key: "tcp_ip", label: "IPv4 Address", kind: "text", section: "TCP/IP", placeholder: "192.168.1.50" },
+  { key: "subnet_mask", label: "Subnet Mask / Prefix", kind: "text", section: "TCP/IP", placeholder: "255.255.255.0 or /24" },
+  { key: "gateway", label: "Gateway", kind: "text", section: "TCP/IP", placeholder: "192.168.1.1" },
+  { key: "dns_servers", label: "DNS Servers", kind: "textarea", section: "TCP/IP", placeholder: "1.1.1.1\n8.8.8.8", wide: true },
+  { key: "ipv6_mode", label: "IPv6 Mode", kind: "select", section: "TCP/IP", options: ["Automatic", "Disabled", "Manual"], defaultValue: "Automatic" },
+  { key: "mtu", label: "MTU", kind: "number", section: "TCP/IP", placeholder: "1500" },
+  { key: "vlan_id", label: "VLAN ID", kind: "number", section: "TCP/IP" },
+  { key: "vpn_profile", label: "VPN Profile", kind: "text", section: "VPN / Proxy" },
+  { key: "vpn_protocol", label: "VPN Protocol", kind: "select", section: "VPN / Proxy", options: ["None", "WireGuard", "OpenVPN", "IKEv2", "L2TP/IPsec", "SSTP"], defaultValue: "None" },
+  { key: "vpn_server", label: "VPN Server", kind: "text", section: "VPN / Proxy" },
+  { key: "vpn_split_tunnel", label: "Split Tunnel", kind: "switch", section: "VPN / Proxy" },
+  { key: "proxy_mode", label: "Proxy Mode", kind: "select", section: "VPN / Proxy", options: ["Off", "Auto Detect", "PAC Script", "Manual"], defaultValue: "Off" },
+  { key: "proxy_address", label: "Proxy Address", kind: "text", section: "VPN / Proxy" },
+  { key: "firewall_profile", label: "Firewall Profile", kind: "select", section: "Governance", options: ["Private", "Public", "Domain", "Isolated"], defaultValue: "Private" },
+  { key: "wake_on_lan", label: "Wake on LAN", kind: "switch", section: "Governance" },
+  { key: "priority", label: "Network Priority", kind: "slider", section: "Governance", min: 0, max: 100, step: 5, unit: "%", defaultValue: 50 },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const CAMERA_FIELDS: SettingField[] = [
+  { key: "camera_profile", label: "Camera Profile", kind: "text", section: "Identity", placeholder: "Streaming / security / vision" },
+  { key: "resolution", label: "Resolution", kind: "select", section: "Capture", options: ["Auto", "640x480", "1280x720", "1920x1080", "2560x1440", "3840x2160"], defaultValue: "Auto" },
+  { key: "frame_rate", label: "Frame Rate", kind: "select", section: "Capture", options: ["Auto", "24 fps", "30 fps", "60 fps", "120 fps"], defaultValue: "Auto" },
+  { key: "mirror", label: "Mirror Preview", kind: "switch", section: "Capture", defaultValue: true },
+  { key: "rotation", label: "Rotation", kind: "select", section: "Capture", options: ["0 deg", "90 deg", "180 deg", "270 deg"], defaultValue: "0 deg" },
+  { key: "video_hdr", label: "Video HDR", kind: "switch", section: "Capture" },
+  { key: "brightness", label: "Brightness", kind: "slider", section: "Image", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "contrast", label: "Contrast", kind: "slider", section: "Image", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "saturation", label: "Saturation", kind: "slider", section: "Image", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "sharpness", label: "Sharpness", kind: "slider", section: "Image", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "hue", label: "Hue", kind: "slider", section: "Image", min: -180, max: 180, step: 1, unit: "deg", defaultValue: 0 },
+  { key: "white_balance", label: "White Balance", kind: "slider", section: "Image", min: 2500, max: 9000, step: 100, unit: "K", defaultValue: 5000 },
+  { key: "exposure", label: "Exposure", kind: "slider", section: "Lens", min: -10, max: 10, step: 1, defaultValue: 0 },
+  { key: "gain", label: "Gain", kind: "slider", section: "Lens", min: 0, max: 100, step: 1, unit: "%", defaultValue: 25 },
+  { key: "zoom", label: "Zoom", kind: "slider", section: "Lens", min: 100, max: 400, step: 5, unit: "%", defaultValue: 100 },
+  { key: "pan", label: "Pan", kind: "slider", section: "Lens", min: -100, max: 100, step: 1, defaultValue: 0 },
+  { key: "tilt", label: "Tilt", kind: "slider", section: "Lens", min: -100, max: 100, step: 1, defaultValue: 0 },
+  { key: "autofocus", label: "Autofocus", kind: "switch", section: "Lens", defaultValue: true },
+  { key: "focus_distance", label: "Focus Distance", kind: "slider", section: "Lens", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "low_light_boost", label: "Low Light Boost", kind: "switch", section: "Enhancement" },
+  { key: "noise_reduction", label: "Noise Reduction", kind: "slider", section: "Enhancement", min: 0, max: 100, step: 5, unit: "%", defaultValue: 30 },
+  { key: "auto_framing", label: "Auto Framing", kind: "switch", section: "Enhancement" },
+  { key: "background_blur", label: "Background Blur", kind: "slider", section: "Enhancement", min: 0, max: 100, step: 5, unit: "%", defaultValue: 0 },
+  { key: "privacy_shutter", label: "Privacy Shutter", kind: "switch", section: "Governance" },
+  { key: "vision_lane", label: "Vision Lane", kind: "select", section: "Governance", options: ["Preview only", "Object recognition", "Face recognition review", "Avatar witness", "Disabled"], defaultValue: "Preview only" },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const DISPLAY_FIELDS: SettingField[] = [
+  { key: "display_alias", label: "Display Alias", kind: "text", section: "Identity", placeholder: "Main monitor / projector" },
+  { key: "primary_display", label: "Primary Display", kind: "switch", section: "Layout" },
+  { key: "resolution", label: "Resolution", kind: "select", section: "Layout", options: ["Auto", "1280x720", "1600x900", "1920x1080", "2560x1440", "3440x1440", "3840x2160"], defaultValue: "Auto" },
+  { key: "refresh_rate", label: "Refresh Rate", kind: "select", section: "Layout", options: ["Auto", "60 Hz", "75 Hz", "120 Hz", "144 Hz", "165 Hz", "240 Hz"], defaultValue: "Auto" },
+  { key: "scale", label: "Scale", kind: "slider", section: "Layout", min: 75, max: 300, step: 5, unit: "%", defaultValue: 100 },
+  { key: "orientation", label: "Orientation", kind: "select", section: "Layout", options: ["Landscape", "Portrait", "Landscape flipped", "Portrait flipped"], defaultValue: "Landscape" },
+  { key: "screen_position", label: "Screen Position", kind: "select", section: "Layout", options: ["Auto", "Left", "Center", "Right", "Above", "Below"], defaultValue: "Auto" },
+  { key: "brightness", label: "Brightness", kind: "slider", section: "Color", min: 0, max: 100, step: 1, unit: "%", defaultValue: 70 },
+  { key: "contrast", label: "Contrast", kind: "slider", section: "Color", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "gamma", label: "Gamma", kind: "slider", section: "Color", min: 80, max: 140, step: 1, unit: "%", defaultValue: 100 },
+  { key: "hue", label: "Hue", kind: "slider", section: "Color", min: -180, max: 180, step: 1, unit: "deg", defaultValue: 0 },
+  { key: "saturation", label: "Saturation", kind: "slider", section: "Color", min: 0, max: 150, step: 1, unit: "%", defaultValue: 100 },
+  { key: "color_temperature", label: "Color Temperature", kind: "slider", section: "Color", min: 2500, max: 10000, step: 100, unit: "K", defaultValue: 6500 },
+  { key: "color_profile", label: "Color Profile", kind: "text", section: "Color", placeholder: "ICC / calibrated profile" },
+  { key: "hdr_mode", label: "HDR Mode", kind: "select", section: "HDR / Advanced", options: ["Off", "Auto", "On", "Video only"], defaultValue: "Auto" },
+  { key: "sdr_brightness", label: "SDR Brightness", kind: "slider", section: "HDR / Advanced", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "dynamic_range", label: "Dynamic Range", kind: "select", section: "HDR / Advanced", options: ["Auto", "Full", "Limited"], defaultValue: "Auto" },
+  { key: "bit_depth", label: "Bit Depth", kind: "select", section: "HDR / Advanced", options: ["Auto", "8-bit", "10-bit", "12-bit"], defaultValue: "Auto" },
+  { key: "adaptive_sync", label: "Adaptive Sync", kind: "switch", section: "HDR / Advanced" },
+  { key: "overscan", label: "Overscan / Underscan", kind: "slider", section: "HDR / Advanced", min: -20, max: 20, step: 1, unit: "%", defaultValue: 0 },
+  { key: "night_filter", label: "Blue-Light Filter", kind: "switch", section: "Comfort" },
+  { key: "power_saver", label: "Display Power Saver", kind: "switch", section: "Comfort" },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const AUDIO_FIELDS: SettingField[] = [
+  { key: "device_role", label: "Device Role", kind: "select", section: "Routing", options: ["Default output", "Default input", "Communications", "Studio monitor", "Disabled"], defaultValue: "Default output" },
+  { key: "channel_mode", label: "Channel Mode", kind: "select", section: "Routing", options: ["Mono", "Stereo", "2.1", "5.1 Surround", "7.1 Surround", "Spatial / HRTF"], defaultValue: "Stereo" },
+  { key: "sample_rate", label: "Sample Rate", kind: "select", section: "Routing", options: ["44.1 kHz", "48 kHz", "96 kHz", "192 kHz"], defaultValue: "48 kHz" },
+  { key: "bit_depth", label: "Bit Depth", kind: "select", section: "Routing", options: ["16-bit", "24-bit", "32-bit float"], defaultValue: "24-bit" },
+  { key: "exclusive_mode", label: "Exclusive Mode", kind: "switch", section: "Routing" },
+  { key: "master_volume", label: "Master Volume", kind: "slider", section: "Levels", min: 0, max: 100, step: 1, unit: "%", defaultValue: 78 },
+  { key: "input_gain", label: "Input Gain", kind: "slider", section: "Levels", min: 0, max: 100, step: 1, unit: "%", defaultValue: 70 },
+  { key: "monitor_mix", label: "Monitor Mix", kind: "slider", section: "Levels", min: 0, max: 100, step: 1, unit: "%", defaultValue: 0 },
+  { key: "balance", label: "Left / Right Balance", kind: "slider", section: "Levels", min: -100, max: 100, step: 1, defaultValue: 0 },
+  { key: "bass", label: "Bass", kind: "slider", section: "Equalizer", min: -12, max: 12, step: 1, unit: "dB", defaultValue: 0 },
+  { key: "mid", label: "Mid", kind: "slider", section: "Equalizer", min: -12, max: 12, step: 1, unit: "dB", defaultValue: 0 },
+  { key: "treble", label: "Treble", kind: "slider", section: "Equalizer", min: -12, max: 12, step: 1, unit: "dB", defaultValue: 0 },
+  { key: "loudness_eq", label: "Loudness Equalization", kind: "switch", section: "Enhancement" },
+  { key: "spatial_audio", label: "Spatial Audio", kind: "select", section: "Enhancement", options: ["Off", "Virtual surround", "Headphone spatial", "Room model"], defaultValue: "Off" },
+  { key: "noise_suppression", label: "Noise Suppression", kind: "slider", section: "Enhancement", min: 0, max: 100, step: 5, unit: "%", defaultValue: 35 },
+  { key: "echo_cancellation", label: "Echo Cancellation", kind: "switch", section: "Enhancement", defaultValue: true },
+  { key: "voice_focus", label: "Voice Focus", kind: "switch", section: "Enhancement" },
+  { key: "latency_buffer", label: "Latency Buffer", kind: "slider", section: "Advanced", min: 32, max: 512, step: 16, unit: "ms", defaultValue: 128 },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const INPUT_FIELDS: SettingField[] = [
+  { key: "input_profile", label: "Input Profile", kind: "text", section: "Identity", placeholder: "Gaming / accessibility / workstation" },
+  { key: "primary_button", label: "Primary Button", kind: "select", section: "Mouse", options: ["Left", "Right"], defaultValue: "Left" },
+  { key: "reverse_clicks", label: "Reverse Mouse Clicking", kind: "switch", section: "Mouse" },
+  { key: "pointer_speed", label: "Pointer Speed", kind: "slider", section: "Mouse", min: 1, max: 20, step: 1, defaultValue: 10 },
+  { key: "enhance_precision", label: "Pointer Acceleration", kind: "switch", section: "Mouse", defaultValue: true },
+  { key: "double_click_speed", label: "Double-Click Speed", kind: "slider", section: "Mouse", min: 0, max: 100, step: 1, unit: "%", defaultValue: 50 },
+  { key: "click_lock", label: "Click Lock", kind: "switch", section: "Mouse" },
+  { key: "pointer_trails", label: "Pointer Trail", kind: "switch", section: "Mouse" },
+  { key: "pointer_size", label: "Pointer Size", kind: "slider", section: "Mouse", min: 1, max: 15, step: 1, defaultValue: 3 },
+  { key: "scroll_lines", label: "Scroll Wheel Lines", kind: "slider", section: "Scroll Wheel", min: 1, max: 20, step: 1, defaultValue: 3 },
+  { key: "horizontal_scroll_chars", label: "Horizontal Scroll Characters", kind: "slider", section: "Scroll Wheel", min: 1, max: 40, step: 1, defaultValue: 3 },
+  { key: "reverse_scroll", label: "Reverse Scroll Direction", kind: "switch", section: "Scroll Wheel" },
+  { key: "keyboard_layout", label: "Keyboard Layout", kind: "select", section: "Keyboard", options: ["US", "US International", "UK", "Custom"], defaultValue: "US" },
+  { key: "repeat_delay", label: "Repeat Delay", kind: "slider", section: "Keyboard", min: 0, max: 100, step: 5, unit: "%", defaultValue: 35 },
+  { key: "repeat_rate", label: "Repeat Rate", kind: "slider", section: "Keyboard", min: 0, max: 100, step: 5, unit: "%", defaultValue: 70 },
+  { key: "sticky_keys", label: "Sticky Keys", kind: "switch", section: "Keyboard" },
+  { key: "filter_keys", label: "Filter Keys", kind: "switch", section: "Keyboard" },
+  { key: "tap_to_click", label: "Tap to Click", kind: "switch", section: "Touch / Gesture", defaultValue: true },
+  { key: "gesture_sensitivity", label: "Gesture Sensitivity", kind: "slider", section: "Touch / Gesture", min: 0, max: 100, step: 5, unit: "%", defaultValue: 50 },
+  { key: "palm_rejection", label: "Palm Rejection", kind: "slider", section: "Touch / Gesture", min: 0, max: 100, step: 5, unit: "%", defaultValue: 60 },
+  { key: "gamepad_deadzone", label: "Gamepad Deadzone", kind: "slider", section: "Gamepad", min: 0, max: 50, step: 1, unit: "%", defaultValue: 8 },
+  { key: "gamepad_vibration", label: "Gamepad Vibration", kind: "switch", section: "Gamepad", defaultValue: true },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const PRINTER_FIELDS: SettingField[] = [
+  { key: "printer_alias", label: "Printer Alias", kind: "text", section: "Identity" },
+  { key: "default_printer", label: "Default Printer", kind: "switch", section: "Identity" },
+  { key: "paper_size", label: "Paper Size", kind: "select", section: "Job Defaults", options: ["Letter", "Legal", "A4", "A3", "4x6 Photo", "Envelope", "Custom"], defaultValue: "Letter" },
+  { key: "orientation", label: "Orientation", kind: "select", section: "Job Defaults", options: ["Portrait", "Landscape"], defaultValue: "Portrait" },
+  { key: "duplex", label: "Duplex", kind: "select", section: "Job Defaults", options: ["Off", "Long edge", "Short edge"], defaultValue: "Off" },
+  { key: "color_mode", label: "Color Mode", kind: "select", section: "Job Defaults", options: ["Color", "Black and white", "Grayscale", "Auto"], defaultValue: "Auto" },
+  { key: "quality", label: "Quality", kind: "select", section: "Job Defaults", options: ["Draft", "Normal", "High", "Photo"], defaultValue: "Normal" },
+  { key: "copies", label: "Copies", kind: "number", section: "Job Defaults", defaultValue: 1 },
+  { key: "scale", label: "Scale", kind: "slider", section: "Job Defaults", min: 25, max: 200, step: 1, unit: "%", defaultValue: 100 },
+  { key: "input_tray", label: "Input Tray", kind: "select", section: "Media", options: ["Auto", "Tray 1", "Tray 2", "Manual feed", "Photo tray"], defaultValue: "Auto" },
+  { key: "media_type", label: "Media Type", kind: "select", section: "Media", options: ["Plain", "Matte", "Glossy", "Cardstock", "Envelope", "Transparency"], defaultValue: "Plain" },
+  { key: "collate", label: "Collate", kind: "switch", section: "Finishing", defaultValue: true },
+  { key: "staple", label: "Staple", kind: "switch", section: "Finishing" },
+  { key: "hole_punch", label: "Hole Punch", kind: "switch", section: "Finishing" },
+  { key: "toner_saver", label: "Toner / Ink Saver", kind: "switch", section: "Economy" },
+  { key: "secure_print", label: "Secure Print", kind: "switch", section: "Governance" },
+  { key: "share_name", label: "Share Name", kind: "text", section: "Governance" },
+  { key: "port_name", label: "Port / Queue", kind: "text", section: "Governance" },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const STORAGE_FIELDS: SettingField[] = [
+  { key: "volume_label", label: "Volume Label", kind: "text", section: "Identity" },
+  { key: "drive_letter", label: "Drive Letter / Mount", kind: "text", section: "Identity", placeholder: "D: or /mnt/data" },
+  { key: "file_system", label: "File System", kind: "select", section: "Format", options: ["NTFS", "exFAT", "FAT32", "ReFS", "ext4", "APFS", "Unknown"], defaultValue: "Unknown" },
+  { key: "allocation_unit", label: "Allocation Unit", kind: "select", section: "Format", options: ["Default", "4 KB", "16 KB", "64 KB", "1 MB"], defaultValue: "Default" },
+  { key: "removal_policy", label: "Removal Policy", kind: "select", section: "Performance", options: ["Quick removal", "Better performance", "Internal fixed disk"], defaultValue: "Quick removal" },
+  { key: "write_cache", label: "Write Cache", kind: "switch", section: "Performance" },
+  { key: "trim_enabled", label: "TRIM / Optimize", kind: "switch", section: "Performance", defaultValue: true },
+  { key: "indexing", label: "Indexing", kind: "switch", section: "Performance" },
+  { key: "compression", label: "Compression", kind: "switch", section: "Performance" },
+  { key: "encryption", label: "Encryption", kind: "select", section: "Security", options: ["Off", "Software", "Hardware", "External vault"], defaultValue: "Off" },
+  { key: "quota_gb", label: "Quota GB", kind: "number", section: "Security" },
+  { key: "smart_monitoring", label: "SMART Monitoring", kind: "switch", section: "Health", defaultValue: true },
+  { key: "health_alert_temp", label: "Temperature Alert", kind: "slider", section: "Health", min: 35, max: 90, step: 1, unit: "C", defaultValue: 65 },
+  { key: "backup_profile", label: "Backup Profile", kind: "text", section: "Health" },
+  { key: "power_policy", label: "Power Policy", kind: "select", section: "Health", options: ["Balanced", "Performance", "Power saver", "Never sleep"], defaultValue: "Balanced" },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const OTHER_FIELDS: SettingField[] = [
+  { key: "device_alias", label: "Device Alias", kind: "text", section: "Identity" },
+  { key: "device_role", label: "Device Role", kind: "text", section: "Identity", placeholder: "Compute, sensor, controller, bridge" },
+  { key: "power_mode", label: "Power Mode", kind: "select", section: "Runtime", options: ["Auto", "Low power", "Balanced", "Performance", "Disabled"], defaultValue: "Auto" },
+  { key: "performance_limit", label: "Performance Limit", kind: "slider", section: "Runtime", min: 0, max: 100, step: 5, unit: "%", defaultValue: 80 },
+  { key: "telemetry_level", label: "Telemetry Level", kind: "select", section: "Runtime", options: ["Off", "Basic", "Detailed", "Diagnostic"], defaultValue: "Basic" },
+  { key: "firmware_channel", label: "Firmware Channel", kind: "select", section: "Maintenance", options: ["Stable", "Preview", "Manual only"], defaultValue: "Stable" },
+  { key: "diagnostic_mode", label: "Diagnostic Mode", kind: "switch", section: "Maintenance" },
+  { key: "notes", label: "Notes", kind: "textarea", section: "Governance", wide: true },
+];
+
+const DEVICE_PROFILES: Record<DeviceTab, DeviceProfile> = {
+  all: { title: "Device Options", description: "Select a concrete device class to edit its settings.", fields: OTHER_FIELDS },
+  network: { title: "Network Adapter Options", description: "LAN, WiFi, TCP/IP, DNS, VPN, proxy, roaming, and governed network profile settings.", fields: NETWORK_FIELDS },
+  audio: { title: "Audio Device Options", description: "Output/input role, mono/stereo/surround routing, EQ, spatial audio, noise control, and latency tuning.", fields: AUDIO_FIELDS },
+  printers: { title: "Printer Options", description: "Paper, color, duplex, quality, finishing, queue, sharing, and secure-print profile settings.", fields: PRINTER_FIELDS },
+  storage: { title: "Storage Device Options", description: "Mount identity, file system, write cache, removal policy, indexing, health, encryption, and backup settings.", fields: STORAGE_FIELDS },
+  input: { title: "Input Device Options", description: "Mouse, keyboard, scroll wheel, touchpad, gesture, pointer, accessibility, and gamepad settings.", fields: INPUT_FIELDS },
+  camera: { title: "Camera Options", description: "Image, lens, capture, mirror, zoom, autofocus, HDR, low-light, and vision-lane controls.", fields: CAMERA_FIELDS },
+  display: { title: "Display Options", description: "Resolution, refresh, scale, orientation, color, HDR, calibration, comfort, and advanced display controls.", fields: DISPLAY_FIELDS },
+  other: { title: "General Device Options", description: "Fallback governed settings for compute, sensors, controllers, and unknown hardware.", fields: OTHER_FIELDS },
+};
+
 const TAB_META: Record<DeviceTab, { label: string; icon: any; needles: string[] }> = {
   all: { label: "All", icon: MonitorCog, needles: [] },
   network: { label: "Networks", icon: Wifi, needles: ["network", "wifi", "wi-fi", "wireless", "ethernet", "tcp", "vpn"] },
@@ -56,21 +282,11 @@ const TAB_META: Record<DeviceTab, { label: string; icon: any; needles: string[] 
   storage: { label: "Storage", icon: HardDrive, needles: ["storage", "disk", "drive", "nvme", "sata", "usb"] },
   input: { label: "Input", icon: Keyboard, needles: ["keyboard", "mouse", "touch", "gamepad", "controller", "input"] },
   camera: { label: "Cameras", icon: Camera, needles: ["camera", "webcam", "vision", "uvc"] },
+  display: { label: "Displays", icon: Monitor, needles: ["display", "monitor", "screen", "hdr", "resolution", "gpu", "video controller"] },
   other: { label: "Other", icon: Cpu, needles: [] },
 };
 
-const CONFIG_FIELDS = [
-  ["network_name", "Network Name"],
-  ["ssid", "SSID"],
-  ["security_mode", "Security Mode"],
-  ["tcp_ip", "TCP/IP"],
-  ["subnet_mask", "Subnet Mask"],
-  ["gateway", "Gateway"],
-  ["dns_servers", "DNS Servers"],
-  ["vpn_profile", "VPN Profile"],
-  ["password", "Password"],
-  ["notes", "Notes"],
-] as const;
+const CLASSIFICATION_ORDER: DeviceTab[] = ["network", "audio", "printers", "storage", "camera", "display", "input"];
 
 const INVENTORY_ENDPOINTS = [
   { label: "Driver Bridge", route: "/api/drivers", source: "driver-bridge" },
@@ -101,7 +317,7 @@ function flattenDeviceText(driver: DriverItem) {
 
 function classifyDevice(driver: DriverItem): DeviceTab {
   const text = flattenDeviceText(driver);
-  for (const key of ["network", "audio", "printers", "storage", "input", "camera"] as DeviceTab[]) {
+  for (const key of CLASSIFICATION_ORDER) {
     if (TAB_META[key].needles.some((needle) => text.includes(needle))) return key;
   }
   return "other";
@@ -144,10 +360,53 @@ function boolValue(...values: unknown[]) {
 
 function categoryFromText(value: unknown): DeviceTab {
   const text = safeString(value).toLowerCase();
-  for (const key of ["network", "audio", "printers", "storage", "input", "camera"] as DeviceTab[]) {
+  for (const key of CLASSIFICATION_ORDER) {
     if (TAB_META[key].needles.some((needle) => text.includes(needle))) return key;
   }
   return "other";
+}
+
+function getDeviceProfile(driver: DriverItem | null): DeviceProfile {
+  return DEVICE_PROFILES[driver ? classifyDevice(driver) : "other"] || DEVICE_PROFILES.other;
+}
+
+function buildConfigDraft(profile: DeviceProfile, config: Record<string, any> = {}) {
+  const draft: Record<string, string | number | boolean> = {};
+  for (const field of profile.fields) {
+    const raw = config[field.key];
+    if (raw !== undefined && raw !== null) draft[field.key] = raw;
+    else if (field.defaultValue !== undefined) draft[field.key] = field.defaultValue;
+    else draft[field.key] = field.kind === "switch" ? false : "";
+  }
+  return draft;
+}
+
+function serializeConfigDraft(draft: Record<string, string | number | boolean>) {
+  return Object.fromEntries(
+    Object.entries(draft).filter(([, value]) => {
+      if (typeof value === "boolean") return true;
+      if (typeof value === "number") return Number.isFinite(value);
+      return String(value || "").trim().length > 0;
+    }),
+  );
+}
+
+function sectionsFor(profile: DeviceProfile) {
+  const sections: Array<[string, SettingField[]]> = [];
+  for (const field of profile.fields) {
+    let section = sections.find(([name]) => name === field.section);
+    if (!section) {
+      section = [field.section, []];
+      sections.push(section);
+    }
+    section[1].push(field);
+  }
+  return sections;
+}
+
+function sliderNumber(value: unknown, fallback: unknown) {
+  const parsed = Number(value ?? fallback ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function normalizeDevice(rawValue: unknown, source: string, label: string, index: number, fallbackCategory?: DeviceTab): DriverItem | null {
@@ -208,7 +467,7 @@ function extractDeviceCandidates(payload: unknown, source: string, label: string
   }
   if (!isRecord(payload)) return out;
 
-  const directKeys = ["drivers", "devices", "items", "adapters", "network_adapters", "storage_devices", "camera_devices", "printers", "audio_devices", "input_devices"];
+  const directKeys = ["drivers", "devices", "items", "adapters", "network_adapters", "storage_devices", "camera_devices", "display_devices", "monitors", "printers", "audio_devices", "input_devices"];
   for (const key of directKeys) {
     const value = payload[key];
     if (Array.isArray(value)) value.forEach((item) => add(item, categoryFromText(key)));
@@ -292,7 +551,7 @@ async function collectBrowserDevices(): Promise<DriverItem[]> {
       width: screen.width,
       height: screen.height,
       colorDepth: screen.colorDepth,
-    }, "browser-runtime", "Browser Runtime", items.length, "other")!);
+    }, "browser-runtime", "Browser Runtime", items.length, "display")!);
   }
 
   if (nav.connection) {
@@ -330,11 +589,153 @@ function mergeDevices(items: DriverItem[]) {
   return Array.from(merged.values()).sort((a, b) => displayName(a).localeCompare(displayName(b)));
 }
 
+function DeviceSettingField({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: SettingField;
+  value: string | number | boolean | undefined;
+  disabled: boolean;
+  onChange: (key: string, value: string | number | boolean) => void;
+}) {
+  const label = (
+    <div className="mb-1 flex items-center justify-between gap-2">
+      <span className="text-xs text-muted-foreground">{field.label}</span>
+      {field.kind === "slider" ? (
+        <span className="rounded bg-secondary/70 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+          {sliderNumber(value, field.defaultValue)}
+          {field.unit || ""}
+        </span>
+      ) : null}
+    </div>
+  );
+
+  if (field.kind === "switch") {
+    const checked = value !== undefined ? boolValue(value) : boolValue(field.defaultValue);
+    return (
+      <div className={cn("rounded-lg border border-border/70 bg-background/45 p-3", field.wide && "md:col-span-2")}>
+        <div className="flex items-center justify-between gap-3">
+          <Label className="text-sm font-medium">{field.label}</Label>
+          <Switch disabled={disabled} checked={checked} onCheckedChange={(checkedValue) => onChange(field.key, checkedValue)} />
+        </div>
+      </div>
+    );
+  }
+
+  if (field.kind === "select") {
+    const selected = safeString(value, safeString(field.defaultValue, field.options?.[0] || ""));
+    return (
+      <label className={cn("min-w-0", field.wide && "md:col-span-2")}>
+        {label}
+        <Select disabled={disabled} value={selected} onValueChange={(next) => onChange(field.key, next)}>
+          <SelectTrigger className="min-w-0 bg-background/80">
+            <SelectValue placeholder={field.placeholder || field.label} />
+          </SelectTrigger>
+          <SelectContent className="z-[100000]">
+            {(field.options || []).map((option) => (
+              <SelectItem key={option} value={option}>
+                {option}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+    );
+  }
+
+  if (field.kind === "slider") {
+    const n = sliderNumber(value, field.defaultValue);
+    return (
+      <div className={cn("min-w-0 rounded-lg border border-border/70 bg-background/45 p-3", field.wide && "md:col-span-2")}>
+        {label}
+        <Slider
+          disabled={disabled}
+          value={[n]}
+          min={field.min ?? 0}
+          max={field.max ?? 100}
+          step={field.step ?? 1}
+          onValueChange={(next) => onChange(field.key, next[0] ?? n)}
+        />
+      </div>
+    );
+  }
+
+  if (field.kind === "textarea") {
+    return (
+      <label className={cn("min-w-0", field.wide && "md:col-span-2")}>
+        {label}
+        <Textarea
+          disabled={disabled}
+          className="min-h-20 resize-y bg-background/80"
+          value={safeString(value)}
+          onChange={(e) => onChange(field.key, e.target.value)}
+          placeholder={field.placeholder || field.label}
+        />
+      </label>
+    );
+  }
+
+  return (
+    <label className={cn("min-w-0", field.wide && "md:col-span-2")}>
+      {label}
+      <Input
+        disabled={disabled}
+        className="min-w-0 bg-background/80"
+        type={field.kind === "password" ? "password" : field.kind === "number" ? "number" : "text"}
+        value={safeString(value, safeString(field.defaultValue))}
+        onChange={(e) => onChange(field.key, field.kind === "number" ? (e.target.value === "" ? "" : Number(e.target.value)) : e.target.value)}
+        placeholder={field.placeholder || field.label}
+      />
+    </label>
+  );
+}
+
+function DeviceSettingsEditor({
+  profile,
+  draft,
+  disabled,
+  onChange,
+}: {
+  profile: DeviceProfile;
+  draft: Record<string, string | number | boolean>;
+  disabled: boolean;
+  onChange: (key: string, value: string | number | boolean) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      <div>
+        <div className="text-sm font-semibold">{profile.title}</div>
+        <p className="mt-1 text-xs text-muted-foreground">{profile.description}</p>
+      </div>
+      {sectionsFor(profile).map(([section, fields]) => (
+        <section key={section} className="rounded-lg border border-border/70 bg-secondary/10 p-3">
+          <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {section}
+          </div>
+          <div className="grid min-w-0 gap-3 md:grid-cols-2">
+            {fields.map((field) => (
+              <DeviceSettingField
+                key={field.key}
+                field={field}
+                value={draft[field.key]}
+                disabled={disabled}
+                onChange={onChange}
+              />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function DeviceManagerScreen() {
   const [tab, setTab] = useState<DeviceTab>("all");
   const [drivers, setDrivers] = useState<DriverItem[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [configDraft, setConfigDraft] = useState<Record<string, string>>({});
+  const [configDraft, setConfigDraft] = useState<Record<string, string | number | boolean>>({});
   const [capabilities, setCapabilities] = useState<any>(null);
   const [governance, setGovernance] = useState<any>(null);
   const [inventorySources, setInventorySources] = useState<InventorySource[]>([]);
@@ -343,6 +744,7 @@ export function DeviceManagerScreen() {
   const [message, setMessage] = useState("Device Manager is waiting for driver inventory.");
 
   const selected = drivers.find((driver) => driver.id === selectedId) || drivers[0] || null;
+  const selectedProfile = getDeviceProfile(selected);
 
   const loadDevices = async (preferredTab?: DeviceTab) => {
     setBusy("refresh");
@@ -410,8 +812,9 @@ export function DeviceManagerScreen() {
 
   useEffect(() => {
     if (!selected) return;
+    const profile = getDeviceProfile(selected);
     if (!selected.bridgeDriverId) {
-      setConfigDraft({});
+      setConfigDraft(buildConfigDraft(profile, selected.raw || {}));
       setSelectedEvidence(null);
       return;
     }
@@ -419,10 +822,8 @@ export function DeviceManagerScreen() {
     const loadConfig = async () => {
       const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(selected.bridgeDriverId || selected.id)}/config`, { method: "GET" });
       if (cancelled) return;
-      const cfg = ((result as any)?.config || {}) as Record<string, any>;
-      const next: Record<string, string> = {};
-      for (const [key] of CONFIG_FIELDS) next[key] = String(cfg[key] || "");
-      setConfigDraft(next);
+      const cfg = { ...(((result as any)?.defaults || {}) as Record<string, any>), ...(((result as any)?.config || {}) as Record<string, any>) };
+      setConfigDraft(buildConfigDraft(profile, cfg));
     };
     void loadConfig();
     return () => {
@@ -464,9 +865,7 @@ export function DeviceManagerScreen() {
     }
     if (!window.confirm(`Save configuration for ${displayName(selected)}?`)) return;
     setBusy(`config:${selected.id}`);
-    const configPatch = Object.fromEntries(
-      Object.entries(configDraft).filter(([, value]) => value.trim().length > 0),
-    );
+    const configPatch = serializeConfigDraft(configDraft);
     const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(selected.bridgeDriverId)}/config`, {
       method: "POST",
       body: { config: configPatch, user_confirmed: true, operator_confirmed: true, source: "frontend:device_manager" },
@@ -510,6 +909,10 @@ export function DeviceManagerScreen() {
     }
   };
 
+  const updateConfigDraft = (key: string, value: string | number | boolean) => {
+    setConfigDraft((draft) => ({ ...draft, [key]: value }));
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
       <div className="shrink-0 border-b border-border bg-card/70 p-4">
@@ -531,7 +934,7 @@ export function DeviceManagerScreen() {
       </div>
 
       <Tabs value={tab} onValueChange={(value) => setTab(value as DeviceTab)} className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="grid h-auto grid-cols-4 rounded-none border-b border-border bg-background/80 p-1 lg:grid-cols-8">
+        <TabsList className="grid h-auto grid-cols-3 rounded-none border-b border-border bg-background/80 p-1 sm:grid-cols-5 xl:grid-cols-9">
           {(Object.keys(TAB_META) as DeviceTab[]).map((key) => {
             const Icon = TAB_META[key].icon;
             return (
@@ -634,27 +1037,25 @@ export function DeviceManagerScreen() {
                       </div>
                     </div>
 
-                    <div className="rounded-xl border border-border bg-card/60 p-4">
+                    <div className="overflow-hidden rounded-xl border border-border bg-card/60 p-4">
                       <div className="mb-3 flex items-center gap-2 font-medium">
                         <SlidersHorizontal className="h-4 w-4 text-primary" />
-                        Network / Device Configuration
+                        {selectedProfile.title}
                       </div>
-                      <div className="grid gap-3 md:grid-cols-2">
-                        {CONFIG_FIELDS.map(([key, label]) => (
-                          <label key={key} className={cn("space-y-1 text-xs", key === "notes" && "md:col-span-2")}>
-                            <span className="text-muted-foreground">{label}</span>
-                            <Input
-                              type={key === "password" ? "password" : "text"}
-                              value={configDraft[key] || ""}
-                              onChange={(e) => setConfigDraft((draft) => ({ ...draft, [key]: e.target.value }))}
-                              placeholder={key === "password" ? "Stored only if saved through an authorized driver bridge" : label}
-                            />
-                          </label>
-                        ))}
-                      </div>
-                      <Button type="button" className="mt-3 gap-2" onClick={() => void saveConfig()} disabled={!selected || busy.startsWith("config:")}>
+                      <DeviceSettingsEditor
+                        profile={selectedProfile}
+                        draft={configDraft}
+                        disabled={busy.startsWith("config:")}
+                        onChange={updateConfigDraft}
+                      />
+                      {!selected.bridgeDriverId ? (
+                        <div className="mt-3 rounded-md border border-dashed border-border/80 bg-background/55 p-2 text-xs text-muted-foreground">
+                          This device was detected from read-only inventory. A matching appdrivers bridge entry is required before SarahMemory can apply settings to hardware.
+                        </div>
+                      ) : null}
+                      <Button type="button" className="mt-3 gap-2" onClick={() => void saveConfig()} disabled={!selected || !selected.bridgeDriverId || busy.startsWith("config:")}>
                         <Save className="h-4 w-4" />
-                        Save Device Config
+                        Save {classifyDevice(selected)} Config
                       </Button>
                     </div>
 

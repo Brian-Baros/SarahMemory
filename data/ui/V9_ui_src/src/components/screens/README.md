@@ -8,7 +8,7 @@ keeps its own owner folder so frontend work stays zoned and reviewable.
 | Addons | `addons/AddonsScreen.tsx` | Addon catalog and governed lifecycle actions. |
 | Avatar | `avatar/AvatarScreen.tsx` | Avatar presentation surface. |
 | DL Engine | `dl-engine/DLEngineScreen.tsx` | Model download and engine controls. |
-| Device Manager | `device-manager/DeviceManagerScreen.tsx` | Boot-detected governed driver/device inventory and configuration. |
+| Device Manager | `device-manager/DeviceManagerScreen.tsx` | Boot-detected governed driver/device inventory with class-specific configuration profiles. |
 | Files | `files/FilesScreen.tsx` | File Cortex, upload, selection, and Trash surface. |
 | History | `history/HistoryScreen.tsx` | Memory Trail and prior conversations. |
 | Media | `media/MediaScreen.tsx` | Media Deck controls. |
