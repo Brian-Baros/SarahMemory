@@ -99,6 +99,13 @@ except Exception:  # pragma: no cover
     _LogicCalc = None  # type: ignore
 
 try:
+    from SarahMemoryLogicCalc import duty_cycle as _duty_cycle  # type: ignore
+    from SarahMemoryLogicCalc import reserve_minimum as _reserve_minimum  # type: ignore
+except Exception:  # pragma: no cover
+    _duty_cycle = None  # type: ignore
+    _reserve_minimum = None  # type: ignore
+
+try:
     import SarahMemoryAdaptive as _Adaptive  # type: ignore
 except Exception:  # pragma: no cover
     _Adaptive = None  # type: ignore
@@ -514,13 +521,50 @@ class SarahMemoryEnergetics:
                 thermal_state = "NORMAL"
 
         pressure = max(cpu, mem, disk)
-        if pressure >= 95.0 or thermal_state == "CRITICAL":
+        reserve_vector: Dict[str, Any] = {
+            "compute": max(0.0, 1.0 - (cpu / 100.0)),
+            "memory": max(0.0, 1.0 - (mem / 100.0)),
+            "storage": max(0.0, 1.0 - (disk / 100.0)),
+        }
+        if battery_known:
+            reserve_vector["battery"] = max(0.0, min(1.0, battery_pct / 100.0))
+        thermal_reserve = ctx.get("thermal_reserve")
+        if thermal_reserve is not None:
+            reserve_vector["thermal"] = thermal_reserve
+        elif thermal_state == "CRITICAL":
+            reserve_vector["thermal"] = 0.0
+        elif thermal_state == "HOT":
+            reserve_vector["thermal"] = 0.20
+        elif thermal_state == "NORMAL":
+            reserve_vector["thermal"] = 1.0
+        for reserve_key in ("network", "sensor", "actuator", "stability", "emergency", "traction", "braking", "joint_torque", "landing_reserve"):
+            if ctx.get(f"{reserve_key}_reserve") is not None:
+                reserve_vector[reserve_key] = ctx.get(f"{reserve_key}_reserve")
+        if isinstance(ctx.get("reserve_vector"), dict):
+            reserve_vector.update(ctx.get("reserve_vector") or {})
+
+        if callable(_reserve_minimum):
+            reserve_summary = _reserve_minimum(reserve_vector)
+        else:
+            normalized = {str(k): max(0.0, min(1.0, float(v) / 100.0 if float(v) > 1.0 else float(v))) for k, v in reserve_vector.items()}
+            weakest = min(normalized, key=normalized.get) if normalized else None
+            reserve_summary = {
+                "known": bool(normalized),
+                "system_reserve": normalized.get(weakest) if weakest else None,
+                "weakest_domain": weakest,
+                "reserves": normalized,
+                "unknown_domains": [],
+                "execution_authority": False,
+            }
+        system_reserve = reserve_summary.get("system_reserve")
+
+        if pressure >= 95.0 or thermal_state == "CRITICAL" or (system_reserve is not None and float(system_reserve) <= 0.05):
             reserve_status = "CRITICAL"
-        elif pressure >= 88.0 or thermal_state == "HOT":
+        elif pressure >= 88.0 or thermal_state == "HOT" or (system_reserve is not None and float(system_reserve) < 0.12):
             reserve_status = "LOW"
         elif battery_known and (not _safe_bool(plugged, False)) and battery_pct < self.min_battery_reserve_pct:
             reserve_status = "LOW"
-        elif pressure >= 72.0:
+        elif pressure >= 72.0 or (system_reserve is not None and float(system_reserve) < 0.28):
             reserve_status = "GUARDED"
         else:
             reserve_status = "SUFFICIENT"
@@ -538,6 +582,10 @@ class SarahMemoryEnergetics:
             "thermal_state": thermal_state,
             "temperature_summary": temps,
             "reserve_status": reserve_status,
+            "reserve_vector": reserve_summary.get("reserves", {}),
+            "system_reserve": reserve_summary.get("system_reserve"),
+            "weakest_reserve_domain": reserve_summary.get("weakest_domain"),
+            "unknown_reserve_domains": reserve_summary.get("unknown_domains", []),
             "psutil_available": bool(_HAS_PSUTIL),
             "no_clock_mutation_rule": True,
             "clock_mutation_allowed": False,
@@ -654,6 +702,38 @@ class SarahMemoryEnergetics:
             "motor", "physical", "drive", "fly", "lift", "steer", "brake",
         }
         physical_action_requested = physical_active or any(token in action or token in phase_key for token in physical_action_tokens)
+        profile = self.body_profile(body)
+        expected_reserves = [str(k) for k in (profile.get("reserve_keys") or [])]
+        observed_reserves = internal.get("reserve_vector") if isinstance(internal.get("reserve_vector"), dict) else {}
+        missing_critical_reserves = sorted([key for key in expected_reserves if key not in observed_reserves])
+
+        active_seconds = active_task.get("active_seconds")
+        duty_window_seconds = active_task.get("duty_window_seconds")
+        lifecycle_stress: Dict[str, Any] = {"known": False, "execution_authority": False}
+        if active_seconds is not None and duty_window_seconds is not None:
+            try:
+                duty = _duty_cycle(active_seconds, duty_window_seconds) if callable(_duty_cycle) else max(0.0, min(1.0, float(active_seconds) / float(duty_window_seconds)))
+                cycle_count = max(0.0, float(active_task.get("cycle_count") or 0.0))
+                retry_count = max(0.0, float(active_task.get("retry_count") or 0.0))
+                stress_score = max(0.0, min(1.0, (duty * 0.65) + (min(1.0, cycle_count / 100.0) * 0.20) + (min(1.0, retry_count / 20.0) * 0.15)))
+                lifecycle_stress = {
+                    "known": True,
+                    "duty_cycle": duty,
+                    "cycle_count": cycle_count,
+                    "retry_count": retry_count,
+                    "stress_score": stress_score,
+                    "class": "SERVICE_RECOMMENDED" if stress_score >= 0.85 else "HIGH_STRESS" if stress_score >= 0.65 else "ELEVATED_STRESS" if stress_score >= 0.40 else "NORMAL",
+                    "execution_authority": False,
+                }
+            except Exception as exc:
+                lifecycle_stress = {"known": False, "error": str(exc), "execution_authority": False}
+
+        if physical_action_requested and body not in {"pc_edge", "server"} and missing_critical_reserves and not safety_critical:
+            ok = False
+            decision = DECISION_DEFER
+            diagnostics_mode = "SAFE_DISCOVERY_ONLY"
+            allowed_power_mode = POWER_LOW
+            reasons.append("Physical action lacks a complete critical reserve witness: " + ", ".join(missing_critical_reserves) + ".")
 
         if unknown_machine and physical_action_requested and not safety_critical:
             ok = False
@@ -747,6 +827,8 @@ class SarahMemoryEnergetics:
             "prefer_low_power_over_off": True,
             "do_not_mutate_clocks": True,
             "active_task_policy": "finish_task_or_safe_pause_before_scheduled_phase" if active_task else "no_active_task_reported",
+            "weakest_reserve_domain": internal.get("weakest_reserve_domain"),
+            "lifecycle_stress": lifecycle_stress,
         }
         constraints_out = {
             "no_clock_mutation_rule": True,
@@ -760,6 +842,8 @@ class SarahMemoryEnergetics:
             "compute_passport_required_for_physical_action": True,
             "unknown_machine": unknown_machine,
             "adaptive_compute_mode": compute_plan.get("mode"),
+            "critical_reserve_witness_required": bool(physical_action_requested and body not in {"pc_edge", "server"}),
+            "missing_critical_reserves": missing_critical_reserves,
         }
         constraints_out.update(constraints)
 

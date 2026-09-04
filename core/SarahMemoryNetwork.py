@@ -51,7 +51,9 @@ import logging
 
 
 
-import socket, threading, time, queue, struct, json, zlib, uuid
+import socket, threading, time, queue, struct, json, zlib, uuid, hashlib
+from collections import deque
+from dataclasses import asdict, dataclass, field
 from typing import Optional, Tuple, Dict, Callable, Any
 import SarahMemoryGlobals as config
 from SarahMemoryEncryption import SarahNetCrypto  # uses class embedded in SarahMemoryEncryption.py
@@ -160,6 +162,30 @@ def recommend_network_device_mode(device_type: str = "network", requested_power_
 
 
 # ========================= Protocol =========================
+@dataclass
+class DeliveryContract:
+    """Bounded delivery evidence.  This contract never grants remote authority."""
+
+    message_id: str
+    sender: str
+    recipient: str
+    schema: str
+    message_type: str
+    timestamp: float
+    ttl_seconds: float
+    deadline_timestamp: float
+    payload_hash: str
+    ack_required: bool = True
+    retry_limit: int = 2
+    retry_count: int = 0
+    sequence: int = 0
+    authority_context: Dict[str, Any] = field(default_factory=dict)
+    execution_authority: bool = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
 class NetworkProtocol:
     MAGIC   = b"SMNP"    # SarahMemory Net Protocol
     VERSION = 1
@@ -186,35 +212,61 @@ class NetworkProtocol:
     @staticmethod
     def pack_message(mtype: int,
                      payload: bytes,
-                     meta: Dict[str, str] = None,
+                     meta: Dict[str, Any] = None,
                      flags: int = 0,
-                     compress_if_over: int = 400) -> bytes:
-        meta = meta or {}
+                     compress_if_over: int = 400,
+                     msg_id: Optional[bytes] = None) -> bytes:
+        if not isinstance(payload, (bytes, bytearray)):
+            raise TypeError("payload must be bytes")
+        payload = bytes(payload)
+        if len(payload) > 8_388_608:
+            raise ValueError("payload exceeds 8 MB protocol limit")
+        meta = dict(meta or {})
+        msg_id = bytes(msg_id or NetworkProtocol.new_id())
+        if len(msg_id) != 16:
+            raise ValueError("msg_id must be exactly 16 bytes")
         meta.setdefault("ts", str(int(time.time())))
         meta.setdefault("schema", "v1")
+        meta.setdefault("mid", msg_id.hex())
         meta_b = json.dumps(meta, separators=(",", ":")).encode("utf-8")
+        if len(meta_b) > 65_535:
+            raise ValueError("metadata exceeds protocol limit")
 
         if compress_if_over and len(payload) >= compress_if_over:
             payload = zlib.compress(payload, level=6)
             flags |= NetworkProtocol.F_COMPRESSED
 
-        msg_id = NetworkProtocol.new_id()
         header = NetworkProtocol._HDR.pack(NetworkProtocol.MAGIC, NetworkProtocol.VERSION, flags, mtype,
                                            len(meta_b), len(payload), msg_id)
         return header + meta_b + payload
 
     @staticmethod
-    def unpack_message(blob: bytes) -> Tuple[int, Dict[str, str], bytes, int, bytes]:
+    def unpack_message(blob: bytes) -> Tuple[int, Dict[str, Any], bytes, int, bytes]:
+        if not isinstance(blob, (bytes, bytearray)) or len(blob) < NetworkProtocol._HDR.size:
+            raise ValueError("Truncated protocol frame")
         (magic, ver, flags, mtype, meta_len, payload_len, msg_id) = NetworkProtocol._HDR.unpack(
             blob[:NetworkProtocol._HDR.size]
         )
-        assert magic == NetworkProtocol.MAGIC and ver == NetworkProtocol.VERSION, "Bad protocol header"
+        if magic != NetworkProtocol.MAGIC or ver != NetworkProtocol.VERSION:
+            raise ValueError("Bad protocol header")
+        expected_size = NetworkProtocol._HDR.size + int(meta_len) + int(payload_len)
+        if expected_size != len(blob) or payload_len > 8_388_608:
+            raise ValueError("Invalid protocol frame lengths")
         off = NetworkProtocol._HDR.size
         meta = json.loads(blob[off:off+meta_len].decode("utf-8"))
+        if not isinstance(meta, dict):
+            raise ValueError("Protocol metadata must be an object")
         off += meta_len
         payload = blob[off:off+payload_len]
         if flags & NetworkProtocol.F_COMPRESSED:
-            payload = zlib.decompress(payload)
+            decompressor = zlib.decompressobj()
+            expanded = decompressor.decompress(payload, 8_388_609)
+            if len(expanded) > 8_388_608 or decompressor.unconsumed_tail:
+                raise ValueError("Decompressed payload exceeds 8 MB protocol limit")
+            expanded += decompressor.flush()
+            if len(expanded) > 8_388_608:
+                raise ValueError("Decompressed payload exceeds 8 MB protocol limit")
+            payload = expanded
         return mtype, meta, payload, flags, msg_id
 
 # ========================= IDS =========================
@@ -347,6 +399,9 @@ class NetworkNode:
         self._stop   = threading.Event()
         self._timeout = self._DEFAULT_TIMEOUT
         self._peers: Dict[str, Tuple[str,int]] = {}  # peer_id -> (host,port)
+        self._seen_message_ids = set()
+        self._seen_message_order = deque(maxlen=4096)
+        self._seen_lock = threading.Lock()
 
         self.ids = NetworkIDS(rps=float(config.SARAHNET_RPS), burst=float(config.SARAHNET_BURST))
         self.ids.on("anomaly",     lambda p,i: self._log(f"[IDS] anomaly {p} :: {i}"))
@@ -386,6 +441,19 @@ class NetworkNode:
         try: self.on_log(s)
         except Exception: pass
 
+    def _is_duplicate_message(self, msg_id: bytes) -> bool:
+        """Bound duplicate suppression while still allowing ACK retransmission."""
+        key = bytes(msg_id).hex()
+        with self._seen_lock:
+            if key in self._seen_message_ids:
+                return True
+            if len(self._seen_message_order) >= self._seen_message_order.maxlen:
+                oldest = self._seen_message_order.popleft()
+                self._seen_message_ids.discard(oldest)
+            self._seen_message_order.append(key)
+            self._seen_message_ids.add(key)
+            return False
+
     # ---- public API ----
     def add_peer(self, peer_id: str, addr: Tuple[str,int]):
         self._peers[peer_id] = addr
@@ -409,6 +477,103 @@ class NetworkNode:
         blob = NetworkProtocol.pack_message(NetworkProtocol.T_DATA, payload, meta, flags)
         self._txq.put((peer_id, blob), block=True)
         return True
+
+    def send_reliable(
+        self,
+        peer_id: str,
+        payload: bytes,
+        meta: Optional[Dict[str, Any]] = None,
+        *,
+        retry_limit: int = 2,
+        deadline_seconds: float = 5.0,
+        ttl_seconds: float = 30.0,
+        authority_context: Optional[Dict[str, Any]] = None,
+        sequence: int = 0,
+    ) -> Dict[str, Any]:
+        """Send one message with matched ACK, deadline, and bounded retries."""
+        addr = self._peers.get(peer_id)
+        if not addr:
+            return {"ok": False, "decision": "NO_ROUTE", "peer_id": peer_id, "execution_authority": False}
+        retry_limit = max(0, min(8, int(retry_limit)))
+        deadline_seconds = max(0.10, min(60.0, float(deadline_seconds)))
+        ttl_seconds = max(0.10, min(86400.0, float(ttl_seconds)))
+        now = time.time()
+        msg_id = NetworkProtocol.new_id()
+        delivery = DeliveryContract(
+            message_id=msg_id.hex(),
+            sender=self.node_id,
+            recipient=str(peer_id),
+            schema=str((meta or {}).get("schema") or "v1"),
+            message_type="DATA",
+            timestamp=now,
+            ttl_seconds=ttl_seconds,
+            deadline_timestamp=now + deadline_seconds,
+            payload_hash=hashlib.sha256(bytes(payload or b"")).hexdigest(),
+            retry_limit=retry_limit,
+            sequence=max(0, int(sequence)),
+            authority_context=dict(authority_context or {}),
+        )
+        allowed, power = _network_power_allowed("send_reliable", "ACTIVE", context={"peer_id": peer_id, "payload_bytes": len(payload or b""), "deadline_seconds": deadline_seconds})
+        if not allowed:
+            return {"ok": False, "decision": str(power.get("decision") or "DEFER"), "reason": power.get("reason"), "delivery": delivery.to_dict(), "energetics": power, "execution_authority": False}
+        packet_meta = dict(meta or {})
+        packet_meta.update({"ack_required": True, "delivery_contract": delivery.to_dict(), "content_is_not_command": True})
+        frame = NetworkProtocol.pack_message(NetworkProtocol.T_DATA, bytes(payload or b""), packet_meta, msg_id=msg_id)
+        attempts = 0
+        last_error = "ack_not_received"
+        while attempts <= retry_limit and time.time() < delivery.deadline_timestamp:
+            delivery.retry_count = max(0, attempts)
+            attempts += 1
+            remaining = max(0.05, delivery.deadline_timestamp - time.time())
+            acknowledged, detail = self._send_tcp_wait_ack(addr, frame, msg_id, timeout=min(self._timeout, remaining))
+            if acknowledged:
+                self._timeout = max(1.0, self._timeout * 0.7)
+                return {
+                    "ok": True,
+                    "decision": "ACKNOWLEDGED",
+                    "attempts": attempts,
+                    "delivery": delivery.to_dict(),
+                    "ack": detail,
+                    "execution_authority": False,
+                }
+            last_error = str(detail.get("reason") or last_error)
+            self._timeout = min(self._MAX_TIMEOUT, max(1.0, self._timeout * 1.25))
+        return {
+            "ok": False,
+            "decision": "DELIVERY_FAILURE",
+            "attempts": attempts,
+            "reason": last_error,
+            "delivery": delivery.to_dict(),
+            "execution_authority": False,
+        }
+
+    def _send_tcp_wait_ack(self, addr: Tuple[str, int], frame: bytes, expected_id: bytes, *, timeout: float) -> Tuple[bool, Dict[str, Any]]:
+        try:
+            ciphertext = SarahNetCrypto.seal(self.shared_key, frame, aad=b"")
+            with socket.create_connection(addr, timeout=max(0.05, timeout)) as sock:
+                sock.settimeout(max(0.05, timeout))
+                sock.sendall(struct.pack("!I", len(ciphertext)) + ciphertext)
+                header = b""
+                while len(header) < 4:
+                    chunk = sock.recv(4 - len(header))
+                    if not chunk:
+                        return False, {"reason": "ack_connection_closed"}
+                    header += chunk
+                (ack_size,) = struct.unpack("!I", header)
+                if ack_size <= 0 or ack_size > 1_048_576:
+                    return False, {"reason": "invalid_ack_length"}
+                ack_ciphertext = b""
+                while len(ack_ciphertext) < ack_size:
+                    chunk = sock.recv(ack_size - len(ack_ciphertext))
+                    if not chunk:
+                        return False, {"reason": "truncated_ack"}
+                    ack_ciphertext += chunk
+            ack_frame = SarahNetCrypto.open(self.shared_key, ack_ciphertext, aad=b"")
+            ack_type, ack_meta, _ack_payload, ack_flags, _ack_id = NetworkProtocol.unpack_message(ack_frame)
+            matched = bool(ack_type == NetworkProtocol.T_ACK and (ack_flags & NetworkProtocol.F_ACK) and str(ack_meta.get("mid") or "") == expected_id.hex())
+            return matched, {"reason": "ack_matched" if matched else "ack_mismatch", "mid": ack_meta.get("mid"), "matched": matched}
+        except Exception as exc:
+            return False, {"reason": f"ack_error:{type(exc).__name__}:{exc}"}
 
     # ---- internal loops ----
     def _accept_loop(self):
@@ -460,10 +625,12 @@ class NetworkNode:
                     self._log("[proto] unpack failed")
                     continue
 
-                self.on_message(peer, meta, payload)
+                duplicate = self._is_duplicate_message(mid)
+                if not duplicate and mtype != NetworkProtocol.T_ACK:
+                    self.on_message(peer, meta, payload)
                 # Acknowledge (best-effort)
                 try:
-                    ack = NetworkProtocol.pack_message(NetworkProtocol.T_ACK, b"", {"ok":"1","mid": meta.get("mid","")}, flags=NetworkProtocol.F_ACK)
+                    ack = NetworkProtocol.pack_message(NetworkProtocol.T_ACK, b"", {"ok":"1","mid": mid.hex(), "duplicate": duplicate}, flags=NetworkProtocol.F_ACK)
                     # AAD must be knowable before decrypting. The former timestamp
                     # AAD lived only inside the encrypted SMNP frame, so a receiver
                     # could not reproduce it. SMNP/1 therefore authenticates the full
@@ -499,7 +666,8 @@ class NetworkNode:
                 mtype, meta, payload, flags, mid = NetworkProtocol.unpack_message(inner)
             except Exception:
                 continue
-            self.on_message(peer, meta, payload)
+            if not self._is_duplicate_message(mid) and mtype != NetworkProtocol.T_ACK:
+                self.on_message(peer, meta, payload)
 
 
     def _tx_loop(self):
@@ -1789,4 +1957,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

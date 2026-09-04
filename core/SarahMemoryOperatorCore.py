@@ -193,8 +193,16 @@ STATE_RECEIVED = "RECEIVED"
 STATE_CLASSIFIED = "CLASSIFIED"
 STATE_AUTHORIZED = "AUTHORIZED"
 STATE_PLANNED = "PLANNED"
+STATE_PREFLIGHT = "PREFLIGHT"
+STATE_READY = "READY"
+STATE_ARMED = "ARMED"
 STATE_DISPATCHED = "DISPATCHED"
 STATE_EXECUTING = "EXECUTING"
+STATE_ACTIVE = "ACTIVE"
+STATE_FINALIZING = "FINALIZING"
+STATE_VERIFYING = "VERIFYING"
+STATE_HOLD = "HOLD"
+STATE_SAFE_STOP = "SAFE_STOP"
 STATE_VERIFIED = "VERIFIED"
 STATE_SUCCEEDED = "SUCCEEDED"
 STATE_FAILED = "FAILED"
@@ -411,6 +419,22 @@ class ActionContract:
     expected_result: str = ""
     verification_checks: List[VerificationCheck] = field(default_factory=list)
     rollback_plan: List[RollbackStep] = field(default_factory=list)
+    expected_witness: Dict[str, Any] = field(default_factory=dict)
+    state_entered_ts: str = field(default_factory=lambda: datetime.now().isoformat())
+    state_deadline_ts: Optional[float] = None
+    timeout_action: str = "fail_and_rollback"
+    timeout_risk: str = "medium"
+    controller_identity: str = ""
+    current_control_owner: str = ""
+    authority_lease_id: str = ""
+    authority_lease_status: str = ""
+    authority_lease_expires_ts: Optional[float] = None
+    requires_fresh_evidence: bool = False
+    evidence_timestamp: Optional[float] = None
+    evidence_useful_lifetime_seconds: Optional[float] = None
+    minimum_freshness: float = 0.50
+    safe_stop_required: bool = False
+    safe_stop_available: bool = False
     origin: str = "unknown"
     source_surface: str = "unknown"
     trust_context: Dict[str, Any] = field(default_factory=dict)
@@ -421,6 +445,7 @@ class ActionContract:
 
     def add_transition(self, state: str, reason: str, *, meta: Optional[Dict[str, Any]] = None) -> None:
         self.current_state = str(state or self.current_state)
+        self.state_entered_ts = datetime.now().isoformat()
         self.state_history.append(
             ActionTransition(
                 state=self.current_state,
@@ -433,6 +458,22 @@ class ActionContract:
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         return data
+
+    def deadline_status(self, now_ts: Optional[float] = None) -> Dict[str, Any]:
+        now = time.time() if now_ts is None else float(now_ts)
+        if self.state_deadline_ts is None:
+            return {"bounded": False, "expired": False, "remaining_seconds": None, "execution_authority": False}
+        remaining = float(self.state_deadline_ts) - now
+        return {
+            "bounded": True,
+            "deadline_timestamp": float(self.state_deadline_ts),
+            "observed_timestamp": now,
+            "remaining_seconds": max(0.0, remaining),
+            "expired": bool(remaining <= 0.0),
+            "timeout_action": self.timeout_action,
+            "timeout_risk": self.timeout_risk,
+            "execution_authority": False,
+        }
 
 
 @dataclass
@@ -1096,6 +1137,38 @@ class SarahMemoryOperatorCore:
         capability_name, executor_name, permissions = _infer_capability_and_executor(action_type, primary_lane, target, mode)
         risk_level = _infer_risk_level(action_type, primary_lane, mode)
 
+        deadline_seconds_raw = proposed_action.get("deadline_seconds", meta.get("deadline_seconds"))
+        state_deadline_ts: Optional[float] = None
+        if deadline_seconds_raw is not None:
+            try:
+                deadline_seconds = max(0.05, min(86400.0, float(deadline_seconds_raw)))
+                state_deadline_ts = time.time() + deadline_seconds
+            except Exception:
+                state_deadline_ts = time.time()
+        controller_identity = str(proposed_action.get("controller_identity") or meta.get("controller_identity") or "").strip()[:200]
+        current_control_owner = str(proposed_action.get("current_control_owner") or meta.get("current_control_owner") or controller_identity).strip()[:200]
+        evidence_timestamp_raw = proposed_action.get("evidence_timestamp", meta.get("evidence_timestamp", meta.get("current_perception_timestamp")))
+        evidence_timestamp: Optional[float] = None
+        if evidence_timestamp_raw is not None:
+            try:
+                evidence_timestamp = float(evidence_timestamp_raw)
+            except Exception:
+                evidence_timestamp = None
+        evidence_lifetime_raw = proposed_action.get("evidence_useful_lifetime_seconds", meta.get("evidence_useful_lifetime_seconds", meta.get("freshness_tau_seconds")))
+        evidence_lifetime: Optional[float] = None
+        if evidence_lifetime_raw is not None:
+            try:
+                evidence_lifetime = max(0.001, float(evidence_lifetime_raw))
+            except Exception:
+                evidence_lifetime = None
+        try:
+            minimum_freshness = max(0.0, min(1.0, float(proposed_action.get("minimum_freshness", meta.get("minimum_freshness", 0.50)) or 0.50)))
+        except Exception:
+            minimum_freshness = 0.50
+        safe_stop_required = bool(proposed_action.get("safe_stop_required", meta.get("safe_stop_required", False)))
+        safe_stop_available = bool(proposed_action.get("safe_stop_available", meta.get("safe_stop_available", False)))
+        expected_witness = proposed_action.get("expected_witness") if isinstance(proposed_action.get("expected_witness"), dict) else {}
+
         contract = ActionContract(
             contract_id=f"act_{uuid.uuid4().hex}",
             intent_id=f"intent_{uuid.uuid4().hex}",
@@ -1116,6 +1189,21 @@ class SarahMemoryOperatorCore:
             expected_result=f"Action '{action_type}' should complete for target '{target}'.",
             verification_checks=_default_verification_checks(action_type, target, mode),
             rollback_plan=_default_rollback_plan(action_type, target, mode),
+            expected_witness=dict(expected_witness),
+            state_deadline_ts=state_deadline_ts,
+            timeout_action=str(proposed_action.get("timeout_action") or meta.get("timeout_action") or "fail_and_rollback")[:120],
+            timeout_risk=str(proposed_action.get("timeout_risk") or meta.get("timeout_risk") or risk_level)[:80],
+            controller_identity=controller_identity,
+            current_control_owner=current_control_owner,
+            authority_lease_id=str(proposed_action.get("authority_lease_id") or meta.get("authority_lease_id") or "")[:200],
+            authority_lease_status=str(proposed_action.get("authority_lease_status") or meta.get("authority_lease_status") or "")[:80],
+            authority_lease_expires_ts=proposed_action.get("authority_lease_expires_ts", meta.get("authority_lease_expires_ts")),
+            requires_fresh_evidence=bool(proposed_action.get("requires_fresh_evidence", meta.get("requires_fresh_evidence", False))),
+            evidence_timestamp=evidence_timestamp,
+            evidence_useful_lifetime_seconds=evidence_lifetime,
+            minimum_freshness=minimum_freshness,
+            safe_stop_required=safe_stop_required,
+            safe_stop_available=safe_stop_available,
             origin=str(origin or meta.get("source") or "unknown"),
             source_surface=str(meta.get("source_surface") or meta.get("surface") or origin or "unknown"),
             trust_context={
@@ -1131,6 +1219,8 @@ class SarahMemoryOperatorCore:
                 "proposed_action": proposed_action,
                 "surface_action": surface_action,
                 "operator_family": "SMGET",
+                "user_confirmed": bool(meta.get("user_confirmed") or meta.get("user_consented") or meta.get("confirmed")),
+                "authority_lease_required": bool(proposed_action.get("authority_lease_required", meta.get("authority_lease_required", False))),
             },
         )
         self._transition(contract, STATE_CLASSIFIED, "ActionContract built from user goal.", meta={"intent": intent_label, "lane": primary_lane})
@@ -1479,11 +1569,30 @@ class SarahMemoryOperatorCore:
             return result
 
         self._transition(contract, STATE_PLANNED, "Executor selected and plan prepared.", meta={"executor_name": contract.executor_name})
+        self._transition(contract, STATE_PREFLIGHT, "Executor preparation and preflight checks started.")
         try:
             prep = executor.prepare(contract)
         except Exception as exc:
             prep = {"ok": False, "reason": str(exc)}
         trace["prepare"] = prep
+        if isinstance(prep, dict) and prep.get("ok") is False:
+            self._transition(contract, STATE_FAILED, "Executor preparation failed.", meta=prep)
+            result = ActionResult(
+                contract_id=contract.contract_id,
+                audit_id=audit_id,
+                state=contract.current_state,
+                success=False,
+                execution_mode=contract.execution_mode,
+                executor_name=contract.executor_name,
+                summary="Executor preparation failed.",
+                decision="PREPARE_FAIL",
+                errors=[str(prep.get("reason") or "prepare_failed")],
+                trace=trace,
+                started_ts=started_ts,
+                completed_ts=datetime.now().isoformat(),
+            )
+            self._persist_action(contract, result)
+            return result
 
         ok_preflight, preflight = executor.preflight_check(contract)
         trace["preflight"] = preflight
@@ -1506,16 +1615,69 @@ class SarahMemoryOperatorCore:
             self._persist_action(contract, result)
             return result
 
+        self._transition(contract, STATE_READY, "Preflight checks passed; contract is ready for dispatch.", meta=preflight)
+        if contract.execution_mode == MODE_APPLY:
+            self._transition(
+                contract,
+                STATE_ARMED,
+                "Apply-mode contract armed after governance, security, assurance, and preflight.",
+                meta={
+                    "controller_identity": contract.controller_identity,
+                    "authority_lease_id": contract.authority_lease_id,
+                    "safe_stop_required": contract.safe_stop_required,
+                    "safe_stop_available": contract.safe_stop_available,
+                },
+            )
+
+        deadline_before_dispatch = contract.deadline_status()
+        trace["deadline_before_dispatch"] = deadline_before_dispatch
+        if deadline_before_dispatch.get("expired"):
+            self._transition(contract, STATE_HOLD, "Contract deadline expired before dispatch.", meta=deadline_before_dispatch)
+            self._transition(contract, STATE_FAILED, "Expired contract was not dispatched.", meta=deadline_before_dispatch)
+            result = ActionResult(
+                contract_id=contract.contract_id,
+                audit_id=audit_id,
+                state=contract.current_state,
+                success=False,
+                execution_mode=contract.execution_mode,
+                executor_name=contract.executor_name,
+                summary="Action deadline expired before dispatch.",
+                decision="DEADLINE_EXPIRED",
+                errors=["state_deadline_expired_before_dispatch"],
+                trace=trace,
+                started_ts=started_ts,
+                completed_ts=datetime.now().isoformat(),
+            )
+            self._persist_action(contract, result)
+            return result
+
         self._transition(contract, STATE_DISPATCHED, "Action dispatched to executor.", meta={"executor_name": contract.executor_name})
         self._transition(contract, STATE_EXECUTING, "Executor started bounded execution.")
+        self._transition(contract, STATE_ACTIVE, "Executor reports active contract execution.")
         execution_result: Dict[str, Any]
         try:
             execution_result = executor.execute(contract)
         except Exception as exc:
             execution_result = {"ok": False, "executed": False, "reason": str(exc)}
         trace["execution"] = execution_result
+        self._transition(contract, STATE_FINALIZING, "Executor returned; observed result is being finalized.")
 
-        verified, verification_result = executor.verify(contract, execution_result)
+        deadline_after_execution = contract.deadline_status()
+        trace["deadline_after_execution"] = deadline_after_execution
+        self._transition(contract, STATE_VERIFYING, "Witness verification started.", meta={"expected_witness": contract.expected_witness})
+        if deadline_after_execution.get("expired"):
+            verified = False
+            verification_result = {
+                "ok": False,
+                "verified": False,
+                "reason": "state_deadline_expired_during_execution",
+                "deadline": deadline_after_execution,
+                "safe_stop_required": bool(contract.safe_stop_required),
+            }
+            if contract.safe_stop_required:
+                self._transition(contract, STATE_SAFE_STOP, "Deadline expired; safe-stop/rollback path required.", meta=verification_result)
+        else:
+            verified, verification_result = executor.verify(contract, execution_result)
         trace["verification"] = verification_result
 
         if verified:
@@ -1763,8 +1925,24 @@ def record_external_domain_action_result(
     contract = auth.get("contract") if isinstance(auth.get("contract"), dict) else {}
     contract_id = str(contract.get("contract_id") or "external_" + uuid.uuid4().hex)
     audit_id = "audit_" + uuid.uuid4().hex
+    deadline_expired = False
+    if contract.get("state_deadline_ts") is not None:
+        try:
+            deadline_expired = float(contract.get("state_deadline_ts")) <= time.time()
+        except Exception:
+            deadline_expired = True
+    if deadline_expired:
+        verified = False
     state = STATE_VERIFIED if bool(verified) else STATE_FAILED
-    summary = "External domain action verified." if verified else "External domain action failed verification."
+    summary = "External domain action verified." if verified else ("External domain action exceeded its deadline and failed verification." if deadline_expired else "External domain action failed verification.")
+    if not verified and bool(contract.get("safe_stop_required")):
+        log_operator_event(
+            contract_id,
+            STATE_SAFE_STOP,
+            "external_domain_safe_stop_required",
+            "External domain result failed verification; domain safe-stop path is required.",
+            meta={"audit_id": audit_id, "origin": str(origin), "deadline_expired": deadline_expired},
+        )
     log_operator_event(
         contract_id,
         state,
@@ -1774,6 +1952,7 @@ def record_external_domain_action_result(
             "audit_id": audit_id,
             "origin": str(origin),
             "verified": bool(verified),
+            "deadline_expired": deadline_expired,
             "execution_result": execution_result if isinstance(execution_result, dict) else {"result": str(execution_result)},
         },
     )
@@ -1783,6 +1962,7 @@ def record_external_domain_action_result(
         "contract_id": contract_id,
         "state": state,
         "verified": bool(verified),
+        "deadline_expired": deadline_expired,
         "execution_authority": False,
     }
 

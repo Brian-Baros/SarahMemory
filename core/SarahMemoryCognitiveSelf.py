@@ -1567,6 +1567,48 @@ def answer_ram_question(question: str = "What type of RAM do you have?") -> Dict
     }
 
 
+def build_control_ownership_awareness_packet(context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Report who currently controls the body without granting that authority."""
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    controller = str(ctx.get("current_control_owner") or ctx.get("controller_identity") or "").strip()[:200]
+    lease_id = str(ctx.get("authority_lease_id") or "").strip()[:200]
+    lease_status = str(ctx.get("authority_lease_status") or ("not_supplied" if not lease_id else "unknown")).strip()[:80]
+    expires = ctx.get("authority_lease_expires_ts")
+    expired = False
+    if expires is not None:
+        try:
+            expired = float(expires) <= time.time()
+        except Exception:
+            expired = True
+    if expired:
+        lease_status = "expired"
+    safe_stop_available = bool(ctx.get("safe_stop_available", False))
+    body_state = str(ctx.get("body_state") or ctx.get("device_state") or "unknown").strip()[:120]
+    return {
+        "packet_type": "ControlOwnershipAwarenessPacket",
+        "schema": "SarahMemory.control_ownership_awareness.v1",
+        "module": MODULE_NAME,
+        "module_version": MODULE_VERSION,
+        "packet_id": "controlself-" + uuid.uuid4().hex[:12],
+        "ts": _now_iso(),
+        "current_control_owner": controller or "unknown",
+        "control_surface": str(ctx.get("control_surface") or ctx.get("source_surface") or "unknown")[:160],
+        "authority_lease_id": lease_id,
+        "authority_lease_status": lease_status,
+        "authority_lease_expires_ts": expires,
+        "current_action": str(ctx.get("current_action") or "")[:240],
+        "body_state": body_state,
+        "safe_stop_available": safe_stop_available,
+        "control_owner_verified": bool(controller and (not lease_id or lease_status == "active") and not expired),
+        "execution_authority": False,
+        "doctrine": {
+            "awareness_is_not_authority": True,
+            "multiple_interfaces_do_not_create_multiple_execution_authorities": True,
+            "operatorcore_remains_execution_choke_point": True,
+        },
+    }
+
+
 def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Build body/resource/capability witness packet for PC, robot, vehicle, cloud, or headless bodies."""
     ctx = context_packet if isinstance(context_packet, dict) else {}
@@ -1607,12 +1649,14 @@ def build_living_body_capability_packet(context_packet: Optional[Dict[str, Any]]
         "neoskymatrix": _flag("NEOSKYMATRIX", False),
         "capabilities": default_caps,
         "resource_witness": {"ram": ram, "robotic_body": robotic_witness},
+        "control_ownership": build_control_ownership_awareness_packet(ctx),
         "robotic_body_awareness": build_robotic_body_awareness_packet(ctx),
         "execution_authority": False,
         "doctrine": {
             "cognitive_self_witnesses_body": True,
             "discovery_is_not_activation": True,
             "capability_presence_is_not_action_authority": True,
+            "control_ownership_is_explicit": True,
         },
     }
 
@@ -1655,6 +1699,7 @@ def build_robotic_body_awareness_packet(context_packet: Optional[Dict[str, Any]]
             "runaway_autonomy_forbidden": True,
         },
         "witness": witness,
+        "control_ownership": build_control_ownership_awareness_packet(ctx),
     }
     return packet
 
@@ -1977,4 +2022,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

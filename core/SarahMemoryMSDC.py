@@ -229,6 +229,22 @@ class DeviceCapabilityRecord:
     requires_local_presence: bool = True
     actuator_state: str = "not_configured"
     safety_envelope: Dict[str, Any] = field(default_factory=dict)
+    hardware_revision: str = ""
+    firmware_revision: str = ""
+    driver_revision: str = ""
+    capability_revision: str = ""
+    controller: str = ""
+    authority_lease_id: str = ""
+    authority_lease_status: str = ""
+    ready: bool = False
+    armed: bool = False
+    active: bool = False
+    safe_stop_available: bool = False
+    health_state: str = "UNKNOWN"
+    service_state: str = "AVAILABLE"
+    telemetry: List[Dict[str, Any]] = field(default_factory=list)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    lifecycle: Dict[str, Any] = field(default_factory=dict)
 
 
 ROBOTIC_BODY_SCHEMA_VERSION = "SarahMemoryMSDC.robotic_body.v1"
@@ -1446,6 +1462,174 @@ def get_rhythm_motion_witness(command_text: str = "", context: Optional[Dict[str
     return msdc_rhythm_motion_witness(command_text, context=context)
 
 
+def msdc_device_witness(
+    driver_id: str,
+    *,
+    manifest: Optional[Dict[str, Any]] = None,
+    registry: Optional[Dict[str, Any]] = None,
+    session: Optional[Dict[str, Any]] = None,
+    status: Optional[Dict[str, Any]] = None,
+    driver_present: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Normalize an arbitrary driver into the universal MSDC witness contract.
+
+    The adapter is read-only.  It separates presence, health, readiness,
+    authorization, activity, telemetry, faults, and lifecycle evidence so a
+    discovered driver cannot be mistaken for an authorized active device.
+    """
+    did = str(driver_id or "").strip()
+    mf = dict(manifest or {})
+    reg = dict(registry or {})
+    sess = dict(session or {})
+    runtime = dict(status or {})
+    declared_id = str(mf.get("id") or mf.get("driver_id") or did).strip()
+    present = bool(driver_present if driver_present is not None else bool(mf) or msdc_driver_present(did))
+    actions = _action_list_from_manifest(mf)
+    manifest_valid = bool(did and declared_id == did)
+    enabled = bool(reg.get("enabled", mf.get("enabled", True)))
+    trusted = bool(reg.get("trusted", False))
+    connected = bool(sess)
+    status_sampled = bool(runtime) and runtime.get("status_sampled") is not False
+    runtime_ok = bool(runtime.get("ok", True)) if status_sampled else None
+    safe_stop_available = "safe_stop" in {str(x).strip().lower() for x in actions}
+
+    raw_faults = runtime.get("active_faults", runtime.get("faults", runtime.get("errors", [])))
+    if isinstance(raw_faults, dict):
+        active_faults = [raw_faults]
+    elif isinstance(raw_faults, list):
+        active_faults = [item if isinstance(item, dict) else {"message": str(item)} for item in raw_faults]
+    elif raw_faults:
+        active_faults = [{"message": str(raw_faults)}]
+    else:
+        active_faults = []
+    fault_classes = {str(item.get("severity_class") or item.get("severity") or item.get("class") or "").upper() for item in active_faults}
+
+    if not present:
+        health_state = "UNKNOWN"
+        service_state = "OUT_OF_SERVICE"
+    elif not manifest_valid or runtime_ok is False:
+        health_state = "ERROR"
+        service_state = "SERVICE_REQUIRED"
+    elif fault_classes.intersection({"FAILURE", "EMERGENCY", "CRITICAL", "FATAL"}):
+        health_state = "FAILURE"
+        service_state = "QUARANTINED"
+    elif active_faults:
+        health_state = "DEGRADED"
+        service_state = "DEGRADED"
+    elif status_sampled:
+        health_state = "HEALTHY"
+        service_state = "READY" if enabled and trusted else "AVAILABLE"
+    else:
+        health_state = "UNVERIFIED"
+        service_state = "AVAILABLE"
+
+    ready = bool(present and manifest_valid and enabled and trusted and runtime_ok is not False and service_state not in {"QUARANTINED", "OUT_OF_SERVICE", "SERVICE_REQUIRED"})
+    active = bool(connected and runtime.get("active", runtime.get("running", True)))
+    controller = str(runtime.get("controller") or sess.get("controller") or sess.get("controller_identity") or "")[:200]
+    authority_lease_id = str(runtime.get("authority_lease_id") or sess.get("authority_lease_id") or "")[:200]
+    authority_lease_status = str(runtime.get("authority_lease_status") or sess.get("authority_lease_status") or ("not_supplied" if not authority_lease_id else "unknown"))[:80]
+
+    telemetry_points: List[Dict[str, Any]] = []
+    raw_telemetry = runtime.get("telemetry")
+    if isinstance(raw_telemetry, dict):
+        for metric, raw in list(raw_telemetry.items())[:256]:
+            record = dict(raw) if isinstance(raw, dict) else {"value": raw}
+            value = record.get("value", record.get("actual"))
+            try:
+                from SarahMemoryLogicCalc import build_telemetry_point  # type: ignore
+
+                point = build_telemetry_point(
+                    source=did or MODULE_NAME,
+                    metric=str(metric),
+                    value=float(value),
+                    unit=str(record.get("unit") or ""),
+                    target=record.get("target"),
+                    tolerance=record.get("tolerance"),
+                    timestamp=record.get("timestamp"),
+                    useful_lifetime_seconds=record.get("useful_lifetime_seconds"),
+                    quality=record.get("quality", 1.0),
+                    confidence=record.get("confidence", 1.0),
+                )
+            except Exception:
+                point = {"schema": "SarahMemory.TelemetryPoint/1.0", "source": did or MODULE_NAME, "metric": str(metric), "value": value, "unit": str(record.get("unit") or ""), "timestamp": record.get("timestamp"), "freshness": None, "execution_authority": False}
+            telemetry_points.append(point)
+    elif isinstance(raw_telemetry, list):
+        telemetry_points = [dict(item) for item in raw_telemetry[:256] if isinstance(item, dict)]
+
+    transport_value: Any = mf.get("transport")
+    platform = mf.get("platform") if isinstance(mf.get("platform"), dict) else {}
+    if not transport_value:
+        transport_value = platform.get("transport")
+    if isinstance(transport_value, list):
+        transport = "+".join(str(x) for x in transport_value[:8])
+    elif isinstance(transport_value, dict):
+        transport = str(transport_value.get("protocol") or transport_value.get("type") or "unknown")
+    else:
+        transport = str(transport_value or "unknown")
+
+    def _bounded_count(raw: Any) -> int:
+        try:
+            return max(0, min(1_000_000_000, int(raw or 0)))
+        except Exception:
+            return 0
+
+    return {
+        "schema": "SarahMemory.MSDC.DeviceWitness/1.0",
+        "device_id": str(runtime.get("device_id") or sess.get("device_id") or did),
+        "identity": {
+            "driver_id": did,
+            "device_class": str(mf.get("category") or mf.get("type") or "generic_device"),
+            "transport": transport,
+            "hardware_revision": str(runtime.get("hardware_revision") or ""),
+            "firmware_revision": str(runtime.get("firmware_revision") or runtime.get("firmware_version") or ""),
+            "driver_revision": str(mf.get("version") or runtime.get("driver_revision") or ""),
+            "capability_revision": str(mf.get("capability_revision") or ""),
+        },
+        "control": {
+            "controller": controller,
+            "authority_lease_id": authority_lease_id,
+            "authority_lease_status": authority_lease_status,
+            "ready": ready,
+            "armed": bool(runtime.get("armed", False)),
+            "active": active,
+            "connected": connected,
+            "safe_stop_available": safe_stop_available,
+            "allowed_actions": actions,
+            "execution_authority": False,
+        },
+        "readiness": {
+            "present": present,
+            "manifest_valid": manifest_valid,
+            "enabled": enabled,
+            "trusted": trusted,
+            "status_sampled": status_sampled,
+            "healthy": health_state == "HEALTHY",
+            "ready": ready,
+            "authorized": bool(authority_lease_id and authority_lease_status.lower() == "active"),
+            "active": active,
+            "invariant": "present != healthy != ready != authorized != active",
+        },
+        "telemetry": telemetry_points,
+        "diagnostics": {
+            "health_state": health_state,
+            "service_state": service_state,
+            "active_faults": active_faults,
+            "fault_count": len(active_faults),
+            "communications_health": runtime.get("communications_health"),
+            "retry_count": _bounded_count(runtime.get("retry_count")),
+            "timeout_count": _bounded_count(runtime.get("timeout_count")),
+        },
+        "lifecycle": {
+            "power_on_seconds": runtime.get("power_on_seconds", runtime.get("power_on_time")),
+            "active_seconds": runtime.get("active_seconds", runtime.get("active_time")),
+            "cycle_count": runtime.get("cycle_count"),
+            "last_service": runtime.get("last_service"),
+            "maintenance_state": runtime.get("maintenance_state", service_state),
+        },
+        "execution_authority": False,
+    }
+
+
 def msdc_status() -> Dict[str, Any]:
     return {
         "ok": True,
@@ -1460,6 +1644,8 @@ def msdc_status() -> Dict[str, Any]:
         "body_map": msdc_map_body(persist=False),
         "robotic_body_status": msdc_robotic_body_status(),
         "rhythm_motion_witness_available": True,
+        "device_witness_schema": "SarahMemory.MSDC.DeviceWitness/1.0",
+        "readiness_invariant": "present != healthy != ready != authorized != active",
     }
 
 
@@ -1587,4 +1773,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

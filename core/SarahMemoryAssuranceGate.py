@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import sys
@@ -601,6 +602,78 @@ def _rollback_readiness(action_contract: Dict[str, Any]) -> Tuple[float, bool, L
     return (0.0, False, missing)
 
 
+def _evidence_freshness_profile(action_contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize bounded evidence age without treating unknown age as fresh."""
+    contract = dict(action_contract or {})
+    meta = dict(contract.get("metadata") or {})
+    age = contract.get("evidence_age_seconds", meta.get("evidence_age_seconds"))
+    useful_lifetime = contract.get("evidence_useful_lifetime_seconds", meta.get("evidence_useful_lifetime_seconds", meta.get("freshness_tau_seconds")))
+    timestamp = contract.get("evidence_timestamp", meta.get("evidence_timestamp", meta.get("current_perception_timestamp", meta.get("telemetry_timestamp"))))
+    if age is None and timestamp is not None:
+        try:
+            if isinstance(timestamp, (int, float)):
+                age = max(0.0, time.time() - float(timestamp))
+            else:
+                parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                age = max(0.0, time.time() - parsed.timestamp())
+        except Exception:
+            age = None
+    if age is None or useful_lifetime is None:
+        return {"known": False, "score": None, "fresh": False, "age_seconds": age, "useful_lifetime_seconds": useful_lifetime}
+    try:
+        age_f = max(0.0, float(age))
+        tau_f = float(useful_lifetime)
+        if tau_f <= 0.0 or not math.isfinite(age_f) or not math.isfinite(tau_f):
+            raise ValueError("invalid freshness interval")
+        try:
+            from SarahMemoryLogicCalc import evidence_freshness  # type: ignore
+
+            score = float(evidence_freshness(age_f, tau_f))
+        except Exception:
+            score = math.exp(-age_f / tau_f)
+        minimum = _clamp01(contract.get("minimum_freshness", meta.get("minimum_freshness", 0.50)), 0.50)
+        return {
+            "known": True,
+            "score": _clamp01(score),
+            "fresh": bool(score >= minimum),
+            "minimum": minimum,
+            "age_seconds": age_f,
+            "useful_lifetime_seconds": tau_f,
+        }
+    except Exception as exc:
+        return {"known": False, "score": None, "fresh": False, "error": str(exc)}
+
+
+def _controller_continuity_profile(action_contract: Dict[str, Any]) -> Dict[str, Any]:
+    """Check that the declared controller still owns the supplied bounded lease."""
+    contract = dict(action_contract or {})
+    meta = dict(contract.get("metadata") or {})
+    controller = str(contract.get("controller_identity") or meta.get("controller_identity") or meta.get("controller") or "").strip()
+    current_owner = str(contract.get("current_control_owner") or meta.get("current_control_owner") or controller).strip()
+    lease_id = str(contract.get("authority_lease_id") or meta.get("authority_lease_id") or "").strip()
+    lease_status = str(contract.get("authority_lease_status") or meta.get("authority_lease_status") or ("active" if lease_id else "not_supplied")).strip().lower()
+    expires = contract.get("authority_lease_expires_ts", meta.get("authority_lease_expires_ts"))
+    expired = False
+    if expires is not None:
+        try:
+            expired = float(expires) <= time.time()
+        except Exception:
+            expired = True
+    mismatch = bool(controller and current_owner and controller != current_owner)
+    valid = bool(not mismatch and not expired and lease_status not in {"expired", "revoked", "invalid", "denied"})
+    return {
+        "known": bool(controller or lease_id),
+        "valid": valid,
+        "controller_identity": controller,
+        "current_control_owner": current_owner,
+        "authority_lease_id": lease_id,
+        "authority_lease_status": lease_status,
+        "expired": expired,
+        "owner_mismatch": mismatch,
+        "execution_authority": False,
+    }
+
+
 def _has_explicit_confirmation(action_contract: Dict[str, Any], governance: Dict[str, Any], security: Dict[str, Any]) -> bool:
     contract = dict(action_contract or {})
     meta = dict(contract.get("metadata") or {})
@@ -710,10 +783,16 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
 
     policy = _policy_snapshot()
     robot_profile = _robotic_body_profile(contract)
+    freshness_profile = _evidence_freshness_profile(contract)
+    controller_profile = _controller_continuity_profile(contract)
     threshold = _threshold_for(execution_mode, risk_level)
     if robot_profile.get("is_robotic"):
         threshold = max(threshold, 0.72 if execution_mode != MODE_APPLY else 0.90)
     signals = _extract_confidence_signals(contract, governance, security)
+    if freshness_profile.get("known"):
+        signals.append(AssuranceSignal(name="evidence_freshness", value=_clamp01(freshness_profile.get("score")), source="telemetry", weight=0.8, details=freshness_profile))
+    if controller_profile.get("known"):
+        signals.append(AssuranceSignal(name="controller_continuity", value=1.0 if controller_profile.get("valid") else 0.0, source="action_contract", weight=0.8, details=controller_profile))
     weighted_conf = _weighted_confidence(signals)
 
     compare_hint = _compare_hint(contract)
@@ -762,6 +841,8 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
             "trust_tier": trust_tier,
             "risk_penalty": risk_penalty,
             "robotic_body_profile": robot_profile,
+            "evidence_freshness": freshness_profile,
+            "controller_continuity": controller_profile,
         },
     )
 
@@ -784,6 +865,39 @@ def evaluate_action_assurance(action_contract: Dict[str, Any], governance: Optio
         review.allow = False
         review.risk_factors.append("quarantined_trust_tier")
         review.reasons.append("Quarantined callers may not pass assurance review.")
+
+    requires_fresh_evidence = bool(contract.get("requires_fresh_evidence") or (contract.get("metadata") or {}).get("requires_fresh_evidence") or robot_profile.get("motion_requested"))
+    if requires_fresh_evidence and (not freshness_profile.get("known") or not freshness_profile.get("fresh")):
+        review.decision = DECISION_DENY if execution_mode == MODE_APPLY else DECISION_SIMULATE_ONLY
+        review.allow = False
+        review.risk_factors.append("evidence_stale_or_unverified")
+        review.missing_requirements.append("fresh_evidence_witness")
+        review.reasons.append("Action requires fresh evidence, but freshness was stale or could not be verified.")
+        if execution_mode != MODE_APPLY:
+            review.constraints["allowed_execution_mode"] = MODE_SIMULATE
+
+    authority_lease_required = bool(contract.get("authority_lease_required") or (contract.get("metadata") or {}).get("authority_lease_required"))
+    if controller_profile.get("known") and not controller_profile.get("valid"):
+        review.decision = DECISION_DENY
+        review.allow = False
+        review.risk_factors.append("controller_continuity_failed")
+        review.reasons.append("Declared controller no longer matches a valid control-ownership context.")
+    elif authority_lease_required and not controller_profile.get("known"):
+        review.decision = DECISION_DENY
+        review.allow = False
+        review.risk_factors.append("authority_lease_missing")
+        review.missing_requirements.append("authority_lease")
+        review.reasons.append("Action requires a bounded authority lease and none was supplied.")
+
+    meta_contract = contract.get("metadata") if isinstance(contract.get("metadata"), dict) else {}
+    safe_stop_required = bool(contract.get("safe_stop_required") or meta_contract.get("safe_stop_required"))
+    safe_stop_available = bool(contract.get("safe_stop_available") or meta_contract.get("safe_stop_available"))
+    if safe_stop_required and not safe_stop_available:
+        review.decision = DECISION_DENY
+        review.allow = False
+        review.risk_factors.append("safe_stop_unavailable")
+        review.missing_requirements.append("safe_stop_available")
+        review.reasons.append("A required safe-stop witness is unavailable; numeric assurance cannot override this hard gate.")
 
     confirmed = _has_explicit_confirmation(contract, governance, security)
     requires_confirmation = bool(contract.get("requires_confirmation"))
@@ -1226,4 +1340,3 @@ def sml_assurance_review(packet, note="Assurance reviewed SML packet"):
     from SarahMemorySMLProtocol import sml_touch_packet
     return sml_touch_packet(packet, organ="SarahMemoryAssuranceGate", action="assurance", omega="Ω050", note=note)
 # --- SML ASSURANCE SPECIALIZATION END ---
-

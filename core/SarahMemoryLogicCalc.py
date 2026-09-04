@@ -258,6 +258,223 @@ def sml_exponential_smoothing(current: Number, target: Number, rate_per_second: 
     return float(current) + alpha * (float(target) - float(current))
 
 
+# =============================================================================
+# GOVERNED TELEMETRY / CONTROL MATHEMATICS
+# =============================================================================
+# These primitives compute evidence only.  They do not authorize a command,
+# select an executor, mutate a device, or convert telemetry into authority.
+
+
+def telemetry_residual(actual: Number, target: Number, tolerance: Optional[Number] = None) -> Dict[str, Any]:
+    """Return signed, absolute, and tolerance-normalized setpoint error."""
+    actual_f = float(_bounded_numeric_value(actual))
+    target_f = float(_bounded_numeric_value(target))
+    residual = actual_f - target_f
+    absolute = abs(residual)
+    normalized: Optional[float] = None
+    within_tolerance: Optional[bool] = None
+    tolerance_f: Optional[float] = None
+    if tolerance is not None:
+        tolerance_f = abs(float(_bounded_numeric_value(tolerance)))
+        denominator = max(1e-12, tolerance_f)
+        normalized = absolute / denominator
+        within_tolerance = bool(absolute <= tolerance_f)
+    return {
+        "actual": actual_f,
+        "target": target_f,
+        "tolerance": tolerance_f,
+        "residual": residual,
+        "absolute_residual": absolute,
+        "normalized_residual": normalized,
+        "within_tolerance": within_tolerance,
+        "deterministic": True,
+        "execution_authority": False,
+    }
+
+
+def hysteresis_state(
+    value: Number,
+    clear_threshold: Number,
+    enter_threshold: Number,
+    current_state: str = "NORMAL",
+    *,
+    normal_state: str = "NORMAL",
+    alert_state: str = "ALERT",
+) -> str:
+    """Apply a two-threshold state latch so noisy signals do not flap."""
+    sample = float(_bounded_numeric_value(value))
+    low = float(_bounded_numeric_value(clear_threshold))
+    high = float(_bounded_numeric_value(enter_threshold))
+    if low > high:
+        raise ValueError("clear_threshold must be less than or equal to enter_threshold")
+    previous = str(current_state or normal_state)
+    if sample >= high:
+        return str(alert_state)
+    if sample <= low:
+        return str(normal_state)
+    return previous
+
+
+def telemetry_rate_of_change(current: Number, previous: Number, delta_seconds: Number) -> float:
+    """Compute first derivative over a strictly positive bounded interval."""
+    dt = float(_bounded_numeric_value(delta_seconds))
+    if dt <= 0.0:
+        raise ValueError("delta_seconds must be greater than zero")
+    return (float(_bounded_numeric_value(current)) - float(_bounded_numeric_value(previous))) / dt
+
+
+def telemetry_second_derivative(current_rate: Number, previous_rate: Number, delta_seconds: Number) -> float:
+    """Compute acceleration/change-of-rate over a positive interval."""
+    return telemetry_rate_of_change(current_rate, previous_rate, delta_seconds)
+
+
+def ewma_update(previous: Number, sample: Number, alpha: Number = 0.2) -> float:
+    """Update an exponentially weighted moving average using explicit alpha."""
+    a = sml_clamp(float(_bounded_numeric_value(alpha)), 0.0, 1.0)
+    previous_f = float(_bounded_numeric_value(previous))
+    sample_f = float(_bounded_numeric_value(sample))
+    return (a * sample_f) + ((1.0 - a) * previous_f)
+
+
+def running_zscore(value: Number, mean: Number, variance: Number, epsilon: Number = 1e-12) -> float:
+    """Return a finite z-score from a supplied running mean and variance."""
+    variance_f = max(0.0, float(_bounded_numeric_value(variance)))
+    epsilon_f = max(1e-18, abs(float(_bounded_numeric_value(epsilon))))
+    denominator = max(epsilon_f, math.sqrt(variance_f))
+    return (float(_bounded_numeric_value(value)) - float(_bounded_numeric_value(mean))) / denominator
+
+
+def evidence_freshness(age_seconds: Number, useful_lifetime_seconds: Number) -> float:
+    """Return exponential evidence freshness F=exp(-age/tau), bounded 0..1."""
+    age = max(0.0, float(_bounded_numeric_value(age_seconds)))
+    tau = float(_bounded_numeric_value(useful_lifetime_seconds))
+    if tau <= 0.0:
+        raise ValueError("useful_lifetime_seconds must be greater than zero")
+    return sml_clamp(math.exp(-age / tau), 0.0, 1.0)
+
+
+def thermal_margin(current: Number, nominal: Number, limit: Number) -> float:
+    """Normalize remaining thermal headroom; 1 is nominal-or-cooler, 0 is limit."""
+    current_f = float(_bounded_numeric_value(current))
+    nominal_f = float(_bounded_numeric_value(nominal))
+    limit_f = float(_bounded_numeric_value(limit))
+    if limit_f <= nominal_f:
+        raise ValueError("limit must be greater than nominal")
+    return sml_clamp((limit_f - current_f) / (limit_f - nominal_f), 0.0, 1.0)
+
+
+def reserve_minimum(reserves: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the weakest known reserve without averaging away a critical rail."""
+    normalized: Dict[str, float] = {}
+    unknown: List[str] = []
+    for key, raw in dict(reserves or {}).items():
+        value = _safe_float(raw)
+        if value is None or not math.isfinite(value):
+            unknown.append(str(key))
+            continue
+        if value > 1.0:
+            value = value / 100.0
+        normalized[str(key)] = sml_clamp(value, 0.0, 1.0)
+    if not normalized:
+        return {
+            "known": False,
+            "system_reserve": None,
+            "weakest_domain": None,
+            "reserves": {},
+            "unknown_domains": sorted(unknown),
+            "execution_authority": False,
+        }
+    weakest = min(normalized, key=normalized.get)
+    return {
+        "known": True,
+        "system_reserve": normalized[weakest],
+        "weakest_domain": weakest,
+        "reserves": normalized,
+        "unknown_domains": sorted(unknown),
+        "execution_authority": False,
+    }
+
+
+def duty_cycle(active_seconds: Number, window_seconds: Number) -> float:
+    """Return bounded active/window duty cycle."""
+    active = max(0.0, float(_bounded_numeric_value(active_seconds)))
+    window = float(_bounded_numeric_value(window_seconds))
+    if window <= 0.0:
+        raise ValueError("window_seconds must be greater than zero")
+    return sml_clamp(active / window, 0.0, 1.0)
+
+
+def event_rate(event_count: Number, window_seconds: Number) -> float:
+    """Return non-negative events per second over a bounded window."""
+    count = max(0.0, float(_bounded_numeric_value(event_count)))
+    window = float(_bounded_numeric_value(window_seconds))
+    if window <= 0.0:
+        raise ValueError("window_seconds must be greater than zero")
+    return count / window
+
+
+def deadline_remaining(deadline_timestamp: Number, now_timestamp: Optional[Number] = None) -> Dict[str, Any]:
+    """Return deterministic deadline state without sleeping or retrying."""
+    deadline = float(_bounded_numeric_value(deadline_timestamp))
+    now = time.time() if now_timestamp is None else float(_bounded_numeric_value(now_timestamp))
+    remaining = deadline - now
+    return {
+        "deadline_timestamp": deadline,
+        "observed_timestamp": now,
+        "remaining_seconds": max(0.0, remaining),
+        "expired": bool(remaining <= 0.0),
+        "execution_authority": False,
+    }
+
+
+def operational_severity(severity: Number) -> str:
+    """Map a 0..1 evidence severity onto the shared operational vocabulary."""
+    value = sml_clamp(float(_bounded_numeric_value(severity)), 0.0, 1.0)
+    if value >= 0.90:
+        return "EMERGENCY"
+    if value >= 0.75:
+        return "FAILURE"
+    if value >= 0.50:
+        return "ERROR"
+    if value >= 0.25:
+        return "ALERT"
+    return "INFO"
+
+
+def build_telemetry_point(
+    *,
+    source: str,
+    metric: str,
+    value: Number,
+    unit: str = "",
+    target: Optional[Number] = None,
+    tolerance: Optional[Number] = None,
+    timestamp: Optional[Number] = None,
+    useful_lifetime_seconds: Optional[Number] = None,
+    quality: Number = 1.0,
+    confidence: Number = 1.0,
+) -> Dict[str, Any]:
+    """Build one normalized, non-authoritative telemetry evidence record."""
+    ts = time.time() if timestamp is None else float(_bounded_numeric_value(timestamp))
+    point: Dict[str, Any] = {
+        "schema": "SarahMemory.TelemetryPoint/1.0",
+        "source": str(source or "unknown")[:160],
+        "metric": str(metric or "unknown")[:160],
+        "value": float(_bounded_numeric_value(value)),
+        "unit": str(unit or "")[:40],
+        "timestamp": ts,
+        "quality": sml_clamp(float(_bounded_numeric_value(quality)), 0.0, 1.0),
+        "confidence": sml_clamp(float(_bounded_numeric_value(confidence)), 0.0, 1.0),
+        "execution_authority": False,
+    }
+    if target is not None:
+        point.update(telemetry_residual(value, target, tolerance))
+    if useful_lifetime_seconds is not None:
+        point["freshness"] = evidence_freshness(max(0.0, time.time() - ts), useful_lifetime_seconds)
+        point["useful_lifetime_seconds"] = float(_bounded_numeric_value(useful_lifetime_seconds))
+    return point
+
+
 def sml_blink_envelope(elapsed_seconds: Number, duration_seconds: Number = 0.18, close_fraction: Number = 0.42) -> float:
     """Asymmetric 0..1..0 blink closure envelope."""
     duration = max(1e-4, float(duration_seconds))
@@ -4624,4 +4841,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

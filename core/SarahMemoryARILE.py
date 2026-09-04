@@ -32,6 +32,7 @@ import collections
 import dataclasses
 import hashlib
 import json
+import math
 import os
 import queue
 import re
@@ -91,6 +92,15 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
         if v != v:  # NaN
             return default
         return max(0.0, min(1.0, v))
+    except Exception:
+        return default
+
+
+def _safe_number(value: Any, default: Optional[float] = None) -> Optional[float]:
+    """Return a finite, unclamped engineering value or the supplied default."""
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else default
     except Exception:
         return default
 
@@ -210,6 +220,19 @@ class RealityVariancePacket:
     expected_state: str = ""
     observed_state: str = ""
     recommended_response: str = ""
+    fault_class: str = ""
+    severity_class: str = ""
+    residual: Optional[float] = None
+    normalized_residual: Optional[float] = None
+    rate_of_change: Optional[float] = None
+    duration_seconds: float = 0.0
+    witness_timestamp: str = ""
+    freshness: Optional[float] = None
+    controller: str = ""
+    contract_id: str = ""
+    safe_stop_required: bool = False
+    cleared: bool = False
+    execution_authority: bool = False
     data: Optional[Dict[str, Any]] = None
     timestamp: str = dataclasses.field(default_factory=_iso)
     packet_id: str = ""
@@ -227,6 +250,30 @@ class RealityVariancePacket:
         self.expected_state = _safe_text(self.expected_state, 500)
         self.observed_state = _safe_text(self.observed_state, 500)
         self.recommended_response = _safe_text(self.recommended_response, 500)
+        self.fault_class = _safe_text(self.fault_class, 80)
+        self.severity_class = _safe_text(self.severity_class, 40).upper()
+        self.residual = _safe_number(self.residual)
+        self.normalized_residual = _safe_number(self.normalized_residual)
+        self.rate_of_change = _safe_number(self.rate_of_change)
+        self.duration_seconds = max(0.0, _safe_number(self.duration_seconds, 0.0) or 0.0)
+        self.witness_timestamp = _safe_text(self.witness_timestamp, 80)
+        self.freshness = _safe_float(self.freshness, 0.0) if self.freshness is not None else None
+        self.controller = _safe_text(self.controller, 160)
+        self.contract_id = _safe_text(self.contract_id, 160)
+        self.safe_stop_required = bool(self.safe_stop_required)
+        self.cleared = bool(self.cleared)
+        self.execution_authority = False
+        if not self.severity_class:
+            if self.severity >= SEVERITY_EMERGENCY_MIN:
+                self.severity_class = "EMERGENCY"
+            elif self.severity >= SEVERITY_GOVERNANCE_MIN:
+                self.severity_class = "FAILURE"
+            elif self.severity >= SEVERITY_DIAGNOSTIC_MIN:
+                self.severity_class = "ERROR"
+            elif self.severity >= 0.25:
+                self.severity_class = "ALERT"
+            else:
+                self.severity_class = "INFO"
         self.retention = _safe_text(self.retention, 80) or "ram"
         if not isinstance(self.data, dict):
             self.data = {}
@@ -568,7 +615,7 @@ def arile_snapshot(limit: int = 50) -> Dict[str, Any]:
     return _RUNTIME.snapshot(limit=limit)
 
 
-def arile_emit(source: str, kind: str, failure_type: str = "", severity: float = 0.0, novelty: float = 0.0, confidence: float = 0.5, risk: str = "low", summary: str = "", requires_governance: bool = False, retention: str = "ram", organ: str = "", expected_state: str = "", observed_state: str = "", recommended_response: str = "", data: Optional[Dict[str, Any]] = None) -> bool:
+def arile_emit(source: str, kind: str, failure_type: str = "", severity: float = 0.0, novelty: float = 0.0, confidence: float = 0.5, risk: str = "low", summary: str = "", requires_governance: bool = False, retention: str = "ram", organ: str = "", expected_state: str = "", observed_state: str = "", recommended_response: str = "", data: Optional[Dict[str, Any]] = None, fault_class: str = "", severity_class: str = "", residual: Optional[float] = None, normalized_residual: Optional[float] = None, rate_of_change: Optional[float] = None, duration_seconds: float = 0.0, witness_timestamp: str = "", freshness: Optional[float] = None, controller: str = "", contract_id: str = "", safe_stop_required: bool = False, cleared: bool = False) -> bool:
     try:
         packet = RealityVariancePacket(
             source=source,
@@ -585,11 +632,101 @@ def arile_emit(source: str, kind: str, failure_type: str = "", severity: float =
             expected_state=expected_state,
             observed_state=observed_state,
             recommended_response=recommended_response,
+            fault_class=fault_class,
+            severity_class=severity_class,
+            residual=residual,
+            normalized_residual=normalized_residual,
+            rate_of_change=rate_of_change,
+            duration_seconds=duration_seconds,
+            witness_timestamp=witness_timestamp,
+            freshness=freshness,
+            controller=controller,
+            contract_id=contract_id,
+            safe_stop_required=safe_stop_required,
+            cleared=cleared,
             data=data or {},
         ).normalize()
         return _RUNTIME.emit(packet)
     except Exception:
         return False
+
+
+def arile_observe_variance(
+    *,
+    source: str,
+    metric: str,
+    expected: float,
+    observed: float,
+    tolerance: float,
+    unit: str = "",
+    duration_seconds: float = 0.0,
+    rate_of_change: Optional[float] = None,
+    freshness: Optional[float] = None,
+    controller: str = "",
+    contract_id: str = "",
+    emit: bool = True,
+) -> Dict[str, Any]:
+    """Convert expected-versus-observed telemetry into one ARILE fault packet.
+
+    This is an observation helper only.  It never performs the recommended
+    response or grants execution authority.
+    """
+    try:
+        from SarahMemoryLogicCalc import operational_severity, telemetry_residual  # type: ignore
+
+        comparison = telemetry_residual(observed, expected, tolerance)
+        normalized = comparison.get("normalized_residual")
+        normalized_f = max(0.0, float(normalized)) if normalized is not None else 0.0
+    except Exception:
+        tol = max(1e-12, abs(float(tolerance)))
+        residual_value = float(observed) - float(expected)
+        normalized_f = abs(residual_value) / tol
+        comparison = {
+            "actual": float(observed),
+            "target": float(expected),
+            "tolerance": tol,
+            "residual": residual_value,
+            "absolute_residual": abs(residual_value),
+            "normalized_residual": normalized_f,
+            "within_tolerance": abs(residual_value) <= tol,
+        }
+
+        def operational_severity(value: float) -> str:
+            return "EMERGENCY" if value >= 0.90 else "FAILURE" if value >= 0.75 else "ERROR" if value >= 0.50 else "ALERT" if value >= 0.25 else "INFO"
+
+    severity = max(0.0, min(1.0, normalized_f / 2.0))
+    if bool(comparison.get("within_tolerance")):
+        severity = 0.0
+    severity_class = operational_severity(severity)
+    safe_stop_required = severity_class in {"FAILURE", "EMERGENCY"}
+    packet = RealityVariancePacket(
+        source=source,
+        organ="SarahMemoryARILE",
+        kind="telemetry_variance",
+        failure_type="setpoint_variance" if severity > 0.0 else "within_tolerance",
+        severity=severity,
+        confidence=0.90,
+        risk="critical" if severity_class == "EMERGENCY" else "high" if safe_stop_required else "medium" if severity > 0.0 else "low",
+        summary=f"{metric} observed against expected setpoint.",
+        expected_state=f"{expected} {unit}".strip(),
+        observed_state=f"{observed} {unit}".strip(),
+        recommended_response="Request governed safe-stop review." if safe_stop_required else "Continue bounded observation." if severity > 0.0 else "No response required.",
+        fault_class="TELEMETRY_DEVIATION" if severity > 0.0 else "NONE",
+        severity_class=severity_class,
+        residual=comparison.get("residual"),
+        normalized_residual=comparison.get("normalized_residual"),
+        rate_of_change=rate_of_change,
+        duration_seconds=duration_seconds,
+        witness_timestamp=_iso(),
+        freshness=freshness,
+        controller=controller,
+        contract_id=contract_id,
+        safe_stop_required=safe_stop_required,
+        cleared=bool(severity == 0.0),
+        data={"metric": str(metric), "unit": str(unit), "comparison": comparison, "execution_authority": False},
+    ).normalize()
+    emitted = bool(_RUNTIME.emit(packet)) if emit else False
+    return {"ok": True, "packet": packet.to_dict(), "emitted": emitted, "execution_authority": False}
 
 
 def arile_should_run(lane: str, source: str = "unknown", default: bool = True) -> bool:
@@ -768,4 +905,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-
