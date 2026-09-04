@@ -4748,6 +4748,16 @@ def _gcaios_status(workload: str = "cognition") -> Dict[str, Any]:
         except Exception as exc:
             executors["reason"] = str(exc)
 
+    control_ownership: Dict[str, Any] = {"available": False, "current_control_owner": "unknown", "execution_authority": False}
+    if _CogSelf is not None:
+        try:
+            fn = getattr(_CogSelf, "build_control_ownership_awareness_packet", None)
+            packet = fn(context) if callable(fn) else None
+            if isinstance(packet, dict):
+                control_ownership = {"available": True, **packet, "execution_authority": False}
+        except Exception as exc:
+            control_ownership["reason"] = str(exc)
+
     readiness = {
         "semantic_control": bool(manifest.get("ok")),
         "cognitive_continuity": bool(gcop.get("available")),
@@ -4768,6 +4778,7 @@ def _gcaios_status(workload: str = "cognition") -> Dict[str, Any]:
         "compute": {"passport": passport, "plan": plan},
         "energetics": energetics,
         "operator_core": executors,
+        "control_ownership": control_ownership,
         "limits": {
             "model_is_authority": False,
             "discovery_is_activation": False,

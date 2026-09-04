@@ -321,6 +321,11 @@ def _operator_authorize_driver_action(driver_id: str, action_id: str, payload: A
         fn = getattr(_OperatorCore, "authorize_external_domain_action", None)
         if not callable(fn):
             raise RuntimeError("OperatorCore authorization surface unavailable")
+        manifest = _load_manifest(driver_id)
+        declared_actions = manifest.get("actions") or manifest.get("actions_callable") or manifest.get("supports") or []
+        declared_actions = declared_actions if isinstance(declared_actions, list) else []
+        action_l = str(action_id or "").strip().lower()
+        physical_motion = any(token in action_l for token in ("move", "drive", "fly", "lift", "steer", "brake", "motor", "actuat", "ptz", "start_job"))
         pa = {
             "action_type": "driver_action",
             "capability_name": "device_control",
@@ -336,6 +341,15 @@ def _operator_authorize_driver_action(driver_id: str, action_id: str, payload: A
             "dry_run": False,
             "touches_filesystem": False,
             "physical_actuation": True,
+            "deadline_seconds": (payload or {}).get("deadline_seconds", 30.0) if isinstance(payload, dict) else 30.0,
+            "timeout_action": "fail_and_safe_stop" if physical_motion else "fail_and_report",
+            "safe_stop_required": physical_motion,
+            "safe_stop_available": "safe_stop" in {str(x).strip().lower() for x in declared_actions},
+            "controller_identity": str((payload or {}).get("controller_identity") or "") if isinstance(payload, dict) else "",
+            "current_control_owner": str((payload or {}).get("current_control_owner") or (payload or {}).get("controller_identity") or "") if isinstance(payload, dict) else "",
+            "authority_lease_id": str((payload or {}).get("authority_lease_id") or "") if isinstance(payload, dict) else "",
+            "authority_lease_status": str((payload or {}).get("authority_lease_status") or "") if isinstance(payload, dict) else "",
+            "authority_lease_expires_ts": (payload or {}).get("authority_lease_expires_ts") if isinstance(payload, dict) else None,
             "payload_summary": payload if isinstance(payload, dict) else {"value": str(payload)[:500]},
         }
         return fn(
@@ -364,6 +378,42 @@ def _ok(**payload: Any):
     data = {"ok": True}
     data.update(payload)
     return jsonify(data), 200
+
+
+def _msdc_device_witness(driver_id: str, *, status: Optional[Dict[str, Any]] = None, manifest: Optional[Dict[str, Any]] = None, registry_entry: Optional[Dict[str, Any]] = None, session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a read-only universal driver witness through the MSDC owner."""
+    try:
+        import SarahMemoryMSDC as _MSDC  # type: ignore
+
+        fn = getattr(_MSDC, "msdc_device_witness", None)
+        if callable(fn):
+            reg = _load_registry() if registry_entry is None else {}
+            return fn(
+                driver_id,
+                manifest=manifest if isinstance(manifest, dict) else _load_manifest(driver_id),
+                registry=registry_entry if isinstance(registry_entry, dict) else _get_reg_entry(reg, driver_id),
+                session=session if isinstance(session, dict) else _session_get(driver_id),
+                status=status or {},
+                driver_present=True,
+            )
+    except Exception as exc:
+        return {"ok": False, "error": f"msdc_device_witness_unavailable:{exc}", "execution_authority": False}
+    return {"ok": False, "error": "msdc_device_witness_surface_missing", "execution_authority": False}
+
+
+def _governed_response(result: Any, authorization: Dict[str, Any]) -> Tuple[Any, int]:
+    """Attach the external-domain result receipt to a Flask response."""
+    response = result[0] if isinstance(result, tuple) and result else result
+    status_code = int(result[1]) if isinstance(result, tuple) and len(result) > 1 else int(getattr(response, "status_code", 200) or 200)
+    try:
+        payload = response.get_json(silent=True) if hasattr(response, "get_json") else None
+    except TypeError:
+        payload = response.get_json() if hasattr(response, "get_json") else None
+    packet = dict(payload or {}) if isinstance(payload, dict) else {"ok": status_code < 400, "result": str(payload if payload is not None else result)}
+    verified = bool(packet.get("ok")) and status_code < 400 and not bool(packet.get("error"))
+    packet["operator_audit"] = _operator_record_driver_result(authorization, packet, verified=verified)
+    packet["operator_contract_id"] = str((authorization.get("contract") or {}).get("contract_id") or "")
+    return jsonify(packet), status_code
 
 
 def _err(msg: str, status: int = 400, details: Any = None, **extra: Any):
@@ -559,12 +609,19 @@ def _validate_driver_manifest_shape(driver_id: str, manifest: Dict[str, Any]) ->
     if dangerous_autoload:
         warnings.append("autoload_requested_requires_registry_and_user_consent")
 
-    for key in ("name", "version", "description"):
+    if not str(manifest.get("name") or manifest.get("display_name") or "").strip():
+        warnings.append("missing_optional_name")
+    for key in ("version", "description"):
         if not str(manifest.get(key) or "").strip():
             warnings.append(f"missing_optional_{key}")
 
     if manifest.get("permissions") is not None and not isinstance(manifest.get("permissions"), (list, dict)):
         errors.append("permissions_must_be_list_or_object")
+
+    declared_actions = manifest.get("actions") or manifest.get("actions_callable") or manifest.get("supports") or []
+    if declared_actions is not None and not isinstance(declared_actions, list):
+        errors.append("actions_must_be_list")
+        declared_actions = []
 
     return {
         "ok": not errors,
@@ -576,6 +633,8 @@ def _validate_driver_manifest_shape(driver_id: str, manifest: Dict[str, Any]) ->
         "lazy_load_required": True,
         "safe_reset_supported": True,
         "direct_boot_activation_allowed": False,
+        "safe_stop_declared": "safe_stop" in {str(x).strip().lower() for x in declared_actions},
+        "universal_witness_supported": True,
     }
 
 # ------------------------------ Lazy Import Driver Module ------------------------------
@@ -736,6 +795,9 @@ def _driver_connect(driver_id: str, cfg: Dict[str, Any], connect_payload: Option
             "meta": out,
             "config": cfg,
             "connected": bool((out or {}).get("ok", True)) if isinstance(out, dict) else True,
+            "controller_identity": str((connect_payload or {}).get("controller_identity") or "local_user")[:200],
+            "authority_lease_id": str((connect_payload or {}).get("authority_lease_id") or "")[:200],
+            "authority_lease_status": str((connect_payload or {}).get("authority_lease_status") or "not_supplied")[:80],
         }
         _session_set(driver_id, sess)
         _log_event(driver_id, "connect", "ok", {"instance_id": instance_id})
@@ -1232,6 +1294,7 @@ def apply(app):
                 "connect",
                 "disconnect",
                 "status",
+                "device_witness",
                 "actions",
                 "governed_chat_device_action",
             ],
@@ -1247,6 +1310,7 @@ def apply(app):
             r = _get_reg_entry(reg, did)
             sess = _session_get(did)
             boot_meta = _boot_registry_entries().get(did, {}) if _is_boot_driver_id(did) else {}
+            witness = _msdc_device_witness(did, manifest=mf, registry_entry=r, session=sess)
             items.append({
                 "id": did,
                 "manifest": mf,
@@ -1257,6 +1321,7 @@ def apply(app):
                 "instance_id": sess.get("instance_id"),
                 "level": boot_meta.get("level", mf.get("level")),
                 "dependencies": boot_meta.get("dependencies", mf.get("dependencies", [])),
+                "witness": witness,
             })
         return jsonify({"ok": True, "safe_mode": _safe_mode(), "drivers": items})
 
@@ -1424,29 +1489,53 @@ def apply(app):
             return _err("config must be an object", 400)
         if not _verify_auth():
             return _err("Unauthorized", 401)
-        return _driver_connect(driver_id, cfg=cfg, connect_payload=body.get("payload") or body)
+        authorization = _operator_authorize_driver_action(driver_id, "connect", body, user_consented=True)
+        if not bool(authorization.get("domain_execution_authorized")):
+            return _err("Driver connection blocked by OperatorCore", 409, details=authorization, decision=str(authorization.get("decision") or "DEFER"))
+        connect_payload = body.get("payload") if isinstance(body.get("payload"), dict) else dict(body)
+        connect_payload["operator_contract"] = authorization.get("contract")
+        return _governed_response(_driver_connect(driver_id, cfg=cfg, connect_payload=connect_payload), authorization)
 
     @app.route("/api/drivers/<driver_id>/disconnect", methods=["POST"])
     def drivers_disconnect(driver_id: str):
+        body = request.get_json(force=True, silent=True) or {}
+        if not _user_confirmed(body):
+            return _err("Driver session stop requires explicit user confirmation", 403, decision="REQUIRE_USER", source="appdrivers.governance")
         if not _verify_auth():
             return _err("Unauthorized", 401)
-        return _driver_disconnect(driver_id)
+        authorization = _operator_authorize_driver_action(driver_id, "disconnect", body, user_consented=True)
+        if not bool(authorization.get("domain_execution_authorized")):
+            return _err("Driver disconnect blocked by OperatorCore", 409, details=authorization, decision=str(authorization.get("decision") or "DEFER"))
+        return _governed_response(_driver_disconnect(driver_id), authorization)
 
     @app.route("/api/drivers/<driver_id>/session/start", methods=["POST"])
     def drivers_session_start(driver_id: str):
         body = request.get_json(force=True, silent=True) or {}
+        if not _user_confirmed(body):
+            return _err("Driver session start requires explicit user confirmation", 403, decision="REQUIRE_USER", source="appdrivers.governance")
         cfg = body.get("config") or _load_config(driver_id)
         if not isinstance(cfg, dict):
             return _err("config must be an object", 400)
         if not _verify_auth():
             return _err("Unauthorized", 401)
-        return _driver_connect(driver_id, cfg=cfg, connect_payload=body.get("payload") or body)
+        authorization = _operator_authorize_driver_action(driver_id, "session_start", body, user_consented=True)
+        if not bool(authorization.get("domain_execution_authorized")):
+            return _err("Driver session start blocked by OperatorCore", 409, details=authorization, decision=str(authorization.get("decision") or "DEFER"))
+        connect_payload = body.get("payload") if isinstance(body.get("payload"), dict) else dict(body)
+        connect_payload["operator_contract"] = authorization.get("contract")
+        return _governed_response(_driver_connect(driver_id, cfg=cfg, connect_payload=connect_payload), authorization)
 
     @app.route("/api/drivers/<driver_id>/session/stop", methods=["POST"])
     def drivers_session_stop(driver_id: str):
+        body = request.get_json(force=True, silent=True) or {}
+        if not _user_confirmed(body):
+            return _err("Driver session stop requires explicit user confirmation", 403, decision="REQUIRE_USER", source="appdrivers.governance")
         if not _verify_auth():
             return _err("Unauthorized", 401)
-        return _driver_disconnect(driver_id)
+        authorization = _operator_authorize_driver_action(driver_id, "session_stop", body, user_consented=True)
+        if not bool(authorization.get("domain_execution_authorized")):
+            return _err("Driver session stop blocked by OperatorCore", 409, details=authorization, decision=str(authorization.get("decision") or "DEFER"))
+        return _governed_response(_driver_disconnect(driver_id), authorization)
 
     @app.route("/api/drivers/<driver_id>/status", methods=["GET"])
     def drivers_status(driver_id: str):
@@ -1463,10 +1552,18 @@ def apply(app):
         try:
             if hasattr(mod, "driver_status"):
                 st = mod.driver_status(context=context)  # type: ignore[attr-defined]
-                return jsonify({"ok": True, "session": sess, "status": st})
-            return jsonify({"ok": True, "session": sess, "status": {"ok": True, "note": "driver_status not implemented"}})
+                status_packet = st if isinstance(st, dict) else {"ok": True, "value": st}
+                return jsonify({"ok": True, "session": sess, "status": status_packet, "witness": _msdc_device_witness(driver_id, status=status_packet)})
+            status_packet = {"ok": True, "note": "driver_status not implemented", "status_sampled": False}
+            return jsonify({"ok": True, "session": sess, "status": status_packet, "witness": _msdc_device_witness(driver_id, status=status_packet)})
         except Exception as e:
             return _err(f"status failed: {e}", 500, details=traceback.format_exc())
+
+    @app.route("/api/drivers/<driver_id>/witness", methods=["GET"])
+    def drivers_witness(driver_id: str):
+        if driver_id not in _discover_driver_ids():
+            return _err("Unknown driver_id", 404)
+        return jsonify({"ok": True, "driver_id": driver_id, "witness": _msdc_device_witness(driver_id)})
 
 
     @app.route("/api/drivers/actions/governed", methods=["POST"])
@@ -1634,4 +1731,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appdrivers', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-
