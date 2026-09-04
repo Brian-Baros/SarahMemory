@@ -11,7 +11,6 @@ import { useSarahStore } from '@/stores/useSarahStore';
 import { useNavigationStore } from "@/stores/useNavigationStore";
 import { api, speakWithSarahBrowserVoice } from '@/lib/api';
 import { toast } from 'sonner';
-import { AudioMixerPanel } from '@/components/panels/audio-mixer/AudioMixerPanel';
 
 // Mode options for data source - matches app.py api_mode setting
 const MODES = [
@@ -89,8 +88,6 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
   const [vrStatus, setVrStatus] = useState<any>(null);
   const [vrError, setVrError] = useState<string>("");
   const [isVrBusy, setIsVrBusy] = useState(false);
-  const [driverInventory, setDriverInventory] = useState<any>(null);
-  const [driverError, setDriverError] = useState<string>("");
 
   const [modelStatus, setModelStatus] = useState<any>(null);
   const [modelError, setModelError] = useState<string>("");
@@ -116,7 +113,6 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     loadMode();
     loadDevBridgeStatus();
     loadVrStatus(true);
-    loadDriverInventory();
     loadModelStatus(true);
     setSelectedMode(settings.mode || 'any');
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,19 +218,6 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     } catch (error: any) {
       setDevBridgeStatus(null);
       setDevBridgeError(String(error?.message || error || "DevBridge unavailable"));
-    }
-  };
-
-  const loadDriverInventory = async () => {
-    try {
-      const result = await api.proxy.call("/api/drivers");
-      const packet = result as any;
-      if (!packet?.ok) throw new Error(packet?.error || "Driver inventory unavailable");
-      setDriverInventory(packet);
-      setDriverError("");
-    } catch (error: any) {
-      setDriverInventory(null);
-      setDriverError(String(error?.message || error || "Driver inventory unavailable"));
     }
   };
 
@@ -786,10 +769,6 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
           </div>
         </div>
       </div>
-
-      <div className="rounded-xl border border-border bg-secondary/20 p-3 xl:col-span-2">
-        <AudioMixerPanel showSettingsButton={false} />
-      </div>
     </div>
   );
 
@@ -1066,13 +1045,7 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
     </div>
   );
 
-  const driverRows = Array.isArray(driverInventory?.drivers) ? driverInventory.drivers : [];
-  const driverReadyCount = driverRows.filter((item: any) => Boolean(item?.witness?.readiness?.ready)).length;
-  const driverConnectedCount = driverRows.filter((item: any) => Boolean(item?.witness?.readiness?.active || item?.connected)).length;
-  const driverFaultCount = driverRows.reduce((total: number, item: any) => total + Number(item?.witness?.diagnostics?.fault_count || 0), 0);
-
   const devicesSection = (
-    <div className="space-y-3">
     <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
       <Label className="flex items-center gap-2 text-sm font-medium">
         <ShieldCheck className="h-4 w-4 text-muted-foreground" />
@@ -1094,37 +1067,6 @@ function SettingsPanelBody({ embedded = false, onRequestClose }: SettingsPanelPr
         <Button variant="outline" size="sm" onClick={() => window.open('/vision', '_blank', 'noopener,noreferrer')}>Open Mirror</Button>
         <Button variant="outline" size="sm" onClick={() => window.open('/vr-hud', '_blank', 'noopener,noreferrer')}>Browser HUD</Button>
       </div>
-    </div>
-    <div className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Label className="flex items-center gap-2 text-sm font-medium"><Cpu className="h-4 w-4 text-muted-foreground" />MSDC Device Witness</Label>
-        <Button variant="outline" size="sm" className="ml-auto" onClick={() => void loadDriverInventory()}>Refresh Devices</Button>
-      </div>
-      <p className="text-xs text-muted-foreground">Read-only readiness chain: present, healthy, ready, authorized, and active remain separate states.</p>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4 text-xs">
-        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Discovered</div><div className="font-medium">{driverRows.length}</div></div>
-        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Ready</div><div className="font-medium">{driverReadyCount}</div></div>
-        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Connected / Active</div><div className="font-medium">{driverConnectedCount}</div></div>
-        <div className="rounded-lg border border-border bg-background/40 px-3 py-2"><div className="text-muted-foreground">Active Faults</div><div className={driverFaultCount ? "font-medium text-red-500" : "font-medium"}>{driverFaultCount}</div></div>
-      </div>
-      {driverError ? <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-600 dark:text-yellow-400">{driverError}</div> : null}
-      {driverRows.length > 0 ? (
-        <div className="max-h-56 space-y-1 overflow-auto rounded-lg border border-border bg-background/30 p-2">
-          {driverRows.slice(0, 100).map((item: any) => {
-            const witness = item?.witness || {};
-            const readiness = witness?.readiness || {};
-            const diagnostics = witness?.diagnostics || {};
-            return (
-              <div key={String(item?.id)} className="grid gap-1 rounded-md border border-border/60 px-2 py-1.5 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto]">
-                <div className="truncate font-medium">{String(item?.manifest?.name || item?.manifest?.display_name || item?.id)}</div>
-                <div className="text-muted-foreground">{String(diagnostics?.service_state || "UNKNOWN")}</div>
-                <div className={readiness?.ready ? "text-green-500" : "text-yellow-500"}>{readiness?.active ? "ACTIVE" : readiness?.authorized ? "AUTHORIZED" : readiness?.ready ? "READY" : readiness?.present ? "PRESENT" : "MISSING"}</div>
-              </div>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
     </div>
   );
 
