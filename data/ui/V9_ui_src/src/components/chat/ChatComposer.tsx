@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback, KeyboardEvent } from "react";
-import { Send, Mic, Paperclip, Loader2, X, SlidersHorizontal, Database } from "lucide-react";
+import { Send, Mic, Paperclip, X, SlidersHorizontal, Database, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -38,10 +38,11 @@ declare global {
 type Props = {
   onSendText: (text: string, files?: File[], options?: { ingest?: boolean }) => Promise<void> | void;
   isSending?: boolean;
+  onStopSending?: () => void;
   onMicStateChange?: (listening: boolean, reason: string) => void;
 };
 
-export function ChatComposer({ onSendText, isSending: isSendingProp, onMicStateChange }: Props) {
+export function ChatComposer({ onSendText, isSending: isSendingProp, onStopSending, onMicStateChange }: Props) {
   const isMobile = useIsMobile();
 
   const [message, setMessage] = useState("");
@@ -312,9 +313,13 @@ export function ChatComposer({ onSendText, isSending: isSendingProp, onMicStateC
   };
 
   const handleSubmit = async () => {
+    if (isSending) {
+      onStopSending?.();
+      return;
+    }
+
     const trimmed = message.trim();
     if (!trimmed && selectedFiles.length === 0) return;
-    if (isSending) return;
 
     setLocalSending(true);
 
@@ -448,12 +453,18 @@ export function ChatComposer({ onSendText, isSending: isSendingProp, onMicStateC
           {/* Send */}
           <Button
             onClick={handleSubmit}
-            disabled={(!message.trim() && selectedFiles.length === 0) || isSending}
+            disabled={!isSending && !message.trim() && selectedFiles.length === 0}
             size="icon"
-            className="shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 h-9 w-9 sm:h-10 sm:w-10"
-            title="Send message"
+            className={cn(
+              "shrink-0 h-9 w-9 sm:h-10 sm:w-10",
+              isSending
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:bg-primary/90",
+            )}
+            title={isSending ? "Stop response" : "Send message"}
+            aria-label={isSending ? "Stop response" : "Send message"}
           >
-            {isSending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+            {isSending ? <Square className="h-4 w-4 fill-current" /> : <Send className="h-4 w-4" />}
           </Button>
         </div>
       </div>

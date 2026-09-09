@@ -28,7 +28,7 @@ type MirrorKind = "mjpeg" | "video" | "image" | "unknown";
 
 const DEFAULT_3D_SPEC: AvatarSpec = {
   renderMode: "gold_standard_avatar",
-  modelUrl: "/api/avatar/3d/SarahMemoryAvatar_RigBootstrap.glb",
+  modelUrl: "",
   backgroundType: "none",
   pose: "stand",
   gesture: "none",
@@ -46,7 +46,7 @@ const DEFAULT_3D_SPEC: AvatarSpec = {
   goldStandardYOffset: 0,
   goldStandardPanelBottomPx: 58,
   goldStandardPanelHeightPct: 92,
-  meshFallbackUrl: "/api/avatar/3d/SarahMemoryAvatar_RigBootstrap.glb",
+  meshFallbackUrl: "",
   bodyProfile: {
     profile_name: "SarahMemory_default_humanoid",
     height_m: 1.68,
@@ -614,7 +614,7 @@ export function AvatarPanel() {
     spec: DEFAULT_3D_SPEC,
   });
 
-  const [webcamVisible, setWebcamVisible] = useState(true);
+  const [webcamVisible, setWebcamVisible] = useState(false);
   const [frameTick, setFrameTick] = useState(0);
   const [imageLoadFailed, setImageLoadFailed] = useState(false);
 
@@ -660,7 +660,9 @@ export function AvatarPanel() {
     };
 
     if (merged.renderMode === "gltf_model" && !merged.modelUrl) {
-      merged.modelUrl = DEFAULT_3D_SPEC.modelUrl;
+      merged.renderMode = "gold_standard_avatar";
+      merged.runtimeVisualPriority = "gold_standard";
+      (merged as any).forceMeshRuntime = false;
     }
 
     // V9 Avatar Panel correction:
@@ -670,7 +672,7 @@ export function AvatarPanel() {
     const priority = String((merged as any).runtimeVisualPriority || "gold_standard").toLowerCase();
     const forceMesh = Boolean((merged as any).forceMeshRuntime) || priority === "mesh_diagnostic" || priority === "mesh-debug";
     if (!forceMesh) {
-      merged.meshFallbackUrl = merged.modelUrl || merged.meshFallbackUrl || DEFAULT_3D_SPEC.modelUrl;
+      merged.meshFallbackUrl = merged.modelUrl || merged.meshFallbackUrl || "";
       merged.renderMode = "gold_standard_avatar";
       merged.runtimeVisualPriority = "gold_standard";
       (merged as any).forceMeshRuntime = false;
@@ -1075,7 +1077,7 @@ export function AvatarPanel() {
                   className="h-7 border border-cyan-500/20 bg-slate-950/95 px-2 text-xs text-cyan-100 hover:bg-slate-900"
                   onClick={() => setWebcamVisible((v) => !v)}
                 >
-                  {webcamVisible ? "Hide" : "Show"}
+                  {webcamVisible ? "Hide" : "Start"}
                 </Button>
               )}
             </div>

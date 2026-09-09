@@ -1,15 +1,20 @@
 # Panel Component Layout
 
-Reusable window panels live in this directory. Each panel keeps a dedicated
-folder when it has state, backend contracts, or non-trivial controls.
+SarahMemory UI panel owners live under this directory. Panels are bounded supporting controls used inside the shell, status bar, drawers, or screen contexts.
 
-| Panel | Owner file | Responsibility |
-| --- | --- | --- |
-| Audio Mixer | `audio-mixer/AudioMixerPanel.tsx` | Master volume, input/output volume, EQ, and audio event dispatch. |
-| Contacts | `contacts/ContactsPanel.tsx` | Contact list and contact editing. |
-| Creative Tools | `creative-tools/CreativeToolsPanel.tsx` | Creative tool controls used by studio surfaces. |
-| Dialer | `dialer/DialerPanel.tsx` | Phone/keypad style communication controls. |
-| Reminders | `reminders/RemindersPanel.tsx` | Reminder creation and completion controls. |
-| Settings Modal | `settings-modal/SettingsModal.tsx` | Modal settings entry point. |
-| System Clock | `system-clock/SystemClockPanel.tsx` | Command rail clock/date/timezone controls and Clock Court authority display. |
-| Terminal | `terminal/TerminalPanel.tsx` | Embedded terminal panel controls. |
+Canonical panel owners:
+
+- `audio-mixer/AudioMixerPanel.tsx` — volume, bass, treble, channel mode controls.
+- `contacts/ContactsPanel.tsx` — contact quick panel.
+- `creative-tools/CreativeToolsPanel.tsx` — creative workflow support panel.
+- `dialer/DialerPanel.tsx` — communication keypad panel.
+- `reminders/RemindersPanel.tsx` — reminder quick panel.
+- `settings-modal/SettingsModal.tsx` — modal settings surface.
+- `system-clock/SystemClockPanel.tsx` — date, time, timezone, and clock-court controls.
+- `terminal/TerminalPanel.tsx` — embedded terminal/control panel.
+
+Rules:
+
+- Panels must remain composable and bounded.
+- Screens may embed panels when ownership is clear.
+- Chat response actions must use the single UI action queue and avoid duplicate `sarah:ui` dispatch for the same returned action batch.

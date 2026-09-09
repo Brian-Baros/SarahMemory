@@ -1464,5 +1464,6 @@ export function Avatar3D({ speaking = false, listening = false, expression = "ne
   );
 }
 
-// Allow GLTF caching
-useGLTF.preload("/api/avatar/3d/SarahMemoryAvatar_RigBootstrap.glb");
+// GLB preloading is intentionally data-driven by /api/avatar/3d/spec. The
+// 20260903 package does not include SarahMemoryAvatar_RigBootstrap.glb, so a
+// module-level preload would create avoidable 404s before fallback can engage.

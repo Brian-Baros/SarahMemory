@@ -15,6 +15,7 @@ import { Button } from "@/components/ui/button";
 import type { Message } from "@/types/sarah";
 import { toast } from "sonner";
 import { useSarahStore } from "@/stores/useSarahStore";
+import { api, type ChatResponse, type DynamicChip } from "@/lib/api";
 
 type Props = {
   message: Message;
@@ -199,7 +200,7 @@ export function ChatMessage({ message, onSendFollowUp }: Props) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
 
   // We need store messages so Regenerate + followups can locate the prompt/answer context
-  const { messages } = useSarahStore();
+  const { messages, addMessage, enqueueUiActions } = useSarahStore();
 
   const formatTime = (ts: any) => {
     const date = ts instanceof Date ? ts : new Date(ts ?? Date.now());
@@ -214,11 +215,118 @@ export function ChatMessage({ message, onSendFollowUp }: Props) {
     return { finalText, bracketSuggestions: suggestions, images, videos };
   }, [message.content]);
 
-  // Requested static follow ups (always available for assistant messages)
-  const followUps = !isUser ? ["Explain simpler", "Give steps", "Show example", "Summarize"] : [];
+  const operationalChips: DynamicChip[] = !isUser && Array.isArray((message as any).chips)
+    ? ((message as any).chips as DynamicChip[]).filter((chip) => chip && chip.label && chip.action)
+    : [];
+  const responseType = String((message as any).response_type || (message as any).meta?.response_type || "");
+  const task = (message as any).task && typeof (message as any).task === "object" ? (message as any).task : null;
+  const pendingActionId = String((message as any).pending_action_id || (message as any).meta?.pending_action_id || "");
+
+  // Requested static follow ups remain available for normal informational answers.
+  const followUps = !isUser && operationalChips.length === 0 ? ["Explain simpler", "Give steps", "Show example", "Summarize"] : [];
 
   // Prefer bracket suggestions if present, otherwise fall back to static followUps
   const suggestionsToShow = !isUser && bracketSuggestions.length > 0 ? bracketSuggestions : followUps;
+
+  const dispatchReturnedActions = (actions: any[]) => {
+    if (!Array.isArray(actions) || actions.length === 0) return;
+    try {
+      enqueueUiActions(actions, "chat_action_chip");
+    } catch (error) {
+      console.warn("[ChatMessage] Failed to enqueue returned actions:", error);
+    }
+  };
+
+  const appendCommandResponse = (response: ChatResponse) => {
+    const content = response.content || response.reply || response.reason || "Command completed.";
+    addMessage({
+      role: "assistant",
+      content,
+      response_type: response.response_type,
+      chips: response.chips,
+      actions: response.actions,
+      pending_action_id: response.pending_action_id,
+      mission_id: response.mission_id,
+      task_id: response.task_id,
+      task: response.task,
+      tasks: response.tasks,
+      pending_actions: response.pending_actions,
+      capability: response.capability,
+      images: response.images,
+      meta: response.meta,
+    });
+    dispatchReturnedActions(response.actions || []);
+  };
+
+  const handleOperationalChip = async (chip: DynamicChip) => {
+    if (isUser) return;
+    const label = String(chip.label || "Action");
+    const action = String(chip.action || "");
+    const chipPendingId = String(chip.pending_action_id || pendingActionId || "");
+
+    try {
+      if (action === "send_prompt" && chip.prompt && onSendFollowUp) {
+        onSendFollowUp(String(chip.prompt));
+        return;
+      }
+      if (action === "open_panel") {
+        const actions = Array.isArray(chip.actions) ? chip.actions : Array.isArray((chip as any).payload?.actions) ? (chip as any).payload.actions : [];
+        dispatchReturnedActions(actions);
+        toast.success(label);
+        return;
+      }
+      if (action === "approve_pending_action") {
+        addMessage({ role: "user", content: label });
+        appendCommandResponse(await api.actions.approve(chipPendingId));
+        return;
+      }
+      if (action === "deny_pending_action") {
+        addMessage({ role: "user", content: label });
+        appendCommandResponse(await api.actions.deny(chipPendingId));
+        return;
+      }
+      if (action === "show_pending_actions") {
+        appendCommandResponse(await api.actions.resolve("show_pending_actions", { pending_action_id: chipPendingId }));
+        return;
+      }
+      if (action === "show_task" && chip.task_id) {
+        const result = await api.tasks.get(String(chip.task_id));
+        const t = result?.task || {};
+        const content = result?.ok
+          ? `Task ${t.task_id || chip.task_id}\nStatus: ${t.status || "unknown"}\nCapability: ${t.capability || "unknown"}\nStep: ${t.current_step || "unknown"}`
+          : `Task lookup failed: ${result?.error || "task_not_found"}`;
+        addMessage({
+          role: "assistant",
+          content,
+          response_type: result?.ok ? "task_registry_card" : "command_error_card",
+          task: t,
+          task_id: t.task_id || chip.task_id,
+        });
+        return;
+      }
+      if (onSendFollowUp) {
+        onSendFollowUp(label);
+      }
+    } catch (error: any) {
+      const msg = String(error?.message || error || "Action failed");
+      toast.error(msg);
+      addMessage({ role: "assistant", content: `Action failed: ${msg}`, response_type: "command_error_card" });
+    }
+  };
+
+  const cardTitle = (() => {
+    switch (responseType) {
+      case "permission_card": return "Approval Required";
+      case "creative_result_card": return "Creative Studios Result";
+      case "mission_card": return "Mission";
+      case "task_registry_card": return "Task Registry";
+      case "pending_action_banner": return "Pending Approvals";
+      case "clarification_card": return "Clarification Needed";
+      case "command_error_card": return "Command Issue";
+      case "command_result_card": return "Command Result";
+      default: return "";
+    }
+  })();
 
   const locateContext = () => {
     const idx = messages.findIndex((m: any) => m?.id === (message as any)?.id);
@@ -320,6 +428,53 @@ export function ChatMessage({ message, onSendFollowUp }: Props) {
         {/* Message Bubble */}
         <div className={cn("px-4 py-2.5 whitespace-pre-wrap", isUser ? "bubble-user" : "bubble-assistant")}>
           <p className="text-sm leading-relaxed break-words">{finalText || message.content}</p>
+
+          {!isUser && (cardTitle || task || operationalChips.length > 0) && (
+            <div className="mt-3 rounded-md border border-white/10 bg-black/20 p-3 text-xs text-white/80">
+              {cardTitle && (
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-white">{cardTitle}</span>
+                  {pendingActionId && (
+                    <span className="rounded bg-amber-400/10 px-2 py-0.5 text-amber-100">
+                      {pendingActionId}
+                    </span>
+                  )}
+                </div>
+              )}
+              {task && (
+                <div className="mb-2 grid gap-1 sm:grid-cols-2">
+                  <div>Status: <span className="text-white">{String(task.status || "unknown")}</span></div>
+                  <div>Capability: <span className="text-white">{String(task.capability || "unknown")}</span></div>
+                  <div>Target: <span className="text-white">{String(task.target || "unknown")}</span></div>
+                  <div>Step: <span className="text-white">{String(task.current_step || "unknown")}</span></div>
+                </div>
+              )}
+              {operationalChips.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {operationalChips.slice(0, 8).map((chip, idx) => (
+                    <Button
+                      key={`${chip.action}-${chip.label}-${idx}`}
+                      variant="secondary"
+                      size="sm"
+                      className={cn(
+                        "h-8 border text-xs",
+                        chip.action === "approve_pending_action"
+                          ? "border-emerald-400/40 bg-emerald-500/20 text-emerald-100 hover:bg-emerald-500/30"
+                          : chip.action === "deny_pending_action"
+                            ? "border-red-400/40 bg-red-500/20 text-red-100 hover:bg-red-500/30"
+                            : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10"
+                      )}
+                      onClick={() => handleOperationalChip(chip)}
+                      title={String(chip.action || chip.label)}
+                    >
+                      <CornerDownRight className="mr-2 h-3.5 w-3.5 opacity-70" />
+                      {chip.label}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Assistant Toolbar + Follow-ups */}
           {!isUser && (

@@ -99,7 +99,7 @@ export function WebcamOverlay({
     let cancelled = false;
 
     const start = async () => {
-      if (!enabled) return;
+      if (!enabled || !visible) return;
 
       setError(null);
       setReady(false);
@@ -132,7 +132,7 @@ export function WebcamOverlay({
       cancelled = true;
       if (stream) stream.getTracks().forEach((t) => t.stop());
     };
-  }, [enabled, targetWidth, targetHeight]);
+  }, [enabled, visible, targetWidth, targetHeight]);
 
   useEffect(() => {
     if (!canStream) return;

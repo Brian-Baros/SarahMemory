@@ -1,21 +1,26 @@
 # Screen Component Layout
 
-Top-level routed workspace screens live in this directory. Each complex screen
-keeps its own owner folder so frontend work stays zoned and reviewable.
+SarahMemory UI screen owners live under this directory. Screens are full-window or full-surface application views opened from the desktop, mobile shell, Nexus menu, or governed Chat UI actions.
 
-| Screen | Owner file | Responsibility |
-| --- | --- | --- |
-| Addons | `addons/AddonsScreen.tsx` | Addon catalog and governed lifecycle actions. |
-| Avatar | `avatar/AvatarScreen.tsx` | Avatar presentation surface. |
-| DL Engine | `dl-engine/DLEngineScreen.tsx` | Model download and engine controls. |
-| Device Manager | `device-manager/DeviceManagerScreen.tsx` | Boot-detected governed driver/device inventory with class-specific configuration profiles. |
-| Files | `files/FilesScreen.tsx` | File Cortex, upload, selection, and Trash surface. |
-| History | `history/HistoryScreen.tsx` | Memory Trail and prior conversations. |
-| Media | `media/MediaScreen.tsx` | Media Deck controls. |
-| NAILDE | `nailde/NAILDEScreen.tsx` | NAILDE workbench and addon generation. |
-| Research | `research/ResearchScreen.tsx` | Evidence Lens and research routing. |
-| SarahNet | `sarah-net/SarahNetScreen.tsx` | SarahNet fabric, MCP, realtime, and worlds views. |
-| Settings | `settings/SettingsScreen.tsx` | System Tuning, appearance, audio, backend, and policy controls. |
-| Studios | `studios/StudiosScreen.tsx` | Creation Bay studio launcher. |
-| Terminal | `terminal/TerminalScreen.tsx` | Operator Terminal shell bridge. |
-| Vision | `vision/VisionScreen.tsx` | Camera Vision and VR HUD route. |
+Canonical screen owners:
+
+- `addons/AddonsScreen.tsx` — ADDONS surface.
+- `avatar/AvatarScreen.tsx` — avatar runtime surface.
+- `device-manager/DeviceManagerScreen.tsx` — hardware/device manager surface.
+- `dl-engine/DLEngineScreen.tsx` — model/DL engine surface.
+- `files/FilesScreen.tsx` — file manager and Trash handoff surface.
+- `history/HistoryScreen.tsx` — chat/history surface.
+- `media/MediaScreen.tsx` — media tools surface.
+- `nailde/NaildeScreen.tsx` — NAILDE build/workbench surface.
+- `research/ResearchScreen.tsx` — research surface.
+- `sarah-net/SarahNetScreen.tsx` — SarahNet/MCP/fabric surface.
+- `settings/SettingsScreen.tsx` — system settings surface.
+- `studios/StudiosScreen.tsx` — creative studio surface.
+- `terminal/TerminalScreen.tsx` — terminal surface.
+- `vision/VisionScreen.tsx` — camera vision/object-recognition surface.
+
+Rules:
+
+- Screens own large application workflows, not small popovers.
+- Chat UI may open a screen only from an explicit UI/action command.
+- Hardware fact questions must answer in Chat and must not auto-open a screen.

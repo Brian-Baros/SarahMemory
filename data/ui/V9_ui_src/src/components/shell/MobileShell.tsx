@@ -138,6 +138,7 @@ export function MobileShell({ className }: MobileShellProps) {
                         : "border-border/55 bg-card/45 text-foreground/80 hover:border-primary/40 hover:bg-card/80",
                     )}
                     title={feature.purpose}
+                    aria-label={`Open ${feature.title}`}
                   >
                     <Icon className="h-4 w-4" />
                     <span className="line-clamp-2 leading-tight">{feature.title}</span>

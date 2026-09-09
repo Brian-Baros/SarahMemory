@@ -128,6 +128,7 @@ export function ChatPanel() {
     setAvatarSpeaking,
     setSpeechStartTime,
     enqueueUiActions,
+    activeThreadId,
   } = useSarahStore();
 
   const isMobile = useIsMobile();
@@ -135,6 +136,7 @@ export function ChatPanel() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeChatAbortRef = useRef<AbortController | null>(null);
 
   // Track whether user is near bottom, so we don't fight manual scrolling
   const shouldAutoScrollRef = useRef(true);
@@ -325,20 +327,6 @@ export function ChatPanel() {
     } catch (e) {
       console.warn("[ChatPanel] Failed to enqueue UI actions:", e);
     }
-
-    try {
-      window.dispatchEvent(
-        new CustomEvent("sarah:ui", {
-          detail: {
-            source: "chat_response",
-            ts: Date.now(),
-            actions,
-          },
-        })
-      );
-    } catch {
-      // non-critical UI automation bridge
-    }
   };
 
   const getLatestDevBridgeStageId = useCallback(async (): Promise<string> => {
@@ -475,6 +463,26 @@ export function ChatPanel() {
     []
   );
 
+  const stopChatRequest = useCallback(() => {
+    const controller = activeChatAbortRef.current;
+    if (!controller || controller.signal.aborted) {
+      setTyping(false);
+      return;
+    }
+
+    controller.abort(new Error("SarahMemory chat request stopped by user"));
+    activeChatAbortRef.current = null;
+    setTyping(false);
+    addMessage({ role: "assistant", content: "Stopped." });
+
+    try {
+      api.avatar.setListening(false).catch(() => {});
+      postAvatarEvent("success").catch(() => {});
+    } catch {
+      // non-critical avatar sync
+    }
+  }, [addMessage, setTyping]);
+
   // Unified send (used by composer + follow-ups + regenerate)
   const sendText = async (text: string, files?: File[], options?: { ingest?: boolean }) => {
     const clean = (text || "").trim();
@@ -590,13 +598,24 @@ if (hasFiles) {
       postAvatarEvent("busy").catch(() => {});
     } catch {}
 
+    let requestController: AbortController | null = null;
+
     try {
       const messageHistory = messages.map((m) => ({ role: m.role, content: m.content }));
       messageHistory.push({ role: "user" as const, content: cleanForBackend });
 
-      const response = await api.chat.sendMessage(messageHistory);
+      requestController = new AbortController();
+      activeChatAbortRef.current = requestController;
+
+      const response = await api.chat.sendMessage(messageHistory, {
+        conversationId: activeThreadId || undefined,
+        signal: requestController.signal,
+      });
 
       setTyping(false);
+      if (activeChatAbortRef.current === requestController) {
+        activeChatAbortRef.current = null;
+      }
 
       if (response?.error) {
         toast.error(response.error);
@@ -604,7 +623,22 @@ if (hasFiles) {
         return;
       }
 
-      addMessage({ role: "assistant", content: response.content });
+      addMessage({
+        role: "assistant",
+        content: response.content,
+        response_type: response.response_type,
+        chips: response.chips,
+        actions: response.actions,
+        pending_action_id: response.pending_action_id,
+        mission_id: response.mission_id,
+        task_id: response.task_id,
+        task: response.task,
+        tasks: response.tasks,
+        pending_actions: response.pending_actions,
+        capability: response.capability,
+        images: response.images,
+        meta: response.meta,
+      });
       dispatchAssistantActions(response);
 
       startAvatarSpeaking(response);
@@ -614,6 +648,9 @@ if (hasFiles) {
         await speakResponse(response.content);
       }
     } catch (error) {
+      if (requestController?.signal.aborted || (error instanceof Error && error.message.includes("stopped by user"))) {
+        return;
+      }
       console.error("Chat send error:", error);
       postAvatarEvent("error").catch(() => {});
       setTyping(false);
@@ -623,6 +660,9 @@ if (hasFiles) {
         content: "I'm having trouble connecting right now. Please try again in a moment.",
       });
     } finally {
+      if (requestController && activeChatAbortRef.current === requestController) {
+        activeChatAbortRef.current = null;
+      }
       try {
         await api.avatar.setListening(false);
       } catch {}
@@ -654,7 +694,12 @@ if (hasFiles) {
       </div>
 
       {/* Composer */}
-      <ChatComposer onSendText={sendText} isSending={isTyping} onMicStateChange={handleComposerMicState} />
+      <ChatComposer
+        onSendText={sendText}
+        isSending={isTyping}
+        onStopSending={stopChatRequest}
+        onMicStateChange={handleComposerMicState}
+      />
     </div>
   );
 }

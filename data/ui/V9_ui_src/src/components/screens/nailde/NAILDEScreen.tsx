@@ -206,6 +206,30 @@ function short(value: unknown, limit = 96): string {
   return s.length > limit ? `${s.slice(0, limit)}…` : s;
 }
 
+function recoverySummary(value: unknown): {
+  workspaceId: string;
+  status: string;
+  savedAt: string;
+  files: string[];
+  executionAuthority: boolean;
+  restoreAvailable: boolean;
+} {
+  const root = (value && typeof value === "object" ? value : {}) as Record<string, any>;
+  const recovery = (root.recovery && typeof root.recovery === "object" ? root.recovery : {}) as Record<string, any>;
+  const snapshot = (root.snapshot && typeof root.snapshot === "object" ? root.snapshot : {}) as Record<string, any>;
+  const files = Array.isArray(snapshot.generated_files)
+    ? snapshot.generated_files.map((item: unknown) => String(item || "")).filter(Boolean).slice(0, 6)
+    : [];
+  return {
+    workspaceId: String(root.workspace_id || recovery.workspace_id || snapshot.workspace_id || "unknown"),
+    status: String(recovery.status || snapshot.status || "unknown"),
+    savedAt: String(root.saved_at || recovery.last_saved_at || snapshot.saved_at || "unknown"),
+    files,
+    executionAuthority: Boolean(root.execution_authority || recovery.execution_authority || snapshot.execution_authority),
+    restoreAvailable: Boolean(recovery.restore_available || root.restore_available),
+  };
+}
+
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -1466,17 +1490,51 @@ export default function NAILDEScreen() {
       {recoveryPopup ? (
         <div className="absolute inset-0 z-[15400] grid place-items-center bg-background/70 backdrop-blur-sm">
           <div className="w-[560px] rounded-xl border border-border bg-popover p-5 shadow-2xl">
+            {(() => {
+              const summary = recoverySummary(recoveryPopup);
+              return (
+                <>
             <div className="mb-3 flex items-center gap-2">
               <RotateCw className="h-5 w-5 text-primary" />
               <h2 className="text-base font-semibold">Restore unfinished NAILDE workspace?</h2>
             </div>
             <p className="text-sm text-muted-foreground">Power-loss/session recovery found a sandbox workspace that can be restored.</p>
-            <pre className="mt-3 max-h-48 overflow-auto rounded border border-border bg-background p-3 text-xs">{pretty(recoveryPopup).slice(0, 3000)}</pre>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+              <div className="rounded border border-border bg-background/70 p-2">
+                <div className="text-muted-foreground">Workspace</div>
+                <div className="break-words font-semibold">{summary.workspaceId}</div>
+              </div>
+              <div className="rounded border border-border bg-background/70 p-2">
+                <div className="text-muted-foreground">Status</div>
+                <div className="font-semibold">{summary.status}</div>
+              </div>
+              <div className="rounded border border-border bg-background/70 p-2">
+                <div className="text-muted-foreground">Saved</div>
+                <div className="font-semibold">{summary.savedAt}</div>
+              </div>
+              <div className="rounded border border-border bg-background/70 p-2">
+                <div className="text-muted-foreground">Authority</div>
+                <div className="font-semibold">{summary.executionAuthority ? "Execution requested" : "Sandbox only"}</div>
+              </div>
+            </div>
+            {summary.files.length ? (
+              <div className="mt-3 rounded border border-border bg-background/70 p-2 text-xs">
+                <div className="text-muted-foreground">Generated sandbox files</div>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {summary.files.map((file) => (
+                    <span key={file} className="rounded border border-border px-2 py-1 font-mono text-[11px]">{file}</span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             <div className="mt-4 grid grid-cols-3 gap-2">
-              <Button onClick={() => void restoreWorkspace()}>Restore</Button>
+              <Button onClick={() => void restoreWorkspace()} disabled={!summary.restoreAvailable}>Restore</Button>
               <Button variant="outline" onClick={() => setRecoveryPopup(null)}>Not Now</Button>
               <Button variant="secondary" onClick={() => setRecoveryPopup(null)}>Cancel</Button>
             </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       ) : null}

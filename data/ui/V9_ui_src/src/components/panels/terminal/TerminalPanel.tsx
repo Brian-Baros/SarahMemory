@@ -705,9 +705,9 @@ ${reply}`,
           agent_authority: explicitAgent ? "inspect_or_propose_only" : undefined,
         };
 
-        // There is no `/api/terminal/ai` backend route in the current contract.
-        // Non-shell terminal prompts route through the governed chat path so
-        // Neuron/CognitiveServices/SMGET remain the authority layer.
+        // `/api/terminal/ai` exists as a governed agent alias. This non-shell
+        // prompt still routes through chat so Neuron/CognitiveServices/SMGET
+        // remain the authority layer for ordinary terminal-language tasks.
         const aiResp = await requestJSON<TerminalAIResponse>("/api/chat", {
           method: "POST",
           body: JSON.stringify(aiPayload),
