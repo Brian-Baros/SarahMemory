@@ -471,6 +471,100 @@ def _sm_is_low_quality_cached_answer(text: str) -> bool:
     return False
 
 
+
+_QA_CACHE_VERIFICATION_COLUMNS = {
+    "source": "TEXT",
+    "source_type": "TEXT",
+    "verification_state": "TEXT DEFAULT 'UNVERIFIED'",
+    "verified": "INTEGER DEFAULT 0",
+    "verifier": "TEXT",
+    "verified_ts": "TEXT",
+    "evidence_hash": "TEXT",
+    "provenance_json": "TEXT",
+    "volatile": "INTEGER DEFAULT 0",
+    "do_not_learn": "INTEGER DEFAULT 0",
+}
+
+_TRAITS_COMPAT_COLUMNS = {
+    "trait_name": "TEXT",
+    "description": "TEXT",
+    "last_updated": "TEXT",
+    "ts": "TEXT",
+    "trait": "TEXT",
+    "value": "REAL",
+    "source": "TEXT",
+}
+
+def _sm_ensure_column(cur, table: str, column: str, column_def: str) -> None:
+    cur.execute(f"PRAGMA table_info({table})")
+    cols = [str(row[1]) for row in cur.fetchall()]
+    if column not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
+
+
+def ensure_qa_cache_schema(db_path: str | None = None) -> bool:
+    """Ensure qa_cache supports verified/unverified provenance without dropping data."""
+    path = db_path or DB_PATH
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with sqlite3.connect(path) as conn:
+            cur = conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS qa_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT,
+                ai_answer TEXT,
+                hit_score REAL,
+                feedback TEXT,
+                timestamp TEXT,
+                source TEXT,
+                source_type TEXT,
+                verification_state TEXT DEFAULT 'UNVERIFIED',
+                verified INTEGER DEFAULT 0,
+                verifier TEXT,
+                verified_ts TEXT,
+                evidence_hash TEXT,
+                provenance_json TEXT,
+                volatile INTEGER DEFAULT 0,
+                do_not_learn INTEGER DEFAULT 0
+            )""")
+            for col, coldef in _QA_CACHE_VERIFICATION_COLUMNS.items():
+                _sm_ensure_column(cur, "qa_cache", col, coldef)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_qa_cache_verified ON qa_cache(verified, verification_state)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_qa_cache_query ON qa_cache(query)")
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[ensure_qa_cache_schema] {e}")
+        return False
+
+
+def ensure_personality_traits_schema(db_path: str | None = None) -> bool:
+    """Ensure one additive compatibility schema for personality1.db.traits."""
+    path = db_path or os.path.join(config.DATASETS_DIR, "personality1.db")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with sqlite3.connect(path) as conn:
+            cur = conn.cursor()
+            cur.execute("""CREATE TABLE IF NOT EXISTS traits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trait_name TEXT,
+                description TEXT,
+                last_updated TEXT,
+                ts TEXT,
+                trait TEXT,
+                value REAL,
+                source TEXT
+            )""")
+            for col, coldef in _TRAITS_COMPAT_COLUMNS.items():
+                _sm_ensure_column(cur, "traits", col, coldef)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_traits_trait_name ON traits(trait_name)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_traits_trait ON traits(trait)")
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"[ensure_personality_traits_schema] {e}")
+        return False
+
 def _json_dumps_safe(value, limit: int = 100000) -> str:
     try:
         raw = json.dumps(value if value is not None else {}, ensure_ascii=False)
@@ -905,28 +999,23 @@ def init_database():
         return None
 
 # --- QA Cache Helpers ---
-def search_answers(query):
-    """Unified search over local QA cache and (optionally) cloud QA cache.
-
-    Local search now supports keyword/entity fallback so general questions do not
-    fail simply because the full natural-language query is not stored verbatim.
-    """
+def search_answers(query, *, include_unverified: bool = False, return_records: bool = False):
+    """Unified verified-first search over local QA cache and optional cloud cache."""
     if _sm_is_volatile_body_fact_query(query):
         logger.info("[V10/V9C] QA cache recall blocked for volatile SelfAware body fact query.")
         return []
     results = []
-
-    # 1) Local sqlite first (fast, offline-safe)
     try:
+        ensure_qa_cache_schema(DB_PATH)
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         ranked = []
+        verified_filter = "" if include_unverified else " AND COALESCE(verified,0)=1 AND UPPER(COALESCE(verification_state,'')) IN ('VERIFIED','PASS','PASS_WITH_UNCERTAINTY')"
         cursor.execute(
-            "SELECT query, ai_answer, COALESCE(hit_score, 0) FROM qa_cache WHERE query LIKE ? OR ai_answer LIKE ? ORDER BY hit_score DESC LIMIT 25",
+            "SELECT query, ai_answer, COALESCE(hit_score, 0), COALESCE(source,''), COALESCE(source_type,''), COALESCE(verification_state,'UNVERIFIED'), COALESCE(verified,0) FROM qa_cache WHERE (query LIKE ? OR ai_answer LIKE ?)" + verified_filter + " ORDER BY hit_score DESC LIMIT 25",
             ('%' + str(query or '') + '%', '%' + str(query or '') + '%')
         )
         rows = cursor.fetchall()
-
         if not rows:
             terms = _sm_search_terms(query)
             if terms:
@@ -934,110 +1023,92 @@ def search_answers(query):
                 params = []
                 for term in terms[:5]:
                     params.extend([f"%{term}%", f"%{term}%"])
-                cursor.execute(f"SELECT query, ai_answer, COALESCE(hit_score, 0) FROM qa_cache WHERE {where} LIMIT 50", params)
+                cursor.execute("SELECT query, ai_answer, COALESCE(hit_score, 0), COALESCE(source,''), COALESCE(source_type,''), COALESCE(verification_state,'UNVERIFIED'), COALESCE(verified,0) FROM qa_cache WHERE (" + where + ")" + verified_filter + " LIMIT 50", params)
                 rows = cursor.fetchall()
-
         conn.close()
-        for qrow, answer, hit_score in rows:
+        for qrow, answer, hit_score, source, source_type, verification_state, verified in rows:
             if _sm_is_low_quality_cached_answer(answer):
+                continue
+            if (not include_unverified) and not bool(int(verified or 0)):
                 continue
             score = max(_sm_rank_text_for_query(query, qrow), _sm_rank_text_for_query(query, answer))
             if score >= 0.40 or str(query or '').lower() in str(qrow or '').lower() or str(query or '').lower() in str(answer or '').lower():
-                ranked.append((score + (float(hit_score or 0) * 0.01), answer))
+                rec = {"query": qrow, "answer": answer, "text": answer, "hit_score": hit_score, "source": source, "source_type": source_type, "verification_state": verification_state, "verified": bool(verified)}
+                ranked.append((score + (float(hit_score or 0) * 0.01), rec))
         ranked.sort(key=lambda item: item[0], reverse=True)
         if ranked:
-            results.extend([answer for _, answer in ranked[:5]])
+            records = [rec for _, rec in ranked[:5]]
+            results.extend(records if return_records else [rec["answer"] for rec in records])
     except Exception as e:
         logger.error(f"Error searching local QA cache: {e}")
-
-    # 2) Cloud MySQL (if enabled and available)
-    try:
-        mesh_cfg = get_mesh_sync_config()
-    except Exception:
-        mesh_cfg = {}
-    if mesh_cfg.get("mesh_enabled", True) and mesh_cfg.get("hub_allowed", True):
+    # Cloud cache remains best-effort but only as externally synced source when requested.
+    if include_unverified:
         try:
-            cloud = _get_cloud_conn()
-            if cloud is not None:
-                cur = cloud.cursor()
-                cur.execute(
-                    "SELECT ai_answer FROM sm_qa_cache WHERE query LIKE %s ORDER BY hit_score DESC LIMIT 5",
-                    ('%' + query + '%',)
-                )
-                rows = cur.fetchall()
-                cloud.close()
-                for (answer,) in rows:
-                    if not _sm_is_low_quality_cached_answer(answer):
-                        results.append(answer)
-        except Exception as e:
-            logger.error(f"[CLOUD QA SEARCH ERROR] {e}")
-
+            mesh_cfg = get_mesh_sync_config()
+        except Exception:
+            mesh_cfg = {}
+        if mesh_cfg.get("mesh_enabled", True) and mesh_cfg.get("hub_allowed", True):
+            try:
+                cloud = _get_cloud_conn()
+                if cloud is not None:
+                    cur = cloud.cursor()
+                    cur.execute("SELECT ai_answer FROM sm_qa_cache WHERE query LIKE %s ORDER BY hit_score DESC LIMIT 5", ('%' + str(query or '') + '%',))
+                    rows = cur.fetchall(); cloud.close()
+                    for (answer,) in rows:
+                        if not _sm_is_low_quality_cached_answer(answer):
+                            results.append({"answer": answer, "text": answer, "source": "cloud_qa_cache", "verified": False} if return_records else answer)
+            except Exception as e:
+                logger.error(f"[CLOUD QA SEARCH ERROR] {e}")
     return results
 
 
-def store_answer(query, answer):
-    """Store answer locally and push to cloud hub if available."""
-    if _sm_is_volatile_body_fact_query(query) or _sm_is_volatile_body_fact_query(answer):
+def store_answer(
+    query,
+    answer,
+    *,
+    source: str = "unknown",
+    source_type: str = "unknown",
+    verification_state: str = "UNVERIFIED",
+    verified: bool = False,
+    verifier: str = "",
+    evidence_hash: str = "",
+    provenance_json=None,
+    volatile: bool = False,
+    do_not_learn: bool = False,
+):
+    """Store QA answer with explicit verification state; default is UNVERIFIED."""
+    if _sm_is_volatile_body_fact_query(query) or _sm_is_volatile_body_fact_query(answer) or volatile:
         logger.info("[V10/V9C] QA cache store blocked for volatile SelfAware body fact.")
         return False
     if _sm_is_low_quality_cached_answer(answer):
         logger.info("[V9.0][CACHE_GUARD] QA cache store blocked for low-quality fallback answer.")
         return False
     timestamp = dt.now().isoformat()
-
-    # 1) Local sqlite
+    verified_i = 1 if bool(verified) or str(verification_state or '').upper() in {"VERIFIED", "PASS", "PASS_WITH_UNCERTAINTY"} else 0
+    state = str(verification_state or ("VERIFIED" if verified_i else "UNVERIFIED")).upper()
+    if bool(do_not_learn) and not verified_i:
+        state = "UNVERIFIED"
     try:
+        ensure_qa_cache_schema(DB_PATH)
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO qa_cache (query, ai_answer, hit_score, feedback, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (query, answer, 0, "ungraded", timestamp)
+            """INSERT INTO qa_cache
+            (query, ai_answer, hit_score, feedback, timestamp, source, source_type, verification_state, verified, verifier, verified_ts, evidence_hash, provenance_json, volatile, do_not_learn)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                query, answer, 1 if verified_i else 0, state.lower(), timestamp,
+                source, source_type, state, verified_i, verifier,
+                timestamp if verified_i else None, evidence_hash,
+                _json_dumps_safe(provenance_json or {}), 1 if volatile else 0, 1 if do_not_learn else 0,
+            )
         )
-        conn.commit()
-        conn.close()
-        logger.info(f"Stored QA cache for query: '{query}' (local)")
+        conn.commit(); conn.close()
+        logger.info(f"Stored QA cache for query: '{query}' (local, state={state})")
+        return True
     except Exception as e:
         logger.error(f"Error storing QA cache locally: {e}")
-
-        # 2) Cloud MySQL (best-effort, NON-BLOCKING)
-        try:
-            mesh_cfg = get_mesh_sync_config() or {}
-        except Exception:
-            mesh_cfg = {}
-
-        try:
-            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False)) if G else False
-        except Exception:
-            local_only = False
-
-        # Respect local-only + hub policy gates
-        if (not local_only) and bool(mesh_cfg.get("mesh_enabled", True)) and bool(mesh_cfg.get("hub_allowed", True)):
-
-            def _cloud_push():
-                try:
-                    cloud = _get_cloud_conn()
-                    if cloud is None:
-                        return
-                    cur = cloud.cursor()
-                    cur.execute(
-                        "INSERT INTO sm_qa_cache (query, ai_answer, hit_score, feedback, timestamp, source_node) "
-                        "VALUES (%s, %s, %s, %s, %s, %s)",
-                        (query, answer, 0, "ungraded", timestamp.replace("T", " "), G.NODE_NAME if G else None)
-                    )
-                    cloud.commit()
-                    cloud.close()
-                    logger.info(f"Stored QA cache for query: '{query}' (cloud)")
-                except Exception as e:
-                    logger.error(f"[CLOUD QA STORE ERROR] {e}")
-
-            # Fire-and-forget to avoid blocking chat/UI responsiveness
-            try:
-                run_async(_cloud_push)
-            except Exception:
-                # Fallback: attempt inline but still best-effort
-                _cloud_push()
-
-
+        return False
 
 
 def store_performance_metrics(conn):
@@ -1089,18 +1160,26 @@ def record_qa_feedback(query, score, feedback, timestamp=None):
         return False
     try:
         if not timestamp:
-           timestamp = dt.now().isoformat()
+            timestamp = dt.now().isoformat()
+        ensure_qa_cache_schema(DB_PATH)
+        numeric_score = float(score or 0)
+        promote = numeric_score >= 1.0 or numeric_score >= 80.0 or str(feedback or "").upper().startswith(("VERIFIED", "PASS"))
+        state = "VERIFIED" if promote else "UNVERIFIED"
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE qa_cache SET hit_score = ?, feedback = ?, timestamp = ? WHERE query LIKE ?",
-            (score, feedback, timestamp, '%' + query + '%')
+            """UPDATE qa_cache
+               SET hit_score = ?, feedback = ?, timestamp = ?, verification_state = ?, verified = ?, verifier = COALESCE(NULLIF(verifier,''),'record_qa_feedback'), verified_ts = CASE WHEN ?=1 THEN ? ELSE verified_ts END
+               WHERE query LIKE ?""",
+            (score, feedback, timestamp, state, 1 if promote else 0, 1 if promote else 0, timestamp, '%' + str(query or '') + '%')
         )
-        conn.commit()
-        conn.close()
-        logger.info(f"Recorded feedback on QA entry: {query} | Score: {score} | Feedback: {feedback} | Time: {timestamp}")
+        conn.commit(); conn.close()
+        logger.info(f"Recorded feedback on QA entry: {query} | Score: {score} | State: {state} | Time: {timestamp}")
+        return True
     except Exception as e:
         logger.error(f"Error recording QA feedback: {e}")
+        return False
+
 
 def export_voice_logs_to_json(conn, output_path):
     try:
@@ -1835,18 +1914,7 @@ def tokenize_text(text):
         return re.findall(r'\b\w+\b', text)
 
 def ensure_qa_cache_table_exists():
-    conn = sqlite3.connect(os.path.join(config.DATASETS_DIR, "ai_learning.db"))
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS qa_cache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT,
-            ai_answer TEXT,
-            hit_score REAL
-        )
-    """)
-    conn.commit()
-    conn.close()
+    return ensure_qa_cache_schema(os.path.join(config.DATASETS_DIR, "ai_learning.db"))
 
 def log_ai_functions_event(event_type, details):
     try:
@@ -3369,6 +3437,27 @@ def ensure_core_schema():
                 raw_meta_json TEXT,
                 presentation_meta_json TEXT)""")
             c.execute("CREATE INDEX IF NOT EXISTS idx_response_layers_ts ON response_layers(ts)")
+            # Unified cognitive spine: QA cache must distinguish VERIFIED vs UNVERIFIED.
+            c.execute("""CREATE TABLE IF NOT EXISTS qa_cache (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                query TEXT,
+                ai_answer TEXT,
+                hit_score REAL,
+                feedback TEXT,
+                timestamp TEXT,
+                source TEXT,
+                source_type TEXT,
+                verification_state TEXT DEFAULT 'UNVERIFIED',
+                verified INTEGER DEFAULT 0,
+                verifier TEXT,
+                verified_ts TEXT,
+                evidence_hash TEXT,
+                provenance_json TEXT,
+                volatile INTEGER DEFAULT 0,
+                do_not_learn INTEGER DEFAULT 0)""")
+            for _col, _def in _QA_CACHE_VERIFICATION_COLUMNS.items():
+                _sm_ensure_column(c, "qa_cache", _col, _def)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_qa_cache_verified ON qa_cache(verified, verification_state)")
             c.execute("""CREATE TABLE IF NOT EXISTS intent_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,
@@ -3391,6 +3480,17 @@ def ensure_core_schema():
                 response TEXT,
                 tone TEXT,
                 complexity TEXT)""")
+            pc.execute("""CREATE TABLE IF NOT EXISTS traits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trait_name TEXT,
+                description TEXT,
+                last_updated TEXT,
+                ts TEXT,
+                trait TEXT,
+                value REAL,
+                source TEXT)""")
+            for _col, _def in _TRAITS_COMPAT_COLUMNS.items():
+                _sm_ensure_column(pc, "traits", _col, _def)
             pconn.commit()
             
     except Exception as e:

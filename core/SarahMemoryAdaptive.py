@@ -649,9 +649,13 @@ def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS traits (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trait_name TEXT UNIQUE NOT NULL,
+            trait_name TEXT UNIQUE,
             description TEXT,
-            last_updated TEXT
+            last_updated TEXT,
+            ts TEXT,
+            trait TEXT,
+            value REAL,
+            source TEXT
         )
     """)
 
@@ -660,10 +664,18 @@ def _ensure_emotion_db_schema(conn: sqlite3.Connection) -> None:
     try:
         cursor.execute("PRAGMA table_info(traits);")
         cols = [r[1] for r in cursor.fetchall()]
-        if "last_updated" not in cols:
-            cursor.execute(
-                "ALTER TABLE traits ADD COLUMN last_updated TEXT;"
-            )
+        compat_columns = {
+            "trait_name": "TEXT",
+            "description": "TEXT",
+            "last_updated": "TEXT",
+            "ts": "TEXT",
+            "trait": "TEXT",
+            "value": "REAL",
+            "source": "TEXT",
+        }
+        for _col, _def in compat_columns.items():
+            if _col not in cols:
+                cursor.execute(f"ALTER TABLE traits ADD COLUMN {_col} {_def};")
     except Exception:
         # Non-fatal: schema enforcement should never break boot
         pass

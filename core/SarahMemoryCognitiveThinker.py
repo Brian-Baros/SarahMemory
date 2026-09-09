@@ -1061,7 +1061,11 @@ def _is_development_or_evolution_candidate(pa: Optional[Dict[str, Any]]) -> bool
     perms = {str(v).strip().lower() for v in (action.get("required_permissions") or []) if str(v).strip()}
     if bool(action.get("development_candidate") or action.get("evolution_candidate") or action.get("sandbox_only")):
         return True
-    if action.get("target_files") or action.get("subsystems"):
+    if bool(action.get("route_metadata_only")) and not action.get("target_files"):
+        return False
+    if action.get("target_files"):
+        return True
+    if action.get("subsystems") and (action_type in {"patch_or_update", "patch_core", "core_patch", "self_modify", "evolution", "capability_extension"} or bool(action.get("side_effecting_route"))):
         return True
     if "patchcore" in perms:
         return True

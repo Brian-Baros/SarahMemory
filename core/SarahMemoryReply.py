@@ -2064,9 +2064,14 @@ def _log_emotion_safe(emotion: str, intensity: float = 0.5):
         try:
             con = sqlite3.connect(db)
             cur = con.cursor()
+            try:
+                from SarahMemoryDatabase import ensure_personality_traits_schema  # type: ignore
+                ensure_personality_traits_schema(os.path.join(os.getcwd(), "data", "memory", "datasets", "personality1.db"))
+            except Exception:
+                pass
             cur.execute(
-                "INSERT INTO traits(ts, trait, value) VALUES (?,?,?)",
-                (time.strftime("%Y-%m-%dT%H:%M:%S"), emotion, float(intensity)),
+                "INSERT INTO traits(ts, trait, value, source) VALUES (?,?,?,?)",
+                (time.strftime("%Y-%m-%dT%H:%M:%S"), emotion, float(intensity), "SarahMemoryReply.emotion_fallback"),
             )
             con.commit()
             con.close()

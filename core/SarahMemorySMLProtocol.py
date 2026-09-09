@@ -3998,6 +3998,37 @@ def sml_resolve_safe_cognitive_answer(
 
 
 
+def sml_build_answer_candidate_policy(text: str, *, context: Optional[Mapping[str, Any]] = None, local_only: bool = True) -> Dict[str, Any]:
+    """Declare source/tier policy for the unified cognitive spine.
+
+    SML selects candidate lanes and ownership metadata only. It does not answer,
+    authorize execution, or bypass Neuron/Compare.
+    """
+    cv = sml_build_dynamic_claim_vector(text, context=context)
+    freshness = bool(cv.get("freshness_required"))
+    return {
+        "schema": "SarahMemory.sml.answer_candidate_policy.v1",
+        "owner": MODULE_NAME,
+        "question": str(text or ""),
+        "claim_vector": cv,
+        "knowledge_tiers": [
+            "TIER_0_DETERMINISTIC",
+            "TIER_1_VERIFIED_LOCAL",
+            "TIER_2_LOCAL_LLM_CANDIDATE",
+            "TIER_3_RESEARCH_OR_API",
+        ],
+        "requires_neuron_convergence": True,
+        "requires_compare_release": True,
+        "local_only": bool(local_only),
+        "freshness_required": freshness,
+        "local_llm_policy": "candidate_only_never_final_authority",
+        "cache_policy": "verified_cache_only_for_answer_retrieval",
+        "execution_authority": False,
+        "ts": _utc_now(),
+    }
+
+
+
 
 def _sml_question_operator(text: str) -> str:
     t = _normalize_token(str(text or "").split(" ", 1)[0] if str(text or "").strip() else "")

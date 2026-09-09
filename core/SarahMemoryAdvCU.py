@@ -3382,20 +3382,31 @@ def _advcu_safe_answer_only(text: str, parsed: Optional[ParsedCommand] = None) -
 
 
 def _advcu_candidate_from_search_answers(query: str) -> Optional[Dict[str, Any]]:
+    """Return only verified QA-cache records as high-confidence local knowledge."""
     try:
         import SarahMemoryDatabase as _SMDB  # type: ignore
-        answers = _SMDB.search_answers(query)
+        answers = _SMDB.search_answers(query, include_unverified=False, return_records=True)
         if isinstance(answers, list):
-            for ans in answers[:5]:
+            for rec in answers[:5]:
+                ans = rec.get("answer") if isinstance(rec, dict) else rec
                 if _advcu_answer_quality_ok(ans):
+                    verified = bool(rec.get("verified")) if isinstance(rec, dict) else False
+                    if not verified:
+                        continue
                     return {
                         "answer": _normalize_text(ans),
-                        "source": "local_qa_cache",
+                        "source": "verified_local_qa_cache",
+                        "source_type": str(rec.get("source_type") or rec.get("source") or "verified_qa_cache") if isinstance(rec, dict) else "verified_qa_cache",
                         "db": "ai_learning.db",
                         "table": "qa_cache",
                         "confidence": 0.88,
-                        "method": "SarahMemoryDatabase.search_answers",
+                        "verified": True,
+                        "verification_state": str(rec.get("verification_state") or "VERIFIED") if isinstance(rec, dict) else "VERIFIED",
+                        "method": "SarahMemoryDatabase.search_answers(verified_only)",
                     }
+    except TypeError:
+        # Older Database contract: do not promote legacy cache into high confidence.
+        return None
     except Exception:
         return None
     return None

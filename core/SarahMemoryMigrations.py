@@ -537,22 +537,44 @@ def _add_column_if_missing(cur: sqlite3.Cursor, table_name: str, column_name: st
     return _exec(cur, sql)
 
 
-def ensure_traits_last_updated_column(conn):
-    """
-    Ensures the traits table contains the 'last_updated' column.
-    Idempotent and safe to run on every boot.
-    """
+def ensure_personality_traits_schema(conn):
+    """Ensure additive compatibility schema for personality1.db.traits."""
     try:
         cursor = conn.cursor()
-        if _add_column_if_missing(
-            cursor,
-            "traits",
-            "last_updated",
-            "last_updated TEXT DEFAULT CURRENT_TIMESTAMP",
-        ):
-            conn.commit()
+        _exec(cursor, """
+            CREATE TABLE IF NOT EXISTS traits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trait_name TEXT,
+                description TEXT,
+                last_updated TEXT,
+                ts TEXT,
+                trait TEXT,
+                value REAL,
+                source TEXT
+            )
+        """)
+        for col, coldef in {
+            "trait_name": "trait_name TEXT",
+            "description": "description TEXT",
+            "last_updated": "last_updated TEXT",
+            "ts": "ts TEXT",
+            "trait": "trait TEXT",
+            "value": "value REAL",
+            "source": "source TEXT",
+        }.items():
+            _add_column_if_missing(cursor, "traits", col, coldef)
+        _exec(cursor, "CREATE INDEX IF NOT EXISTS idx_traits_trait_name ON traits(trait_name)")
+        _exec(cursor, "CREATE INDEX IF NOT EXISTS idx_traits_trait ON traits(trait)")
+        conn.commit()
+        return True
     except Exception as e:
-        logger.warning(f"[MIGRATIONS] Failed to ensure traits.last_updated column: {e}")
+        logger.warning(f"[MIGRATIONS] Failed to ensure personality traits schema: {e}")
+        return False
+
+
+def ensure_traits_last_updated_column(conn):
+    """Backward-compatible wrapper for the old v8 MOD migration name."""
+    return ensure_personality_traits_schema(conn)
 
 # ============================================================================
 # VERSION-SPECIFIC MIGRATIONS
@@ -642,21 +664,21 @@ def _migrate_v2_0() -> bool:
             ON emotion_states(ts)
         """)
         
-        # Personality traits table
+        # Personality traits table - compatibility schema for current traits and legacy event rows.
         _exec(cur, """
             CREATE TABLE IF NOT EXISTS traits (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts TEXT NOT NULL,
-                trait TEXT NOT NULL,
-                value REAL DEFAULT 0.5,
+                trait_name TEXT,
+                description TEXT,
+                last_updated TEXT,
+                ts TEXT,
+                trait TEXT,
+                value REAL,
                 source TEXT
             )
         """)
-        
-        _exec(cur, """
-            CREATE INDEX IF NOT EXISTS idx_traits_ts 
-            ON traits(ts)
-        """)
+        ensure_personality_traits_schema(conn)
+        _exec(cur, "CREATE INDEX IF NOT EXISTS idx_traits_ts ON traits(ts)")
         
         conn.commit()
         conn.close()

@@ -881,6 +881,68 @@ def compare_reply(user_text: str, generated_response: str, intent: str = "genera
         }
 
 
+
+def _compare_is_general_factual_question(text: str) -> bool:
+    t = _normalize_text(text).lower()
+    if not t:
+        return False
+    factual_starters = ("who is", "who was", "what is", "what are", "when did", "when was", "where is", "where was", "how did", "why did")
+    return t.startswith(factual_starters)
+
+
+def compare_candidate_release(user_text: str, candidate: Dict[str, Any], intent: str = "general", *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Final epistemic release gate for fast-source candidates.
+
+    Deterministic/self-aware/explicitly verified candidates can pass locally.
+    Local-LLM general factual claims must not be released solely because they are
+    well-formed; they require evidence or a verified cache/source.
+    """
+    meta = dict(meta or {})
+    cand = dict(candidate or {})
+    answer = _normalize_text(cand.get("answer") or cand.get("reply") or cand.get("response") or "")
+    source = str(cand.get("source") or "candidate")
+    source_type = str(cand.get("source_type") or source).lower()
+    evidence = cand.get("evidence") if isinstance(cand.get("evidence"), list) else []
+    validity = validate_response_quality(user_text, answer, intent=intent)
+    if not validity.get("accepted"):
+        return {
+            "ok": False, "accepted": False, "decision": "REJECT", "reply": "",
+            "confidence": 0.0, "verified": False, "source": source,
+            "reason": "output_validity_guard_rejected_candidate", "guarddogs": {"validity": validity},
+        }
+
+    verified = bool(cand.get("verified"))
+    deterministic = bool(cand.get("deterministic"))
+    trusted_source = any(token in source_type for token in ("selfaware", "logiccalc", "clock", "verified", "evidence", "research"))
+    factual = _compare_is_general_factual_question(user_text) or str(intent or "").lower() in {"general", "question", "knowledge", "general_knowledge"}
+
+    if deterministic or verified or trusted_source or evidence:
+        confidence = max(float(cand.get("confidence") or 0.0), 0.80 if (deterministic or verified or trusted_source) else 0.68)
+        return {
+            "ok": True, "accepted": True, "decision": "PASS" if confidence >= 0.75 else "PASS_WITH_UNCERTAINTY",
+            "reply": answer, "confidence": round(min(confidence, 0.99), 3),
+            "verified": bool(deterministic or verified or trusted_source or evidence),
+            "source": source, "source_type": source_type, "evidence_count": len(evidence),
+            "compare_verifies_release_not_execution": True,
+        }
+
+    if "local_llm" in source_type and factual:
+        return {
+            "ok": False, "accepted": False, "decision": "NEED_MORE_EVIDENCE", "reply": "",
+            "confidence": 0.0, "verified": False, "source": source, "source_type": source_type,
+            "reason": "local_llm_general_factual_candidate_requires_evidence",
+            "recommended_next": "route_to_neuron_research_or_verified_local_source",
+        }
+
+    # Non-factual chat may pass as presentation-only with uncertainty.
+    return {
+        "ok": True, "accepted": True, "decision": "PASS_WITH_UNCERTAINTY", "reply": answer,
+        "confidence": round(max(0.55, float(cand.get("confidence") or 0.55)), 3),
+        "verified": False, "source": source, "source_type": source_type,
+        "compare_verifies_release_not_execution": True,
+    }
+
+
 # =============================================================================
 # COMPARE MULTIPLE CANDIDATES
 # =============================================================================

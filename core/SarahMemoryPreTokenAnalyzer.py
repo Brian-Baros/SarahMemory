@@ -1778,6 +1778,18 @@ _SECURITY_TERMS = (
     "malware", "payload", "reverse shell", "credential dump", "rootkit", "stealth",
 )
 
+_ANSWER_ONLY_CONTEXT_TERMS = (
+    "what is", "what are", "why", "how does", "how do", "explain", "describe", "define",
+    "tell me about", "write a poem", "write poem", "draft a poem", "story about", "poem about",
+    "without deleting", "without changing", "without modifying", "without running", "do not delete",
+    "don't delete", "not deleting anything", "camera obscura",
+)
+
+_DIRECT_ACTION_TARGET_TERMS = (
+    " file", " folder", " directory", " driver", " registry", " firmware", " bios", " app",
+    " application", " device", " camera", " microphone", " disk", " drive", " model", " service",
+)
+
 
 def _sel_contains_any(lowered: str, terms: Iterable[str]) -> bool:
     try:
@@ -1797,6 +1809,25 @@ def _sel_contains_any(lowered: str, terms: Iterable[str]) -> bool:
         return False
     except Exception:
         return False
+
+
+def _sel_is_answer_only_context(lowered: str) -> bool:
+    hay = f" {str(lowered or '').lower()} "
+    if not any(term in hay for term in _ANSWER_ONLY_CONTEXT_TERMS):
+        return False
+    direct_action = re.search(
+        r"\b(delete|remove|patch|install|execute|run|launch|open|move|copy|replace|modify|edit|save|turn on|turn off|enable|disable)\b",
+        hay,
+    )
+    if not direct_action:
+        return True
+    if "without " in hay or "do not " in hay or "don't " in hay or "not deleting anything" in hay:
+        return True
+    if "poem" in hay or "story" in hay:
+        return True
+    if "camera obscura" in hay:
+        return True
+    return not any(target in hay for target in _DIRECT_ACTION_TARGET_TERMS)
 
 
 def classify_runtime_governance_lane(
@@ -1823,6 +1854,7 @@ def classify_runtime_governance_lane(
     has_hardware = _sel_contains_any(lowered, _HARDWARE_TERMS)
     has_model = _sel_contains_any(lowered, _MODEL_TERMS)
     has_security = _sel_contains_any(lowered, _SECURITY_TERMS)
+    answer_only_context = _sel_is_answer_only_context(lowered)
 
     answer_like = (
         any(lowered.startswith(s) for s in _ANSWER_ONLY_STARTERS)
@@ -1837,6 +1869,13 @@ def classify_runtime_governance_lane(
     required_checks: List[str] = ["pretok_lite"]
     deny_by_default: List[str] = ["network", "shell", "filesystem_write", "credential_access", "hardware_control"]
     reasons: List[str] = []
+
+    if answer_only_context and answer_like:
+        has_mutation = False
+        has_hardware = False
+        action_detected = False
+        execution_risk = min(execution_risk, 0.20)
+        reasons.append("answer_only_context_overrides_keyword_match")
 
     if has_network:
         tier = max(tier, 3)
@@ -1902,6 +1941,7 @@ def classify_runtime_governance_lane(
             "hardware": bool(has_hardware),
             "model": bool(has_model),
             "security": bool(has_security),
+            "answer_only_context": bool(answer_only_context),
         },
         "reasons": reasons,
         "execution_authority": False,
@@ -2083,4 +2123,3 @@ def sml_build_initial_packet(text, context_packet=None, payload=None):
     from SarahMemorySMLProtocol import sml_build_ingress_packet
     return sml_build_ingress_packet(str(text or ""), payload=payload or {}, context_packet=context_packet or {}, caller="SarahMemoryPreTokenAnalyzer")
 # --- SML PRETOKEN SPECIALIZATION END ---
-

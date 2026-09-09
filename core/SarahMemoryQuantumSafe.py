@@ -325,6 +325,13 @@ _QIST_ACTION_WORDS: Tuple[str, ...] = (
     "move", "copy", "replace", "modify", "edit", "apply", "rollback", "create file",
 )
 
+_QIST_ANSWER_CONTEXTS: Tuple[str, ...] = (
+    "what is", "what are", "why", "how does", "how do", "explain", "describe", "define",
+    "tell me about", "write a poem", "write poem", "draft a poem", "story about", "poem about",
+    "without deleting", "without changing", "without modifying", "without running", "do not delete",
+    "don't delete", "not deleting anything", "camera obscura",
+)
+
 
 def _qist_clamp01(value: Any, default: float = 0.0) -> float:
     try:
@@ -348,9 +355,21 @@ def _qist_keyword_fit(text: str, keywords: Iterable[str]) -> float:
     return min(1.0, max(0.35, hits / 2.0))
 
 
+def _qist_answer_only_context(lowered: str) -> bool:
+    hay = f" {str(lowered or '').lower()} "
+    if not any(term in hay for term in _QIST_ANSWER_CONTEXTS):
+        return False
+    if "without " in hay or "do not " in hay or "don't " in hay or "not deleting anything" in hay:
+        return True
+    if "poem" in hay or "story" in hay or "camera obscura" in hay:
+        return True
+    return hay.strip().startswith(("what ", "why ", "how ", "define ", "explain ", "describe ", "tell me "))
+
+
 def _qist_text_flags(text: str) -> Dict[str, bool]:
     lowered = str(text or "").lower()
     question_like = lowered.strip().endswith("?") or lowered.strip().startswith(("what ", "why ", "how ", "define ", "explain ", "tell me "))
+    answer_only_context = _qist_answer_only_context(lowered)
     action_like = any(word in lowered for word in _QIST_ACTION_WORDS)
     file_like = any(marker in lowered for marker in (".py", ".json", ".txt", ".md", "file", "folder", "directory"))
     rollback_like = "rollback" in lowered or "backup" in lowered or "restore" in lowered
@@ -359,9 +378,10 @@ def _qist_text_flags(text: str) -> Dict[str, bool]:
     network_like = any(word in lowered for word in ("latest", "current", "today", "news", "web", "internet", "online"))
     return {
         "question_like": question_like,
-        "action_like": action_like,
-        "file_like": file_like,
-        "rollback_like": rollback_like,
+        "answer_only_context": answer_only_context,
+        "action_like": False if answer_only_context else action_like,
+        "file_like": False if answer_only_context else file_like,
+        "rollback_like": False if answer_only_context else rollback_like,
         "model_like": model_like,
         "security_like": security_like,
         "network_like": network_like,
@@ -375,6 +395,8 @@ def build_qist_candidates_from_text(text: str, governance_lane: Optional[Dict[st
     active_lane = str(lane.get("lane") or "").strip()
     expected_candidate = _QIST_LANE_TO_CANDIDATE.get(active_lane, "")
     flags = _qist_text_flags(text)
+    if flags.get("answer_only_context") and active_lane in {"", "fast_answer", "governed_action", "hardware_guarded"}:
+        expected_candidate = "answer_only"
 
     out: List[Dict[str, Any]] = []
     for tmpl in _QIST_CANDIDATE_TEMPLATES:
@@ -398,7 +420,7 @@ def build_qist_candidates_from_text(text: str, governance_lane: Optional[Dict[st
 
         # Text-level pressure when /api/qist/rank is called directly without lane metadata.
         if cid == "answer_only":
-            if flags["question_like"] and not flags["action_like"] and not flags["model_like"] and not flags["security_like"]:
+            if (flags["question_like"] or flags.get("answer_only_context")) and not flags["action_like"] and not flags["model_like"] and not flags["security_like"]:
                 fit = max(fit, 0.85)
             if flags["action_like"] or flags["file_like"] or flags["model_like"] or flags["security_like"]:
                 risk = max(risk, 0.50)
@@ -492,6 +514,8 @@ def qist_rank_meaning_candidates(
     active_lane = governance_lane.get("lane") if isinstance(governance_lane, dict) else ""
     expected_candidate = _QIST_LANE_TO_CANDIDATE.get(str(active_lane or ""), "")
     flags = _qist_text_flags(text)
+    if flags.get("answer_only_context") and str(active_lane or "") in {"", "fast_answer", "governed_action", "hardware_guarded"}:
+        expected_candidate = "answer_only"
 
     ranked: List[Dict[str, Any]] = []
     for i, opt in enumerate(opts):
@@ -623,4 +647,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

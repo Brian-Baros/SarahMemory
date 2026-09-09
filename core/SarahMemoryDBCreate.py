@@ -317,8 +317,13 @@ web_static_data = [
 personality_schema = """
 CREATE TABLE IF NOT EXISTS traits (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    trait_name TEXT NOT NULL,
-    description TEXT
+    trait_name TEXT,
+    description TEXT,
+    last_updated TEXT,
+    ts TEXT,
+    trait TEXT,
+    value REAL,
+    source TEXT
 );
 CREATE TABLE IF NOT EXISTS responses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -364,7 +369,18 @@ CREATE TABLE IF NOT EXISTS qa_cache (
     query TEXT,
     ai_answer TEXT,
     hit_score REAL,
-    timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+    feedback TEXT,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+    source TEXT,
+    source_type TEXT,
+    verification_state TEXT DEFAULT 'UNVERIFIED',
+    verified INTEGER DEFAULT 0,
+    verifier TEXT,
+    verified_ts TEXT,
+    evidence_hash TEXT,
+    provenance_json TEXT,
+    volatile INTEGER DEFAULT 0,
+    do_not_learn INTEGER DEFAULT 0
 );
 """
 
@@ -470,7 +486,17 @@ CREATE TABLE IF NOT EXISTS qa_cache (
     ai_answer TEXT,
     hit_score REAL,
     feedback TEXT,
-    timestamp TEXT
+    timestamp TEXT,
+    source TEXT,
+    source_type TEXT,
+    verification_state TEXT DEFAULT 'UNVERIFIED',
+    verified INTEGER DEFAULT 0,
+    verifier TEXT,
+    verified_ts TEXT,
+    evidence_hash TEXT,
+    provenance_json TEXT,
+    volatile INTEGER DEFAULT 0,
+    do_not_learn INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS vocal_projects (
     project_id TEXT PRIMARY KEY,

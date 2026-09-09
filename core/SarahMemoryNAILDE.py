@@ -2526,6 +2526,159 @@ class SarahMemoryNAILDERuntime:
             "live_runtime_verified": False,
         }
 
+    def _deterministic_qsml_fallback_synthesis(self, spec: Dict[str, Any], architecture_error: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a bounded QSML-derived sandbox app when no local model is online.
+
+        This is a governed availability fallback, not a shortcut around the NAILDE
+        gates. It stays local, produces source files only, and still flows through
+        static validation, Addons packaging, install approval, and separate run
+        approval. The fallback chooses behavior from the compiled QSML project
+        kind and user text rather than from a single prompt-specific answer.
+        """
+        user_goal = str(spec.get("top_prompt") or spec.get("goal") or "").strip()
+        details = str(spec.get("details_prompt") or "").strip()
+        joined = f"{user_goal}\n{details}".lower()
+        app_name = str(spec.get("application_name") or self._title_from_prompt(user_goal) or "NAILDE Application").strip()[:160]
+
+        kind = "generic"
+        if re.search(r"\b(tic\s*tac\s*toe|noughts?\s+and\s+crosses|xo game)\b", joined):
+            kind = "tic_tac_toe"
+        elif re.search(r"\b(racing|race|tron|light\s*cycle|vehicle|car)\b", joined):
+            kind = "racing"
+        elif re.search(r"\b(snake)\b", joined):
+            kind = "snake"
+        elif re.search(r"\b(pong|paddle)\b", joined):
+            kind = "pong"
+        elif re.search(r"\b(calculator|calculate|math)\b", joined):
+            kind = "calculator"
+        elif re.search(r"\b(todo|to-do|task list|checklist)\b", joined):
+            kind = "todo"
+        elif re.search(r"\b(note|journal|memo|writer)\b", joined):
+            kind = "notes"
+
+        project_kind = "game" if kind in {"tic_tac_toe", "racing", "snake", "pong"} else str(spec.get("project_kind") or "web_application")
+        requirements = [
+            {"requirement_id": "req_user_goal", "text": user_goal, "kind": "functional", "priority": "must", "acceptance": ["Application opens locally from sandbox/web/index.html."]},
+            {"requirement_id": "req_local_first", "text": "Use only local browser/runtime features; do not require network or credentials.", "kind": "constraint", "priority": "must", "acceptance": ["No fetch, WebSocket, external script, or credential access is present."]},
+            {"requirement_id": "req_state", "text": "Persist lightweight app state in browser localStorage where useful.", "kind": "functional", "priority": "should", "acceptance": ["The app can save or reset its own local state without touching SarahMemory live files."]},
+        ]
+        blueprint = {
+            "name": app_name,
+            "goal": user_goal,
+            "project_kind": project_kind,
+            "languages": ["html", "css", "javascript"],
+            "frameworks": ["browser_dom"],
+            "requirements": requirements,
+            "components": [
+                {"id": "ui_shell", "name": "Local Web UI", "responsibility": "Render the requested sandbox application and visible controls.", "interfaces": ["DOM"]},
+                {"id": "app_logic", "name": "Application Logic", "responsibility": f"Implement the {kind.replace('_', ' ')} behavior derived from the user request.", "interfaces": ["JavaScript event handlers"]},
+                {"id": "state", "name": "Local State", "responsibility": "Keep score, notes, entries, or app values inside the sandbox browser session.", "interfaces": ["localStorage"]},
+            ],
+            "dependencies": [{"name": "modern_browser", "kind": "stdlib", "required": True, "reason": "Static HTML/CSS/JS application runtime."}],
+            "requested_capabilities": [],
+            "files": [
+                {"path": "sandbox/web/index.html", "purpose": "Application entrypoint and semantic layout.", "language": "html", "artifact_role": "ENTRYPOINT", "component_id": "ui_shell", "entrypoint": True, "depends_on": ["sandbox/web/styles.css", "sandbox/web/app.js"], "acceptance": ["Loads app.js and styles.css."]},
+                {"path": "sandbox/web/styles.css", "purpose": "Responsive visual presentation.", "language": "css", "artifact_role": "SOURCE", "component_id": "ui_shell", "entrypoint": False, "depends_on": [], "acceptance": ["Works on desktop and mobile widths."]},
+                {"path": "sandbox/web/app.js", "purpose": "Interactive application behavior.", "language": "javascript", "artifact_role": "SOURCE", "component_id": "app_logic", "entrypoint": False, "depends_on": [], "acceptance": ["Provides reset and local app interactions."]},
+                {"path": "sandbox/app_manifest.json", "purpose": "QSML fallback manifest for NAILDE evidence.", "language": "json", "artifact_role": "MANIFEST", "component_id": "state", "entrypoint": False, "depends_on": [], "acceptance": ["Valid JSON."]},
+                {"path": "sandbox/README.md", "purpose": "User-facing build notes and governance boundaries.", "language": "markdown", "artifact_role": "DOCUMENTATION", "component_id": "ui_shell", "entrypoint": False, "depends_on": [], "acceptance": ["Explains sandbox-only status."]},
+            ],
+            "tests": [
+                {"name": "static_text_validation", "type": "static", "target": "sandbox/*", "description": "Run NAILDE text validation on generated artifacts."},
+                {"name": "addon_package_validation", "type": "static", "target": "sandbox/addon_package", "description": "Validate Addons manifest, wrapper, runtime contract, and integrity hashes."},
+            ],
+            "acceptance_criteria": [
+                "The requested app opens as a complete local static web application.",
+                "The app can be packaged for Addons but is not installed or run without separate user approval.",
+                "No live SarahMemory CORE/API/UI, driver, model, or device state is modified.",
+            ],
+            "constraints": {"local_first": True, "sandbox_only": True, "live_core_write": False, "self_approval": False, "shell_allowed": False, "network_allowed": False},
+            "run": {"entrypoint": "sandbox/web/index.html", "method": "static_web", "arguments": []},
+            "asset_requests": [],
+            "phase": "ARCHITECT",
+            "metadata": {
+                "schema": "SarahMemory.qsml.application_blueprint.v0_2",
+                "planner": "NAILDE_deterministic_qsml_fallback",
+                "fallback_reason": str(architecture_error.get("error") or "local_model_unavailable"),
+                "prompt_specific_template_selection": False,
+                "execution_authority": False,
+            },
+        }
+
+        config_json = json.dumps({"appName": app_name, "kind": kind, "goal": user_goal, "sandboxOnly": True, "executionAuthority": False}, ensure_ascii=False)
+        safe_title = app_name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        safe_goal = user_goal.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        html = f'''<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{safe_title}</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <p class="eyebrow">NAILDE Sandbox Application</p>
+      <h1>{safe_title}</h1>
+      <p>{safe_goal}</p>
+    </header>
+    <section id="app" class="workspace" aria-live="polite"></section>
+    <section class="governance">
+      <strong>Sandbox boundary</strong>
+      <span>Local static app. Addons install and runtime launch require separate user approval.</span>
+    </section>
+  </main>
+  <script id="nailde-config" type="application/json">{config_json}</script>
+  <script src="app.js"></script>
+</body>
+</html>
+'''
+        css = '''*{box-sizing:border-box}body{margin:0;font-family:Inter,Segoe UI,system-ui,sans-serif;background:#f6f8fb;color:#111827}.app-shell{width:min(1040px,calc(100% - 24px));margin:0 auto;padding:20px}.hero{padding:18px 0 12px}.eyebrow{margin:0 0 6px;color:#2563eb;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}h1{margin:0;font-size:clamp(28px,5vw,46px);line-height:1.05}p{line-height:1.5}.workspace{display:grid;gap:14px;margin-top:14px}.panel{background:white;border:1px solid #d8dee9;border-radius:8px;padding:16px;box-shadow:0 8px 24px rgba(15,23,42,.08)}button,input,textarea{font:inherit}button{border:0;border-radius:7px;background:#2563eb;color:white;padding:10px 13px;cursor:pointer}button.secondary{background:#e5e7eb;color:#111827}button:disabled{opacity:.55;cursor:not-allowed}.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grid{display:grid;gap:8px}.board{display:grid;grid-template-columns:repeat(3,minmax(72px,1fr));gap:8px;max-width:360px}.cell{aspect-ratio:1;border:1px solid #cbd5e1;border-radius:8px;background:#fff;font-size:42px;font-weight:800;color:#111827}.track{position:relative;height:420px;max-width:520px;overflow:hidden;border-radius:8px;background:linear-gradient(90deg,#111827 0 18%,#1f2937 18% 82%,#111827 82%)}.lane{position:absolute;top:0;bottom:0;width:2px;background:#94a3b8;opacity:.55}.car,.obstacle,.ball,.paddle,.snake,.food{position:absolute;border-radius:6px}.car{width:42px;height:64px;background:#38bdf8;bottom:20px}.obstacle{width:42px;height:64px;background:#f97316}.calc{display:grid;gap:8px;max-width:360px}.calc-display{width:100%;padding:14px;border:1px solid #cbd5e1;border-radius:8px;text-align:right;font-size:28px}.calc-keys{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.list{display:grid;gap:8px}.item{display:flex;justify-content:space-between;gap:8px;align-items:center;border:1px solid #e5e7eb;border-radius:8px;padding:8px}.done{text-decoration:line-through;color:#64748b}.governance{margin-top:18px;display:flex;gap:8px;flex-wrap:wrap;border-top:1px solid #d8dee9;padding-top:12px;color:#475569;font-size:13px}@media(max-width:640px){.app-shell{width:100%;padding:14px}.board{max-width:none}.track{height:360px}}'''
+        js = r'''const config=JSON.parse(document.getElementById("nailde-config").textContent||"{}");const app=document.getElementById("app");const storeKey="nailde:"+config.kind+":"+config.appName;function panel(html){app.innerHTML='<section class="panel">'+html+"</section>"}function resetStore(){localStorage.removeItem(storeKey);location.reload()}function ticTacToe(){let state=JSON.parse(localStorage.getItem(storeKey)||'{"cells":["","","","","","","","",""],"turn":"X","winner":""}');const wins=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];function check(){for(const w of wins){const [a,b,c]=w;if(state.cells[a]&&state.cells[a]===state.cells[b]&&state.cells[a]===state.cells[c])return state.cells[a]}return state.cells.every(Boolean)?"Draw":""}function move(i){if(state.cells[i]||state.winner)return;state.cells[i]=state.turn;state.winner=check();state.turn=state.turn==="X"?"O":"X";localStorage.setItem(storeKey,JSON.stringify(state));render()}function render(){panel('<div class="row"><strong>'+(state.winner?("Result: "+state.winner):("Turn: "+state.turn))+'</strong><button class="secondary" id="reset">Reset</button></div><div class="board">'+state.cells.map((v,i)=>'<button class="cell" data-i="'+i+'">'+v+'</button>').join("")+'</div>');document.querySelectorAll(".cell").forEach(b=>b.onclick=()=>move(Number(b.dataset.i)));document.getElementById("reset").onclick=()=>{state={cells:["","","","","","","","",""],turn:"X",winner:""};localStorage.setItem(storeKey,JSON.stringify(state));render()}}render()}function racing(){let lane=1,score=0,speed=3,obstacles=[],running=true;panel('<div class="row"><strong id="score">Score: 0</strong><button class="secondary" id="reset">Reset</button></div><div class="track" id="track"><span class="lane" style="left:25%"></span><span class="lane" style="left:50%"></span><span class="lane" style="left:75%"></span><div class="car" id="car"></div></div>');const track=document.getElementById("track"),car=document.getElementById("car"),scoreEl=document.getElementById("score");document.getElementById("reset").onclick=()=>location.reload();document.addEventListener("keydown",e=>{if(e.key==="ArrowLeft"||e.key==="a")lane=Math.max(0,lane-1);if(e.key==="ArrowRight"||e.key==="d")lane=Math.min(3,lane+1);if(e.key==="r")location.reload()});function step(){if(!running)return;score++;if(score%160===0)speed++;if(score%55===0)obstacles.push({lane:Math.floor(Math.random()*4),y:-70,el:null});const xs=[13,36,59,82];car.style.left="calc("+xs[lane]+"% - 21px)";for(const o of obstacles){o.y+=speed;if(!o.el){o.el=document.createElement("div");o.el.className="obstacle";track.appendChild(o.el)}o.el.style.left="calc("+xs[o.lane]+"% - 21px)";o.el.style.top=o.y+"px";if(o.lane===lane&&o.y>300&&o.y<390){running=false;scoreEl.textContent="Crash. Score: "+score+" - press Reset"}}obstacles=obstacles.filter(o=>o.y<460);scoreEl.textContent=running?"Score: "+score+"  Speed: "+speed:scoreEl.textContent;if(running)requestAnimationFrame(step)}step()}function calculator(){panel('<div class="calc"><input class="calc-display" id="display" value="0" readonly><div class="calc-keys">'+["7","8","9","/","4","5","6","*","1","2","3","-","0",".","=","+","C"].map(k=>'<button data-k="'+k+'" class="'+(k==="C"?"secondary":"")+'">'+k+"</button>").join("")+'</div></div>');let expr="";const d=document.getElementById("display");document.querySelectorAll("[data-k]").forEach(b=>b.onclick=()=>{const k=b.dataset.k;if(k==="C"){expr="";d.value="0";return}if(k==="="){try{expr=String(Function("return ("+expr.replace(/[^0-9+\-*/.() ]/g,"")+")")());d.value=expr}catch(e){d.value="Error";expr=""}return}expr+=k;d.value=expr})}function todo(){let items=JSON.parse(localStorage.getItem(storeKey)||"[]");function save(){localStorage.setItem(storeKey,JSON.stringify(items))}function render(){panel('<div class="row"><input id="newItem" placeholder="Add item"><button id="add">Add</button><button class="secondary" id="clear">Clear</button></div><div class="list">'+items.map((it,i)=>'<div class="item"><button class="secondary" data-toggle="'+i+'">'+(it.done?"Undo":"Done")+'</button><span class="'+(it.done?"done":"")+'">'+it.text+'</span><button class="secondary" data-del="'+i+'">Remove</button></div>').join("")+'</div>');document.getElementById("add").onclick=()=>{const input=document.getElementById("newItem");if(input.value.trim()){items.push({text:input.value.trim(),done:false});save();render()}};document.getElementById("clear").onclick=()=>{items=[];save();render()};document.querySelectorAll("[data-toggle]").forEach(b=>b.onclick=()=>{items[Number(b.dataset.toggle)].done=!items[Number(b.dataset.toggle)].done;save();render()});document.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{items.splice(Number(b.dataset.del),1);save();render()})}render()}function notes(){panel('<textarea id="notes" rows="14" style="width:100%" placeholder="Write local sandbox notes"></textarea><div class="row"><button id="save">Save</button><button class="secondary" id="reset">Reset</button></div>');const n=document.getElementById("notes");n.value=localStorage.getItem(storeKey)||"";document.getElementById("save").onclick=()=>localStorage.setItem(storeKey,n.value);document.getElementById("reset").onclick=resetStore}function generic(){panel('<h2>'+config.appName+'</h2><p>'+config.goal+'</p><textarea id="workspace" rows="10" style="width:100%" placeholder="Use this local sandbox workspace for the requested app data"></textarea><div class="row"><button id="save">Save Local State</button><button class="secondary" id="reset">Reset</button></div>');const w=document.getElementById("workspace");w.value=localStorage.getItem(storeKey)||"";document.getElementById("save").onclick=()=>localStorage.setItem(storeKey,w.value);document.getElementById("reset").onclick=resetStore}({tic_tac_toe:ticTacToe,racing,calculator,todo,notes,snake:racing,pong:racing,generic}[config.kind]||generic)();'''
+        manifest = self._qsml_manifest({**spec, "application_name": app_name, "project_kind": project_kind, "languages": ["html", "css", "javascript"]})
+        manifest.update({"synthesis_mode": "deterministic_qsml_fallback", "fallback_kind": kind})
+        readme = "\n".join([
+            f"# {app_name}",
+            "",
+            "NAILDE created this local static web application from the compiled QSML/user request because no approved local synthesis model was available.",
+            "",
+            f"Requested goal: {user_goal}",
+            f"Fallback app kind: `{kind}`",
+            "",
+            "## Governance",
+            "- Sandbox-only source generation",
+            "- No live SarahMemory CORE/API/UI/driver/model writes",
+            "- Addons install and runtime launch require separate explicit approval",
+            "- No network, shell, credential, or device access",
+            "",
+        ])
+        files = {
+            "sandbox/web/index.html": html,
+            "sandbox/web/styles.css": css,
+            "sandbox/web/app.js": js,
+            "sandbox/app_manifest.json": json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False),
+            "sandbox/README.md": readme,
+        }
+        validation = self._project_static_validation(files, blueprint)
+        return {
+            "ok": bool(validation.get("ok")),
+            "phase": "READY" if validation.get("ok") else "VALIDATE",
+            "schema": "SarahMemory.nailde.universal_arbitrary_application_synthesis.v0_2",
+            "blueprint": blueprint,
+            "architecture": {"ok": False, "fallback_used": True, "original_error": architecture_error, "execution_authority": False},
+            "ownership": self._validate_qsml_synthesis_ownership(spec),
+            "files": files,
+            "generation_trace": [{"path": path, "model": {"backend": "deterministic_qsml_fallback", "ok": True}, "validation": self._static_validate_generated_content(path, content), "repairs": []} for path, content in sorted(files.items())],
+            "validation": validation,
+            "risk_review_required": bool(validation.get("risk_review_required")),
+            "deterministic_fallback_used": True,
+            "fallback_kind": kind,
+            "sandbox_only": True,
+            "live_file_write": False,
+            "execution_authority": False,
+        }
+
     def _universal_synthesize_spec(self, spec: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Architect, generate, validate, and bounded-repair an arbitrary app."""
         payload = payload if isinstance(payload, dict) else {}
@@ -2541,6 +2694,9 @@ class SarahMemoryNAILDERuntime:
             }
         architecture = self._universal_blueprint_from_model(spec, payload)
         if not architecture.get("ok"):
+            fallback = self._deterministic_qsml_fallback_synthesis(spec, architecture)
+            if fallback.get("ok"):
+                return fallback
             return {
                 "ok": False,
                 "phase": "ARCHITECT",
@@ -5617,5 +5773,4 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-
 

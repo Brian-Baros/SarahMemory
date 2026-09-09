@@ -671,8 +671,13 @@ def _intent_uses_smget(intent: str, proposed_action: Optional[Dict[str, Any]] = 
     if label in _SMGET_INTENTS:
         return True
     pa = proposed_action or {}
-    if isinstance(pa, dict) and any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files", "subsystems")):
-        return True
+    if isinstance(pa, dict):
+        if bool(pa.get("route_metadata_only")) and not any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files")):
+            return False
+        if any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files")):
+            return True
+        if pa.get("subsystems") and bool(pa.get("side_effecting_route")):
+            return True
     if _robotic_action_governance_profile(pa).get("is_robotic_body_action"):
         return True
     return False
@@ -1040,7 +1045,7 @@ def _validate_scope_modules(target_files: list, subsystems: list) -> Dict[str, A
 # "download from the internet" classify correctly.
 _INTENT_PATTERNS: Tuple[Tuple[str, str], ...] = (
     ("EMERGENCY_INSTINCT", r"\b(fire|smoke|flame|grease\s+fire|electrical\s+fire|asthma|inhaler|choking|can\'t\s+breathe|cannot\s+breathe|unconscious|collision|about\s+to\s+hit|hit\s+by\s+(?:a\s+)?car|vehicle\s+impact|emergency)\b"),
-    ("PATCH_OR_UPDATE", r"\b(update|upgrade|patch|monkey\s*patch|self[-\s]*repair|fix\s+code)\b"),
+    ("PATCH_OR_UPDATE", r"\b(self[-\s]*repair|fix\s+code|apply\s+(?:a\s+)?patch|patch\s+(?:it|this|that|the|core|api|ui|file|code|module|route|bug|issue|function)|(?:update|upgrade|repair|modify|edit|rewrite|change|implement)\s+(?:the\s+)?(?:code|core|api|ui|file|module|system|app|route|bug|issue|function))\b"),
     ("DIAGNOSTICS", r"\b(diagnose|diagnostics|health\s*check|self\s*check|log\s*scan)\b"),
     ("SYSTEM_INFO", r"\b(gpu|vram|cuda|disk\s*space|free\s*space|drive\s*space|storage|cpu\s*usage|ram\s*usage|memory\s*usage|hardware\s*stats|system\s*stats)\b"),
     ("CREATIVE_REQUEST", r"\b(create|generate|make|draw|design|render|compose|build)\b.*\b(image|picture|art|song|music|video|website|webpage|page|avatar|logo|graphic|animation|lyrics|beat)\b"),
@@ -1229,7 +1234,11 @@ def _is_high_impact_governance_request(intent: str, risk_score: int, proposed_ac
         return True
     if bool(pa.get("touches_network")) or bool(pa.get("touches_privacy")) or bool(pa.get("touches_filesystem")):
         return True
-    if pa.get("target_files") or pa.get("subsystems"):
+    if bool(pa.get("route_metadata_only")) and not any(pa.get(k) for k in ("action_type", "executor_name", "required_permissions", "paths", "target_files", "touches_network", "touches_privacy", "touches_filesystem")):
+        return False
+    if pa.get("target_files"):
+        return True
+    if pa.get("subsystems") and bool(pa.get("side_effecting_route")):
         return True
     return False
 
@@ -3787,4 +3796,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

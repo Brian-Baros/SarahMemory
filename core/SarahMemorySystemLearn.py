@@ -1205,15 +1205,31 @@ if __name__ == "__main__":
 
     # NEW: QA Cache Initialization
     try:
-        qa_conn = sqlite3.connect(os.path.join(config.DATASETS_DIR, "ai_learning.db"))
+        qa_db_path = os.path.join(config.DATASETS_DIR, "ai_learning.db")
+        try:
+            from SarahMemoryDatabase import ensure_qa_cache_schema  # type: ignore
+            ensure_qa_cache_schema(qa_db_path)
+        except Exception:
+            pass
+        qa_conn = sqlite3.connect(qa_db_path)
         qa_conn.execute("""
             CREATE TABLE IF NOT EXISTS qa_cache (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 query TEXT,
                 ai_answer TEXT,
-                hit_score INTEGER,
+                hit_score REAL,
                 feedback TEXT,
-                timestamp TEXT
+                timestamp TEXT,
+                source TEXT,
+                source_type TEXT,
+                verification_state TEXT DEFAULT 'UNVERIFIED',
+                verified INTEGER DEFAULT 0,
+                verifier TEXT,
+                verified_ts TEXT,
+                evidence_hash TEXT,
+                provenance_json TEXT,
+                volatile INTEGER DEFAULT 0,
+                do_not_learn INTEGER DEFAULT 0
             )
         """)
         for file_path, file_type in files:
@@ -1223,12 +1239,12 @@ if __name__ == "__main__":
             category = categorize_text_by_path_or_content(file_path, content)
             if category in {"functions", "programming", "personality"}:
                 qa_conn.execute("""
-                    INSERT INTO qa_cache (query, ai_answer, hit_score, feedback, timestamp)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (content[:200], content[:300], 0, "ungraded", datetime.datetime.now().isoformat()))
+                    INSERT INTO qa_cache (query, ai_answer, hit_score, feedback, timestamp, source, source_type, verification_state, verified, verifier, provenance_json, do_not_learn)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (content[:200], content[:300], 0, "ungraded", datetime.datetime.now().isoformat(), "SarahMemorySystemLearn", "training_candidate", "UNVERIFIED", 0, "", "{}", 1))
         qa_conn.commit()
         qa_conn.close()
-        log("📚 QA cache initialized with training examples for future grading.")
+        log("📚 QA cache initialized with unverified training candidates for future grading.")
     except Exception as e:
         log(f"❌ Failed to initialize qa_cache: {e}")
 

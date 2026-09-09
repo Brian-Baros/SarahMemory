@@ -797,9 +797,13 @@ class NeuronResult:
     actions: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        visible_reply = str(self.reply)
         return {
             "ok": bool(self.ok),
-            "reply": str(self.reply),
+            "reply": visible_reply,
+            "response": visible_reply,
+            "content": visible_reply,
+            "presentation_reply": visible_reply,
             "confidence": float(self.confidence),
             "intent": str(self.intent),
             "source": str(self.source),
@@ -2895,29 +2899,16 @@ def _discover_driver_capabilities(route: Dict[str, Any], user_text: str) -> Dict
     entities = dict(route.get("entities") or {})
     requested_device = str(entities.get("device_type") or "").strip().lower()
     requested_vendor = str(entities.get("vendor") or "").strip().lower()
-    out = {"requested_device": requested_device, "requested_vendor": requested_vendor, "driver_ids": [], "matches": [], "available": False}
-    try:
-        import appdrivers as _AppDrivers  # type: ignore
-        ids = list(_AppDrivers._discover_driver_ids())
-    except Exception:
-        ids = []
-        return out
-    out["driver_ids"] = ids
-    for did in ids:
-        try:
-            manifest = _AppDrivers._load_manifest(did) or {}
-        except Exception:
-            manifest = {}
-        blob = json.dumps(manifest, ensure_ascii=False).lower()
-        if requested_device and requested_device not in blob and requested_device not in str(did).lower():
-            if not (requested_device == 'webcam' and ('camera' in blob or 'cam' in blob)):
-                continue
-        if requested_vendor and requested_vendor not in blob and requested_vendor not in str(did).lower():
-            continue
-        actions = manifest.get('actions') if isinstance(manifest.get('actions'), list) else []
-        out['matches'].append({'driver_id': did, 'manifest': manifest, 'actions': actions})
-    out['available'] = bool(out['matches'])
-    return out
+    return {
+        "requested_device": requested_device,
+        "requested_vendor": requested_vendor,
+        "driver_ids": [],
+        "matches": [],
+        "available": False,
+        "source": "neuron_non_executing_ticket_only",
+        "next_owner": "api.server.appdrivers",
+        "reason": "Neuron must not import the API driver bridge or inspect driver modules directly.",
+    }
 
 
 def _derive_schedule_spec(user_text: str, route: Dict[str, Any]) -> Dict[str, Any]:
@@ -3058,55 +3049,6 @@ def _make_execution_plan(route: Dict[str, Any], discovery: Dict[str, Any], user_
 
 
 
-def _generic_set_lock_key_state(key_name: str, requested_state: str) -> Dict[str, Any]:
-    key_name = str(key_name or '').strip().lower()
-    requested_state = str(requested_state or 'on').strip().lower()
-    vk_map = {'caps_lock': 0x14, 'num_lock': 0x90, 'scroll_lock': 0x91}
-    if key_name not in vk_map:
-        return {'ok': False, 'error': 'unsupported_lock_key', 'key_name': key_name}
-    if os.name != 'nt':
-        return {'ok': False, 'error': 'unsupported_os', 'os': os.name, 'key_name': key_name}
-    try:
-        import ctypes, time as _time
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        desired_on = requested_state != 'off'
-        vk = vk_map[key_name]
-        KEYEVENTF_EXTENDEDKEY = 0x0001
-        KEYEVENTF_KEYUP = 0x0002
-        changed = False
-        for _ in range(4):
-            current_on = bool(user32.GetKeyState(vk) & 1)
-            if current_on == desired_on:
-                return {'ok': True, 'key_name': key_name, 'requested_state': requested_state, 'final_state': 'on' if current_on else 'off', 'changed': changed}
-            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY, 0)
-            user32.keybd_event(vk, 0x45, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
-            changed = True
-            _time.sleep(0.05)
-        final_on = bool(user32.GetKeyState(vk) & 1)
-        return {'ok': final_on == desired_on, 'key_name': key_name, 'requested_state': requested_state, 'final_state': 'on' if final_on else 'off', 'changed': changed}
-    except Exception as e:
-        return {'ok': False, 'error': str(e), 'key_name': key_name, 'requested_state': requested_state}
-
-
-def _generic_keyboard_rgb_set(color_value: str) -> Dict[str, Any]:
-    try:
-        import shutil, subprocess
-        op = shutil.which('openrgb') or shutil.which('OpenRGB')
-        if not op:
-            return {'ok': False, 'error': 'openrgb_not_found'}
-        color = str(color_value or '').strip().lower() or 'white'
-        color_map = {'red':'FF0000','green':'00FF00','blue':'0000FF','purple':'800080','yellow':'FFFF00','white':'FFFFFF','orange':'FFA500','pink':'FFC0CB'}
-        cmd = [op, '--mode', 'static']
-        if color in color_map:
-            cmd.extend(['--color', color_map[color]])
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=8)
-        return {'ok': proc.returncode == 0, 'color': color, 'stdout': proc.stdout[-500:], 'stderr': proc.stderr[-500:], 'returncode': proc.returncode}
-    except Exception as e:
-        return {'ok': False, 'error': str(e), 'color': str(color_value or '')}
-
-
-
-
 def _canonical_app_name(app_name: str) -> str:
     aliases = {
         'microsoft word': 'winword', 'ms word': 'winword', 'word': 'winword', 'winword': 'winword',
@@ -3207,106 +3149,28 @@ def _execute_ingress_plan(route: Dict[str, Any], discovery: Dict[str, Any], user
     entities = dict(route.get('entities') or {})
     result = {'attempted': False, 'executed': False, 'mode': 'plan_only', 'details': {}}
     action_routes = {'system.application.control', 'documents.office.write', 'email.mail.automation', 'drivers.device.control', 'avatar.create.activate'}
-    if route_id in action_routes and _smget_execution_mode(meta) != 'apply':
-        reason = 'safe_mode_gate' if bool(meta.get('safe_mode')) else 'explicit_user_consent_required'
-        result['attempted'] = True
-        result['mode'] = 'governed_draft'
-        result['details'] = {
-            'ok': False,
-            'reason': reason,
-            'requires_confirmation': True,
-            'user_present': bool(meta.get('user_present', True)),
-            'user_consented': bool(meta.get('user_consented', False)),
-            'safe_mode': bool(meta.get('safe_mode', False)),
+    if route_id in action_routes:
+        return {
+            'attempted': True,
+            'executed': False,
+            'mode': 'governed_ticket_only',
+            'details': {
+                'ok': False,
+                'route_id': route_id,
+                'entities': entities,
+                'reason': 'Neuron emits governed route tickets only; execution belongs to OperatorCore and the owning API bridge.',
+                'requires_confirmation': True,
+                'execution_authority': False,
+                'domain_execution_authorized': False,
+                'next_owner': {
+                    'drivers.device.control': 'api.server.appdrivers',
+                    'email.mail.automation': 'api.server.appcomm',
+                    'system.application.control': 'SarahMemoryOperatorCore',
+                    'documents.office.write': 'SarahMemoryOperatorCore',
+                    'avatar.create.activate': 'api.server.appmedia / AvatarPanel',
+                }.get(route_id, 'SarahMemoryOperatorCore'),
+            },
         }
-        return result
-    try:
-        if route_id in {'system.application.control', 'documents.office.write'}:
-            preferred = entities.get('target_app_exec') or entities.get('target_app') or ('winword' if route_id == 'documents.office.write' else '')
-            task = _derive_surface_task(_canonical_app_name(str(preferred or '')), entities, user_text)
-            canonical = _canonical_app_name(task.get('requested_app_exec') or task.get('requested_app') or preferred)
-            requested_state = str(entities.get('requested_state') or 'open').strip().lower()
-            explicit_followup = bool(entities.get('followup_action') or entities.get('task_kind') or entities.get('surface_task'))
-            if route_id == 'system.application.control' and requested_state == 'open' and not explicit_followup:
-                task['task_kind'] = ''
-            if canonical:
-                operator_packet = {}
-                ok = False
-                plan_state = {'surface_open': False, 'launched': False, 'focused': False}
-                if requested_state == 'open':
-                    operator_packet = _smget_open_surface(canonical, route_id, entities, user_text, meta)
-                    result = dict(operator_packet.get('result') or {}) if isinstance(operator_packet, dict) else {}
-                    execution = dict(result.get('execution_result') or {}) if isinstance(result, dict) else {}
-                    verification = dict(result.get('verification_result') or {}) if isinstance(result, dict) else {}
-                    info = dict(verification.get('info') or {}) if isinstance(verification, dict) else {}
-                    executed = bool(execution.get('executed'))
-                    verified = bool(verification.get('ok')) and bool(result.get('success'))
-                    ok = bool(operator_packet.get('ok')) and executed and verified
-                    plan_state.update({'surface_open': bool(ok), 'launched': bool(executed), 'focused': bool(info.get('focused') or info.get('is_focused')), 'surface_focused': bool(info.get('focused') or info.get('is_focused')), 'result_verified': bool(verified)})
-                else:
-                    operator_packet = {'ok': False, 'reason': 'unsupported_requested_state'}
-
-                followup = {'ok': True, 'skipped': True, 'reason': 'no_followup', 'task_kind': task.get('task_kind')}
-                if ok and requested_state == 'open' and task.get('task_kind'):
-                    try:
-                        import SarahMemoryAiFunctions as _AF  # type: ignore
-                        fn = getattr(_AF, 'execute_surface_task', None)
-                        if callable(fn):
-                            followup = fn(canonical, task, user_text=user_text)
-                        else:
-                            followup = {'ok': False, 'task_kind': task.get('task_kind'), 'reason': 'surface_executor_unavailable'}
-                    except Exception as e:
-                        followup = {'ok': False, 'task_kind': task.get('task_kind'), 'error': str(e)}
-                    if isinstance(followup, dict):
-                        plan_state.update({k: v for k, v in followup.items() if isinstance(v, (bool, str, int, float, dict, list))})
-                compass = _compass_packet_for_execution(user_text, plan_state=plan_state, meta=meta, proposed_action={'route_id': route_id, 'entities': entities, 'task': task, 'operator_packet': operator_packet})
-                executed = bool(ok and (not task.get('task_kind') or (isinstance(followup, dict) and bool(followup.get('ok')) and bool((compass or {}).get('reply_allowed', True)))))
-                return {'attempted': True, 'executed': executed, 'mode': 'smget_dispatch', 'details': {'ok': ok, 'target_app': canonical, 'requested_state': requested_state, 'task': task, 'followup': followup, 'compass': compass, 'operator_packet': operator_packet}}
-        if route_id == 'email.mail.automation':
-            import appcomm as _AppComm  # type: ignore
-            folder = str(entities.get('target_folder') or 'spam')
-            listed = _unwrap_flaskish_response(_AppComm._email_poll({'folder': folder, 'limit': 50, 'source': 'neuron_ingress'})) if hasattr(_AppComm, '_email_poll') else {'ok': False, 'error': 'email_poll_unavailable'}
-            details = {'listed': listed}
-            executed = bool(listed.get('ok'))
-            sched = discovery.get('schedule_spec') or {}
-            if sched.get('requested') and hasattr(_AppComm, '_reminder_upsert'):
-                reminder = _AppComm._reminder_upsert({'title': 'Empty spam trash', 'body': 'Governed recurring spam-trash cleanup task requested from chat ingress.', 'status': 'active', 'source': 'neuron_ingress', 'extra': {'pattern': sched.get('pattern'), 'time_hint': sched.get('time_hint')}})
-                details['scheduler'] = reminder if isinstance(reminder, dict) else {'result': reminder}
-                executed = executed or bool(details['scheduler'].get('ok'))
-            return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': details}
-        if route_id == 'drivers.device.control':
-            action_id = _driver_action_hint(route, user_text)
-            control_name = str(entities.get('control_name') or entities.get('key_name') or '').lower()
-            if action_id == 'keyboard_lock_set' and control_name in {'caps_lock', 'num_lock', 'scroll_lock'}:
-                action_res = _generic_set_lock_key_state(control_name, str(entities.get('requested_state') or 'on'))
-                return {'attempted': True, 'executed': bool(action_res.get('ok')), 'mode': 'generic_local_control', 'details': {'action': action_res, 'action_id': action_id}}
-            if action_id == 'keyboard_rgb_set':
-                action_res = _generic_keyboard_rgb_set(str(entities.get('value') or 'white'))
-                if bool(action_res.get('ok')):
-                    return {'attempted': True, 'executed': True, 'mode': 'generic_local_control', 'details': {'action': action_res, 'action_id': action_id}}
-            import appdrivers as _AppDrivers  # type: ignore
-            matches = ((discovery.get('driver_capabilities') or {}).get('matches') or [])
-            if matches and hasattr(_AppDrivers, '_driver_discover') and hasattr(_AppDrivers, '_driver_connect'):
-                driver_id = str(matches[0].get('driver_id') or '')
-                discovered = _unwrap_flaskish_response(_AppDrivers._driver_discover(driver_id, payload={'source': 'neuron_ingress', 'entities': entities}))
-                connected = _unwrap_flaskish_response(_AppDrivers._driver_connect(driver_id, cfg={}, connect_payload={'source': 'neuron_ingress', 'entities': entities}))
-                action_res = {'ok': False, 'skipped': True}
-                try:
-                    mod, err = _AppDrivers._load_driver_module(driver_id)
-                    if not err and mod is not None:
-                        context = _AppDrivers._build_driver_context(driver_id, instance_id=(_AppDrivers._session_get(driver_id) or {}).get('instance_id'), extra={'action_id': action_id})
-                        payload = {'requested_action': action_id, 'entities': entities, 'user_text': user_text}
-                        if hasattr(mod, 'driver_action'):
-                            action_res = _unwrap_flaskish_response(mod.driver_action(action_id=action_id, context=context, payload=payload))
-                        elif hasattr(mod, f'action_{action_id}'):
-                            action_res = _unwrap_flaskish_response(getattr(mod, f'action_{action_id}')(context=context, payload=payload))
-                except Exception as e:
-                    action_res = {'ok': False, 'error': str(e)}
-                executed = bool(discovered.get('ok')) or bool(connected.get('ok')) or bool(action_res.get('ok'))
-                return {'attempted': True, 'executed': executed, 'mode': 'direct_internal_dispatch', 'details': {'driver_id': driver_id, 'discover': discovered, 'connect': connected, 'action': action_res, 'action_id': action_id}}
-            return {'attempted': True, 'executed': False, 'mode': 'direct_internal_dispatch', 'details': {'ok': False, 'error': 'driver_unavailable', 'action_id': action_id, 'entities': entities}}
-    except Exception as e:
-        return {'attempted': True, 'executed': False, 'mode': 'direct_internal_dispatch', 'details': {'ok': False, 'error': str(e)}}
     return result
 
 
@@ -3355,6 +3219,9 @@ def _ingress_execution_ticket(route: Dict[str, Any], trace: Dict[str, Any], user
         elif execution_result.get('mode') == 'governed_draft':
             reason = str(details.get('reason') or 'explicit_user_consent_required')
             reply = f"The request was routed but not executed: {reason}."
+        elif execution_result.get('mode') == 'governed_ticket_only':
+            owner = str((details.get('next_owner') if isinstance(details, dict) else '') or 'OperatorCore')
+            reply = f"The request was routed as a governed ticket for {owner}. Neuron did not execute it."
         elif execution_result.get('mode') in {'direct_internal_dispatch', 'smget_dispatch'}:
             operator_packet = details.get('operator_packet') if isinstance(details.get('operator_packet'), dict) else {}
             operator_result = operator_packet.get('result') if isinstance(operator_packet.get('result'), dict) else {}
@@ -4311,3 +4178,44 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
         return packet
 # --- SML ORGAN ADAPTER END ---
 
+
+def neuron_validate_candidate_answer(user_text: str, candidate: Dict[str, Any], *, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Converge a fast-source candidate through Neuron and Compare before release.
+
+    This helper keeps app.py from treating local LLM/AdvCU output as final
+    authority. It does not execute actions and does not widen governance.
+    """
+    meta = dict(meta or {})
+    cand = dict(candidate or {})
+    cand.setdefault("source", "neuron_candidate")
+    cand.setdefault("source_type", cand.get("source") or "neuron_candidate")
+    trace = {
+        "primary_lane": "candidate_validation",
+        "primary_owner": "SarahMemoryNeuron",
+        "compare_required": True,
+        "execution_authority": False,
+        "candidate_source": cand.get("source"),
+    }
+    try:
+        import SarahMemoryCompare as _SMCompare  # type: ignore
+        gate = getattr(_SMCompare, "compare_candidate_release", None)
+        if callable(gate):
+            out = gate(user_text, cand, intent=str(meta.get("intent") or "question"), meta=meta)
+            if isinstance(out, dict):
+                out.setdefault("trace", trace)
+                out.setdefault("neuron_converged", True)
+                out.setdefault("execution_authority", False)
+                return out
+    except Exception as exc:
+        trace["compare_error"] = str(exc)
+    return {
+        "ok": False,
+        "accepted": False,
+        "decision": "NEED_MORE_EVIDENCE",
+        "reply": "",
+        "confidence": 0.0,
+        "verified": False,
+        "trace": trace,
+        "neuron_converged": True,
+        "execution_authority": False,
+    }

@@ -113,6 +113,63 @@ SENSITIVE_TARGET_PATTERNS = (
     "token", "private key", "SarahMemoryEnergetics.py", "ENERGETICS",
 )
 ROACHMOTEL_SCHEMA = "SARAHMEMORY_AI_AGENT_ROACHMOTEL_V1"
+LOCAL_TASK_SCHEMA = "SARAHMEMORY_LOCAL_TASK_ENVELOPE_V1"
+
+LOCAL_OPERATOR_SURFACES = {
+    "local_ui_chat",
+    "local_ui",
+    "webui",
+    "desktop_ui",
+    "terminal_local",
+    "operator_console",
+}
+
+TERMINAL_EGRESS_SURFACES = {
+    "terminal",
+    "terminal_local",
+    "terminal_egress",
+    "operator_terminal",
+}
+
+PROTECTED_ORGAN_IDS = {
+    "avatar": "avatar_panel",
+    "avatar_panel": "avatar_panel",
+    "deep_learning": "deep_learning_controls",
+    "deep_learning_controls": "deep_learning_controls",
+    "dlengine": "deep_learning_controls",
+    "model_forge": "deep_learning_controls",
+    "settings": "settings",
+    "system_settings": "settings",
+    "nailde": "nailde",
+    "terminal": "terminal",
+    "operator_terminal": "terminal",
+    "creative_studios": "creative_studios",
+    "studio": "creative_studios",
+    "studios": "creative_studios",
+    "sarahnet": "sarahnet",
+    "device_manager": "device_manager",
+    "device-manager": "device_manager",
+    "task_manager": "task_manager",
+    "performance_monitor": "performance_monitor",
+    "model_manager": "model_manager",
+    "memory_panel": "memory_panel",
+    "security_panel": "security_panel",
+    "files": "files",
+    "research": "research",
+    "history": "history",
+}
+
+MUTATING_TASK_PATTERNS = (
+    "execute", "run command", "run shell", "launch", "open app", "start service",
+    "build", "create file", "write file", "patch", "modify core", "change setting",
+    "control device", "driver action", "terminal", "install", "delete", "persist",
+)
+
+EXTERNAL_ACCESS_PATTERNS = (
+    "http://", "https://", "webhook", "remote api", "external api", "online",
+    "internet", "cloud", "mcp", "browser agent", "send agent", "outbound agent",
+    "leave the system", "egress", "crawl", "scrape",
+)
 
 
 def _base_dir() -> str:
@@ -376,6 +433,13 @@ def _managed_passport_truth_guard(task_truth: Dict[str, Any], *, user_approved: 
     failures: List[str] = []
     if not user_approved:
         failures.append("explicit_user_launch_approval_required")
+    origin = _clean_token(truth.get("origin") or truth.get("origin_surface") or truth.get("task_origin"))
+    if origin and origin not in LOCAL_OPERATOR_SURFACES and origin not in TERMINAL_EGRESS_SURFACES:
+        failures.append("local_ui_or_terminal_origin_required_for_passport")
+    if bool(truth.get("external_access_requested") or truth.get("egress_required")):
+        egress_surface = _clean_token(truth.get("egress_surface") or truth.get("egress_owner") or truth.get("egress_gate") or truth.get("target_organ"))
+        if egress_surface not in TERMINAL_EGRESS_SURFACES:
+            failures.append("terminal_egress_required_for_external_agent_task")
     allowed_sources = _managed_passport_list(truth.get("allowed_sources") or truth.get("allowed_resources"))
     if not allowed_sources:
         failures.append("allowed_sources_required")
@@ -821,6 +885,313 @@ def _hash_text(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Local UI Task Sovereignty and internal organ routing
+# ---------------------------------------------------------------------------
+def _clean_token(value: Any, *, limit: int = 96) -> str:
+    return re.sub(r"[^a-z0-9._:-]+", "_", str(value or "").strip().lower())[:limit].strip("_")
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "approved", "confirmed"}
+
+
+def _is_local_peer(remote_addr: str = "") -> bool:
+    return str(remote_addr or "").strip().lower() in {"", "127.0.0.1", "::1", "localhost"}
+
+
+def _extract_task_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    data = value if isinstance(value, dict) else {}
+    body = data.get("json") if isinstance(data.get("json"), dict) else data
+    for key in ("text", "message", "prompt", "task", "command", "instruction", "request"):
+        found = body.get(key) if isinstance(body, dict) else None
+        if found not in (None, ""):
+            return str(found)
+    return _normalize_text(value, max_len=4000)
+
+
+def _origin_surface_from_payload(payload: Any, *, source: str = "") -> str:
+    data = payload if isinstance(payload, dict) else {}
+    body = data.get("json") if isinstance(data.get("json"), dict) else data
+    headers = data.get("headers") if isinstance(data.get("headers"), dict) else {}
+    for container in (body, headers, data):
+        if not isinstance(container, dict):
+            continue
+        for key in ("origin_surface", "origin", "surface", "source_surface", "task_origin"):
+            value = container.get(key)
+            if value not in (None, ""):
+                return _clean_token(value)
+    src = _clean_token(source)
+    if src in {"api_chat", "api.chat", "api_server_chat", "local_ui_chat", "webui"}:
+        return "local_ui_chat"
+    return src
+
+
+def _payload_requests_execution(payload: Any, text: Optional[str] = None) -> bool:
+    data = payload if isinstance(payload, dict) else {}
+    body = data.get("json") if isinstance(data.get("json"), dict) else data
+    if isinstance(body, dict):
+        for key in (
+            "execute", "execution_requested", "tool_execution_requested", "requested_action",
+            "command", "task", "launch", "agent_launch", "memory_write_requested",
+            "core_write_requested", "device_control_requested",
+        ):
+            if key in body and body.get(key) not in (None, "", False):
+                return True
+    raw = (text if text is not None else _extract_task_text(payload)).lower()
+    return any(pattern in raw for pattern in MUTATING_TASK_PATTERNS)
+
+
+def classify_local_task_intent(text: str, *, requested_target: str = "") -> Dict[str, Any]:
+    """Classify local Chat intent into a governed organ route without executing it."""
+    raw = str(text or "").strip()
+    low = raw.lower()
+    requested = PROTECTED_ORGAN_IDS.get(_clean_token(requested_target), "")
+    target = requested or "chat"
+    intent = "chat"
+
+    route_rules: List[Tuple[str, Tuple[str, ...], str]] = [
+        ("nailde", ("nailde", "build", "code", "create app", "create program", "make app", "make a tool", "write module", "patch code"), "build"),
+        ("terminal", ("terminal", "command line", "shell", "console"), "terminal"),
+        ("avatar_panel", ("avatar", "face", "speak", "voice", "animate", "camera"), "avatar"),
+        ("deep_learning_controls", ("deep learning", "model", "llm", "training", "weights", "rem", "model forge"), "deep_learning"),
+        ("creative_studios", ("creative studio", "creative studios", "studio", "image", "video", "music", "song", "scene"), "creative"),
+        ("sarahnet", ("sarahnet", "network mesh", "xr", "vr", "ar", "node"), "network"),
+        ("device_manager", ("device manager", "driver", "camera setting", "audio setting", "wifi", "wi-fi", "printer", "display setting"), "device"),
+        ("settings", ("settings", "preferences", "system tuning", "theme", "timezone"), "settings"),
+        ("task_manager", ("task manager", "process monitor", "running apps", "processes"), "task_manager"),
+        ("performance_monitor", ("performance", "cpu", "gpu", "ram", "vram", "temperature", "monitor"), "performance"),
+        ("model_manager", ("model manager", "models folder", "ollama", "provider"), "model_manager"),
+        ("memory_panel", ("memory panel", "memory trail", "remember", "recall memory"), "memory"),
+        ("security_panel", ("security panel", "firewall", "agent firewall", "quarantine", "roachmotel"), "security"),
+        ("files", ("file manager", "files", "folder"), "files"),
+        ("research", ("research", "search web", "look up", "read page"), "research"),
+        ("history", ("history", "chat history", "conversation history"), "history"),
+    ]
+    for route_target, phrases, route_intent in route_rules:
+        if any(phrase in low for phrase in phrases):
+            target = route_target
+            intent = route_intent
+            break
+
+    external_access_requested = any(pattern in low for pattern in EXTERNAL_ACCESS_PATTERNS)
+    tool_execution_requested = _payload_requests_execution({"json": {"text": raw}}, raw)
+    protected_mutation_requested = any(
+        phrase in low for phrase in (
+            "modify core", "patch core", "write memory", "save memory", "control device",
+            "change setting", "driver action", "install", "delete", "run shell",
+        )
+    )
+    return {
+        "ok": True,
+        "schema": LOCAL_TASK_SCHEMA,
+        "requested_intent": intent,
+        "target_organ": target,
+        "target_panel": target,
+        "external_access_requested": bool(external_access_requested),
+        "egress_required": bool(external_access_requested),
+        "passport_required": bool(external_access_requested),
+        "tool_execution_requested": bool(tool_execution_requested),
+        "protected_mutation_requested": bool(protected_mutation_requested),
+        "requires_operatorcore": bool(tool_execution_requested or protected_mutation_requested or external_access_requested),
+        "requires_ledger": True,
+        "execution_authority": False,
+    }
+
+
+def build_local_task_envelope(
+    text: str,
+    *,
+    origin: str = "local_ui_chat",
+    operator_present: bool = True,
+    session_id: str = "",
+    target_organ: str = "",
+    user_approved: bool = False,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build a non-executing local task envelope from the SarahMemory Chat UI."""
+    route = classify_local_task_intent(text, requested_target=target_organ)
+    task_hash = _hash_text(str(text or ""))
+    envelope = {
+        "schema": LOCAL_TASK_SCHEMA,
+        "origin": _clean_token(origin) or "local_ui_chat",
+        "operator_present": bool(operator_present),
+        "session_id": str(session_id or "")[:180],
+        "task_id": "localtask_" + task_hash[:24],
+        "task_text_sha256": task_hash,
+        "requested_text_preview": str(text or "")[:280],
+        "requested_intent": route["requested_intent"],
+        "target_organ": route["target_organ"],
+        "target_panel": route["target_panel"],
+        "requested_action": "route_to_internal_organ",
+        "external_access_requested": route["external_access_requested"],
+        "tool_execution_requested": route["tool_execution_requested"],
+        "protected_mutation_requested": route["protected_mutation_requested"],
+        "egress_required": route["egress_required"],
+        "passport_required": route["passport_required"],
+        "requires_operatorcore": route["requires_operatorcore"],
+        "requires_ledger": True,
+        "user_approved": bool(user_approved),
+        "execution_authority": False,
+        "created_ts": time.time(),
+        "metadata": metadata or {},
+    }
+    return envelope
+
+
+def validate_local_ui_task_envelope(envelope: Dict[str, Any], *, remote_addr: str = "") -> Dict[str, Any]:
+    """Validate the only normal executable task origin: the local UI operator lane."""
+    env = envelope if isinstance(envelope, dict) else {}
+    failures: List[str] = []
+    origin = _clean_token(env.get("origin") or env.get("origin_surface") or env.get("task_origin"))
+    target = PROTECTED_ORGAN_IDS.get(_clean_token(env.get("target_organ") or env.get("target_panel")), _clean_token(env.get("target_organ") or env.get("target_panel")))
+
+    if env.get("schema") not in (LOCAL_TASK_SCHEMA, None, ""):
+        failures.append("unknown_local_task_schema")
+    if origin not in LOCAL_OPERATOR_SURFACES:
+        failures.append("local_ui_origin_required")
+    if not _is_local_peer(remote_addr):
+        failures.append("local_peer_required")
+    if not _truthy(env.get("operator_present")):
+        failures.append("operator_present_required")
+    if not target:
+        failures.append("target_organ_required")
+    if _truthy(env.get("execution_authority")):
+        failures.append("envelope_cannot_grant_execution_authority")
+
+    ok = not failures
+    result = {
+        "ok": ok,
+        "verdict": "ALLOW" if ok else "DENY",
+        "reason": "local_ui_task_envelope_valid" if ok else ",".join(failures),
+        "failures": failures,
+        "schema": LOCAL_TASK_SCHEMA,
+        "origin": origin,
+        "target_organ": target,
+        "target_panel": target,
+        "operator_present": bool(env.get("operator_present")),
+        "requires_operatorcore": bool(env.get("requires_operatorcore", True)),
+        "requires_ledger": True,
+        "external_access_requested": bool(env.get("external_access_requested")),
+        "egress_required": bool(env.get("egress_required") or env.get("external_access_requested")),
+        "passport_required": bool(env.get("passport_required") or env.get("external_access_requested")),
+        "execution_authority": False,
+        "risk_tier": "LOW" if ok else "HIGH",
+        "ts": time.time(),
+    }
+    if not ok:
+        _ledger_receipt(
+            "LOCAL_UI_TASK_ENVELOPE_BLOCKED",
+            verdict="DENY",
+            identity={"task_id": str(env.get("task_id") or ""), "requested_lane": target or "local_ui_task"},
+            source="SarahMemoryAgentFirewall.validate_local_ui_task_envelope",
+            reason=result["reason"],
+            risk="high",
+            payload_hash=_hash_text(_normalize_text(env)),
+            metadata={"origin": origin, "failures": failures, "execution_authority": False},
+        )
+    return result
+
+
+def require_terminal_egress_for_external_access(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    """Confirm external movement is routed through Terminal/Egress and passporting."""
+    env = envelope if isinstance(envelope, dict) else {}
+    if not bool(env.get("external_access_requested") or env.get("egress_required")):
+        return {"ok": True, "verdict": "ALLOW", "reason": "no_external_access_requested", "execution_authority": False}
+
+    egress_surface = _clean_token(env.get("egress_surface") or env.get("egress_owner") or env.get("egress_gate"))
+    terminal_owned = egress_surface in TERMINAL_EGRESS_SURFACES or _clean_token(env.get("target_organ")) == "terminal"
+    passport_required = bool(env.get("passport_required", True))
+    if terminal_owned and passport_required:
+        return {
+            "ok": True,
+            "verdict": "REQUIRE_PASSPORT",
+            "reason": "terminal_egress_requires_scoped_agent_passport",
+            "egress_surface": egress_surface or "terminal",
+            "passport_required": True,
+            "execution_authority": False,
+        }
+    return {
+        "ok": False,
+        "verdict": "DENY",
+        "reason": "external_access_must_route_through_terminal_egress_with_passport",
+        "egress_surface": egress_surface,
+        "passport_required": True,
+        "execution_authority": False,
+    }
+
+
+def guard_internal_organ_request(envelope: Dict[str, Any], *, remote_addr: str = "") -> Dict[str, Any]:
+    """Guard Chat-to-organ requests before OperatorCore receives them."""
+    env = envelope if isinstance(envelope, dict) else {}
+    validation = validate_local_ui_task_envelope(env, remote_addr=remote_addr)
+    if not validation.get("ok"):
+        return validation
+    egress = require_terminal_egress_for_external_access(env)
+    if not egress.get("ok") and str(egress.get("verdict")) == "DENY":
+        _ledger_receipt(
+            "INTERNAL_ORGAN_EGRESS_BLOCKED",
+            verdict="DENY",
+            identity={"task_id": str(env.get("task_id") or ""), "requested_lane": str(env.get("target_organ") or "")},
+            source="SarahMemoryAgentFirewall.guard_internal_organ_request",
+            reason=str(egress.get("reason") or "egress_blocked"),
+            risk="high",
+            payload_hash=_hash_text(_normalize_text(env)),
+            metadata={"execution_authority": False},
+        )
+        return {**validation, **egress, "ok": False, "requires_operatorcore": True, "requires_ledger": True}
+    return {
+        **validation,
+        "ok": True,
+        "verdict": "REQUIRE_OPERATORCORE" if validation.get("requires_operatorcore") else "ALLOW",
+        "reason": str(egress.get("reason") or "local_organ_request_guarded"),
+        "egress": egress,
+        "execution_authority": False,
+    }
+
+
+def deny_foreign_task_origin(payload: Any, *, source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
+    """Deny remote/foreign payloads that try to become executable task intent."""
+    text = _extract_task_text(payload)
+    origin = _origin_surface_from_payload(payload, source=source)
+    remote = not _is_local_peer(remote_addr)
+    requested_execution = _payload_requests_execution(payload, text)
+    local_surface = origin in LOCAL_OPERATOR_SURFACES
+    implicit_bridge_sources = {"", "unknown", "api.server.app.before_request", "api_chat", "api.chat", "api_server_chat"}
+    explicit_nonlocal_origin = bool(origin and origin not in implicit_bridge_sources and not local_surface and origin not in TERMINAL_EGRESS_SURFACES)
+    should_deny = bool(requested_execution and (remote or explicit_nonlocal_origin))
+    result = {
+        "ok": not should_deny,
+        "verdict": "DENY" if should_deny else "ALLOW",
+        "reason": "foreign_or_nonlocal_task_origin_denied" if should_deny else "no_foreign_task_origin",
+        "origin": origin,
+        "remote": remote,
+        "requested_execution": requested_execution,
+        "local_surface": local_surface,
+        "explicit_nonlocal_origin": explicit_nonlocal_origin,
+        "execution_authority": False,
+        "ts": time.time(),
+    }
+    if should_deny:
+        _ledger_receipt(
+            "FOREIGN_TASK_ORIGIN_BLOCKED",
+            verdict="DENY",
+            identity={"requested_lane": "foreign_task_origin"},
+            source="SarahMemoryAgentFirewall.deny_foreign_task_origin",
+            reason=result["reason"],
+            risk="high",
+            payload_hash=_hash_text(_normalize_text(payload)),
+            metadata={"origin": origin, "remote": remote, "requested_execution": requested_execution},
+        )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Enterprise assurance helpers (bounded, local, user-governed)
 # ---------------------------------------------------------------------------
 def _int_flag(name: str, default: int, *, minimum: int = 0, maximum: int = 100000) -> int:
@@ -1029,6 +1400,21 @@ def _run_firewall_assurance_tests() -> List[Dict[str, Any]]:
     unknown = inspect_payload({"headers": {"User-Agent": "unknown ai agent"}, "json": {"task": "return to system", "agent_id": "unknown_remote_agent"}}, source="assurance.unknown_agent", remote_addr="203.0.113.11")
     tests.append(_guard_test("unknown_remote_agent_denied", str(unknown.get("verdict") or "").upper() == "DENY", str(unknown.get("reason") or "")))
 
+    local_task = build_local_task_envelope("Open NAILDE and build a sandboxed local tool.", origin="local_ui_chat", operator_present=True)
+    local_guard = guard_internal_organ_request(local_task, remote_addr="127.0.0.1")
+    tests.append(_guard_test("local_ui_task_envelope_routes_to_nailde", bool(local_guard.get("ok")) and local_guard.get("target_organ") == "nailde", str(local_guard.get("reason") or "")))
+
+    foreign_task = inspect_payload({"headers": {"User-Agent": "foreign ai agent"}, "json": {"origin": "google_agent", "task": "launch terminal and patch core"}}, source="assurance.foreign_task", remote_addr="203.0.113.12")
+    tests.append(_guard_test("foreign_agent_task_origin_denied", str(foreign_task.get("verdict") or "").upper() == "DENY", str(foreign_task.get("reason") or "")))
+
+    egress_task = build_local_task_envelope("Send an agent online to research an external API.", origin="local_ui_chat", operator_present=True)
+    egress_guard = guard_internal_organ_request(egress_task, remote_addr="127.0.0.1")
+    tests.append(_guard_test("external_access_requires_terminal_egress", not egress_guard.get("ok") and "terminal_egress" in str(egress_guard.get("reason") or ""), str(egress_guard.get("reason") or "")))
+
+    terminal_egress_task = {**egress_task, "target_organ": "terminal", "target_panel": "terminal", "egress_surface": "terminal_egress"}
+    terminal_egress_guard = guard_internal_organ_request(terminal_egress_task, remote_addr="127.0.0.1")
+    tests.append(_guard_test("terminal_egress_requires_passport", bool(terminal_egress_guard.get("ok")) and str((terminal_egress_guard.get("egress") or {}).get("verdict") or "") == "REQUIRE_PASSPORT", str(terminal_egress_guard.get("reason") or "")))
+
     status = assurance_security_status()
     tests.append(_guard_test("max_parallel_returns_fifo", int(status["flags"].get("SARAH_AGENT_MAX_PARALLEL_RETURNS") or 0) == 1, "SARAH_AGENT_MAX_PARALLEL_RETURNS should remain 1 for FIFO passport security."))
     tests.append(_guard_test("collision_policy_reject_all", status["flags"].get("SARAH_AGENT_PASSPORT_COLLISION_POLICY") == "reject_all", "Duplicate passports must reject all involved returns."))
@@ -1159,6 +1545,15 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         or identity.get("passport_id")
         or "agent" in str(identity.get("claimed_identity") or "").lower()
     )
+    foreign_task_guard = deny_foreign_task_origin(payload, source=source, remote_addr=remote_addr)
+    local_task_guard: Optional[Dict[str, Any]] = None
+    try:
+        data = payload if isinstance(payload, dict) else {}
+        body = data.get("json") if isinstance(data.get("json"), dict) else data
+        if isinstance(body, dict) and body.get("schema") == LOCAL_TASK_SCHEMA:
+            local_task_guard = guard_internal_organ_request(body, remote_addr=remote_addr)
+    except Exception:
+        local_task_guard = None
 
     passport_result: Optional[Dict[str, Any]] = None
     if firewall_enabled and identity.get("passport_id") and not hits:
@@ -1184,6 +1579,14 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
     elif firewall_enabled and remote_trigger_block and remote_hits and not local_peer:
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "remote protected-core mutation pattern detected", 96, "HIGH", "BLOCKED"
+        )
+    elif firewall_enabled and local_task_guard is not None and not local_task_guard.get("ok"):
+        verdict, reason, risk_score, risk_tier, containment_state = (
+            "DENY", "local UI task envelope failed guard: " + str(local_task_guard.get("reason") or "invalid_local_task_envelope"), 94, "HIGH", "BLOCKED"
+        )
+    elif firewall_enabled and foreign_task_guard.get("verdict") == "DENY":
+        verdict, reason, risk_score, risk_tier, containment_state = (
+            "DENY", "foreign or nonlocal task origin attempted executable authority", 94, "HIGH", "BLOCKED"
         )
     elif firewall_enabled and passport_result is not None and not passport_result.get("ok"):
         verdict = "DENY"
@@ -1223,6 +1626,8 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         "signature_match": signature_match,
         "passport_verified": bool(passport_result and passport_result.get("ok")),
         "passport_result": passport_result or {},
+        "foreign_task_guard": foreign_task_guard,
+        "local_task_guard": local_task_guard or {},
         "agent_identity": identity,
         "risk_score": risk_score,
         "risk_tier": risk_tier,
@@ -1530,4 +1935,3 @@ def sml_authorize_packet(packet, decision="Pending", granted_authority=None, rea
     pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
     return get_protocol().authorize_packet(pkt, decision=decision, granted_authority=granted_authority, organ="SarahMemoryAgentFirewall", reasons=reasons)
 # --- SML FIREWALL SPECIALIZATION END ---
-
