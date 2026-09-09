@@ -6,6 +6,18 @@ export interface Message {
   content: string;
   timestamp: Date;
   attachments?: Attachment[];
+  response_type?: string;
+  chips?: any[];
+  actions?: any[];
+  pending_action_id?: string | null;
+  mission_id?: string | null;
+  task_id?: string;
+  task?: Record<string, any>;
+  tasks?: Record<string, any>[];
+  pending_actions?: Record<string, any>[];
+  capability?: Record<string, any>;
+  images?: any[];
+  meta?: Record<string, any>;
 }
 
 export interface Attachment {

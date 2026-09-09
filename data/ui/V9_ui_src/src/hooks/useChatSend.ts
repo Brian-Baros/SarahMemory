@@ -19,6 +19,8 @@ export function useChatSend() {
     setSpeechCues,
     setAvatarSpeaking,
     setSpeechStartTime,
+    enqueueUiActions,
+    activeThreadId,
   } = useSarahStore();
 
   // Browser-safe timeout
@@ -110,6 +112,16 @@ export function useChatSend() {
     if (!ok) stopAvatarSpeaking();
   }, [settings.selectedVoice, stopAvatarSpeaking]);
 
+  const dispatchAssistantActions = useCallback((response: ChatResponse) => {
+    const actions = Array.isArray((response as any)?.actions) ? (response as any).actions : [];
+    if (actions.length === 0) return;
+    try {
+      enqueueUiActions(actions, "chat_response");
+    } catch (error) {
+      console.warn("[useChatSend] Failed to enqueue UI actions:", error);
+    }
+  }, [enqueueUiActions]);
+
 
   const speakResponse = useCallback(async (text: string) => {
     try {
@@ -177,7 +189,7 @@ export function useChatSend() {
       const messageHistory = messages.map((m) => ({ role: m.role, content: m.content }));
       messageHistory.push({ role: "user" as const, content: clean });
 
-      const response = await api.chat.sendMessage(messageHistory);
+      const response = await api.chat.sendMessage(messageHistory, { conversationId: activeThreadId || undefined });
 
       setTyping(false);
 
@@ -187,7 +199,23 @@ export function useChatSend() {
         return;
       }
 
-      addMessage({ role: "assistant", content: response.content });
+      addMessage({
+        role: "assistant",
+        content: response.content,
+        response_type: response.response_type,
+        chips: response.chips,
+        actions: response.actions,
+        pending_action_id: response.pending_action_id,
+        mission_id: response.mission_id,
+        task_id: response.task_id,
+        task: response.task,
+        tasks: response.tasks,
+        pending_actions: response.pending_actions,
+        capability: response.capability,
+        images: response.images,
+        meta: response.meta,
+      });
+      dispatchAssistantActions(response);
 
       // avatar always animates speaking
       startAvatarSpeaking(response);
@@ -209,7 +237,7 @@ export function useChatSend() {
         await api.avatar.setListening(false);
       } catch {}
     }
-  }, [messages, addMessage, setTyping, mediaState.voiceEnabled, settings.autoSpeak, stopAvatarSpeaking, startAvatarSpeaking, speakResponse]);
+  }, [messages, addMessage, setTyping, mediaState.voiceEnabled, settings.autoSpeak, activeThreadId, stopAvatarSpeaking, startAvatarSpeaking, speakResponse, dispatchAssistantActions]);
 
   return {
     send,

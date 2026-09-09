@@ -61,6 +61,33 @@ function normalizeUiActions(input: any): UiAction[] {
   return [];
 }
 
+const RECENT_UI_ACTION_BATCHES = new Map<string, number>();
+const UI_ACTION_DEDUP_WINDOW_MS = 750;
+
+function stableUiActionSignature(actions: UiAction[], source: string): string {
+  const normalized = actions.map((action) => ({
+    type: safeString(action?.type || "").trim().toLowerCase(),
+    payload: action?.payload ?? null,
+  }));
+  try {
+    return `${safeString(source)}:${JSON.stringify(normalized)}`;
+  } catch {
+    return `${safeString(source)}:${normalized.map((a) => a.type).join("|")}`;
+  }
+}
+
+function shouldSkipRecentUiActionBatch(actions: UiAction[], source: string): boolean {
+  const now = Date.now();
+  for (const [key, ts] of Array.from(RECENT_UI_ACTION_BATCHES.entries())) {
+    if (now - ts > UI_ACTION_DEDUP_WINDOW_MS) RECENT_UI_ACTION_BATCHES.delete(key);
+  }
+  const signature = stableUiActionSignature(actions, source);
+  const previous = RECENT_UI_ACTION_BATCHES.get(signature);
+  if (previous && now - previous <= UI_ACTION_DEDUP_WINDOW_MS) return true;
+  RECENT_UI_ACTION_BATCHES.set(signature, now);
+  return false;
+}
+
 const PANEL_PENDING_PREFIX = "sarahmemory:panel:pending:";
 
 function canonicalActionType(type: any): string {
@@ -741,6 +768,7 @@ export const useSarahStore = create<SarahState>()(
         const batch = normalizeUiActions(actions);
         if (batch.length === 0) return;
         if (!get().uiAutomationEnabled) return;
+        if (shouldSkipRecentUiActionBatch(batch, source)) return;
         if (get().processingActions) return;
 
         set({ processingActions: true });
@@ -849,6 +877,21 @@ export const useSarahStore = create<SarahState>()(
                     break;
                   case "avatar.wave":
                     get().triggerWave();
+                    break;
+
+                  case "organ.route":
+                  case "organ_route":
+                    try {
+                      window.dispatchEvent(new CustomEvent("sarah:organ-route", { detail: payload || {} }));
+                    } catch {}
+                    break;
+
+                  case "device_manager.open":
+                  case "device-manager.open":
+                  case "device_manager_open":
+                    try {
+                      window.dispatchEvent(new CustomEvent("sarah:device-manager", { detail: payload || {} }));
+                    } catch {}
                     break;
 
                   case "research_open":

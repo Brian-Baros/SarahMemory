@@ -12,6 +12,7 @@ export type ViewportProfile = {
   isLandscape: boolean;
   isPhoneWidth: boolean;
   isTabletPortrait: boolean;
+  isCompactLandscape: boolean;
   isTouch: boolean;
   shellMode: ShellMode;
 };
@@ -29,6 +30,7 @@ function getViewportProfile(): ViewportProfile {
       isLandscape: true,
       isPhoneWidth: false,
       isTabletPortrait: false,
+      isCompactLandscape: false,
       isTouch: false,
       shellMode: "desktop",
     };
@@ -41,6 +43,7 @@ function getViewportProfile(): ViewportProfile {
   const isLandscape = !isPortrait;
   const isPhoneWidth = width < MOBILE_BREAKPOINT;
   const isTabletPortrait = isPortrait && width < TABLET_PORTRAIT_BREAKPOINT;
+  const isCompactLandscape = isLandscape && height < 600 && width < TABLET_PORTRAIT_BREAKPOINT;
   const isTouch =
     typeof navigator !== "undefined" &&
     (navigator.maxTouchPoints > 0 || window.matchMedia?.("(hover: none) and (pointer: coarse)").matches === true);
@@ -48,12 +51,15 @@ function getViewportProfile(): ViewportProfile {
   /**
    * Single SarahMemory viewport contract:
    * - Portrait phone/tablet uses the mobile shell.
-   * - Landscape phone/tablet and desktop use the desktop shell.
+   * - Compact landscape phone/tablet uses the mobile shell to avoid cramped,
+   *   overlapping desktop windows.
+   * - Larger landscape tablet and desktop use the desktop shell.
    *
    * This keeps horizontal device posture aligned with the desktop-style shell
    * while keeping vertical phone posture aligned with the mobile shell.
    */
-  const shellMode: ShellMode = isPortrait && (isPhoneWidth || isTabletPortrait) ? "mobile" : "desktop";
+  const shellMode: ShellMode =
+    (isPortrait && (isPhoneWidth || isTabletPortrait)) || isCompactLandscape ? "mobile" : "desktop";
 
   return {
     width,
@@ -62,6 +68,7 @@ function getViewportProfile(): ViewportProfile {
     isLandscape,
     isPhoneWidth,
     isTabletPortrait,
+    isCompactLandscape,
     isTouch,
     shellMode,
   };
