@@ -2599,6 +2599,62 @@ def net_energetics_status():
     return _err("Energetics unavailable", 503)
 
 
+@bp.post("/api/mcp/rpc")
+def mcp_rpc_adapter_only():
+    packet = _j()
+    rpc_id = packet.get("id")
+    method = str(packet.get("method") or "").strip()
+
+    def ok_result(result: Dict[str, Any]):
+        return jsonify({"jsonrpc": "2.0", "id": rpc_id, "result": result}), 200
+
+    def rpc_error(code: int, message: str, data: Optional[Dict[str, Any]] = None):
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "error": {
+                "code": code,
+                "message": message,
+                "data": data or {},
+            },
+        }), 200
+
+    base = {
+        "schema": "SarahMemory.MCP.rpc.v1",
+        "source": "api.server.appnet",
+        "mode": "adapter_only",
+        "execution_authority": False,
+        "operator_required": True,
+        "trust": {"remote_execution_allowed": False, "tools_call_allowed": False},
+        "policy": {
+            "passive_list_methods_allowed": True,
+            "tool_execution_allowed": False,
+            "agent_firewall_required": True,
+            "operator_core_required": True,
+            "trust_registry_required": True,
+        },
+    }
+
+    if method == "initialize":
+        return ok_result({
+            **base,
+            "protocolVersion": "2025-06-18",
+            "serverInfo": {"name": "SarahMemory MCP Adapter", "version": "9.0.0a-adapter"},
+            "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+        })
+    if method == "notifications/initialized":
+        return ok_result({**base, "acknowledged": True})
+    if method == "tools/list":
+        return ok_result({**base, "tools": []})
+    if method == "resources/list":
+        return ok_result({**base, "resources": []})
+    if method == "prompts/list":
+        return ok_result({**base, "prompts": []})
+    if method in {"tools/call", "resources/read", "prompts/get"}:
+        return rpc_error(-32001, "MCP method blocked: governed local MCP gateway is not installed or authorized.", base)
+    return rpc_error(-32601, f"Unsupported MCP adapter method: {method or '<missing>'}", base)
+
+
 @bp.post("/api/net/energetics/preflight")
 def net_energetics_preflight():
     raw = _body_bytes()
@@ -2677,4 +2733,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appnet', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-

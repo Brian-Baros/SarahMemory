@@ -713,6 +713,8 @@ def api_store_addon_candidates():
     items = _scan_addon_candidates()
     return _cors_ok(_jok({"count": len(items), "candidates": items, "auto_run_performed": False}))
 
+@bp2.route("/api/store/addons", methods=["GET", "OPTIONS"])
+@bp2.route("/api/store/addons/", methods=["GET", "OPTIONS"])
 @bp2.route("/api/store/addons/registry", methods=["GET", "OPTIONS"])
 def api_store_addon_registry():
     """Read-only addon/capability registry surface for the AiOS shell.
@@ -2463,4 +2465,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appstore', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-

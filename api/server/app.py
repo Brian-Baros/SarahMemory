@@ -79,6 +79,8 @@ except Exception as _flask_import_error:
         content_length = 0
         is_json = False
         args = {}
+        headers = {}
+        cookies = {}
         host = "127.0.0.1"
         def get_json(self, silent=True):
             return None
@@ -579,6 +581,8 @@ def _sm_v9g_component_from_text(norm: str) -> str:
         return "cpu"
     if _sm_v9g_contains_any(norm, ("gpu", "graphics", "video card", "nvidia", "radeon")):
         return "gpu"
+    if _sm_v9g_contains_any(norm, ("camera", "webcam", "imaging device", "uvc", "vision sensor")):
+        return "camera"
     if _sm_v9g_contains_any(norm, ("motherboard", "mainboard", "baseboard", "system board", "board", "chipset", "vrm")):
         return "motherboard"
     if _sm_v9g_contains_any(norm, ("drive", "disk", "disc", "storage", "ssd", "hdd", "nvme")):
@@ -632,6 +636,11 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
         requested_metric = "connectivity" if ("ethernet" in norm or "wi-fi" in norm or "wifi" in norm) and re.search(r"\bare\s+you\s+connected|\bconnected\b", norm) else "network_adapters"
         fact_kind = "network"
         answer_shape = "direct_answer" if requested_metric == "connectivity" else "summary"
+    elif (not general_definition) and (_sm_v9g_word_any(norm, ("camera", "webcam", "uvc")) or "imaging device" in norm or "vision hardware" in norm):
+        requested_metric = "identity"
+        fact_kind = "camera"
+        target = target or component or "camera"
+        answer_shape = "summary"
     elif (not general_definition) and (_sm_v9g_word_any(norm, ("gpu", "graphics")) or "video card" in norm):
         requested_metric = "identity"
         fact_kind = "gpu"
@@ -663,7 +672,7 @@ def _sm_build_canonical_query_packet(text: str, payload: dict | None = None, con
     self_scope = _sm_v9g_is_self_scope_query(norm, fact_kind=fact_kind)
     fact_scope = bool(self_scope and fact_kind != "general_system_fact")
     weather_phrases = ("outside", "weather", "forecast", "rain", "humidity", "wind chill", "heat index")
-    if _sm_v9g_contains_any(norm, weather_phrases) and not _sm_v9g_contains_any(norm, ("cpu", "gpu", "fan", "drive", "disk", "usb", "system", "motherboard")):
+    if _sm_v9g_contains_any(norm, weather_phrases) and not _sm_v9g_contains_any(norm, ("cpu", "gpu", "fan", "drive", "disk", "usb", "system", "motherboard", "camera", "webcam")):
         fact_scope = False
 
     return {
@@ -720,6 +729,7 @@ def _sm_v9g_component_label(value: str) -> str:
     labels = {
         "cpu": "CPU",
         "gpu": "GPU",
+        "camera": "camera/webcam",
         "motherboard": "motherboard",
         "body thermal": "body thermal",
         "drive": "drive",
@@ -744,6 +754,8 @@ def _sm_v9g_clean_denial(kind: str, claim: str, ticket: dict) -> str:
         return "I can identify the motherboard only if evidence is available, but I do not currently have a verified BIOS/UEFI version witness."
     if kind in {"network", "network_card", "wifi_card", "ethernet_card", "bluetooth_card", "lan"}:
         return "I cannot verify the requested network hardware state from the current evidence packet."
+    if kind in {"camera", "webcam", "vision_hardware"}:
+        return "I cannot verify a physical camera/webcam device from the current SelfAware evidence packet. I will not substitute a missing live frame for hardware identity."
     return f"I cannot verify that {kind.replace('_', ' ')} fact from the current evidence packet. I will not guess."
 
 
@@ -1399,34 +1411,66 @@ def _get_latest_vision_frame(session_id: str, *, max_age_s: int | None = None) -
     except Exception:
         return None
 
+def _sm_visual_word_match(text: str, phrase: str) -> bool:
+    """Whole-token/phrase matcher for vision routing; prevents hat-in-what false positives."""
+    t = str(text or "").lower()
+    p = str(phrase or "").strip().lower()
+    if not p:
+        return False
+    if " " in p or "'" in p:
+        return p in t
+    return re.search(rf"(?<![a-z0-9_]){re.escape(p)}(?![a-z0-9_])", t) is not None
+
+
 def _sm_text_looks_like_visual_request(text: str, payload: dict | None = None, context_packet: dict | None = None) -> bool:
-    """Return True when chat text needs the newest backend vision frame."""
+    """Return True only when chat text needs visual scene/frame analysis.
+
+    Hardware questions such as "what type of webcam do you have" belong to
+    SelfAware/body topology. Mentioning camera/webcam/hat/cpu/gpu must not by
+    itself pull a request into the no-frame vision guard.
+    """
     payload = payload if isinstance(payload, dict) else {}
     context_packet = context_packet if isinstance(context_packet, dict) else {}
     meta = context_packet.get("meta") if isinstance(context_packet.get("meta"), dict) else {}
 
     if bool(payload.get("force_latest_vision") or payload.get("use_latest_vision") or payload.get("vision_request")):
         return True
-    if str(payload.get("intent") or meta.get("intent") or "").strip().lower() in {"vision", "visual", "camera", "scene"}:
-        return True
 
     t = str(text or payload.get("text") or payload.get("message") or payload.get("q") or "").strip().lower()
     if not t:
         return False
 
-    visual_phrases = (
+    try:
+        if _sm_is_selfaware_fact_question(t):
+            return False
+    except Exception:
+        pass
+
+    explicit_intent = str(payload.get("intent") or meta.get("intent") or "").strip().lower()
+    if explicit_intent in {"vision", "visual", "scene", "image_analysis", "camera_scene"}:
+        return True
+
+    hard_visual_phrases = (
         "what do you see", "what can you see", "describe what you see", "show me what you see",
         "can you see me", "do you see me", "look at me", "look at this", "look at that",
-        "what color", "what colour", "color of", "colour of",
         "what is in my hand", "what's in my hand", "what am i holding", "what object is in my hand",
-        "in my hand", "in my hands", "holding up", "holding",
-        "do i have", "am i wearing", "what am i wearing", "what is on my",
-        "shirt", "hat", "cap", "headset", "glasses", "face", "hand", "hands",
-        "behind me", "in front of me", "left of me", "right of me", "next to me",
-        "scene", "webcam", "camera", "frame", "object", "detect", "recognize", "recognise",
-        "read this", "read the text", "text on", "say on", "ocr",
+        "in my hand", "in my hands", "holding up", "read this", "read the text", "summarize this image",
+        "describe the scene", "what is in this image", "what is in this picture", "ocr this",
     )
-    return any(p in t for p in visual_phrases)
+    if any(p in t for p in hard_visual_phrases):
+        return True
+
+    if any(p in t for p in ("what color", "what colour", "color of", "colour of")):
+        return True
+
+    wearable_context = any(p in t for p in ("am i wearing", "what am i wearing", "on my head", "on my face", "on my hand"))
+    wearable_words = ("shirt", "hat", "cap", "headset", "glasses", "face", "hand", "hands")
+    if wearable_context and any(_sm_visual_word_match(t, w) for w in wearable_words):
+        return True
+
+    scene_words = ("scene", "frame", "object", "objects", "detect", "recognize", "recognise", "behind me", "in front of me")
+    return any(_sm_visual_word_match(t, w) for w in scene_words)
+
 
 
 def _sm_parse_appvision_ts(value: object) -> float:
@@ -1953,6 +1997,124 @@ def _extract_research_query(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" :,-")
     return cleaned or t
 
+def _sm_is_information_question(text: str) -> bool:
+    t = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not t:
+        return False
+    if re.match(r"^(what|who|when|where|why|how|which)", t):
+        return True
+    if re.match(r"^(do|does|did|is|are|was|were|can|could|should|would)\s+(you|i|we|this|that)", t):
+        return True
+    if t.startswith(("tell me", "explain", "define", "describe")):
+        return True
+    return False
+
+
+def _sm_is_explicit_panel_command(text: str) -> bool:
+    """True only for deliberate UI/window/panel commands, not subject mentions."""
+    t = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not t:
+        return False
+    if _sm_is_information_question(t) and not t.startswith(("show ", "show me ", "bring up ")):
+        return False
+    command_verbs = (
+        "open", "show", "launch", "bring up", "go to", "load", "switch to", "focus", "navigate to",
+        "display", "scan devices", "detect devices", "list devices"
+    )
+    panel_targets = (
+        "panel", "screen", "window", "dl engine", "deep learning", "model forge", "performance monitor",
+        "task manager", "device manager", "nailde", "terminal", "creative studio", "creative studios",
+        "sarahnet", "settings", "history", "file manager", "research browser", "research panel"
+    )
+    return any(t.startswith(v + " ") or t == v or v in t for v in command_verbs) and any(target in t for target in panel_targets)
+
+
+def _chat_panel_route_for_text(text: str) -> dict | None:
+    """Return a governed local Chat-to-organ route without executing it."""
+    t = (text or "").strip()
+    low = t.lower()
+    if not t:
+        return None
+    if not _sm_is_explicit_panel_command(t):
+        return None
+    def _phrase_matches(phrase: str) -> bool:
+        p = str(phrase or "").strip().lower()
+        if not p:
+            return False
+        if re.match(r"^[a-z0-9_-]{1,3}$", p):
+            return re.search(rf"(?<![a-z0-9_-]){re.escape(p)}(?![a-z0-9_-])", low) is not None
+        return p in low
+    route_map = [
+        ("nailde", "nailde", ("nailde", "build", "code", "create app", "create program", "make app", "write module", "patch code")),
+        ("terminal", "terminal", ("terminal", "command line", "console", "shell")),
+        ("avatar_panel", "avatar", ("avatar", "voice", "speak", "animate", "camera panel")),
+        ("deep_learning_controls", "dlengine", ("deep learning", "model forge", "dl engine", "training", "weights", "model controls")),
+        ("creative_studios", "studio", ("creative studio", "creative studios", "studio", "make image", "make video", "make music", "create scene")),
+        ("sarahnet", "sarahnet", ("sarahnet", "vr", "xr", "ar", "network mesh")),
+        ("device_manager", "device-manager", ("device manager", "scan devices", "detect devices", "show devices", "list devices", "driver", "wifi", "wi-fi", "printer", "display setting", "camera setting", "audio setting")),
+        ("settings", "settings", ("settings", "preferences", "system tuning", "theme", "timezone")),
+        ("task_manager", "dlengine", ("task manager", "running apps", "process monitor", "processes")),
+        ("performance_monitor", "dlengine", ("performance monitor", "system performance", "hardware performance", "resource monitor")),
+        ("model_manager", "dlengine", ("model manager", "models folder", "ollama", "provider")),
+        ("memory_panel", "history", ("memory panel", "memory trail", "recall memory")),
+        ("security_panel", "settings", ("security panel", "agent firewall", "firewall", "quarantine", "roachmotel")),
+        ("files", "files", ("file manager", "files", "folder")),
+    ]
+    for organ, app_id, phrases in route_map:
+        if any(_phrase_matches(phrase) for phrase in phrases):
+            return {"organ": organ, "app": app_id}
+    return None
+
+def _chat_organ_route_actions(text: str) -> list[dict]:
+    route = _chat_panel_route_for_text(text)
+    if not route:
+        return []
+    organ = str(route.get("organ") or "")
+    app_id = str(route.get("app") or "")
+    envelope = {}
+    guard = {}
+    try:
+        if callable(_sm_build_local_task_envelope):
+            envelope = _sm_build_local_task_envelope(
+                text,
+                origin="local_ui_chat",
+                operator_present=True,
+                target_organ=organ,
+                metadata={"source": "api_chat.panel_route", "bridge": "app.py"},
+            )
+        if envelope and callable(_sm_guard_internal_organ_request):
+            guard = _sm_guard_internal_organ_request(envelope, remote_addr="127.0.0.1")
+    except Exception as exc:
+        guard = {"ok": False, "reason": f"local_task_envelope_guard_failed:{exc}", "execution_authority": False}
+    actions = [
+        {"type": "navigate", "payload": {"screen": app_id, "app": app_id, "reason": "chat_command", "target_organ": organ}},
+        {"type": "desktop.set_app", "payload": {"app": app_id, "reason": "chat_command", "target_organ": organ}},
+        {"type": "window.open", "payload": {"id": app_id, "reason": "chat_command", "target_organ": organ}},
+        {
+            "type": "organ.route",
+            "payload": {
+                "origin": "local_ui_chat",
+                "target_organ": organ,
+                "target_panel": app_id,
+                "local_task_envelope": envelope,
+                "firewall_guard": guard,
+                "requires_operatorcore": bool((guard or {}).get("requires_operatorcore", True)),
+                "requires_ledger": True,
+                "execution_authority": False,
+            },
+        },
+    ]
+    if organ == "avatar_panel":
+        if "wave" in str(text or "").lower():
+            actions.append({"type": "avatar.wave", "payload": {"reason": "chat_command"}})
+        else:
+            actions.append({"type": "avatar.pose", "payload": {"pose": "stand", "reason": "chat_command"}})
+    if organ == "settings":
+        actions.append({"type": "settings.open", "payload": {"reason": "chat_command"}})
+    if organ == "device_manager":
+        actions.append({"type": "device_manager.open", "payload": {"tab": "all", "reason": "chat_command"}})
+    return actions
+
 def _panel_actions_for_text(text: str) -> list[dict]:
     t = (text or "").strip()
     low = t.lower()
@@ -1960,6 +2122,10 @@ def _panel_actions_for_text(text: str) -> list[dict]:
         return []
 
     actions: list[dict] = []
+
+    organ_actions = _chat_organ_route_actions(t)
+    if organ_actions:
+        actions.extend(organ_actions)
 
     wants_history = any(k in low for k in ("chat history", "history panel", "conversation history", "open history", "show history"))
     if wants_history:
@@ -1992,7 +2158,7 @@ def _panel_actions_for_text(text: str) -> list[dict]:
             actions.append({"type": "research_search", "payload": {"query": _extract_research_query(t), "reason": "chat_command"}})
         return actions
 
-    return []
+    return actions
 
 def _attach_panel_actions_to_bundle(bundle: dict, text: str | None = None) -> dict:
     try:
@@ -2027,6 +2193,995 @@ def _attach_panel_actions_to_bundle(bundle: dict, text: str | None = None) -> di
     except Exception:
         pass
     return bundle
+
+
+_SM_COMMAND_SPINE_SCHEMA = "SarahMemory.command_spine.v1"
+_SM_COMMAND_ACTION_TTL_SECONDS = 3600
+
+
+def _sm_cmd_now() -> float:
+    return time.time()
+
+
+def _sm_cmd_iso(ts: float | None = None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(float(ts or _sm_cmd_now())))
+
+
+def _sm_cmd_id(prefix: str) -> str:
+    raw = f"{prefix}:{time.time_ns()}:{random.random()}".encode("utf-8", "ignore")
+    return f"{prefix}_{hashlib.sha256(raw).hexdigest()[:16]}"
+
+
+def _sm_cmd_dumps(value) -> str:
+    try:
+        return json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return "{}"
+
+
+def _sm_cmd_loads(value):
+    try:
+        obj = json.loads(value or "{}")
+        return obj if isinstance(obj, (dict, list)) else {}
+    except Exception:
+        return {}
+
+
+def _sm_cmd_ensure_tables() -> None:
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        cur = con.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS command_pending_actions (
+                pending_action_id TEXT PRIMARY KEY,
+                thread_id TEXT,
+                session_id TEXT,
+                capability TEXT,
+                intent TEXT,
+                target TEXT,
+                risk_tier INTEGER,
+                permission TEXT,
+                status TEXT,
+                user_request TEXT,
+                payload_json TEXT,
+                resume_route TEXT,
+                created_ts REAL,
+                updated_ts REAL,
+                expires_ts REAL,
+                audit_json TEXT
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_command_pending_thread ON command_pending_actions(thread_id, status, created_ts)")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS command_task_registry (
+                task_id TEXT PRIMARY KEY,
+                mission_id TEXT,
+                source TEXT,
+                owner TEXT,
+                capability TEXT,
+                target TEXT,
+                status TEXT,
+                current_step TEXT,
+                payload_json TEXT,
+                result_json TEXT,
+                created_ts REAL,
+                updated_ts REAL
+            )
+            """
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_command_tasks_status ON command_task_registry(status, updated_ts)")
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS command_audit_receipts (
+                receipt_id TEXT PRIMARY KEY,
+                event_type TEXT,
+                capability TEXT,
+                target TEXT,
+                task_id TEXT,
+                pending_action_id TEXT,
+                payload_json TEXT,
+                created_ts REAL
+            )
+            """
+        )
+        con.commit()
+    except Exception as exc:
+        try:
+            app_logger.warning(f"command spine table init failed: {exc}")
+        except Exception:
+            pass
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_thread_id(payload: dict | None = None, context_packet: dict | None = None) -> str:
+    payload = payload if isinstance(payload, dict) else {}
+    context_packet = context_packet if isinstance(context_packet, dict) else {}
+    return str(
+        payload.get("thread_id")
+        or payload.get("conversation_id")
+        or payload.get("session_id")
+        or context_packet.get("session_id")
+        or "default_thread"
+    )[:180]
+
+
+def _sm_cmd_capabilities() -> list[dict]:
+    return [
+        {"capability": "ui.open_panel", "owner": "Chat UI", "type": "ui_panel", "risk": "low", "risk_tier": 0, "permission": "none", "available": True},
+        {"capability": "creative_studios.generate_image", "owner": "appmedia.py/Creative Studios", "type": "media_generation", "risk": "medium", "risk_tier": 2, "permission": "user_present_local", "backend_route": "/api/creative/image", "available": True},
+        {"capability": "nailde.create_project", "owner": "appsdk.py/SarahMemoryNAILDE.py", "type": "filesystem_write", "risk": "medium", "risk_tier": 2, "permission": "approve_once", "backend_route": "appsdk.run_governed_creation_mission", "sandbox_required": True, "available": True},
+        {"capability": "research.open_url", "owner": "Research Browser", "type": "network_panel_open", "risk": "medium", "risk_tier": 2, "permission": "approve_once", "backend_route": "research_open UI action", "available": True},
+        {"capability": "external_model.openai_agent", "owner": "OperatorCore/AgentFirewall", "type": "external_agent_network", "risk": "high", "risk_tier": 5, "permission": "approve_once", "backend_route": "governed_external_agent_bridge", "available": False},
+        {"capability": "task_registry.list", "owner": "Command Spine", "type": "task_status", "risk": "low", "risk_tier": 1, "permission": "none", "backend_route": "/api/tasks", "available": True},
+        {"capability": "pending_actions.list", "owner": "Command Spine", "type": "approval_status", "risk": "low", "risk_tier": 1, "permission": "none", "backend_route": "/api/actions/pending", "available": True},
+    ]
+
+
+def _sm_cmd_chip(label: str, action: str, **payload) -> dict:
+    return {"label": label, "action": action, **{k: v for k, v in payload.items() if v not in (None, "", [], {})}}
+
+
+def _sm_cmd_set_card(bundle: dict, *, response_type: str, chips: list[dict] | None = None, capability: dict | None = None, pending_action_id: str | None = None, task: dict | None = None, mission_id: str | None = None) -> dict:
+    if not isinstance(bundle, dict):
+        return bundle
+    bundle["response_type"] = response_type
+    bundle["chips"] = list(chips or [])
+    if pending_action_id:
+        bundle["pending_action_id"] = pending_action_id
+    if mission_id:
+        bundle["mission_id"] = mission_id
+    if task:
+        bundle["task"] = task
+        bundle["task_id"] = task.get("task_id")
+    if capability:
+        bundle["capability"] = capability
+    meta = bundle.setdefault("meta", {})
+    if isinstance(meta, dict):
+        meta["response_type"] = response_type
+        meta["chips"] = list(chips or [])
+        meta["capability"] = capability or meta.get("capability")
+        if pending_action_id:
+            meta["pending_action_id"] = pending_action_id
+        if mission_id:
+            meta["mission_id"] = mission_id
+        if task:
+            meta["task"] = task
+    return bundle
+
+
+def _sm_cmd_record_audit(event_type: str, *, capability: str = "", target: str = "", task_id: str = "", pending_action_id: str = "", payload: dict | None = None) -> str:
+    _sm_cmd_ensure_tables()
+    receipt_id = _sm_cmd_id("audit")
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        con.execute(
+            "INSERT INTO command_audit_receipts(receipt_id,event_type,capability,target,task_id,pending_action_id,payload_json,created_ts) VALUES(?,?,?,?,?,?,?,?)",
+            (receipt_id, event_type, capability, target, task_id, pending_action_id, _sm_cmd_dumps(payload or {}), _sm_cmd_now()),
+        )
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    return receipt_id
+
+
+def _sm_cmd_create_task(*, source: str, capability: str, target: str, status: str, current_step: str, payload: dict | None = None, mission_id: str = "", result: dict | None = None) -> dict:
+    _sm_cmd_ensure_tables()
+    task_id = _sm_cmd_id("task")
+    now = _sm_cmd_now()
+    task = {
+        "task_id": task_id,
+        "mission_id": mission_id,
+        "source": source,
+        "owner": "local_owner",
+        "capability": capability,
+        "target": target,
+        "status": status,
+        "current_step": current_step,
+        "payload": payload or {},
+        "result": result or {},
+        "created_at": _sm_cmd_iso(now),
+        "updated_at": _sm_cmd_iso(now),
+    }
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        con.execute(
+            "INSERT INTO command_task_registry(task_id,mission_id,source,owner,capability,target,status,current_step,payload_json,result_json,created_ts,updated_ts) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, mission_id, source, "local_owner", capability, target, status, current_step, _sm_cmd_dumps(payload or {}), _sm_cmd_dumps(result or {}), now, now),
+        )
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    return task
+
+
+def _sm_cmd_update_task(task_id: str, *, status: str | None = None, current_step: str | None = None, result: dict | None = None) -> dict:
+    _sm_cmd_ensure_tables()
+    current = _sm_cmd_get_task(task_id) or {}
+    if not current:
+        return {}
+    status = status or current.get("status") or "unknown"
+    current_step = current_step or current.get("current_step") or ""
+    result_obj = result if isinstance(result, dict) else current.get("result") if isinstance(current.get("result"), dict) else {}
+    now = _sm_cmd_now()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        con.execute(
+            "UPDATE command_task_registry SET status=?, current_step=?, result_json=?, updated_ts=? WHERE task_id=?",
+            (status, current_step, _sm_cmd_dumps(result_obj), now, task_id),
+        )
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    current.update({"status": status, "current_step": current_step, "result": result_obj, "updated_at": _sm_cmd_iso(now)})
+    return current
+
+
+def _sm_cmd_task_from_row(row) -> dict:
+    return {
+        "task_id": row[0],
+        "mission_id": row[1] or "",
+        "source": row[2] or "",
+        "owner": row[3] or "",
+        "capability": row[4] or "",
+        "target": row[5] or "",
+        "status": row[6] or "",
+        "current_step": row[7] or "",
+        "payload": _sm_cmd_loads(row[8]),
+        "result": _sm_cmd_loads(row[9]),
+        "created_at": _sm_cmd_iso(row[10]),
+        "updated_at": _sm_cmd_iso(row[11]),
+    }
+
+
+def _sm_cmd_get_task(task_id: str) -> dict | None:
+    _sm_cmd_ensure_tables()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        row = con.execute(
+            "SELECT task_id,mission_id,source,owner,capability,target,status,current_step,payload_json,result_json,created_ts,updated_ts FROM command_task_registry WHERE task_id=?",
+            (str(task_id or ""),),
+        ).fetchone()
+        return _sm_cmd_task_from_row(row) if row else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_list_tasks(limit: int = 50) -> list[dict]:
+    _sm_cmd_ensure_tables()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        rows = con.execute(
+            "SELECT task_id,mission_id,source,owner,capability,target,status,current_step,payload_json,result_json,created_ts,updated_ts FROM command_task_registry ORDER BY updated_ts DESC LIMIT ?",
+            (max(1, min(int(limit or 50), 200)),),
+        ).fetchall()
+        return [_sm_cmd_task_from_row(row) for row in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_pending_from_row(row) -> dict:
+    return {
+        "pending_action_id": row[0],
+        "thread_id": row[1] or "",
+        "session_id": row[2] or "",
+        "capability": row[3] or "",
+        "intent": row[4] or "",
+        "target": row[5] or "",
+        "risk_tier": int(row[6] or 0),
+        "permission": row[7] or "",
+        "status": row[8] or "",
+        "user_request": row[9] or "",
+        "payload": _sm_cmd_loads(row[10]),
+        "resume_route": row[11] or "",
+        "created_at": _sm_cmd_iso(row[12]),
+        "updated_at": _sm_cmd_iso(row[13]),
+        "expires_at": _sm_cmd_iso(row[14]),
+        "audit": _sm_cmd_loads(row[15]),
+    }
+
+
+def _sm_cmd_create_pending_action(*, thread_id: str, session_id: str, capability: str, intent: str, target: str, risk_tier: int, permission: str, user_request: str, payload: dict | None, resume_route: str) -> dict:
+    _sm_cmd_ensure_tables()
+    pending_action_id = _sm_cmd_id("act")
+    now = _sm_cmd_now()
+    expires = now + _SM_COMMAND_ACTION_TTL_SECONDS
+    audit = {"schema": _SM_COMMAND_SPINE_SCHEMA, "created_by": "api_chat.command_spine", "created_at": _sm_cmd_iso(now)}
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        con.execute(
+            "INSERT INTO command_pending_actions(pending_action_id,thread_id,session_id,capability,intent,target,risk_tier,permission,status,user_request,payload_json,resume_route,created_ts,updated_ts,expires_ts,audit_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (pending_action_id, thread_id, session_id, capability, intent, target, int(risk_tier), permission, "waiting", user_request, _sm_cmd_dumps(payload or {}), resume_route, now, now, expires, _sm_cmd_dumps(audit)),
+        )
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    return _sm_cmd_get_pending_action(pending_action_id) or {"pending_action_id": pending_action_id, "status": "waiting"}
+
+
+def _sm_cmd_get_pending_action(pending_action_id: str) -> dict | None:
+    _sm_cmd_ensure_tables()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        row = con.execute(
+            "SELECT pending_action_id,thread_id,session_id,capability,intent,target,risk_tier,permission,status,user_request,payload_json,resume_route,created_ts,updated_ts,expires_ts,audit_json FROM command_pending_actions WHERE pending_action_id=?",
+            (str(pending_action_id or ""),),
+        ).fetchone()
+        return _sm_cmd_pending_from_row(row) if row else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_latest_waiting_pending(thread_id: str) -> dict | None:
+    _sm_cmd_ensure_tables()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        row = con.execute(
+            "SELECT pending_action_id,thread_id,session_id,capability,intent,target,risk_tier,permission,status,user_request,payload_json,resume_route,created_ts,updated_ts,expires_ts,audit_json FROM command_pending_actions WHERE thread_id=? AND status='waiting' AND expires_ts>? ORDER BY created_ts DESC LIMIT 1",
+            (str(thread_id or "default_thread"), _sm_cmd_now()),
+        ).fetchone()
+        return _sm_cmd_pending_from_row(row) if row else None
+    except Exception:
+        return None
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_list_pending(thread_id: str = "", limit: int = 50) -> list[dict]:
+    _sm_cmd_ensure_tables()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        if thread_id:
+            rows = con.execute(
+                "SELECT pending_action_id,thread_id,session_id,capability,intent,target,risk_tier,permission,status,user_request,payload_json,resume_route,created_ts,updated_ts,expires_ts,audit_json FROM command_pending_actions WHERE thread_id=? AND status='waiting' ORDER BY created_ts DESC LIMIT ?",
+                (thread_id, max(1, min(int(limit or 50), 200))),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT pending_action_id,thread_id,session_id,capability,intent,target,risk_tier,permission,status,user_request,payload_json,resume_route,created_ts,updated_ts,expires_ts,audit_json FROM command_pending_actions WHERE status='waiting' ORDER BY created_ts DESC LIMIT ?",
+                (max(1, min(int(limit or 50), 200)),),
+            ).fetchall()
+        return [_sm_cmd_pending_from_row(row) for row in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+
+
+def _sm_cmd_set_pending_status(pending_action_id: str, status: str) -> dict | None:
+    _sm_cmd_ensure_tables()
+    now = _sm_cmd_now()
+    con = None
+    try:
+        con = _connect_sqlite(META_DB)
+        con.execute("UPDATE command_pending_actions SET status=?, updated_ts=? WHERE pending_action_id=?", (status, now, pending_action_id))
+        con.commit()
+    except Exception:
+        try:
+            if con:
+                con.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            if con:
+                con.close()
+        except Exception:
+            pass
+    return _sm_cmd_get_pending_action(pending_action_id)
+
+
+def _sm_cmd_extract_image_prompt(text: str) -> str:
+    prompt = re.sub(r"^\s*(please\s+)?(create|generate|make|draw|render)\s+(me\s+|an?\s+|some\s+)?", "", str(text or ""), flags=re.I).strip()
+    prompt = re.sub(r"^\s*(image|picture|photo|art|illustration|poster|logo)\s+(of|for|showing)?\s*", "", prompt, flags=re.I).strip()
+    return prompt or str(text or "").strip()
+
+
+def _sm_cmd_is_image_request(text: str) -> bool:
+    low = str(text or "").lower()
+    return bool(re.search(r"\b(create|generate|make|draw|render)\b", low) and re.search(r"\b(image|picture|photo|art|illustration|poster|logo)\b", low))
+
+
+def _sm_cmd_run_creative_image_fallback(job_payload: dict) -> dict:
+    prompt = str((job_payload or {}).get("prompt") or "").strip()
+    if not prompt:
+        return {"ok": False, "error": "missing_prompt", "status": "error"}
+    job_id = _sm_cmd_id("imgjob")
+    export_root = os.path.join(DATA_DIR, "media", "exports", "jobs", job_id)
+    out_path = os.path.join(export_root, "chat_image.png")
+    try:
+        import SarahMemoryCanvasStudio as CS  # type: ignore
+        studio_cls = getattr(CS, "CanvasStudio", None)
+        if studio_cls is None:
+            raise RuntimeError("CanvasStudio_class_missing")
+        os.makedirs(export_root, exist_ok=True)
+        studio = studio_cls()
+        canvas = studio.generate_from_prompt(
+            prompt,
+            width=int((job_payload or {}).get("width") or 1024),
+            height=int((job_payload or {}).get("height") or 1024),
+            style=(job_payload or {}).get("style") or "default",
+            quality=(job_payload or {}).get("quality") or "standard",
+        )
+        if canvas is None:
+            raise RuntimeError("canvas_generation_returned_none")
+        ok = studio.export_canvas(canvas, out_path, format="PNG", quality=90, flatten=True)
+        if not ok:
+            raise RuntimeError("canvas_export_failed")
+        if not os.path.isfile(out_path) and os.path.isfile(out_path + ".png"):
+            out_path = out_path + ".png"
+        manifest = {
+            "job_id": job_id,
+            "kind": "image",
+            "status": "completed",
+            "created_at": _sm_cmd_iso(),
+            "updated_at": _sm_cmd_iso(),
+            "request": job_payload or {},
+            "artifacts": [{"role": "image", "path": out_path, "filename": os.path.basename(out_path), "mime": "image/png"}],
+            "source": "command_spine.CanvasStudio_fallback",
+        }
+        try:
+            with open(os.path.join(export_root, "manifest.json"), "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh, indent=2, sort_keys=True)
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "success": True,
+            "status": "completed",
+            "job_id": job_id,
+            "url": f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}",
+            "preview": f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}",
+            "path": out_path,
+            "manifest": manifest,
+        }
+    except Exception as exc:
+        primary_detail = str(exc)
+        try:
+            from PIL import Image, ImageDraw, ImageFont  # type: ignore
+            os.makedirs(export_root, exist_ok=True)
+            seed = hashlib.sha256(prompt.encode("utf-8", "ignore")).digest()
+            width = max(512, min(int((job_payload or {}).get("width") or 1024), 1536))
+            height = max(512, min(int((job_payload or {}).get("height") or 1024), 1536))
+            bg = (30 + seed[0] % 80, 25 + seed[1] % 70, 45 + seed[2] % 90)
+            accent = (130 + seed[3] % 90, 100 + seed[4] % 120, 150 + seed[5] % 90)
+            image = Image.new("RGB", (width, height), bg)
+            draw = ImageDraw.Draw(image)
+            for y in range(0, height, 12):
+                blend = y / max(1, height - 1)
+                color = tuple(int(bg[i] * (1 - blend) + accent[i] * blend) for i in range(3))
+                draw.rectangle((0, y, width, min(height, y + 12)), fill=color)
+            for idx in range(18):
+                x = int(seed[idx % len(seed)] / 255 * width)
+                y = int(seed[(idx + 7) % len(seed)] / 255 * height)
+                r = 24 + seed[(idx + 13) % len(seed)] % 90
+                outline = (220, 230, 255)
+                draw.ellipse((x - r, y - r, x + r, y + r), outline=outline, width=2)
+            try:
+                font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", max(30, width // 24))
+                font_body = ImageFont.truetype("DejaVuSans.ttf", max(20, width // 40))
+            except Exception:
+                font_title = ImageFont.load_default()
+                font_body = ImageFont.load_default()
+            margin = max(36, width // 18)
+            draw.rounded_rectangle((margin, margin, width - margin, height - margin), radius=24, fill=(8, 10, 18), outline=(235, 240, 255), width=2)
+            draw.text((margin + 28, margin + 28), "Creative Studios", font=font_title, fill=(245, 248, 255))
+            words = prompt.split()
+            lines = []
+            line = ""
+            max_chars = max(24, width // 24)
+            for word in words:
+                candidate = f"{line} {word}".strip()
+                if len(candidate) > max_chars and line:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = candidate
+            if line:
+                lines.append(line)
+            y = margin + 100
+            for line in lines[:12]:
+                draw.text((margin + 32, y), line, font=font_body, fill=(230, 235, 245))
+                y += max(26, height // 32)
+            draw.text((margin + 32, height - margin - 56), "Prompt-render fallback: optional image engine dependency unavailable.", font=font_body, fill=(190, 200, 220))
+            image.save(out_path, "PNG")
+            manifest = {
+                "job_id": job_id,
+                "kind": "image",
+                "status": "completed",
+                "created_at": _sm_cmd_iso(),
+                "updated_at": _sm_cmd_iso(),
+                "request": job_payload or {},
+                "artifacts": [{"role": "image", "path": out_path, "filename": os.path.basename(out_path), "mime": "image/png"}],
+                "source": "command_spine.PIL_prompt_renderer_fallback",
+                "primary_error": primary_detail,
+            }
+            try:
+                with open(os.path.join(export_root, "manifest.json"), "w", encoding="utf-8") as fh:
+                    json.dump(manifest, fh, indent=2, sort_keys=True)
+            except Exception:
+                pass
+            return {
+                "ok": True,
+                "success": True,
+                "status": "completed",
+                "job_id": job_id,
+                "url": f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}",
+                "preview": f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}",
+                "path": out_path,
+                "manifest": manifest,
+                "fallback_used": True,
+            }
+        except Exception as final_exc:
+            return {"ok": False, "success": False, "status": "error", "error": "creative_image_fallback_failed", "detail": primary_detail, "final_detail": str(final_exc), "job_id": job_id}
+
+
+def _sm_cmd_is_approval_text(text: str) -> bool:
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return low in {"yes", "approve", "approved", "continue", "proceed", "do it", "go ahead", "resume", "approve once"}
+
+
+def _sm_cmd_is_denial_text(text: str) -> bool:
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    return low in {"no", "deny", "denied", "cancel", "stop", "do not", "reject"}
+
+
+def _sm_cmd_find_capability(name: str) -> dict:
+    for cap in _sm_cmd_capabilities():
+        if cap.get("capability") == name:
+            return dict(cap)
+    return {"capability": name, "available": False, "risk_tier": 0, "permission": "unknown"}
+
+
+def _sm_cmd_extract_web_target(text: str) -> str:
+    raw = str(text or "").strip()
+    url = _extract_url_candidate(raw)
+    if url:
+        return _normalize_panel_url(url)
+    match = re.search(r"\b(?:open|connect\s+to|go\s+to|browse\s+to|load)\s+([a-z0-9][a-z0-9.-]{1,80})(?:\s|$)", raw, flags=re.I)
+    if not match:
+        return ""
+    host = match.group(1).strip(" .,:;\"'")
+    if not host or host.lower() in {"nailde", "terminal", "studio", "settings", "files", "device", "devices", "sarahnet"}:
+        return ""
+    if "." not in host:
+        host = f"www.{host}.com"
+    return _normalize_panel_url(host)
+
+
+def _sm_cmd_is_web_open_request(text: str) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if re.search(r"\b(search|research|look\s+up|find)\b", raw, flags=re.I):
+        return False
+    return bool(_sm_cmd_extract_web_target(raw) and re.search(r"\b(open|connect\s+to|go\s+to|browse\s+to|load)\b", raw, flags=re.I))
+
+
+def _sm_cmd_web_open_actions(url: str) -> list[dict]:
+    safe_url = _normalize_panel_url(url)
+    return [
+        {"type": "navigate", "payload": {"screen": "research", "app": "research", "reason": "chat_web_open"}},
+        {"type": "desktop.set_app", "payload": {"app": "research", "reason": "chat_web_open"}},
+        {"type": "window.open", "payload": {"id": "research", "reason": "chat_web_open"}},
+        {"type": "research_open", "payload": {"url": safe_url, "reason": "approved_chat_command"}},
+    ]
+
+
+def _sm_cmd_web_open_bundle(url: str, original: str, *, pending_action_id: str = "") -> dict:
+    safe_url = _normalize_panel_url(url)
+    cap = _sm_cmd_find_capability("research.open_url")
+    actions = _sm_cmd_web_open_actions(safe_url)
+    task = _sm_cmd_create_task(source="chat_ui", capability="research.open_url", target=safe_url, status="completed", current_step="research_open_action_returned", payload={"url": safe_url, "user_request": original}, result={"actions": actions})
+    _sm_cmd_record_audit("research_open_url", capability="research.open_url", target=safe_url, task_id=task.get("task_id", ""), pending_action_id=pending_action_id, payload={"url": safe_url})
+    reply = f"Opening the Research Browser to {safe_url}."
+    chips = [_sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id"))]
+    bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "research_browser_launcher", "intent": "open_url", "schema": _SM_COMMAND_SPINE_SCHEMA, "version": PROJECT_VERSION}, raw_answer=reply, actions=actions)
+    bundle["ok"] = True
+    return _sm_cmd_set_card(bundle, response_type="command_result_card", chips=chips, capability=cap, pending_action_id=pending_action_id, task=task)
+
+
+def _sm_cmd_make_pending_card(pending: dict, message: str | None = None) -> dict:
+    cap = _sm_cmd_find_capability(str(pending.get("capability") or ""))
+    pending_id = str(pending.get("pending_action_id") or "")
+    text = message or f"{cap.get('capability')} requires owner approval before it can continue."
+    chips = [
+        _sm_cmd_chip("Approve Once", "approve_pending_action", pending_action_id=pending_id),
+        _sm_cmd_chip("Deny", "deny_pending_action", pending_action_id=pending_id),
+        _sm_cmd_chip("Show Pending", "show_pending_actions", pending_action_id=pending_id),
+    ]
+    bundle = _sm_make_outward_bundle(
+        text,
+        meta={
+            "source": "command_spine",
+            "engine": "permission_resolver",
+            "intent": str(pending.get("intent") or "approval_required"),
+            "schema": _SM_COMMAND_SPINE_SCHEMA,
+            "pending_action": pending,
+            "execution_authority": False,
+            "version": PROJECT_VERSION,
+        },
+        raw_answer=text,
+        actions=[],
+    )
+    bundle["ok"] = True
+    bundle["blocked"] = True
+    return _sm_cmd_set_card(bundle, response_type="permission_card", chips=chips, capability=cap, pending_action_id=pending_id)
+
+
+def _sm_cmd_generate_image_bundle(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    prompt = _sm_cmd_extract_image_prompt(text)
+    cap = _sm_cmd_find_capability("creative_studios.generate_image")
+    task = _sm_cmd_create_task(source="chat_ui", capability="creative_studios.generate_image", target="creative_studios", status="running", current_step="creative_image_generation", payload={"prompt": prompt})
+    result = None
+    try:
+        import appmedia as _sm_appmedia  # type: ignore
+        run_job = getattr(_sm_appmedia, "run_creative_image_job", None)
+        if not callable(run_job):
+            raise RuntimeError("appmedia.run_creative_image_job unavailable")
+        job_payload = {
+            "prompt": prompt,
+            "style": (payload or {}).get("style") or "default",
+            "quality": (payload or {}).get("quality") or "standard",
+            "width": int((payload or {}).get("width") or 1024),
+            "height": int((payload or {}).get("height") or 1024),
+            "format": "png",
+            "filename": "chat_image.png",
+            "source": "api_chat.command_spine",
+            "thread_id": _sm_cmd_thread_id(payload, context_packet),
+        }
+        result = run_job(job_payload)
+    except Exception as exc:
+        fallback = _sm_cmd_run_creative_image_fallback({
+            "prompt": prompt,
+            "style": (payload or {}).get("style") or "default",
+            "quality": (payload or {}).get("quality") or "standard",
+            "width": int((payload or {}).get("width") or 1024),
+            "height": int((payload or {}).get("height") or 1024),
+            "source": "api_chat.command_spine_fallback",
+            "primary_error": str(exc),
+        })
+        result = fallback if fallback.get("ok") else {"ok": False, "error": "creative_image_route_failed", "detail": str(exc), "fallback": fallback}
+    status = "completed" if isinstance(result, dict) and result.get("ok") else "error"
+    task = _sm_cmd_update_task(task["task_id"], status=status, current_step=status, result=result if isinstance(result, dict) else {"error": "invalid_result"})
+    _sm_cmd_record_audit("creative_image_generate", capability="creative_studios.generate_image", target="creative_studios", task_id=task.get("task_id", ""), payload={"prompt_hash": hashlib.sha256(prompt.encode("utf-8", "ignore")).hexdigest(), "status": status})
+    if status == "completed":
+        url = str((result or {}).get("preview") or (result or {}).get("url") or "")
+        reply = f"Creative Studios generated the image for: {prompt}."
+        if url:
+            reply += f"\n\n![Generated image]({url})"
+        actions = [
+            {"type": "navigate", "payload": {"screen": "studio", "app": "studio", "reason": "creative_image_generated"}},
+            {"type": "desktop.set_app", "payload": {"app": "studio", "reason": "creative_image_generated"}},
+            {"type": "window.open", "payload": {"id": "studio", "reason": "creative_image_generated"}},
+            {"type": "creative.cache.add", "payload": {"type": "image", "url": url, "preview": url, "title": prompt[:80], "status": "complete", "job_id": (result or {}).get("job_id")}},
+            {"type": "preview.show_image", "payload": {"url": url, "title": prompt[:80], "mediaId": (result or {}).get("job_id")}},
+        ]
+        chips = [
+            _sm_cmd_chip("Open Creative Studios", "open_panel", actions=actions[:3]),
+            _sm_cmd_chip("Make Variation", "send_prompt", prompt=f"Make a variation of the last generated image: {prompt}"),
+            _sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id")),
+        ]
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "appmedia.run_creative_image_job", "intent": "generate_image", "schema": _SM_COMMAND_SPINE_SCHEMA, "execution_authority": False, "version": PROJECT_VERSION}, raw_answer=reply, actions=actions)
+        bundle["ok"] = True
+        bundle["images"] = [{"id": str((result or {}).get("job_id") or task.get("task_id")), "type": "image", "url": url, "preview": url, "title": prompt, "status": "complete"}] if url else []
+        return _sm_cmd_set_card(bundle, response_type="creative_result_card", chips=chips, capability=cap, task=task)
+    detail = str((result or {}).get("detail") or (result or {}).get("error") or "unknown_error")
+    reply = f"Creative Studios could not complete the image job. Reason: {detail}"
+    chips = [_sm_cmd_chip("Open Creative Studios", "open_panel", actions=_chat_organ_route_actions("open creative studios")), _sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id"))]
+    bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "creative_image_error", "intent": "generate_image", "schema": _SM_COMMAND_SPINE_SCHEMA, "error": detail, "version": PROJECT_VERSION}, raw_answer=reply, errors=[detail])
+    bundle["ok"] = False
+    return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=chips, capability=cap, task=task)
+
+
+def _sm_cmd_panel_bundle(text: str, route: dict) -> dict:
+    organ = str(route.get("organ") or "")
+    app_id = str(route.get("app") or "")
+    cap = _sm_cmd_find_capability("ui.open_panel")
+    actions = _panel_actions_for_text(text)
+    task = _sm_cmd_create_task(source="chat_ui", capability="ui.open_panel", target=organ or app_id, status="completed", current_step="ui_actions_returned", payload={"text": text, "actions_count": len(actions)}, result={"actions": actions})
+    _sm_cmd_record_audit("ui_open_panel", capability="ui.open_panel", target=organ or app_id, task_id=task.get("task_id", ""), payload={"app": app_id})
+    display = {
+        "creative_studios": "Creative Studios",
+        "device_manager": "Device Manager",
+        "sarahnet": "SarahNet",
+        "nailde": "NAILDE",
+        "terminal": "Terminal",
+        "avatar_panel": "Avatar Core",
+        "task_manager": "Task Manager",
+        "performance_monitor": "Performance Monitor",
+    }.get(organ, organ.replace("_", " ").title() or app_id)
+    reply = f"Opening {display}."
+    chips = [_sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id"))]
+    bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "panel_launcher", "intent": "open_panel", "schema": _SM_COMMAND_SPINE_SCHEMA, "version": PROJECT_VERSION}, raw_answer=reply, actions=actions)
+    bundle["ok"] = True
+    return _sm_cmd_set_card(bundle, response_type="command_result_card", chips=chips, capability=cap, task=task)
+
+
+def _sm_cmd_task_list_bundle() -> dict:
+    tasks = _sm_cmd_list_tasks(limit=25)
+    active = [t for t in tasks if t.get("status") in {"running", "waiting", "paused"}]
+    lines = ["Task Registry"]
+    if not tasks:
+        lines.append("No command-spine tasks are currently recorded.")
+    else:
+        for t in tasks[:10]:
+            lines.append(f"- {t.get('task_id')} | {t.get('status')} | {t.get('capability')} | {t.get('current_step')}")
+    bundle = _sm_make_outward_bundle("\n".join(lines), meta={"source": "command_spine", "engine": "task_registry", "intent": "task_status", "schema": _SM_COMMAND_SPINE_SCHEMA, "active_task_count": len(active), "version": PROJECT_VERSION}, raw_answer="\n".join(lines))
+    bundle["ok"] = True
+    bundle["tasks"] = tasks
+    return _sm_cmd_set_card(bundle, response_type="task_registry_card", chips=[_sm_cmd_chip("Refresh Tasks", "send_prompt", prompt="show running tasks")])
+
+
+def _sm_cmd_pending_list_bundle(thread_id: str = "") -> dict:
+    pending = _sm_cmd_list_pending(thread_id=thread_id, limit=25)
+    lines = ["Pending Approvals"]
+    if not pending:
+        lines.append("No pending approvals are waiting.")
+    else:
+        for item in pending[:10]:
+            lines.append(f"- {item.get('pending_action_id')} | {item.get('capability')} | {item.get('target')} | expires {item.get('expires_at')}")
+    chips = []
+    if pending:
+        chips.append(_sm_cmd_chip("Approve Latest", "approve_pending_action", pending_action_id=pending[0].get("pending_action_id")))
+        chips.append(_sm_cmd_chip("Deny Latest", "deny_pending_action", pending_action_id=pending[0].get("pending_action_id")))
+    bundle = _sm_make_outward_bundle("\n".join(lines), meta={"source": "command_spine", "engine": "pending_action_store", "intent": "pending_actions", "schema": _SM_COMMAND_SPINE_SCHEMA, "pending_count": len(pending), "version": PROJECT_VERSION}, raw_answer="\n".join(lines))
+    bundle["ok"] = True
+    bundle["pending_actions"] = pending
+    return _sm_cmd_set_card(bundle, response_type="pending_action_banner", chips=chips)
+
+
+def _sm_cmd_stage_nailde_approval(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    thread_id = _sm_cmd_thread_id(payload, context_packet)
+    pending = _sm_cmd_create_pending_action(
+        thread_id=thread_id,
+        session_id=thread_id,
+        capability="nailde.create_project",
+        intent="create_software_project",
+        target="NAILDE",
+        risk_tier=2,
+        permission="approve_once",
+        user_request=text,
+        payload={"original_payload": payload or {}, "confirmed_payload": {"confirmed": True, "user_confirmed": True}},
+        resume_route="nailde.create_project",
+    )
+    _sm_cmd_create_task(source="chat_ui", capability="nailde.create_project", target="NAILDE", status="waiting", current_step="awaiting_workspace_approval", payload={"pending_action_id": pending.get("pending_action_id"), "user_request": text})
+    return _sm_cmd_make_pending_card(pending, "Creating a NAILDE sandbox project requires owner approval. Install/run will still require a separate approval.")
+
+
+def _sm_cmd_stage_external_agent_approval(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    thread_id = _sm_cmd_thread_id(payload, context_packet)
+    pending = _sm_cmd_create_pending_action(
+        thread_id=thread_id,
+        session_id=thread_id,
+        capability="external_model.openai_agent",
+        intent="external_agent_access",
+        target="external_model",
+        risk_tier=5,
+        permission="approve_once",
+        user_request=text,
+        payload={"original_payload": payload or {}, "network_required": True},
+        resume_route="external_model.openai_agent",
+    )
+    return _sm_cmd_make_pending_card(pending, "External model or agent access requires owner approval and an egress policy before it can continue.")
+
+
+def _sm_cmd_stage_web_open_approval(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict:
+    thread_id = _sm_cmd_thread_id(payload, context_packet)
+    url = _sm_cmd_extract_web_target(text)
+    pending = _sm_cmd_create_pending_action(
+        thread_id=thread_id,
+        session_id=thread_id,
+        capability="research.open_url",
+        intent="open_url",
+        target=url,
+        risk_tier=2,
+        permission="approve_once",
+        user_request=text,
+        payload={"url": url, "original_payload": payload or {}},
+        resume_route="research.open_url",
+    )
+    _sm_cmd_create_task(source="chat_ui", capability="research.open_url", target=url, status="waiting", current_step="awaiting_network_open_approval", payload={"pending_action_id": pending.get("pending_action_id"), "url": url, "user_request": text})
+    return _sm_cmd_make_pending_card(pending, f"Opening {url} in the Research Browser requires owner approval for network access.")
+
+
+def _sm_cmd_resume_pending_action(pending_action_id: str, *, approved: bool = True) -> dict:
+    pending = _sm_cmd_get_pending_action(pending_action_id)
+    if not pending:
+        bundle = _sm_make_outward_bundle("No matching pending action was found.", meta={"source": "command_spine", "engine": "approval_resume", "intent": "pending_action_missing", "version": PROJECT_VERSION})
+        bundle["ok"] = False
+        return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[])
+    if not approved:
+        _sm_cmd_set_pending_status(pending_action_id, "denied")
+        _sm_cmd_record_audit("pending_action_denied", capability=str(pending.get("capability") or ""), target=str(pending.get("target") or ""), pending_action_id=pending_action_id)
+        bundle = _sm_make_outward_bundle("Pending action denied. The original task was not executed.", meta={"source": "command_spine", "engine": "approval_deny", "intent": "deny_pending_action", "pending_action": pending, "version": PROJECT_VERSION})
+        bundle["ok"] = True
+        return _sm_cmd_set_card(bundle, response_type="command_result_card", chips=[_sm_cmd_chip("Show Pending", "show_pending_actions")], pending_action_id=pending_action_id)
+    if pending.get("status") not in {"waiting", "approved"}:
+        bundle = _sm_make_outward_bundle(f"Pending action is not waiting; current status is {pending.get('status')}.", meta={"source": "command_spine", "engine": "approval_resume", "intent": "pending_action_status", "pending_action": pending, "version": PROJECT_VERSION})
+        bundle["ok"] = False
+        return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Show Pending", "show_pending_actions")], pending_action_id=pending_action_id)
+    _sm_cmd_set_pending_status(pending_action_id, "approved")
+    capability = str(pending.get("capability") or "")
+    original = str(pending.get("user_request") or "")
+    _sm_cmd_record_audit("pending_action_approved", capability=capability, target=str(pending.get("target") or ""), pending_action_id=pending_action_id)
+    if capability == "nailde.create_project":
+        try:
+            p = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
+            original_payload = p.get("original_payload") if isinstance(p.get("original_payload"), dict) else {}
+            original_payload = {**original_payload, "confirmed": True, "user_confirmed": True, "pending_action_id": pending_action_id}
+            result = _sm_try_nailde_creation_mission_route(original, payload=original_payload, context_packet={"session_id": pending.get("thread_id"), "meta": {"user_consented": True}}, governor={"decision": "ALLOW", "allow": True})
+            if isinstance(result, dict):
+                _sm_cmd_set_pending_status(pending_action_id, "completed" if result.get("ok", True) else "error")
+                task = _sm_cmd_create_task(source="chat_ui", capability=capability, target="NAILDE", status="completed" if result.get("ok", True) else "error", current_step="approval_resumed", payload={"pending_action_id": pending_action_id}, result=result)
+                chips = [
+                    _sm_cmd_chip("Open NAILDE", "open_panel", actions=_chat_organ_route_actions("open NAILDE")),
+                    _sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id")),
+                    _sm_cmd_chip("Show Pending", "show_pending_actions"),
+                ]
+                result = _sm_cmd_set_card(result, response_type="mission_card", chips=chips, capability=_sm_cmd_find_capability(capability), pending_action_id=pending_action_id, task=task)
+                return result
+        except Exception as exc:
+            _sm_cmd_set_pending_status(pending_action_id, "error")
+            bundle = _sm_make_outward_bundle(f"Approval was accepted, but NAILDE resume failed: {exc}", meta={"source": "command_spine", "engine": "nailde_resume_failed", "intent": "approval_resume", "version": PROJECT_VERSION})
+            bundle["ok"] = False
+            return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Open NAILDE", "open_panel", actions=_chat_organ_route_actions("open NAILDE"))], pending_action_id=pending_action_id)
+    if capability == "external_model.openai_agent":
+        _sm_cmd_set_pending_status(pending_action_id, "blocked_missing_route")
+        task = _sm_cmd_create_task(source="chat_ui", capability=capability, target="external_model", status="blocked", current_step="missing_governed_external_bridge", payload={"pending_action_id": pending_action_id, "user_request": original})
+        reply = "External agent route approved for this request, but no governed external OpenAI bridge handler is installed in this package. I did not substitute an ungoverned network call."
+        bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "external_agent_resume", "intent": "external_agent_access", "schema": _SM_COMMAND_SPINE_SCHEMA, "execution_authority": False, "version": PROJECT_VERSION}, raw_answer=reply)
+        bundle["ok"] = False
+        return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Use Local Model Instead", "send_prompt", prompt="use the local model instead for the previous task"), _sm_cmd_chip("Show Task", "show_task", task_id=task.get("task_id"))], capability=_sm_cmd_find_capability(capability), pending_action_id=pending_action_id, task=task)
+    if capability == "research.open_url":
+        p = pending.get("payload") if isinstance(pending.get("payload"), dict) else {}
+        url = str(p.get("url") or pending.get("target") or _sm_cmd_extract_web_target(original)).strip()
+        if url:
+            result = _sm_cmd_web_open_bundle(url, original, pending_action_id=pending_action_id)
+            _sm_cmd_set_pending_status(pending_action_id, "completed")
+            return result
+        _sm_cmd_set_pending_status(pending_action_id, "error")
+        bundle = _sm_make_outward_bundle("Approval was accepted, but the original web target could not be resolved.", meta={"source": "command_spine", "engine": "research_open_resume", "intent": "open_url", "pending_action": pending, "version": PROJECT_VERSION})
+        bundle["ok"] = False
+        return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Show Pending", "show_pending_actions")], pending_action_id=pending_action_id)
+    _sm_cmd_set_pending_status(pending_action_id, "error")
+    bundle = _sm_make_outward_bundle("Approval was accepted, but this pending action has no resume handler.", meta={"source": "command_spine", "engine": "approval_resume_missing_handler", "intent": "approval_resume", "pending_action": pending, "version": PROJECT_VERSION})
+    bundle["ok"] = False
+    return _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Show Pending", "show_pending_actions")], pending_action_id=pending_action_id)
+
+
+def _sm_try_command_execution_spine_route(text: str, *, payload: dict | None = None, context_packet: dict | None = None) -> dict | None:
+    raw = str(text or "").strip()
+    low = raw.lower()
+    if not raw:
+        return None
+    thread_id = _sm_cmd_thread_id(payload, context_packet)
+    pending_id = str((payload or {}).get("pending_action_id") or "").strip()
+    if pending_id and _sm_cmd_is_approval_text(raw):
+        return _sm_cmd_resume_pending_action(pending_id, approved=True)
+    if pending_id and _sm_cmd_is_denial_text(raw):
+        return _sm_cmd_resume_pending_action(pending_id, approved=False)
+    if _sm_cmd_is_approval_text(raw):
+        pending = _sm_cmd_latest_waiting_pending(thread_id)
+        if pending:
+            return _sm_cmd_resume_pending_action(str(pending.get("pending_action_id") or ""), approved=True)
+    if _sm_cmd_is_denial_text(raw):
+        pending = _sm_cmd_latest_waiting_pending(thread_id)
+        if pending:
+            return _sm_cmd_resume_pending_action(str(pending.get("pending_action_id") or ""), approved=False)
+    if re.search(r"\b(show|list|what|view)\b.*\b(pending|approval|approvals)\b", low):
+        return _sm_cmd_pending_list_bundle(thread_id=thread_id)
+    if re.search(r"\b(what|show|list|view)\b.*\b(running|task|tasks|agents|jobs|missions)\b", low) or low in {"task status", "show tasks", "show running tasks"}:
+        return _sm_cmd_task_list_bundle()
+    if _sm_cmd_is_image_request(raw):
+        return _sm_cmd_generate_image_bundle(raw, payload=payload, context_packet=context_packet)
+    if _sm_is_nailde_creation_request(raw):
+        return _sm_cmd_stage_nailde_approval(raw, payload=payload, context_packet=context_packet)
+    if re.search(r"\b(agent|external model|openai|chatgpt|gpt|claude|gemini)\b", low) and re.search(r"\b(use|launch|run|agent|connect|external)\b", low):
+        return _sm_cmd_stage_external_agent_approval(raw, payload=payload, context_packet=context_packet)
+    if "dial" in low or re.search(r"\b(call|phone)\b", low):
+        if "sarahnet" in low or "contact" in low or "dial" in low:
+            actions = _chat_organ_route_actions("open SarahNet")
+            task = _sm_cmd_create_task(source="chat_ui", capability="sarahnet.resolve_contact", target="SarahNet", status="waiting", current_step="contact_resolution_required", payload={"user_request": raw})
+            reply = "Opening SarahNet. Contact dialing requires contact resolution and final confirmation before placing a call."
+            chips = [_sm_cmd_chip("Open SarahNet", "open_panel", actions=actions), _sm_cmd_chip("Search Contacts", "send_prompt", prompt=f"search contacts for {raw}"), _sm_cmd_chip("Cancel", "send_prompt", prompt="cancel")]
+            bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "sarahnet_contact_gate", "intent": "dial_contact", "schema": _SM_COMMAND_SPINE_SCHEMA, "execution_authority": False, "version": PROJECT_VERSION}, raw_answer=reply, actions=actions)
+            bundle["ok"] = True
+            return _sm_cmd_set_card(bundle, response_type="clarification_card", chips=chips, task=task)
+    route = _chat_panel_route_for_text(raw)
+    if route:
+        return _sm_cmd_panel_bundle(raw, route)
+    if _sm_cmd_is_web_open_request(raw):
+        return _sm_cmd_stage_web_open_approval(raw, payload=payload, context_packet=context_packet)
+    return None
 
 def _browser_state_answer_for_text(text: str) -> dict | None:
     low = (text or "").lower()
@@ -2144,8 +3299,14 @@ def _arile_api_boundary_preflight():
 # SecurityGovernor/AssuranceGate/SMGET; it adds required boundary evidence.
 try:
     from SarahMemoryAgentFirewall import inspect_payload as _sm_agent_firewall_inspect
+    from SarahMemoryAgentFirewall import build_local_task_envelope as _sm_build_local_task_envelope
+    from SarahMemoryAgentFirewall import guard_internal_organ_request as _sm_guard_internal_organ_request
+    from SarahMemoryAgentFirewall import classify_local_task_intent as _sm_classify_local_task_intent
 except Exception:
     _sm_agent_firewall_inspect = None  # type: ignore
+    _sm_build_local_task_envelope = None  # type: ignore
+    _sm_guard_internal_organ_request = None  # type: ignore
+    _sm_classify_local_task_intent = None  # type: ignore
 
 def _sm_v9_confirmed_payload(payload: dict | None = None) -> bool:
     try:
@@ -2179,7 +3340,7 @@ def _sm_v9_action_authority_preflight(path: str, method: str, payload: dict | No
     )
     high_impact = (
         driver_high_impact
-        or p in {"/api/terminal/execute", "/api/launch", "/api/ui/exit"}
+        or p in {"/api/terminal/execute", "/api/terminal/ai", "/api/launch", "/api/ui/exit"}
         or p.startswith("/api/devbridge/apply-approved")
         or p.startswith("/api/devbridge/rollback")
         or p.startswith("/api/files/trash/empty")
@@ -3152,6 +4313,29 @@ def _sm_module_approved(module_name: str, capability: str | None = None) -> bool
     return True
 
 
+def _sm_normalize_conversation_history(payload: dict, *, max_messages: int = 16, max_chars: int = 1800) -> list[dict]:
+    """Bound and normalize Chat UI message history for Neuron/SML/Compare continuity."""
+    payload = payload if isinstance(payload, dict) else {}
+    raw_messages = payload.get("messages")
+    if not isinstance(raw_messages, list):
+        meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+        raw_messages = meta.get("messages") if isinstance(meta.get("messages"), list) else []
+    out: list[dict] = []
+    for item in raw_messages[-max_messages:]:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or item.get("sender") or "").strip().lower()
+        if role not in {"user", "assistant", "system", "tool"}:
+            role = "user" if role in {"human", "operator"} else "assistant" if role in {"sarah", "ai"} else "unknown"
+        content = str(item.get("content") or item.get("text") or item.get("message") or "").strip()
+        if not content:
+            continue
+        if len(content) > max_chars:
+            content = content[:max_chars].rstrip() + " ..."
+        out.append({"role": role, "content": content, "id": str(item.get("id") or "")[:96], "timestamp": item.get("timestamp") or item.get("ts") or None})
+    return out
+
+
 def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, complexity: str, avatar_request: bool, *, local_only: bool, safe_mode: bool, neoskymatrix: bool, developersmode: bool) -> dict:
     meta_in = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     session_id = _get_or_create_session_id(payload)
@@ -3168,6 +4352,7 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
 
     frame_payload = _normalize_vision_frame_payload(payload)
     frame_value = frame_payload.get("frame") if isinstance(frame_payload, dict) else None
+    conversation_history = _sm_normalize_conversation_history(payload)
 
     return {
         "text": text,
@@ -3181,6 +4366,8 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
         "avatar_request": bool(avatar_request),
         "request_source": "api_chat",
         "ui": str(payload.get("ui") or "webui"),
+        "messages": conversation_history,
+        "conversation": {"messages": conversation_history, "bounded": True, "max_messages": 16},
         "meta": {
             "files": files,
             "images": images,
@@ -3206,6 +4393,8 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
                 "NEOSKYMATRIX": bool(neoskymatrix),
                 "DEVELOPERSMODE": bool(developersmode),
             },
+            "conversation_history": conversation_history,
+            "history_message_count": len(conversation_history),
             "ingress_meta": meta_in,
         },
     }
@@ -3309,7 +4498,11 @@ def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None,
                     pass
             if isinstance(bundle, dict):
                 bundle["ok"] = True
-                bundle["reply"] = bundle.get("presentation_reply") or bundle.get("response") or presentation_text
+                visible_text = bundle.get("presentation_reply") or bundle.get("response") or bundle.get("content") or presentation_text
+                bundle["presentation_reply"] = bundle.get("presentation_reply") or visible_text
+                bundle["reply"] = bundle.get("reply") or visible_text
+                bundle["response"] = bundle.get("response") or visible_text
+                bundle["content"] = bundle.get("content") or visible_text
                 return _attach_panel_actions_to_bundle(bundle)
     except Exception:
         pass
@@ -3319,6 +4512,7 @@ def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None,
         "presentation_reply": presentation_text,
         "reply": presentation_text,
         "response": presentation_text,
+        "content": presentation_text,
         "meta": meta,
         "artifacts": list(artifacts or []),
         "actions": list(actions or []),
@@ -5334,6 +6528,14 @@ def _sm_build_virtual_ingress_route(text: str, payload: dict | None = None, cont
 
     best = best or dict(cards[-1])
     route_id = str(best.get("route_id") or "chat.general")
+    # Minimum-confidence fail-safe: weak semantic matches must fall back to chat.
+    # This prevents benign questions/fragments from becoming email/research/system actions.
+    min_conf = 0.50 if query_vec is not None else 0.34
+    best_domain = str(best.get("domain") or "chat")
+    if (best_score < min_conf and best_domain != "chat") or (_sm_is_information_question(original) and best_domain not in {"chat"} and not _sm_is_explicit_panel_command(original)):
+        best = {"route_id": "chat.general", "domain": "chat", "action": "general_reply", "target_module": "SarahMemoryReply", "transport_target": "/api/chat"}
+        route_id = "chat.general"
+        best_score = max(0.15, float(best_score if best_score >= 0 else 0.15))
     # Forward repair B04: a request to write/summarize/explain text in chat is
     # answer-only unless the user explicitly asks for a file, Word/Notepad,
     # document, spreadsheet, website, or application launch target.
@@ -5398,6 +6600,8 @@ def _sm_proposed_action_from_ingress(ingress_route: dict) -> dict:
 
     action = str(entities.get("action") or "").strip().lower()
     action_type = ""
+    side_effecting_route = route_id in {"system.application.control", "documents.office.write", "drivers.device.control", "email.mail.automation", "reminder.schedule.task", "creative.general.generate"}
+    route_metadata_only = bool(domain == "chat" or not side_effecting_route or not bool((ingress_route or {}).get("needs_discovery")))
     if route_id in {"system.application.control", "documents.office.write"}:
         if requested_state in {"close", "quit", "exit", "stop"}:
             action, action_type = "close", "close_app"
@@ -5428,13 +6632,15 @@ def _sm_proposed_action_from_ingress(ingress_route: dict) -> dict:
         "action": action,
         "action_type": action_type,
         "target": target,
-        "subsystems": [str((ingress_route or {}).get("target_module") or "")],
+        "subsystems": [] if route_metadata_only else [str((ingress_route or {}).get("target_module") or "")],
         "target_files": [],
-        "dry_run": False,
-        "touches_network": bool(domain in {"research", "email", "network", "store"}),
-        "touches_privacy": bool(domain in {"email", "drivers", "system"}),
-        "touches_filesystem": bool(domain in {"documents", "avatar", "system", "media"}),
-        "sends_data": bool(domain in {"email", "network", "store"}),
+        "dry_run": bool(route_metadata_only),
+        "route_metadata_only": bool(route_metadata_only),
+        "side_effecting_route": bool(side_effecting_route and not route_metadata_only),
+        "touches_network": bool((not route_metadata_only) and domain in {"research", "email", "network", "store"}),
+        "touches_privacy": bool((not route_metadata_only) and domain in {"email", "drivers", "system"}),
+        "touches_filesystem": bool((not route_metadata_only) and domain in {"documents", "avatar", "system", "media"}),
+        "sends_data": bool((not route_metadata_only) and domain in {"email", "network", "store"}),
         "entities": entities,
     }
 
@@ -6121,106 +7327,47 @@ def _sm_fast_cache_lookup(question: str) -> tuple[str | None, dict]:
         return None, {"cache_status": "error", "cache_error": str(exc)}
 
 
-def _sm_fast_cache_store(question: str, answer: str, *, source: str = "howto_fastpath") -> bool:
-    if _sm_fast_is_low_quality_answer(answer, question):
-        return False
-    try:
-        import sqlite3 as _sqlite3
-        ds = _sm_fast_dataset_dir()
-        ds.mkdir(parents=True, exist_ok=True)
-        db_path = (ds / "ai_learning.db").resolve()
-        if not _sm_fast_path_under(db_path, ds):
-            return False
-        conn = _sqlite3.connect(str(db_path), timeout=0.75)
-        cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS qa_cache (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            query TEXT,
-            ai_answer TEXT,
-            hit_score INTEGER,
-            feedback TEXT,
-            timestamp TEXT
-        )""")
-        norm = _sm_fast_normalize_question(question)
-        existing = cur.execute("SELECT id FROM qa_cache WHERE lower(query)=? AND ai_answer=? LIMIT 1", (norm, answer)).fetchone()
-        if not existing:
-            cur.execute(
-                "INSERT INTO qa_cache (query, ai_answer, hit_score, feedback, timestamp) VALUES (?, ?, ?, ?, ?)",
-                (norm, answer, 10, f"vetted_{source}", datetime.now().isoformat()),
-            )
-        conn.commit()
-        conn.close()
-        return True
-    except Exception:
-        try:
-            conn.close()  # type: ignore[name-defined]
-        except Exception:
-            pass
-        return False
-
-
-
-def _sm_fast_advcu_local_answer(
+def _sm_fast_cache_store(
     question: str,
+    answer: str,
     *,
-    intent: str = "question",
-    sel_packet: dict | None = None,
-    qist_result: dict | None = None,
-    allow_learning_record: bool = False,
-) -> tuple[str | None, dict]:
-    """Ask AdvCU for a local semantic DB answer instead of bloating app.py.
-
-    Contract:
-      - app.py remains the route/governance airlock.
-      - AdvCU owns semantic pool selection.
-      - SarahMemoryDatabase/meta.db own bounded local SQLite retrieval.
-      - Synapes may record semantic/tokenization candidates when allowed.
-      - No web/API/shell/filesystem/device authority is granted here.
-    """
+    source: str = "howto_fastpath",
+    verified: bool = False,
+    verification_state: str = "UNVERIFIED",
+    meta: dict | None = None,
+) -> bool:
+    """Store only verification-aware QA entries. Default is UNVERIFIED."""
     try:
-        import SarahMemoryAdvCU as _SMAdvCU  # type: ignore
-        fn = getattr(_SMAdvCU, "resolve_local_fast_answer", None)
-        if not callable(fn):
-            return None, {"advcu_status": "unavailable", "advcu_error": "resolve_local_fast_answer missing"}
-        result = fn(
-            question,
-            context_packet=None,
-            sel_packet=sel_packet if isinstance(sel_packet, dict) else {},
-            qist_result=qist_result if isinstance(qist_result, dict) else {},
-            allow_learning_record=bool(allow_learning_record),
-            approved_for_learning=False,
-        )
-        if not isinstance(result, dict):
-            return None, {"advcu_status": "bad_result"}
-        answer = str(result.get("answer") or "").strip()
-        if bool(result.get("ok")) and answer and not _sm_fast_is_low_quality_answer(answer):
-            return answer, {
-                "advcu_status": "hit",
-                "advcu_schema": result.get("schema"),
-                "advcu_source": result.get("source"),
-                "advcu_confidence": result.get("confidence"),
-                "advcu_intent": result.get("intent"),
-                "advcu_query_type": result.get("query_type"),
-                "advcu_db": result.get("db"),
-                "advcu_table": result.get("table"),
-                "advcu_method": result.get("method"),
-                "advcu_routes_checked": result.get("routes_checked"),
-                "advcu_latency_ms": result.get("latency_ms"),
-                "advcu_synapes_record": result.get("synapes_record"),
-                "semantic_packet": result.get("semantic_packet"),
-                "db_access": "meta_routed_local_sqlite_pools",
-                "network_used": False,
-                "execution_authority": False,
-            }
-        return None, {
-            "advcu_status": "miss",
-            "advcu_blocked_reason": result.get("blocked_reason"),
-            "advcu_errors": result.get("errors"),
-            "network_used": False,
-            "execution_authority": False,
-        }
-    except Exception as exc:
-        return None, {"advcu_status": "error", "advcu_error": str(exc), "network_used": False, "execution_authority": False}
+        if not question or not answer:
+            return False
+        if _sm_fast_is_low_quality_answer(answer, question):
+            return False
+        try:
+            import SarahMemoryDatabase as DB  # type: ignore
+            store = getattr(DB, "store_answer", None)
+            if callable(store):
+                return bool(store(
+                    question,
+                    answer,
+                    source=source,
+                    source_type=str((meta or {}).get("source_type") or source),
+                    verification_state=str(verification_state or ("VERIFIED" if verified else "UNVERIFIED")),
+                    verified=bool(verified),
+                    verifier=str((meta or {}).get("verifier") or "app.py.fast_candidate_gate"),
+                    evidence_hash=str((meta or {}).get("evidence_hash") or ""),
+                    provenance_json={"source": source, "meta": dict(meta or {})},
+                    volatile=bool((meta or {}).get("volatile", False)),
+                    do_not_learn=not bool(verified),
+                ))
+        except TypeError:
+            return False
+        except Exception:
+            return False
+        return False
+    except Exception:
+        return False
+
+
 
 def _sm_fast_local_llm_general(question: str, *, intent: str = "question", route: str = "api_chat_general_fastpath") -> tuple[str | None, dict]:
     """Call only the local text-generation LLM lane. Never call Research/Web/API."""
@@ -6276,6 +7423,39 @@ def _sm_fast_local_llm_general(question: str, *, intent: str = "question", route
         return None, {"local_llm_status": "error", "local_llm_error": str(exc)}
 
 
+def _sm_validate_fast_candidate_with_neuron(text: str, answer: str, *, source: str, intent: str, meta: dict | None = None) -> dict:
+    """Send fast-source output through Neuron/Compare as a candidate, not final truth."""
+    candidate = {
+        "answer": str(answer or ""),
+        "source": str(source or "fast_candidate"),
+        "source_type": str((meta or {}).get("source_type") or source or "fast_candidate"),
+        "confidence": float((meta or {}).get("confidence") or 0.62),
+        "verified": bool((meta or {}).get("verified", False)),
+        "deterministic": bool((meta or {}).get("deterministic", False)),
+        "evidence": (meta or {}).get("evidence") or [],
+        "provenance": dict(meta or {}),
+        "timestamp": time.time(),
+    }
+    try:
+        from SarahMemoryNeuron import neuron_validate_candidate_answer  # type: ignore
+        out = neuron_validate_candidate_answer(text, candidate, meta={"intent": intent, "caller": "app.py.fast_candidate"})
+        if isinstance(out, dict):
+            return out
+    except Exception as exc:
+        try:
+            app_logger.debug(f"Neuron candidate validation unavailable: {exc}")
+        except Exception:
+            pass
+    try:
+        from SarahMemoryCompare import compare_candidate_release  # type: ignore
+        out = compare_candidate_release(text, candidate, intent=intent)
+        if isinstance(out, dict):
+            return out
+    except Exception:
+        pass
+    return {"ok": False, "accepted": False, "decision": "NEED_MORE_EVIDENCE", "reply": "", "verified": False}
+
+
 def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bool = False, intent: str = "question", governor: dict | None = None):
     """SML v0.8.2 dynamic answer-only route: source-based, not canned.
 
@@ -6309,12 +7489,13 @@ def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bo
         logiccalc_gate = _sm_logiccalc_lane_guard_for_answer(text, "answer")
         cache_written = False
 
-        source_attempts.append("local_llm")
+        source_attempts.append("local_llm_candidate")
         answer, llm_meta = _sm_fast_local_llm_general(text, intent=intent or "question")
         if answer:
-            source = "local_general_llm"
+            source = "local_general_llm_candidate"
             source_meta.update(llm_meta or {})
-            cache_written = _sm_fast_cache_store(norm, answer, source="local_llm_general")
+            source_meta["source_type"] = "local_llm_candidate"
+            source_meta["candidate_only"] = True
 
         if not answer:
             source_attempts.append("advcu_local_semantic_source")
@@ -6327,7 +7508,7 @@ def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bo
                 answer = adv_answer
                 source = str((adv_meta or {}).get("advcu_source") or "local_semantic_db")
                 source_meta.update(adv_meta or {})
-                cache_written = _sm_fast_cache_store(norm, answer, source=source)
+                source_meta.setdefault("source_type", source)
 
         if not answer and bool(globals().get("SM_ENABLE_QA_CACHE_RETRIEVAL", False)):
             source_attempts.append("trusted_qa_cache")
@@ -6340,11 +7521,29 @@ def _sm_try_tier1_general_local_llm_fastpath_bundle(text: str, *, local_only: bo
         if not answer:
             return None
 
+        release = _sm_validate_fast_candidate_with_neuron(text, answer, source=source, intent=(intent or "question"), meta=source_meta)
+        if not bool((release or {}).get("accepted") or (release or {}).get("ok")):
+            return None
+        answer = str((release or {}).get("reply") or answer).strip()
+        source_meta["neuron_candidate_release"] = release
+        if bool((release or {}).get("verified")):
+            cache_written = _sm_fast_cache_store(
+                norm,
+                answer,
+                source=source,
+                verified=True,
+                verification_state=str((release or {}).get("decision") or "VERIFIED"),
+                meta={**source_meta, "verifier": "Neuron/Compare"},
+            )
+
         meta = {
             "source": source,
             "engine": "api_chat_dynamic_sml_source_route_v0_8_2",
             "intent": intent or "question",
-            "confidence": 0.84,
+            "confidence": float((release or {}).get("confidence") or 0.64),
+            "candidate_validated_by_neuron": True,
+            "candidate_release_decision": str((release or {}).get("decision") or "UNKNOWN"),
+            "verified": bool((release or {}).get("verified", False)),
             "local_only": bool(local_only),
             "side_effects": "none",
             "execution_allowed": False,
@@ -7622,6 +8821,14 @@ def api_chat():
         if browser_state_bundle is not None:
             return jsonify(browser_state_bundle), 200
 
+        command_spine_bundle = _sm_try_command_execution_spine_route(
+            text,
+            payload=payload,
+            context_packet=context_packet,
+        )
+        if isinstance(command_spine_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(command_spine_bundle, locals().get("reality_flow"))), 200
+
         # Governance must fail closed. app.py is transport/bridge, not authority.
         gov = None
 
@@ -7962,7 +9169,9 @@ def api_chat():
             except Exception:
                 pass
 
-        if (not gov_allow) or gov_require_user or gov_decision in ("DENY", "DEFER", "REQUIRE_USER"):
+        _proposed_for_gate = context_packet.get("meta", {}).get("proposed_action") if isinstance(context_packet.get("meta"), dict) else {}
+        _presentation_only_read = bool(isinstance(_proposed_for_gate, dict) and _proposed_for_gate.get("route_metadata_only")) or _sm_is_information_question(text)
+        if ((not gov_allow) or gov_require_user or gov_decision in ("DENY", "DEFER", "REQUIRE_USER")) and not _presentation_only_read:
             if gov_decision == "DENY":
                 raw_reply = gov_rationale or "Request denied by policy."
                 src = "governor:deny"
@@ -8003,9 +9212,9 @@ def api_chat():
         if handled and quick_bundle is not None:
             return jsonify(_sm_attach_reality_meta(quick_bundle, locals().get("reality_flow"))), 200
 
-        # WAVE7: answer-only local LLM fast path. This is after CognitiveServices
-        # governance and before OperatorCore/Neuron to avoid unnecessary DB/vector
-        # work for simple general questions. No file/network/device authority exists here.
+        # WAVE7+GCAIOS: fast source acquisition. Local LLM/AdvCU output is only
+        # a candidate here and must pass Neuron/Compare release gating before presentation.
+        # No file/network/device authority exists here.
         general_llm_bundle = _sm_try_tier1_general_local_llm_fastpath_bundle(
             text,
             local_only=local_only,
@@ -8226,7 +9435,16 @@ def api_chat():
                     "trace": getattr(nres, "trace", {}) or {},
                 }
 
-                raw_reply = str(nres_dict.get("reply") or "")
+                raw_reply = str(
+                    nres_dict.get("presentation_reply")
+                    or nres_dict.get("reply")
+                    or nres_dict.get("response")
+                    or nres_dict.get("content")
+                    or nres_dict.get("text")
+                    or nres_dict.get("answer")
+                    or nres_dict.get("raw_answer")
+                    or ""
+                )
                 resolved_intent = str(nres_dict.get("intent") or intent or "chat")
                 source_label = str(nres_dict.get("source") or "neuron")
                 if not raw_reply.strip() or raw_reply.strip().lower() in {"i’m having trouble generating a response right now.", "i'm having trouble generating a response right now."}:
@@ -8236,6 +9454,7 @@ def api_chat():
                     agent_bundle = _api_chat_governed_agent_assist_fallback("neuron_empty_reply")
                     if isinstance(agent_bundle, dict):
                         return jsonify(agent_bundle), 200
+                    raise RuntimeError("neuron_empty_presentable_reply")
                 meta_out = {
                     "source": source_label,
                     "engine": "neuron_route",
@@ -8247,6 +9466,7 @@ def api_chat():
                     "session_id": context_packet.get("session_id"),
                     "vision_frame_attached": bool(frame_rec),
                     "neuron_trace": nres_dict.get("trace") or {},
+                    "neuron_module_file": str(getattr(sys.modules.get("SarahMemoryNeuron"), "__file__", "")),
                 }
                 artifacts = []
                 actions = []
@@ -8275,6 +9495,11 @@ def api_chat():
                 )
                 bundle["ok"] = bool(nres_dict.get("ok", True))
                 return jsonify(bundle), 200
+        except RuntimeError as e:
+            if str(e) == "neuron_empty_presentable_reply":
+                app_logger.warning("Neuron route returned no presentable reply; continuing to governed Reply fallback.")
+            else:
+                app_logger.error(f"Neuron route failed: {e}", exc_info=True)
         except Exception as e:
             app_logger.error(f"Neuron route failed: {e}", exc_info=True)
 
@@ -8349,6 +9574,131 @@ def api_chat():
         bundle["ok"] = False
         bundle["error"] = str(e)
         return jsonify(bundle), 500
+
+
+@app.route("/api/chat/command", methods=["POST"])
+def api_chat_command():
+    """Structured command-surface endpoint used by operational chat cards."""
+    try:
+        payload = request.get_json(silent=True) or {}
+        text = str(payload.get("text") or payload.get("message") or payload.get("q") or "").strip()
+        if not text:
+            return jsonify({"ok": False, "error": "missing_text", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
+        bundle = _sm_try_command_execution_spine_route(text, payload=payload, context_packet={"session_id": _sm_cmd_thread_id(payload)})
+        if not isinstance(bundle, dict):
+            reply = "No command capability matched that request."
+            bundle = _sm_make_outward_bundle(reply, meta={"source": "command_spine", "engine": "command_resolver", "intent": "unmatched_command", "schema": _SM_COMMAND_SPINE_SCHEMA, "version": PROJECT_VERSION}, raw_answer=reply)
+            bundle["ok"] = False
+            bundle = _sm_cmd_set_card(bundle, response_type="command_error_card", chips=[_sm_cmd_chip("Show Capabilities", "send_prompt", prompt="show command capabilities")])
+        return jsonify(bundle), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "schema": _SM_COMMAND_SPINE_SCHEMA}), 500
+
+
+@app.route("/api/capabilities", methods=["GET"])
+def api_command_capabilities():
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "capabilities": _sm_cmd_capabilities(), "version": PROJECT_VERSION}), 200
+
+
+@app.route("/api/actions/pending", methods=["GET"])
+def api_actions_pending():
+    thread_id = str(request.args.get("thread_id") or request.args.get("conversation_id") or "").strip()
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "pending_actions": _sm_cmd_list_pending(thread_id=thread_id, limit=int(request.args.get("limit") or 50)), "version": PROJECT_VERSION}), 200
+
+
+@app.route("/api/actions/approve", methods=["POST"])
+def api_actions_approve():
+    payload = request.get_json(silent=True) or {}
+    pending_action_id = str(payload.get("pending_action_id") or payload.get("id") or "").strip()
+    if not pending_action_id:
+        thread_id = _sm_cmd_thread_id(payload)
+        pending = _sm_cmd_latest_waiting_pending(thread_id)
+        pending_action_id = str((pending or {}).get("pending_action_id") or "")
+    if not pending_action_id:
+        return jsonify({"ok": False, "error": "missing_pending_action_id", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
+    return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=True)), 200
+
+
+@app.route("/api/actions/deny", methods=["POST"])
+def api_actions_deny():
+    payload = request.get_json(silent=True) or {}
+    pending_action_id = str(payload.get("pending_action_id") or payload.get("id") or "").strip()
+    if not pending_action_id:
+        thread_id = _sm_cmd_thread_id(payload)
+        pending = _sm_cmd_latest_waiting_pending(thread_id)
+        pending_action_id = str((pending or {}).get("pending_action_id") or "")
+    if not pending_action_id:
+        return jsonify({"ok": False, "error": "missing_pending_action_id", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
+    return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=False)), 200
+
+
+@app.route("/api/actions/resume", methods=["POST"])
+def api_actions_resume():
+    payload = request.get_json(silent=True) or {}
+    pending_action_id = str(payload.get("pending_action_id") or payload.get("id") or "").strip()
+    if not pending_action_id:
+        return jsonify({"ok": False, "error": "missing_pending_action_id", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
+    return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=bool(payload.get("approved", True)))), 200
+
+
+@app.route("/api/actions/resolve", methods=["POST"])
+def api_actions_resolve():
+    payload = request.get_json(silent=True) or {}
+    action = str(payload.get("action") or "").strip()
+    pending_action_id = str(payload.get("pending_action_id") or "").strip()
+    if action == "show_pending_actions":
+        return jsonify(_sm_cmd_pending_list_bundle(thread_id=_sm_cmd_thread_id(payload))), 200
+    if action == "approve_pending_action":
+        return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=True)), 200
+    if action == "deny_pending_action":
+        return jsonify(_sm_cmd_resume_pending_action(pending_action_id, approved=False)), 200
+    return jsonify({"ok": False, "error": "unsupported_action_resolution", "schema": _SM_COMMAND_SPINE_SCHEMA}), 400
+
+
+@app.route("/api/tasks", methods=["GET"])
+def api_tasks_list():
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "tasks": _sm_cmd_list_tasks(limit=int(request.args.get("limit") or 50)), "version": PROJECT_VERSION}), 200
+
+
+@app.route("/api/tasks/<task_id>", methods=["GET"])
+def api_tasks_get(task_id):
+    task = _sm_cmd_get_task(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "task_not_found", "task_id": task_id, "schema": _SM_COMMAND_SPINE_SCHEMA}), 404
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "task": task, "version": PROJECT_VERSION}), 200
+
+
+def _sm_cmd_task_state_route(task_id: str, status: str, step: str):
+    task = _sm_cmd_update_task(task_id, status=status, current_step=step)
+    if not task:
+        return jsonify({"ok": False, "error": "task_not_found", "task_id": task_id, "schema": _SM_COMMAND_SPINE_SCHEMA}), 404
+    _sm_cmd_record_audit(f"task_{status}", capability=str(task.get("capability") or ""), target=str(task.get("target") or ""), task_id=task_id)
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "task": task, "version": PROJECT_VERSION}), 200
+
+
+@app.route("/api/tasks/<task_id>/pause", methods=["POST"])
+def api_tasks_pause(task_id):
+    return _sm_cmd_task_state_route(task_id, "paused", "paused_by_user")
+
+
+@app.route("/api/tasks/<task_id>/resume", methods=["POST"])
+def api_tasks_resume(task_id):
+    return _sm_cmd_task_state_route(task_id, "running", "resumed_by_user")
+
+
+@app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+def api_tasks_cancel(task_id):
+    return _sm_cmd_task_state_route(task_id, "cancelled", "cancelled_by_user")
+
+
+@app.route("/api/tasks/<task_id>/redirect", methods=["POST"])
+def api_tasks_redirect(task_id):
+    payload = request.get_json(silent=True) or {}
+    task = _sm_cmd_update_task(task_id, status="waiting", current_step="redirect_requested", result={"redirect": payload})
+    if not task:
+        return jsonify({"ok": False, "error": "task_not_found", "task_id": task_id, "schema": _SM_COMMAND_SPINE_SCHEMA}), 404
+    _sm_cmd_record_audit("task_redirect_requested", capability=str(task.get("capability") or ""), target=str(task.get("target") or ""), task_id=task_id, payload=payload)
+    return jsonify({"ok": True, "schema": _SM_COMMAND_SPINE_SCHEMA, "task": task, "requires_approval": True, "version": PROJECT_VERSION}), 200
 
 
 @app.route("/api/media/job", methods=["POST"])
@@ -9507,6 +10857,60 @@ def run_automation_trigger():
 CHAT_HISTORY_DB_PATH = str(getattr(config, "CONTEXT_HISTORY_DB_PATH", os.path.join(_globals_dir("DATASETS_DIR", "data/memory/datasets"), "context_history.db"))) if config is not None else os.path.join(_globals_dir("DATASETS_DIR", "data/memory/datasets"), "context_history.db")
 
 
+def _sm_sql_ident(name):
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _sm_conversation_schema(cur):
+    cur.execute("PRAGMA table_info(conversations)")
+    columns = {str(row[1]) for row in cur.fetchall()}
+
+    def pick(*names):
+        for name in names:
+            if name in columns:
+                return name
+        return None
+
+    text_columns = [
+        name for name in (
+            "content",
+            "text",
+            "message",
+            "user_input",
+            "assistant_response",
+            "response",
+            "reply",
+        )
+        if name in columns
+    ]
+
+    return {
+        "columns": columns,
+        "id": pick("id", "conversation_id", "thread_id", "session_id"),
+        "timestamp": pick("timestamp", "created_at", "updated_at", "ts", "datetime"),
+        "role": pick("role", "speaker", "sender"),
+        "metadata": pick("metadata", "meta"),
+        "text_columns": text_columns,
+    }
+
+
+def _sm_conversation_exprs(schema):
+    id_expr = _sm_sql_ident(schema["id"]) if schema.get("id") else "rowid"
+    timestamp_expr = _sm_sql_ident(schema["timestamp"]) if schema.get("timestamp") else "datetime('now')"
+    role_expr = _sm_sql_ident(schema["role"]) if schema.get("role") else "'assistant'"
+    meta_expr = _sm_sql_ident(schema["metadata"]) if schema.get("metadata") else "NULL"
+    text_cols = schema.get("text_columns") or []
+    content_expr = "COALESCE(" + ", ".join(_sm_sql_ident(col) for col in text_cols) + ", '')" if text_cols else "''"
+    return {
+        "id": id_expr,
+        "timestamp": timestamp_expr,
+        "role": role_expr,
+        "meta": meta_expr,
+        "content": content_expr,
+        "order": timestamp_expr if schema.get("timestamp") else "rowid",
+    }
+
+
 # ---------------------------------------------------------------------------
 # v8 WebUI Compatibility: Conversations API (HistoryScreen.tsx)
 # ---------------------------------------------------------------------------
@@ -9518,25 +10922,35 @@ def api_conversations_list():
     Response:
       { ok: true, conversations: [ {id,title,preview,timestamp,message_count} ] }
     """
+    date_filter = request.args.get("date", "").strip()
     con = None
     try:
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
+        schema = _sm_conversation_schema(cur)
+        exprs = _sm_conversation_exprs(schema)
 
-        # Best-effort schema support: we aggregate by conversation id.
+        where_sql = ""
+        params = []
+        if date_filter and schema.get("timestamp"):
+            where_sql = f"WHERE date({exprs['timestamp']})=?"
+            params.append(date_filter)
+
         cur.execute(
-            """
+            f"""
             SELECT
-              id,
-              MAX(timestamp) AS timestamp,
-              MAX(COALESCE(user_input, '')) AS preview,
+              CAST({exprs['id']} AS TEXT) AS id,
+              MAX({exprs['timestamp']}) AS timestamp,
+              MAX({exprs['content']}) AS preview,
               COUNT(1) AS message_count
             FROM conversations
-            GROUP BY id
-            ORDER BY MAX(timestamp) DESC
+            {where_sql}
+            GROUP BY {exprs['id']}
+            ORDER BY MAX({exprs['timestamp']}) DESC
             LIMIT 250
-            """
+            """,
+            tuple(params),
         )
         rows = [dict(r) for r in cur.fetchall()]
         convs = []
@@ -9576,27 +10990,21 @@ def api_conversation_get(convo_id):
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-
-        # Order by timestamp when present; otherwise stable rowid.
-        try:
-            cur.execute(
-                """
-                SELECT role, text, metadata AS meta, timestamp
-                FROM conversations
-                WHERE id = ?
-                ORDER BY COALESCE(timestamp, '') ASC
-                """,
-                (convo_id,),
-            )
-        except Exception:
-            cur.execute(
-                """
-                SELECT role, text, metadata AS meta, NULL AS timestamp
-                FROM conversations
-                WHERE id = ?
-                """,
-                (convo_id,),
-            )
+        schema = _sm_conversation_schema(cur)
+        exprs = _sm_conversation_exprs(schema)
+        cur.execute(
+            f"""
+            SELECT
+              {exprs['role']} AS role,
+              {exprs['content']} AS content,
+              {exprs['meta']} AS meta,
+              {exprs['timestamp']} AS timestamp
+            FROM conversations
+            WHERE CAST({exprs['id']} AS TEXT) = ?
+            ORDER BY {exprs['order']} ASC
+            """,
+            (str(convo_id),),
+        )
 
         rows = [dict(r) for r in cur.fetchall()]
         if not rows:
@@ -9610,7 +11018,7 @@ def api_conversation_get(convo_id):
                 role = 'user' if role.startswith('u') else 'assistant'
             msgs.append({
                 'role': role,
-                'content': r.get('text') or '',
+                'content': r.get('content') or '',
                 'meta': r.get('meta') or None,
                 'timestamp': r.get('timestamp') or None,
             })
@@ -9632,15 +11040,23 @@ def get_chat_threads_by_date():
     con = None
     try:
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
-        cur = con.cursor()
-        q = "SELECT id, timestamp, user_input AS preview FROM conversations"
-        params = []
-        if date_filter:
-            q += " WHERE date(timestamp)=?"
-            params.append(date_filter)
-        q += " ORDER BY timestamp DESC" # Order by newest first
         con.row_factory = sqlite3.Row
         cur = con.cursor()
+        schema = _sm_conversation_schema(cur)
+        exprs = _sm_conversation_exprs(schema)
+
+        q = f"""
+            SELECT
+              CAST({exprs['id']} AS TEXT) AS id,
+              {exprs['timestamp']} AS timestamp,
+              {exprs['content']} AS preview
+            FROM conversations
+        """
+        params = []
+        if date_filter and schema.get("timestamp"):
+            q += f" WHERE date({exprs['timestamp']})=?"
+            params.append(date_filter)
+        q += f" ORDER BY {exprs['order']} DESC"
         cur.execute(q, tuple(params))
         rows = [dict(r) for r in cur.fetchall()]
         return jsonify({"threads": rows})
@@ -9662,11 +11078,22 @@ def get_conversation_by_id():
     con = None
     try:
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
-        cur = con.cursor()
-        # Assuming conversations table has role, text, and metadata
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-        cur.execute("SELECT role, text, metadata AS meta FROM conversations WHERE id = ?", (convo_id,))
+        schema = _sm_conversation_schema(cur)
+        exprs = _sm_conversation_exprs(schema)
+        cur.execute(
+            f"""
+            SELECT
+              {exprs['role']} AS role,
+              {exprs['content']} AS text,
+              {exprs['meta']} AS meta
+            FROM conversations
+            WHERE CAST({exprs['id']} AS TEXT) = ?
+            ORDER BY {exprs['order']} ASC
+            """,
+            (str(convo_id),),
+        )
         rows = [dict(r) for r in cur.fetchall()]
         if not rows:
             return jsonify({"error": f"Conversation with ID {convo_id} not found."}), 404
@@ -11887,6 +13314,7 @@ def api_voice_status():
 
 
 @app.route("/api/tts/speak", methods=['POST'])
+@app.route("/api/voice/speak", methods=['POST'])
 def api_tts_speak():
     """
     Minimal TTS bridge for the Web UI.
@@ -13569,6 +14997,7 @@ def _sm_terminal_agent_response(result: dict, *, status_if_unavailable: int = 40
 
 
 @app.post("/api/terminal/agent")
+@app.post("/api/terminal/ai")
 def api_terminal_agent():
     """Governed terminal AI-agent lane.
 
@@ -13896,4 +15325,3 @@ SML_ORGAN_METADATA = {
 def sml_get_metadata():
     return dict(SML_ORGAN_METADATA)
 # --- SML ORGAN ADAPTER END ---
-

@@ -568,6 +568,19 @@ def _artifact_from_path(role: str, path: str, mime: str) -> RenderArtifact:
 
     return RenderArtifact(role=role, filename=os.path.basename(p), path=p, mime=mime, size_bytes=size, sha256=sha)
 
+
+def _artifact_to_dict(artifact: Any) -> Dict[str, Any]:
+    if isinstance(artifact, dict):
+        return dict(artifact)
+    return {
+        "role": getattr(artifact, "role", ""),
+        "filename": getattr(artifact, "filename", ""),
+        "path": getattr(artifact, "path", ""),
+        "mime": getattr(artifact, "mime", ""),
+        "size_bytes": int(getattr(artifact, "size_bytes", 0) or 0),
+        "sha256": getattr(artifact, "sha256", ""),
+    }
+
 def _mime_from_ext(filename: str) -> str:
     ext = (filename.rsplit(".", 1)[-1] or "").lower()
     if ext in ("png",):
@@ -620,16 +633,12 @@ def media_capabilities():
 # They are thin wrappers over the job system, returning a direct downloadable URL.
 # ---------------------------------------------------------------------------
 
-@bp.post("/api/creative/image")
-def creative_image():
-    body = _body_bytes()
-    if not _verify_auth(body):
-        return _err("unauthorized", 401)
-
-    payload = _j()
+def run_creative_image_job(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run the bounded Creative Studios image path for API and Chat UI callers."""
+    payload = dict(payload or {})
     prompt = (payload.get("prompt") or "").strip()
     if not prompt:
-        return _err("missing_prompt", 400)
+        return {"ok": False, "error": "missing_prompt", "status": "error"}
 
     job_id = _sanitize_job_id(payload.get("job_id") or _safe_id("imgjob"))
     jd = _job_dir(job_id)
@@ -693,7 +702,7 @@ def creative_image():
             if os.path.isfile(guess):
                 out_path = guess
 
-        art = _artifact_from_path("image", out_path, _mime_from_ext(out_path))
+        art = _artifact_to_dict(_artifact_from_path("image", out_path, _mime_from_ext(out_path)))
         manifest["artifacts"] = [art]
         manifest["status"] = "completed"
         manifest["updated_at"] = _iso()
@@ -702,16 +711,118 @@ def creative_image():
         _db_upsert_job(job_id, "completed", "image", payload, result={"artifacts": manifest["artifacts"]})
 
         url = f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}"
-        return _ok(job_id=job_id, url=url, preview=url, artifact=art, manifest=manifest)
+        return {
+            "ok": True,
+            "success": True,
+            "status": "completed",
+            "job_id": job_id,
+            "url": url,
+            "preview": url,
+            "artifact": art,
+            "manifest": manifest,
+        }
 
     except Exception as e:
         err = str(e)
-        manifest["status"] = "error"
-        manifest["updated_at"] = _iso()
-        manifest["errors"] = list(manifest.get("errors") or []) + [err]
-        _write_json(_manifest_path(job_id), manifest)
-        _db_upsert_job(job_id, "error", "image", payload, result={"error": err})
-        return _err("image_generation_failed", 500, detail=err, job_id=job_id)
+        try:
+            from PIL import Image, ImageDraw, ImageFont  # type: ignore
+
+            seed = hashlib.sha256(prompt.encode("utf-8", "ignore")).digest()
+            width = max(512, min(width, 1536))
+            height = max(512, min(height, 1536))
+            bg = (24 + seed[0] % 70, 28 + seed[1] % 70, 42 + seed[2] % 80)
+            accent = (125 + seed[3] % 90, 120 + seed[4] % 100, 165 + seed[5] % 70)
+            image = Image.new("RGB", (width, height), bg)
+            draw = ImageDraw.Draw(image)
+            for y in range(0, height, 10):
+                blend = y / max(1, height - 1)
+                color = tuple(int(bg[i] * (1 - blend) + accent[i] * blend) for i in range(3))
+                draw.rectangle((0, y, width, min(height, y + 10)), fill=color)
+            for idx in range(20):
+                x = int(seed[idx % len(seed)] / 255 * width)
+                y = int(seed[(idx + 9) % len(seed)] / 255 * height)
+                r = 20 + seed[(idx + 15) % len(seed)] % 95
+                draw.ellipse((x - r, y - r, x + r, y + r), outline=(230, 236, 255), width=2)
+            try:
+                font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", max(30, width // 24))
+                font_body = ImageFont.truetype("DejaVuSans.ttf", max(20, width // 42))
+            except Exception:
+                font_title = ImageFont.load_default()
+                font_body = ImageFont.load_default()
+            margin = max(34, width // 18)
+            draw.rounded_rectangle((margin, margin, width - margin, height - margin), radius=24, fill=(10, 12, 20), outline=(238, 242, 255), width=2)
+            draw.text((margin + 28, margin + 28), "Creative Studios", font=font_title, fill=(247, 249, 255))
+            words = prompt.split()
+            lines: List[str] = []
+            line = ""
+            max_chars = max(24, width // 24)
+            for word in words:
+                candidate = f"{line} {word}".strip()
+                if len(candidate) > max_chars and line:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = candidate
+            if line:
+                lines.append(line)
+            y = margin + 104
+            for line in lines[:12]:
+                draw.text((margin + 32, y), line, font=font_body, fill=(232, 237, 246))
+                y += max(26, height // 32)
+            draw.text((margin + 32, height - margin - 56), "Local prompt-render fallback. CanvasStudio engine reported: " + err[:80], font=font_body, fill=(190, 200, 220))
+            image.save(out_path, "PNG")
+
+            art = _artifact_to_dict(_artifact_from_path("image", out_path, _mime_from_ext(out_path)))
+            manifest["artifacts"] = [art]
+            manifest["status"] = "completed"
+            manifest["updated_at"] = _iso()
+            manifest["notes"] = list(manifest.get("notes") or []) + ["prompt_renderer_fallback_used"]
+            manifest["errors"] = list(manifest.get("errors") or []) + [err]
+            _write_json(_manifest_path(job_id), manifest)
+            _db_upsert_job(job_id, "completed", "image", payload, result={"artifacts": manifest["artifacts"], "fallback_used": True})
+
+            url = f"/api/media/job/download?job_id={job_id}&filename={os.path.basename(out_path)}"
+            return {
+                "ok": True,
+                "success": True,
+                "status": "completed",
+                "job_id": job_id,
+                "url": url,
+                "preview": url,
+                "artifact": art,
+                "manifest": manifest,
+                "fallback_used": True,
+                "primary_error": err,
+            }
+        except Exception as fallback_exc:
+            manifest["status"] = "error"
+            manifest["updated_at"] = _iso()
+            manifest["errors"] = list(manifest.get("errors") or []) + [err, f"prompt_renderer_fallback_failed:{fallback_exc}"]
+            _write_json(_manifest_path(job_id), manifest)
+            _db_upsert_job(job_id, "error", "image", payload, result={"error": err, "fallback_error": str(fallback_exc)})
+            return {
+                "ok": False,
+                "success": False,
+                "status": "error",
+                "error": "image_generation_failed",
+                "detail": err,
+                "fallback_detail": str(fallback_exc),
+                "job_id": job_id,
+                "manifest": manifest,
+            }
+
+
+@bp.post("/api/creative/image")
+def creative_image():
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+
+    result = run_creative_image_job(_j())
+    if not result.get("ok"):
+        code = 400 if result.get("error") == "missing_prompt" else 500
+        return _err(str(result.get("error") or "image_generation_failed"), code, **{k: v for k, v in result.items() if k not in {"ok", "success", "error"}})
+    return _ok(**{k: v for k, v in result.items() if k not in {"ok", "success"}})
 
 @bp.post("/api/media/job/create")
 def media_job_create():
@@ -1303,4 +1414,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appmedia', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-

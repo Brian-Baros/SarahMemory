@@ -52,7 +52,38 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from flask import Blueprint, jsonify, request
+try:
+    from flask import Blueprint, jsonify, request
+except Exception:  # pragma: no cover - local command-spine fallback when Flask is unavailable
+    class Blueprint:  # type: ignore[no-redef]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def route(self, *args: Any, **kwargs: Any):
+            def decorator(fn):
+                return fn
+            return decorator
+
+        get = post = put = delete = route
+
+    def jsonify(*args: Any, **kwargs: Any):  # type: ignore[no-redef]
+        if args and kwargs:
+            return {"args": args, **kwargs}
+        if args:
+            return args[0] if len(args) == 1 else list(args)
+        return kwargs
+
+    class _FallbackRequest:
+        method = "GET"
+        args: Dict[str, Any] = {}
+        remote_addr = "127.0.0.1"
+
+        @staticmethod
+        def get_json(silent: bool = True):
+            return {}
+
+    request = _FallbackRequest()  # type: ignore[assignment]
 
 SDK_SCHEMA = "SarahMemory.api.appsdk.nailde_bridge.v1"
 _BLUEPRINT_NAME = "sarahmemory_appsdk"
@@ -870,4 +901,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appsdk', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-

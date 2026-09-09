@@ -556,13 +556,25 @@ def _load_manifest(driver_id: str) -> Dict[str, Any]:
         mf = {}
     if "id" not in mf:
         mf["id"] = driver_id
+    mf.setdefault("schema", "SarahMemory.driver.manifest.v9a")
+    mf.setdefault("api_compat", {"min": "9.0.0a", "max": "9.x"})
+    mf.setdefault("device_class", _infer_device_class(driver_id, mf))
+    mf.setdefault("family", _infer_driver_family(driver_id, mf))
+    if "actions" not in mf and isinstance(mf.get("supported_actions"), list):
+        mf["actions"] = list(mf.get("supported_actions") or [])
+    mf.setdefault("settings_apply_contract", "stored_pending_driver_support")
     return mf
 
 
 def _load_ui_schema(driver_id: str) -> Dict[str, Any]:
     upath = _driver_dir(driver_id) / "ui.json"
     ui = _read_json(upath, default={})
-    return ui if isinstance(ui, dict) else {}
+    if not isinstance(ui, dict):
+        ui = {}
+    ui.setdefault("schema", "SarahMemory.driver.ui.v9a")
+    ui.setdefault("device_class", _infer_device_class(driver_id, _load_manifest(driver_id)))
+    ui.setdefault("apply_states", ["applied", "stored_pending_driver_support", "simulated", "blocked_by_governance", "unsupported", "read_only"])
+    return ui
 
 
 def _load_defaults(driver_id: str) -> Dict[str, Any]:
@@ -582,6 +594,68 @@ def _load_config(driver_id: str) -> Dict[str, Any]:
 def _save_config(driver_id: str, cfg: Dict[str, Any]) -> None:
     cpath = _driver_dir(driver_id) / "config.json"
     _write_json(cpath, cfg)
+
+
+def _infer_device_class(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> str:
+    manifest = manifest if isinstance(manifest, dict) else {}
+    raw = " ".join([
+        str(driver_id or ""),
+        str(manifest.get("device_class") or ""),
+        str(manifest.get("family") or ""),
+        str(manifest.get("driver_type") or ""),
+        str(manifest.get("name") or ""),
+        str(manifest.get("description") or ""),
+        json.dumps(manifest.get("capabilities") or manifest.get("supported_actions") or manifest.get("actions") or [], ensure_ascii=False),
+    ]).lower()
+    checks = [
+        ("camera", ("camera", "webcam", "uvc", "vision")),
+        ("audio", ("audio", "speaker", "microphone", "midi", "ac97", "sound")),
+        ("network", ("network", "wifi", "ethernet", "tcp", "mqtt", "sip", "zigbee", "zwave")),
+        ("display", ("display", "vga", "hdmi", "framebuffer", "gpu", "monitor")),
+        ("input", ("keyboard", "mouse", "gamepad", "hid", "barcode", "rfid", "input")),
+        ("storage", ("storage", "filesystem", "disk", "mount", "usbhost")),
+        ("printer", ("printer", "print", "escpos", "octoprint")),
+    ]
+    for device_class, tokens in checks:
+        if any(token in raw for token in tokens):
+            return device_class
+    return "other"
+
+
+def _infer_driver_family(driver_id: str, manifest: Optional[Dict[str, Any]] = None) -> str:
+    manifest = manifest if isinstance(manifest, dict) else {}
+    if str(manifest.get("family") or "").strip():
+        return str(manifest.get("family"))
+    if _is_boot_driver_id(driver_id):
+        return "boot_foundation"
+    return "runtime_device"
+
+
+def _device_manager_contract(driver_id: str, manifest: Optional[Dict[str, Any]] = None, cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    manifest = manifest if isinstance(manifest, dict) else _load_manifest(driver_id)
+    current_config = cfg if isinstance(cfg, dict) else _load_config(driver_id)
+    actions = manifest.get("actions") or manifest.get("supported_actions") or manifest.get("actions_supported") or []
+    if not isinstance(actions, list):
+        actions = []
+    state_changing = any(str(a).lower() in {"set_config", "set_mode", "connect", "disconnect", "start", "stop", "power_on", "power_off"} or str(a).lower().startswith(("set_", "write_", "mount", "unmount")) for a in actions)
+    return {
+        "schema": "SarahMemory.DeviceManager.driver_contract.v9a",
+        "device_id": driver_id,
+        "driver_id": driver_id,
+        "device_class": str(manifest.get("device_class") or _infer_device_class(driver_id, manifest)),
+        "family": str(manifest.get("family") or _infer_driver_family(driver_id, manifest)),
+        "capabilities": actions,
+        "settings_schema": manifest.get("config_schema") or manifest.get("ui_schema") or {},
+        "current_config": current_config,
+        "desired_config": {},
+        "apply_mode": "store",
+        "apply_state": "stored_pending_driver_support",
+        "operator_required_for_apply": bool(state_changing),
+        "operator_contract": {},
+        "msdc_witness_required": bool(state_changing),
+        "result_verification": {"required": bool(state_changing), "status": "not_attempted"},
+        "audit_id": "",
+    }
 
 
 def _reset_config(driver_id: str) -> Dict[str, Any]:
@@ -618,10 +692,22 @@ def _validate_driver_manifest_shape(driver_id: str, manifest: Dict[str, Any]) ->
     if manifest.get("permissions") is not None and not isinstance(manifest.get("permissions"), (list, dict)):
         errors.append("permissions_must_be_list_or_object")
 
-    declared_actions = manifest.get("actions") or manifest.get("actions_callable") or manifest.get("supports") or []
+    declared_actions = manifest.get("actions") or manifest.get("supported_actions") or manifest.get("actions_callable") or manifest.get("supports") or []
     if declared_actions is not None and not isinstance(declared_actions, list):
         errors.append("actions_must_be_list")
         declared_actions = []
+
+    for required in ("api_compat", "device_class", "family", "trust_level", "driver_signature", "rollback_behavior"):
+        if required not in manifest:
+            warnings.append(f"missing_v9a_{required}")
+
+    compat = manifest.get("api_compat")
+    if isinstance(compat, dict):
+        max_version = str(compat.get("max") or "")
+        if max_version.startswith("8."):
+            errors.append("api_compat_max_excludes_v9a")
+    else:
+        errors.append("api_compat_missing_or_invalid")
 
     return {
         "ok": not errors,
@@ -629,6 +715,9 @@ def _validate_driver_manifest_shape(driver_id: str, manifest: Dict[str, Any]) ->
         "warnings": warnings,
         "driver_id": driver_id,
         "declared_id": declared_id,
+        "device_class": str(manifest.get("device_class") or _infer_device_class(driver_id, manifest)),
+        "family": str(manifest.get("family") or _infer_driver_family(driver_id, manifest)),
+        "api_compat": manifest.get("api_compat"),
         "autoload_requested": dangerous_autoload,
         "lazy_load_required": True,
         "safe_reset_supported": True,
@@ -1314,6 +1403,9 @@ def apply(app):
             items.append({
                 "id": did,
                 "manifest": mf,
+                "device_class": str(mf.get("device_class") or _infer_device_class(did, mf)),
+                "family": str(mf.get("family") or _infer_driver_family(did, mf)),
+                "device_manager_contract": _device_manager_contract(did, mf, _load_config(did)),
                 "enabled": bool(r.get("enabled", mf.get("enabled", True))),
                 "autoload": bool(r.get("autoload", mf.get("autoload", False))),
                 "trusted": bool(r.get("trusted", False)),
@@ -1331,7 +1423,7 @@ def apply(app):
             return _err("Unknown driver_id", 404)
         mf = _load_manifest(driver_id)
         ui = _load_ui_schema(driver_id)
-        return jsonify({"ok": True, "manifest": mf, "ui": ui})
+        return jsonify({"ok": True, "manifest": mf, "ui": ui, "device_manager_contract": _device_manager_contract(driver_id, mf, _load_config(driver_id))})
 
     @app.route("/api/drivers/<driver_id>/config", methods=["GET", "POST", "DELETE"])
     def drivers_config(driver_id: str):
@@ -1341,7 +1433,16 @@ def apply(app):
         if request.method == "GET":
             defaults = _load_defaults(driver_id)
             cfg = _load_config(driver_id)
-            return jsonify({"ok": True, "config": cfg, "defaults": defaults})
+            mf = _load_manifest(driver_id)
+            return jsonify({
+                "ok": True,
+                "config": cfg,
+                "defaults": defaults,
+                "apply_state": "stored_pending_driver_support",
+                "applied": False,
+                "hardware_mutated": False,
+                "device_manager_contract": _device_manager_contract(driver_id, mf, cfg),
+            })
 
         if not _verify_auth():
             return _err("Unauthorized", 401)
@@ -1353,11 +1454,29 @@ def apply(app):
                 return _err("config must be an object", 400)
             _save_config(driver_id, cfg)
             _log_event(driver_id, "config_update", "ok", {"keys": sorted(list(cfg.keys()))[:50]})
-            return jsonify({"ok": True})
+            mf = _load_manifest(driver_id)
+            return jsonify({
+                "ok": True,
+                "saved": True,
+                "applied": False,
+                "hardware_mutated": False,
+                "apply_state": "stored_pending_driver_support",
+                "message": "Driver configuration was saved only. Use a governed connect/action route for hardware apply.",
+                "device_manager_contract": _device_manager_contract(driver_id, mf, cfg),
+            })
 
         defaults = _reset_config(driver_id)
         _log_event(driver_id, "config_reset", "ok", {})
-        return jsonify({"ok": True, "reset": True, "config": defaults})
+        mf = _load_manifest(driver_id)
+        return jsonify({
+            "ok": True,
+            "reset": True,
+            "config": defaults,
+            "applied": False,
+            "hardware_mutated": False,
+            "apply_state": "stored_pending_driver_support",
+            "device_manager_contract": _device_manager_contract(driver_id, mf, defaults),
+        })
 
     @app.route("/api/drivers/registry", methods=["GET"])
     def drivers_registry_get():

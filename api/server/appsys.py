@@ -1136,6 +1136,12 @@ def trash_list():
     return _ok(items=items, count=len(items))
 
 
+@bp.get("/api/files/dumpster/list")
+@bp.get("/api/files/list_trash")
+def trash_list_compat():
+    return trash_list()
+
+
 @bp.post("/api/files/trash/restore")
 def trash_restore():
     if not _files_enabled():
@@ -1938,4 +1944,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appsys', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-
