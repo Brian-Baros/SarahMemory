@@ -65,24 +65,69 @@ export const getApiBase = (): string => {
 
 
 
+export type SarahRequestInit = RequestInit & {
+  timeoutMs?: number;
+};
+
+function timeoutForPath(path: string): number {
+  if (path.includes("/api/health")) return config.timeouts.health;
+  if (path.includes("/api/voice")) return config.timeouts.voice;
+  return config.timeouts.api;
+}
+
 /**
- * Robust fetch helper with proper error handling
+ * Robust fetch helper with proper error handling and a governed client-side
+ * watchdog so UI controls cannot spin forever when the local backend stalls.
  */
 export async function apiFetch<T = unknown>(
   path: string,
-  options: RequestInit = {}
+  options: SarahRequestInit = {}
 ): Promise<T> {
   const baseUrl = getApiBase();
   const url = `${baseUrl}${path}`;
-  
-  const response = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers,
-    },
-    credentials: 'include',
-  });
+
+  const { timeoutMs, signal, ...fetchOptions } = options;
+  const requestTimeoutMs = timeoutMs ?? timeoutForPath(path);
+  const controller = new AbortController();
+  const abortFromCaller = () => {
+    try {
+      controller.abort(signal?.reason);
+    } catch {
+      controller.abort();
+    }
+  };
+  const timeout = setTimeout(() => controller.abort(new Error(`Request timeout after ${requestTimeoutMs}ms`)), requestTimeoutMs);
+
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...fetchOptions,
+      headers: {
+        'Content-Type': 'application/json',
+        ...fetchOptions.headers,
+      },
+      credentials: 'include',
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const reason = controller.signal.reason;
+      if (reason instanceof Error && reason.message) {
+        throw reason;
+      }
+      throw new Error(`Request aborted: ${path}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
   
   // Try to parse JSON
   let data: unknown;

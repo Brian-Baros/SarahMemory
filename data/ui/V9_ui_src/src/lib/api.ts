@@ -8,7 +8,7 @@
 
 import { supabase } from "@/integrations/supabase/client";
 
-import { config, apiFetch } from "./config";
+import { config, apiFetch, type SarahRequestInit } from "./config";
 
 // ============================================================================
 // Types for API responses
@@ -36,6 +36,16 @@ export interface MediaResult {
   error?: string;
 }
 
+export interface DynamicChip {
+  label: string;
+  action: string;
+  pending_action_id?: string;
+  task_id?: string;
+  prompt?: string;
+  actions?: any[];
+  [key: string]: any;
+}
+
 export interface ChatResponse {
   ok?: boolean;
   blocked?: boolean;
@@ -43,7 +53,15 @@ export interface ChatResponse {
   reply?: string;
   content: string;
   source: "sarah_backend" | "governed_remote_fallback";
+  response_type?: string;
+  chips?: DynamicChip[];
+  pending_action_id?: string | null;
+  mission_id?: string | null;
   task_id?: string;
+  task?: Record<string, any>;
+  tasks?: Record<string, any>[];
+  pending_actions?: Record<string, any>[];
+  capability?: Record<string, any>;
   task_truth_hash?: string;
   receipt_ids?: string[];
   agent_status?: Record<string, any>;
@@ -54,12 +72,20 @@ export interface ChatResponse {
   audio_url?: string | null;
   images?: MediaResult[];
   error?: string;
+  actions?: any[];
   web_augmented?: boolean;
   sources?: string[];
   meta?: {
     source?: string;
     engine?: string;
     avatar_speech?: AvatarSpeechMeta;
+    response_type?: string;
+    chips?: DynamicChip[];
+    pending_action_id?: string;
+    mission_id?: string;
+    task?: Record<string, any>;
+    capability?: Record<string, any>;
+    [key: string]: any;
   };
 }
 
@@ -551,7 +577,7 @@ export interface BootstrapResponse {
 // Core API Helpers (Hardened)
 // ============================================================================
 
-function withJsonHeaders(options: RequestInit = {}): RequestInit {
+function withJsonHeaders(options: SarahRequestInit = {}): SarahRequestInit {
   const headers = new Headers(options.headers || {});
   if (options.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   headers.set("Accept", "application/json");
@@ -583,7 +609,7 @@ async function invokeEdgeFunction<T>(functionName: string, body: Record<string, 
   return data as T;
 }
 
-async function directCall<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+async function directCall<T>(endpoint: string, options: SarahRequestInit = {}): Promise<T> {
   return apiFetch<T>(endpoint, withJsonHeaders(options));
 }
 
@@ -600,7 +626,7 @@ function isLocalOnlyRuntime(): boolean {
 
 async function tryDirectEndpoints<T>(
   endpoints: string[],
-  options: RequestInit,
+  options: SarahRequestInit,
 ): Promise<{ endpoint: string; data: T }> {
   let lastErr: unknown = null;
   for (const ep of endpoints) {
@@ -748,6 +774,76 @@ function formatGovernanceEvidence(data: any): string {
   return lines.join("\n");
 }
 
+function firstNonEmptyString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "";
+}
+
+function extractChatReplyText(data: any): string {
+  if (!data || typeof data !== "object") {
+    return typeof data === "string" ? data : "";
+  }
+
+  const direct = firstNonEmptyString(
+    data.reply,
+    data.content,
+    data.response,
+    data.presentation_reply,
+    data.presentation_text,
+    data.text,
+    data.answer,
+    data.final_answer,
+    data.output_text,
+    data.raw_answer,
+    data.message,
+  );
+  if (direct) return direct;
+
+  if (Array.isArray(data.choices)) {
+    for (const choice of data.choices) {
+      const choiceText = extractChatReplyText(choice?.message ?? choice);
+      if (choiceText) return choiceText;
+    }
+  }
+
+  if (Array.isArray(data.messages)) {
+    for (let index = data.messages.length - 1; index >= 0; index -= 1) {
+      const message = data.messages[index];
+      const role = String(message?.role ?? "").toLowerCase();
+      if (role && role !== "assistant") continue;
+      const messageText = extractChatReplyText(message);
+      if (messageText) return messageText;
+    }
+  }
+
+  for (const nested of [data.data, data.result, data.payload, data.output]) {
+    const nestedText = extractChatReplyText(nested);
+    if (nestedText) return nestedText;
+  }
+
+  for (const value of [data.content, data.response, data.answer, data.output]) {
+    if (value && typeof value === "object" && Object.keys(value).length > 0) {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch {
+        return String(value);
+      }
+    }
+  }
+
+  return "";
+}
+
+function compactUnknownChatBundle(data: any): string {
+  try {
+    return JSON.stringify(data, null, 2).slice(0, 2400);
+  } catch {
+    return String(data || "No backend payload");
+  }
+}
+
 // ============================================================================
 // BOOTSTRAP API
 // ============================================================================
@@ -794,6 +890,7 @@ export const chatApi = {
       intent?: string;
       tone?: string;
       complexity?: string;
+      signal?: AbortSignal;
     },
   ): Promise<ChatResponse> {
     const lastUserMessage = messages.filter((m) => m.role === "user").pop();
@@ -802,22 +899,43 @@ export const chatApi = {
     try {
       const { data } = await tryDirectEndpoints<any>(["/api/chat", "/chat", "/api/v1/chat"], {
         method: "POST",
+        signal: options?.signal,
+        timeoutMs: 45000,
         body: JSON.stringify({
           text,
+          messages,
           intent: options?.intent || "question",
           tone: options?.tone || "friendly",
           complexity: options?.complexity || "adult",
           conversation_id: options?.conversationId,
+          thread_id: options?.conversationId,
           research_mode: options?.researchMode || false,
         }),
       });
 
       const ok = isTruthySuccess(data) || Boolean(data.ok);
-      const reply = data.reply ?? data.content ?? data.response ?? "";
+      const reply = extractChatReplyText(data);
       const governanceEvidence = formatGovernanceEvidence(data);
-      const content = governanceEvidence && typeof reply === "string" && !reply.includes("Governance evidence:")
+      const content = governanceEvidence && !reply.includes("Governance evidence:")
         ? `${reply}\n\n${governanceEvidence}`
         : reply;
+
+      if ((ok || data?.blocked) && (!content || (typeof content === "string" && !content.trim()))) {
+        const reason = data?.reason || data?.error || data?.meta?.reason || "empty_backend_response";
+        return {
+          ok: Boolean(ok),
+          blocked: Boolean(data?.blocked),
+          reason,
+          reply: "SarahMemory returned a governed but empty response. The request completed, but the local answer lane did not provide presentable text.",
+          content: "SarahMemory returned a governed but empty response. The request completed, but the local answer lane did not provide presentable text.",
+          source: "sarah_backend",
+          response_type: data.response_type || data.meta?.response_type,
+          chips: Array.isArray(data.chips) ? data.chips : Array.isArray(data.meta?.chips) ? data.meta.chips : [],
+          actions: Array.isArray(data.actions) ? data.actions : Array.isArray(data.ui_actions) ? data.ui_actions : [],
+          meta: data.meta,
+          error: String(reason),
+        };
+      }
 
       if ((ok || data?.blocked || content) && typeof content === "string" && content.length) {
         return {
@@ -827,14 +945,23 @@ export const chatApi = {
           reply: content,
           content,
           source: "sarah_backend",
+          response_type: data.response_type || data.meta?.response_type,
+          chips: Array.isArray(data.chips) ? data.chips : Array.isArray(data.meta?.chips) ? data.meta.chips : [],
+          pending_action_id: data.pending_action_id || data.meta?.pending_action_id || null,
+          mission_id: data.mission_id || data.meta?.mission_id || null,
           audio_url: data.audio_url ?? null,
           images: data.images,
           sources: data.sources,
           web_augmented: data.web_augmented,
           meta: data.meta,
           task_id: data.task_id,
+          task: data.task || data.meta?.task,
+          tasks: Array.isArray(data.tasks) ? data.tasks : [],
+          pending_actions: Array.isArray(data.pending_actions) ? data.pending_actions : [],
+          capability: data.capability || data.meta?.capability,
           task_truth_hash: data.task_truth_hash,
           receipt_ids: Array.isArray(data.receipt_ids) ? data.receipt_ids : [],
+          actions: Array.isArray(data.actions) ? data.actions : Array.isArray(data.ui_actions) ? data.ui_actions : [],
           agent_status: data.agent_status || data.meta?.agent_status,
           verified_answer_state: data.verified_answer_state || data.meta?.verified_answer_state,
           transport_status: data.transport_status,
@@ -843,8 +970,23 @@ export const chatApi = {
         };
       }
 
-      throw new Error(data?.error || data?.reason || "Invalid response from backend chat");
+      const unreadableReason = data?.error || data?.reason || data?.meta?.reason || "unreadable_backend_chat_bundle";
+      return {
+        ok: false,
+        blocked: Boolean(data?.blocked),
+        reason: unreadableReason,
+        reply: `SarahMemory returned a chat bundle that the UI could not convert into presentable text.\n\n${compactUnknownChatBundle(data)}`,
+        content: `SarahMemory returned a chat bundle that the UI could not convert into presentable text.\n\n${compactUnknownChatBundle(data)}`,
+        source: "sarah_backend",
+        response_type: data?.response_type || data?.meta?.response_type || "chat_bridge_diagnostic",
+        chips: Array.isArray(data?.chips) ? data.chips : Array.isArray(data?.meta?.chips) ? data.meta.chips : [],
+        actions: Array.isArray(data?.actions) ? data.actions : Array.isArray(data?.ui_actions) ? data.ui_actions : [],
+        meta: data?.meta,
+      };
     } catch (error) {
+      if (options?.signal?.aborted) {
+        throw error instanceof Error ? error : new Error("SarahMemory chat request stopped by user");
+      }
       console.warn("[Chat] Direct local backend call failed; cloud fallback remains governed:", error);
       try {
         return await invokeEdgeFunction<ChatResponse>("chat", {
@@ -855,11 +997,14 @@ export const chatApi = {
         });
       } catch (edgeError) {
         console.error("[Chat] Edge function also failed:", edgeError);
+        const directMessage = error instanceof Error && error.message ? error.message : String(error);
         return {
           ok: false,
-          content: "I'm having trouble connecting to the backend. Please try again.",
+          content: directMessage.includes("timeout") || directMessage.includes("aborted")
+            ? "The local chat request was stopped or timed out before SarahMemory returned a governed response."
+            : "I'm having trouble connecting to the backend. Please try again.",
           source: "governed_remote_fallback",
-          error: String(error),
+          error: directMessage,
         };
       }
     }
@@ -1397,46 +1542,104 @@ export const mediaApi = {
 };
 
 // ============================================================================
-// QA / CONVERSATIONS API (legacy endpoints)
+// QA / CONVERSATIONS API
 // ============================================================================
+
+function normalizeConversationSummary(item: any): Conversation {
+  const id = String(item?.id ?? item?.conversation_id ?? item?.thread_id ?? "");
+  const preview = String(item?.preview ?? item?.title ?? item?.last_message ?? "");
+  const timestamp = String(item?.timestamp ?? item?.updated_at ?? item?.created_at ?? new Date().toISOString());
+  const messageCount = Number(item?.message_count ?? item?.messageCount ?? item?.count ?? 0);
+
+  return {
+    id,
+    title: String(item?.title ?? preview.slice(0, 40) ?? "Conversation") || "Conversation",
+    preview,
+    timestamp,
+    message_count: Number.isFinite(messageCount) ? messageCount : 0,
+  };
+}
+
+function normalizeConversationMessages(messages: any[]): Conversation["messages"] {
+  return messages.map((m) => {
+    const rawRole = String(m?.role ?? m?.sender ?? "").trim().toLowerCase();
+    const role = ["user", "assistant", "system"].includes(rawRole)
+      ? rawRole
+      : rawRole.startsWith("u")
+        ? "user"
+        : "assistant";
+    return {
+      role,
+      content: String(m?.content ?? m?.text ?? m?.message ?? m?.user_input ?? m?.response ?? ""),
+      timestamp: m?.timestamp ?? m?.created_at ?? undefined,
+    };
+  });
+}
 
 export const qaApi = {
   async listConversations(date?: string): Promise<{ conversations: Conversation[]; total: number }> {
+    const query = date ? `?date=${encodeURIComponent(date)}` : "";
+
     try {
-      const query = date ? `?date=${date}` : "";
-      const result = await directCall<{ threads: Array<{ id: string; timestamp: string; preview: string }> }>(
-        `/get_chat_threads_by_date${query}`,
+      const result = await directCall<{ conversations?: any[]; total?: number }>(
+        `/api/conversations${query}`,
+        { method: "GET", timeoutMs: 8000 },
       );
-      const conversations = (result.threads || []).map((t) => ({
-        id: String(t.id),
-        title: t.preview?.slice(0, 40) || "Conversation",
-        preview: t.preview || "",
-        timestamp: t.timestamp,
-        message_count: 1,
-      }));
-      return { conversations, total: conversations.length };
-    } catch (error) {
-      console.error("[API] List conversations failed:", error);
-      return { conversations: [], total: 0 };
+      const conversations = (result.conversations || [])
+        .map(normalizeConversationSummary)
+        .filter((c) => c.id);
+      return { conversations, total: Number(result.total ?? conversations.length) };
+    } catch (primaryError) {
+      try {
+        const result = await directCall<{ threads: Array<{ id: string; timestamp: string; preview: string }> }>(
+          `/get_chat_threads_by_date${query}`,
+          { method: "GET", timeoutMs: 8000 },
+        );
+        const conversations = (result.threads || [])
+          .map(normalizeConversationSummary)
+          .filter((c) => c.id);
+        return { conversations, total: conversations.length };
+      } catch (legacyError) {
+        console.error("[API] List conversations failed:", primaryError, legacyError);
+        return { conversations: [], total: 0 };
+      }
     }
   },
 
   async getConversation(id: string): Promise<Conversation | null> {
     try {
-      const result = await directCall<Array<{ role: string; text: string; meta?: string }>>(
-        `/get_conversation_by_id?id=${encodeURIComponent(id)}`,
+      const result = await directCall<{ id?: string; messages?: any[] }>(
+        `/api/conversations/${encodeURIComponent(id)}`,
+        { method: "GET", timeoutMs: 8000 },
       );
+      const messages = normalizeConversationMessages(result.messages || []);
       return {
         id,
         title: "Conversation",
-        preview: result[0]?.text || "",
+        preview: messages?.[0]?.content || "",
         timestamp: new Date().toISOString(),
-        message_count: result.length,
-        messages: result.map((m) => ({ role: m.role || "user", content: m.text || "" })),
+        message_count: messages?.length || 0,
+        messages,
       };
-    } catch (error) {
-      console.error("[API] Get conversation failed:", error);
-      return null;
+    } catch (primaryError) {
+      try {
+        const result = await directCall<Array<{ role: string; text: string; meta?: string }>>(
+          `/get_conversation_by_id?id=${encodeURIComponent(id)}`,
+          { method: "GET", timeoutMs: 8000 },
+        );
+        const messages = normalizeConversationMessages(result || []);
+        return {
+          id,
+          title: "Conversation",
+          preview: messages?.[0]?.content || "",
+          timestamp: new Date().toISOString(),
+          message_count: messages?.length || 0,
+          messages,
+        };
+      } catch (legacyError) {
+        console.error("[API] Get conversation failed:", primaryError, legacyError);
+        return null;
+      }
     }
   },
 
@@ -1907,6 +2110,97 @@ export const governanceApi = {
   },
 };
 
+export const commandActionsApi = {
+  async approve(pendingActionId?: string | null): Promise<ChatResponse> {
+    const data: any = await directCall("/api/actions/approve", {
+      method: "POST",
+      body: JSON.stringify({ pending_action_id: pendingActionId || "" }),
+    });
+    return normalizeCommandResponse(data);
+  },
+
+  async deny(pendingActionId?: string | null): Promise<ChatResponse> {
+    const data: any = await directCall("/api/actions/deny", {
+      method: "POST",
+      body: JSON.stringify({ pending_action_id: pendingActionId || "" }),
+    });
+    return normalizeCommandResponse(data);
+  },
+
+  async resume(pendingActionId: string, approved = true): Promise<ChatResponse> {
+    const data: any = await directCall("/api/actions/resume", {
+      method: "POST",
+      body: JSON.stringify({ pending_action_id: pendingActionId, approved }),
+    });
+    return normalizeCommandResponse(data);
+  },
+
+  async resolve(action: string, payload: Record<string, any> = {}): Promise<ChatResponse> {
+    const data: any = await directCall("/api/actions/resolve", {
+      method: "POST",
+      body: JSON.stringify({ action, ...payload }),
+    });
+    return normalizeCommandResponse(data);
+  },
+
+  async pending(threadId = ""): Promise<any> {
+    const suffix = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
+    return directCall(`/api/actions/pending${suffix}`, { method: "GET" });
+  },
+};
+
+export const commandTasksApi = {
+  async list(): Promise<any> {
+    return directCall("/api/tasks", { method: "GET" });
+  },
+
+  async get(taskId: string): Promise<any> {
+    return directCall(`/api/tasks/${encodeURIComponent(taskId)}`, { method: "GET" });
+  },
+
+  async pause(taskId: string): Promise<any> {
+    return directCall(`/api/tasks/${encodeURIComponent(taskId)}/pause`, { method: "POST", body: JSON.stringify({}) });
+  },
+
+  async resume(taskId: string): Promise<any> {
+    return directCall(`/api/tasks/${encodeURIComponent(taskId)}/resume`, { method: "POST", body: JSON.stringify({}) });
+  },
+
+  async cancel(taskId: string): Promise<any> {
+    return directCall(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST", body: JSON.stringify({}) });
+  },
+};
+
+export const commandCapabilitiesApi = {
+  async list(): Promise<any> {
+    return directCall("/api/capabilities", { method: "GET" });
+  },
+};
+
+function normalizeCommandResponse(data: any): ChatResponse {
+  const reply = data?.reply ?? data?.content ?? data?.response ?? data?.presentation_reply ?? "";
+  return {
+    ok: Boolean(isTruthySuccess(data) || data?.ok),
+    blocked: Boolean(data?.blocked),
+    reason: data?.reason ?? data?.error ?? null,
+    reply,
+    content: String(reply || data?.error || ""),
+    source: "sarah_backend",
+    response_type: data?.response_type || data?.meta?.response_type,
+    chips: Array.isArray(data?.chips) ? data.chips : Array.isArray(data?.meta?.chips) ? data.meta.chips : [],
+    pending_action_id: data?.pending_action_id || data?.meta?.pending_action_id || null,
+    mission_id: data?.mission_id || data?.meta?.mission_id || null,
+    task_id: data?.task_id || data?.task?.task_id || data?.meta?.task?.task_id,
+    task: data?.task || data?.meta?.task,
+    tasks: Array.isArray(data?.tasks) ? data.tasks : [],
+    pending_actions: Array.isArray(data?.pending_actions) ? data.pending_actions : [],
+    capability: data?.capability || data?.meta?.capability,
+    actions: Array.isArray(data?.actions) ? data.actions : Array.isArray(data?.ui_actions) ? data.ui_actions : [],
+    images: data?.images,
+    meta: data?.meta,
+  };
+}
+
 // ============================================================================
 // MODEL MANAGER API
 // ============================================================================
@@ -2264,6 +2558,9 @@ export const api = {
   proxy: proxyApi,
   devbridge: devBridgeApi,
   governance: governanceApi,
+  actions: commandActionsApi,
+  tasks: commandTasksApi,
+  capabilities: commandCapabilitiesApi,
   vision: visionApi,
   vr: vrApi,
   models: modelsApi,
