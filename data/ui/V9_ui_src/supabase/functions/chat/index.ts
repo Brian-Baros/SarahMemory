@@ -24,7 +24,6 @@ serve(async (req) => {
   try {
     const { messages, useAI, mode, research_mode, conversation_id } = await req.json();
     const SARAH_API_URL = Deno.env.get("SARAH_MEMORY_API_URL") || "https://api.sarahmemory.com";
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     
     // Get the latest user message
     const latestMessage = messages[messages.length - 1];
@@ -70,65 +69,20 @@ serve(async (req) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-        console.log(`[chat] Backend returned status ${backendResponse.status}, falling back to AI`);
+        console.log(`[chat] Backend returned status ${backendResponse.status}; local-first fallback will report unavailable`);
       } catch (e) {
-        console.log("[chat] Backend unavailable, using AI fallback:", e);
+        console.log("[chat] Backend unavailable:", e);
       }
     }
-    
-    // Fallback to Lovable AI Gateway
-    if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY not configured");
-    }
-    
-    console.log("[chat] Using Lovable AI Gateway");
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          { 
-            role: "system", 
-            content: `You are Sarah, an intelligent AI assistant from the SarahMemory AiOS system. 
-You are helpful, friendly, and knowledgeable. You assist users with tasks, answer questions, 
-provide information, and help manage their digital life including contacts, reminders, and research.
-Keep responses clear, concise, and helpful. When appropriate, ask clarifying questions.
-You have access to the user's contacts, reminders, and conversation history.`
-          },
-          ...messages,
-        ],
-        stream: false,
-      }),
-    });
-    
-    if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(
-          JSON.stringify({ error: "Rate limit exceeded. Please try again later." }),
-          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      if (response.status === 402) {
-        return new Response(
-          JSON.stringify({ error: "AI credits depleted. Please add funds." }),
-          { status: 402, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-        );
-      }
-      throw new Error(`AI Gateway error: ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content || "I'm sorry, I couldn't process that request.";
-    
+
     return new Response(JSON.stringify({ 
-      content,
-      source: "lovable_ai",
+      content: "SarahMemory backend is unavailable. Cloud fallback is disabled by local-first policy.",
+      source: "sarah_backend_unavailable",
       audio_url: null,
+      ok: false,
+      fallback_policy: "local_first_no_third_party_gateway",
     }), {
+      status: 503,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
     

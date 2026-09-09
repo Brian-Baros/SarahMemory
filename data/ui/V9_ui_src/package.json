@@ -1,7 +1,7 @@
 {
   "name": "sarahmemory-aios-v9-functional-ui",
   "private": true,
-  "version": "9.0.0-alpha.workstation.5",
+  "version": "9.0.0-alpha.workstation.8",
   "type": "module",
   "scripts": {
     "dev": "node ./node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5173",

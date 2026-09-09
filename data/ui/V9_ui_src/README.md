@@ -21,8 +21,10 @@ This workstation revision adds:
 - Clock/date popover from the command rail clock with editable date, time, and timezone/locality context.
 - Clock timezone control is now a dropdown with selected-timezone preview and constrained popover layout.
 - WiFi/network command rail button that opens Device Manager directly to network devices.
-- Device Manager screen for boot-detected governed drivers, network/audio/printer/storage/input/camera grouping, registry enable/autoload/trust controls, and driver configuration.
+- Device Manager screen for boot-detected governed drivers, network/audio/printer/storage/input/camera/display grouping, registry enable/autoload/trust controls, and class-specific device configuration.
 - Device Manager dynamically normalizes driver bridge, manifest audit, self/body hardware, vision, and browser-visible inventory sources.
+- Device Manager now switches the center settings surface per detected class: camera image/lens controls, display resolution/color/HDR controls, network LAN/TCP/IP/VPN controls, audio routing/EQ controls, input pointer/keyboard/gamepad controls, printer defaults, storage policy, and general hardware controls.
+- Device Manager function pass aligns save/connect/disconnect payloads with the existing `/api/drivers/*` bridge contract, hardens API failure handling, and keeps source-aware selection for duplicate detected device IDs.
 - Ask Sarah context handoff moved into each window title bar so it no longer covers screen content.
 - Workspace presets for Chat, Research, Operator, Engineer, and Media modes.
 - Start/AiOS launcher polish with app search and quick settings.
