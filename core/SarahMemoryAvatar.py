@@ -162,6 +162,118 @@ def update_live_avatar_state(updates: Optional[Dict[str, Any]] = None, **kwargs:
         return _LIVE_AVATAR_STATE.to_dict()
 
 
+def resolve_live_avatar_event(event: str, *, current_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve a high-level UI/API avatar event into CORE-owned state updates.
+
+    This function owns embodiment semantics only. It does not grant cognition,
+    execution, device, network, or filesystem authority. API/UI bridges should
+    call this resolver instead of inventing their own event mappings.
+    """
+    evt = str(event or "").strip().lower()
+    now = time.time()
+    current = dict(current_state or {})
+    updates: Dict[str, Any] = {}
+    lock_seconds = 0.0
+    mark_interaction = False
+
+    if evt in {"boot", "startup", "hello", "greeting"}:
+        updates.update({
+            "busy": False,
+            "thinking": False,
+            "diagnostics": False,
+            "current_action": "boot_greeting",
+            "expression": "hello",
+            "emotion": "hello",
+            "life_state": "boot_greeting",
+        })
+        lock_seconds = 5.0
+    elif evt in {"success", "correct", "complete", "completed", "done", "ok", "approved"}:
+        updates.update({
+            "busy": False,
+            "thinking": False,
+            "diagnostics": False,
+            "current_action": "success",
+            "expression": "success",
+            "emotion": "success",
+            "life_state": "success",
+            "last_success_at": now,
+        })
+        lock_seconds = 4.0
+    elif evt in {"thumbs_up", "approval", "confirmed", "good"}:
+        updates.update({
+            "current_action": "thumbs_up",
+            "expression": "thumbs_up",
+            "emotion": "thumbs_up",
+            "life_state": "success",
+            "last_success_at": now,
+        })
+        lock_seconds = 4.0
+    elif evt in {"error", "failed", "failure", "confused"}:
+        updates.update({
+            "current_action": "error",
+            "expression": "concerned",
+            "emotion": "concerned",
+            "life_state": "error",
+            "last_error_at": now,
+        })
+        lock_seconds = 4.0
+    elif evt in {"diagnostics", "diagnostic", "self_check", "self_diagnostics"}:
+        updates.update({
+            "diagnostics": True,
+            "current_action": "diagnostics",
+            "expression": "serious_focus",
+            "emotion": "serious_focus",
+            "life_state": "diagnostics",
+        })
+        lock_seconds = 3.0
+    elif evt in {"busy", "working", "processing"}:
+        updates.update({
+            "busy": True,
+            "current_action": "busy",
+            "expression": "pondering",
+            "emotion": "pondering",
+            "life_state": "busy",
+        })
+        lock_seconds = 3.0
+    elif evt in {"idle", "ready", "reset"}:
+        updates.update({
+            "busy": False,
+            "diagnostics": False,
+            "thinking": False,
+            "current_action": "idle",
+            "expression": "ready",
+            "emotion": "ready",
+            "life_state": "ready",
+        })
+        lock_seconds = 1.0
+
+    if updates:
+        mark_interaction = True
+    if updates.get("speaking") is False and current.get("current_action") == "speaking":
+        updates.setdefault("current_action", "ready")
+        updates.setdefault("expression", "ready")
+        updates.setdefault("emotion", "ready")
+        updates.setdefault("life_state", "ready")
+        lock_seconds = max(lock_seconds, 1.5)
+    if updates.get("listening") is False and current.get("current_action") == "listening":
+        updates.setdefault("current_action", "ready")
+        updates.setdefault("expression", "ready")
+        updates.setdefault("emotion", "ready")
+        updates.setdefault("life_state", "ready")
+        lock_seconds = max(lock_seconds, 1.5)
+
+    return {
+        "ok": True,
+        "schema": "SarahMemory.avatar.event_resolution.v1",
+        "event": evt,
+        "updates": updates,
+        "lock_seconds": lock_seconds,
+        "mark_interaction": mark_interaction,
+        "execution_authority": False,
+        "owner": "SarahMemoryAvatar",
+    }
+
+
 def queue_live_avatar_event(event_type: str, *, intensity: float = 1.0, duration_seconds: float = 1.0, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Register a transient physical event (blink/sigh/yawn/gesture) in AvatarState."""
     event_key = str(event_type or "event").strip().lower() or "event"
@@ -977,4 +1089,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

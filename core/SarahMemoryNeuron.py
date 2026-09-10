@@ -562,6 +562,20 @@ def _is_safe_mode() -> bool:
 def _is_local_only() -> bool:
     return _flag("LOCAL_ONLY_MODE", False)
 
+def _request_allows_external_api(meta: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True only for a request-scoped UI lane that explicitly allows API/Web."""
+    if _is_safe_mode():
+        return False
+    m = meta if isinstance(meta, dict) else {}
+    lane = str(m.get("lane") or m.get("api_mode") or m.get("mode") or "").strip().lower()
+    if lane not in {"any", "auto", "web", "api", "cloud"}:
+        return False
+    if not bool(m.get("external_api_allowed_by_ui_lane")):
+        return False
+    if bool(m.get("local_only") or m.get("offline") or m.get("LOCAL_ONLY_MODE") or m.get("force_local_only")):
+        return False
+    return True
+
 def _neosky_armed() -> bool:
     # Dual-key arm: NEOSKYMATRIX + DEVELOPERSMODE
     return _flag("NEOSKYMATRIX", False) and _flag("DEVELOPERSMODE", False)
@@ -797,7 +811,21 @@ class NeuronResult:
     actions: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
-        visible_reply = str(self.reply)
+        visible_reply = str(self.reply or "").strip()
+        if not visible_reply:
+            try:
+                compare = self.artifacts.get("compare") if isinstance(self.artifacts, dict) else {}
+                guarddogs = compare.get("guarddogs") if isinstance(compare, dict) else {}
+                validity = guarddogs.get("validity") if isinstance(guarddogs, dict) else {}
+                visible_reply = str(
+                    (compare.get("api_response") if isinstance(compare, dict) else "")
+                    or (validity.get("normalized_response") if isinstance(validity, dict) else "")
+                    or ""
+                ).strip()
+            except Exception:
+                visible_reply = ""
+        if not visible_reply:
+            visible_reply = "No engine produced an answer. Provide more constraints or enable an applicable tier."
         return {
             "ok": bool(self.ok),
             "reply": visible_reply,
@@ -1803,14 +1831,14 @@ def _try_websym(text: str) -> Optional[str]:
     return None
 
 def _try_api(text: str, meta: Optional[Dict[str, Any]] = None) -> Optional[str]:
-    if _is_local_only():
+    meta2 = dict(meta or {})
+    if _is_local_only() and not _request_allows_external_api(meta2):
         return None
     if not _SMAPI:
         return None
     if not _core_module_allowed("SarahMemoryAPI", "helper", _SMAPI):
         return None
 
-    meta2 = dict(meta or {})
     helper_payload = meta2.get("sm_helper_payload")
     user_input = str(helper_payload or text or "").strip()
     if not user_input:

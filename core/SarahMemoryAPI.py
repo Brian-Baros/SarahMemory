@@ -2585,6 +2585,26 @@ def _sm_is_selfaware_body_query(text: str) -> bool:
     return any(k in t for k in hardware_terms) and any(k in t for k in self_scope_terms)
 
 
+def _sm_request_allows_external_api(kwargs: Dict[str, Any]) -> bool:
+    """Honor only request-scoped UI lane approval; never bypass Safe Mode."""
+    if SAFE_MODE:
+        return False
+    data: Dict[str, Any] = {}
+    if isinstance(kwargs, dict):
+        data.update(kwargs)
+        meta = kwargs.get("meta")
+        if isinstance(meta, dict):
+            data.update(meta)
+    lane = str(data.get("lane") or data.get("api_mode") or data.get("mode") or "").strip().lower()
+    if lane not in {"any", "auto", "web", "api", "cloud"}:
+        return False
+    if not bool(data.get("external_api_allowed_by_ui_lane")):
+        return False
+    if bool(data.get("local_only") or data.get("offline") or data.get("LOCAL_ONLY_MODE") or data.get("force_local_only")):
+        return False
+    return True
+
+
 def send_to_api(
     user_input: str,
     provider: str = "auto",
@@ -2669,14 +2689,17 @@ def send_to_api(
         offline = False
 
     # Log debug info
+    request_external_api_allowed = _sm_request_allows_external_api(kwargs)
+
     logger.debug(
         f"[API] provider={provider}, SAFE_MODE={SAFE_MODE}, "
-        f"LOCAL_ONLY_MODE={LOCAL_ONLY_MODE}, run_mode={run_mode}, offline={offline}"
+        f"LOCAL_ONLY_MODE={LOCAL_ONLY_MODE}, run_mode={run_mode}, offline={offline}, "
+        f"request_external_api_allowed={request_external_api_allowed}"
     )
 
 
     # Check safety / offline modes
-    if SAFE_MODE or LOCAL_ONLY_MODE or (offline and run_mode not in ("cloud", "server")):
+    if SAFE_MODE or (LOCAL_ONLY_MODE and not request_external_api_allowed) or (offline and run_mode not in ("cloud", "server") and not request_external_api_allowed):
         # In local-only / safe / offline modes we MUST NOT call external providers (including mesh).
         # We will reroute to local lanes if possible; otherwise return a clear error.
         requested = (provider or "").strip().lower()
@@ -3542,4 +3565,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

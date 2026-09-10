@@ -1660,6 +1660,16 @@ class SarahMemoryNAILDERuntime:
         content = str(payload.get("content") if payload.get("content") is not None else "")
         if not workspace_id:
             return {"ok": False, "error": "workspace_id_required", "execution_authority": False}
+        content_bytes = len(content.encode("utf-8", "replace"))
+        if content_bytes > _MAX_UNIVERSAL_TEXT_FILE_BYTES:
+            return {
+                "ok": False,
+                "error": "workspace_file_text_budget_exceeded",
+                "path": rel_path,
+                "size_bytes": content_bytes,
+                "max_bytes": _MAX_UNIVERSAL_TEXT_FILE_BYTES,
+                "execution_authority": False,
+            }
         try:
             path = self._workspace_file_path(workspace_id, rel_path)
         except Exception as exc:
@@ -3562,8 +3572,18 @@ def run_game(context=None):
         payload = payload if isinstance(payload, dict) else {}
         command = str(payload.get("command") or payload.get("id") or "").strip()
         args = payload.get("args") if isinstance(payload.get("args"), dict) else payload
-        safe_view_commands = {"show_explorer", "show_search", "show_flow_graph", "show_blockforge", "show_form_designer", "show_device_bay", "show_holoforge", "show_output", "show_doctrine", "show_shortcuts", "show_boundaries", "show_settings", "show_github_settings", "show_filesystem", "show_diagnostics"}
-        blocked_apply_commands = {"stage_devbridge_proposal", "create_backup_zip", "prepare_rollback", "package_addon_pending_review", "validate_sandbox", "compare_sandbox", "assurance_review"}
+        safe_view_commands = {
+            "show_command_palette", "go_to_file", "go_to_symbol", "go_to_line",
+            "show_explorer", "show_search", "show_flow_graph", "show_blockforge",
+            "show_form_designer", "show_toolbox", "show_database_builder",
+            "show_device_bay", "show_holoforge", "show_simulation", "show_output",
+            "show_run_debug", "show_terminal", "show_terminal_boundary",
+            "show_validation", "show_problems", "show_diff", "show_sdk",
+            "show_model_bay", "show_properties", "show_governance", "show_doctrine",
+            "show_shortcuts", "show_boundaries", "show_research_notes",
+            "show_settings", "show_github_settings", "show_filesystem", "show_diagnostics",
+        }
+        blocked_apply_commands = {"stage_devbridge_proposal", "create_backup_zip", "prepare_rollback", "package_addon_pending_review", "assurance_review"}
         try:
             if command in {"create_workspace", "workspace.new"}:
                 return {"ok": True, "command": command, "result": self.create_workspace(args), "execution_authority": False}
@@ -3587,8 +3607,9 @@ def run_game(context=None):
                 return {"ok": True, "command": command, "result": self.package_workspace_export(args), "execution_authority": False}
             if command in {"reconcile_edits", "edit.reconcile"}:
                 return {"ok": True, "command": command, "result": self.reconcile_edits(args), "execution_authority": False}
-            if command in {"editor_validate", "validate_editor"}:
-                return {"ok": True, "command": command, "result": self.editor_validate(args), "execution_authority": False}
+            if command in {"editor_validate", "validate_editor", "validate_sandbox", "validate_text_artifact", "compare_sandbox"}:
+                result = self.validate_text_artifacts(args) if command in {"validate_sandbox", "validate_text_artifact", "compare_sandbox"} else self.editor_validate(args)
+                return {"ok": True, "command": command, "result": result, "compare_required": command == "compare_sandbox", "execution_authority": False}
             if command in {"create_application_from_editor", "editor.create_application"}:
                 return {"ok": True, "command": command, "result": self.create_application_from_editor(args), "execution_authority": False}
             if command in {"filesystem_map", "show_filesystem"}:
@@ -4346,7 +4367,14 @@ def run_game(context=None):
             raise ValueError("relative_path_required_inside_workspace")
         root = self._workspace_root(workspace_id)
         path = os.path.abspath(os.path.join(root, rel))
-        if not path.startswith(root + os.sep) and path != root:
+        try:
+            if os.path.commonpath([root, path]) != root:
+                raise ValueError("workspace_file_escape_blocked")
+            real_root = os.path.realpath(root)
+            real_path = os.path.realpath(path)
+            if os.path.commonpath([real_root, real_path]) != real_root:
+                raise ValueError("workspace_symlink_escape_blocked")
+        except ValueError:
             raise ValueError("workspace_file_escape_blocked")
         return path
 
@@ -5773,4 +5801,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

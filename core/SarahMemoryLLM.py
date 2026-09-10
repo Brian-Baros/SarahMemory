@@ -118,6 +118,11 @@ get_stack_primary_repo = getattr(G, "get_stack_primary_repo", lambda category, t
 recommend_model_tier = getattr(G, "recommend_model_tier", lambda category="reasoning", metrics=None: "low")
 
 model_policy_allows_download = getattr(G, "model_policy_allows_download", lambda size_gb, models_dir=None: {"ok": True, "prompt_required": False})
+
+MODEL_SIZE_CACHE_TTL_SECONDS = max(15, int(os.getenv("SARAH_MODEL_SIZE_CACHE_TTL_SECONDS", "300") or 300))
+MODEL_SIZE_MAX_FILES = max(100, int(os.getenv("SARAH_MODEL_SIZE_MAX_FILES", "5000") or 5000))
+_SIZE_CACHE_LOCK = threading.RLock()
+_SIZE_CACHE: Dict[str, Tuple[float, float, float]] = {}
 get_models_storage_usage_gb = getattr(G, "get_models_storage_usage_gb", lambda models_dir=None: 0.0)
 is_headless_runtime = getattr(G, "is_headless_runtime", lambda: True)
 is_interactive_tty = getattr(G, "is_interactive_tty", lambda: False)
@@ -182,16 +187,37 @@ def is_repo_installed(repo: str) -> bool:
 
 def local_dir_size_gb(path: str) -> float:
     total = 0
+    abs_path = os.path.abspath(str(path or ""))
     try:
-        for root, _, files in os.walk(path):
+        dir_mtime = os.path.getmtime(abs_path)
+        now = time.monotonic()
+        with _SIZE_CACHE_LOCK:
+            cached = _SIZE_CACHE.get(abs_path)
+            if cached and (now - cached[0]) <= MODEL_SIZE_CACHE_TTL_SECONDS and cached[1] == dir_mtime:
+                return float(cached[2])
+
+        scanned = 0
+        for root, dirs, files in os.walk(abs_path):
+            dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", ".cache"} and not d.startswith(".")]
             for fn in files:
+                scanned += 1
+                if scanned > MODEL_SIZE_MAX_FILES:
+                    raise RuntimeError("model_size_file_budget_exceeded")
                 try:
                     total += os.path.getsize(os.path.join(root, fn))
                 except Exception:
                     pass
     except Exception:
+        with _SIZE_CACHE_LOCK:
+            cached = _SIZE_CACHE.get(abs_path)
+            if cached:
+                return float(cached[2])
         return 0.0
-    return float(total) / (1024**3)
+
+    size_gb = float(total) / (1024**3)
+    with _SIZE_CACHE_LOCK:
+        _SIZE_CACHE[abs_path] = (time.monotonic(), dir_mtime, size_gb)
+    return size_gb
 
 # ---------------------------------------------------------------------------
 # Optional integrity verification (CRC32) for local model installs
@@ -2531,4 +2557,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

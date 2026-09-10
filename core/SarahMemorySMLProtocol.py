@@ -2,7 +2,7 @@
 File: SarahMemorySMLProtocol.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.0.0
-Date: 2026-08-16
+Date: 2026-09-09
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -80,8 +80,11 @@ from __future__ import annotations
 # NOTES = "Canonical SML/QSML universal natural programming language runtime: typed variables, cognitive AST, organ contracts, compiler semantics, Ω registry, bounded routing, integrity, diagnostics, and serialization. Coordinates cognition; does not execute actions."
 # --- SARAHMETA END ---
 
+import configparser
 import copy
+import csv
 import hashlib
+import io
 import hmac
 import importlib.util
 import json
@@ -94,6 +97,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple, Union
+import xml.etree.ElementTree as ET
 
 
 PROJECT_VERSION = "v9.0.0"
@@ -114,6 +118,31 @@ MODULE_NAME = "SarahMemorySMLProtocol"
 def _utc_now() -> str:
     """Return a stable UTC timestamp in ISO-8601 form."""
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def sml_normalize_user_text(text: str) -> str:
+    """Normalize user text for deterministic SML classification only."""
+    return re.sub(r"\s+", " ", str(text or "").strip().lower())
+
+
+def sml_is_information_question(text: str) -> bool:
+    """Return True for answer-only wording that requires no action authority.
+
+    This is protocol classification, not answer generation.  It lets bridges and
+    governors distinguish harmless presentation requests from commands that need
+    filesystem, shell, driver, device, network, or persistent-write authority.
+    """
+    t = sml_normalize_user_text(text)
+    if not t:
+        return False
+    if re.match(r"^(what|who|when|where|why|how|which)\b", t):
+        return True
+    if re.match(r"^(do|does|did|is|are|was|were|can|could|should|would)\s+(you|i|we|this|that)\b", t):
+        return True
+    return t.startswith((
+        "tell me", "explain", "define", "describe", "say ", "reply",
+        "respond", "answer", "summarize", "summarise",
+    ))
 
 
 def _coerce_list(value: Any) -> List[str]:
@@ -217,6 +246,7 @@ class MissionType(str, Enum):
     EXECUTION = "Execution"
     PATCH = "Patch"
     GOVERNANCE = "Governance"
+    INDUSTRIAL = "Industrial"
 
 
 class CognitiveState(str, Enum):
@@ -416,6 +446,14 @@ class SMLDataType(str, Enum):
     APPLICATION_BLUEPRINT = "SML_APPLICATION_BLUEPRINT"
     REQUIREMENT = "SML_REQUIREMENT"
     FILE_PLAN = "SML_FILE_PLAN"
+    INDUSTRIAL_ASSET = "SML_INDUSTRIAL_ASSET"
+    INDUSTRIAL_MACHINE_CONTRACT = "SML_INDUSTRIAL_MACHINE_CONTRACT"
+    INDUSTRIAL_PARAMETER = "SML_INDUSTRIAL_PARAMETER"
+    INDUSTRIAL_AXIS = "SML_INDUSTRIAL_AXIS"
+    INDUSTRIAL_IO = "SML_INDUSTRIAL_IO"
+    INDUSTRIAL_COMMAND = "SML_INDUSTRIAL_COMMAND"
+    INDUSTRIAL_RECIPE = "SML_INDUSTRIAL_RECIPE"
+    INDUSTRIAL_SAFETY = "SML_INDUSTRIAL_SAFETY"
     UNKNOWN = "SML_UNKNOWN"
 
 
@@ -446,6 +484,17 @@ class SMLSemanticType(str, Enum):
     TEST = "TEST"
     ACCEPTANCE = "ACCEPTANCE"
     SYNTHESIS_PHASE = "SYNTHESIS_PHASE"
+    INDUSTRIAL_ASSET = "INDUSTRIAL_ASSET"
+    MACHINE_CONTRACT = "MACHINE_CONTRACT"
+    MACHINE_PARAMETER = "MACHINE_PARAMETER"
+    MACHINE_AXIS = "MACHINE_AXIS"
+    MACHINE_IO = "MACHINE_IO"
+    MACHINE_COMMAND = "MACHINE_COMMAND"
+    MACHINE_RECIPE = "MACHINE_RECIPE"
+    MACHINE_SAFETY = "MACHINE_SAFETY"
+    MACHINE_TELEMETRY = "MACHINE_TELEMETRY"
+    MACHINE_FAULT = "MACHINE_FAULT"
+    MACHINE_MAINTENANCE = "MACHINE_MAINTENANCE"
     UNKNOWN = "UNKNOWN"
 
 
@@ -483,6 +532,7 @@ class SMLASTKind(str, Enum):
     PROJECT = "PROJECT"
     FEATURE = "FEATURE"
     TARGET = "TARGET"
+    MACHINE_CONTRACT = "MACHINE_CONTRACT"
     UNKNOWN = "UNKNOWN"
 
 
@@ -514,6 +564,68 @@ class SMLArtifactRole(str, Enum):
     ASSET_TEXT = "ASSET_TEXT"
     DATA = "DATA"
     OTHER = "OTHER"
+
+
+# =============================================================================
+# Industrial / cyber-physical contract vocabulary
+# =============================================================================
+
+INDUSTRIAL_CONTRACT_SCHEMA_VERSION = "SarahMemory.sml.industrial_machine_contract.v1"
+
+
+class SMLIndustrialSourceType(str, Enum):
+    UNKNOWN = "unknown"
+    GENERIC_MAPPING = "generic_mapping"
+    JSON = "json"
+    INI = "ini"
+    CSV = "csv"
+    XML = "xml"
+    TEXT = "text"
+
+
+class SMLIndustrialAssetClass(str, Enum):
+    UNKNOWN = "unknown"
+    INDUSTRIAL_MACHINE = "industrial_machine"
+    CNC = "cnc"
+    PLC = "plc"
+    ROBOT = "robot"
+    PLASMA_TABLE = "plasma_table"
+    PRESS_BRAKE = "press_brake"
+    CONVEYOR = "conveyor"
+    SENSOR = "sensor"
+    ACTUATOR = "actuator"
+    SERVO_DRIVE = "servo_drive"
+    UTILITY = "utility"
+    VEHICLE = "vehicle"
+    EDGE_NODE = "edge_node"
+    FACTORY_SERVER = "factory_server"
+
+
+class SMLIndustrialSafetyClass(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    OBSERVE_ONLY = "OBSERVE_ONLY"
+    CONFIGURATION = "CONFIGURATION"
+    PROCESS_PARAMETER = "PROCESS_PARAMETER"
+    MOTION_CAPABLE = "MOTION_CAPABLE"
+    PROCESS_EXECUTION = "PROCESS_EXECUTION"
+    SAFETY_CRITICAL = "SAFETY_CRITICAL"
+
+
+class SMLIndustrialSignalDirection(str, Enum):
+    UNKNOWN = "UNKNOWN"
+    INPUT = "INPUT"
+    OUTPUT = "OUTPUT"
+    BIDIRECTIONAL = "BIDIRECTIONAL"
+    INTERNAL = "INTERNAL"
+
+
+class SMLIndustrialGovernanceMode(str, Enum):
+    OBSERVE = "observe"
+    IMPORT = "import"
+    VALIDATE = "validate"
+    SIMULATE = "simulate"
+    APPLY = "apply"
+    EXECUTE = "execute"
 
 
 # =============================================================================
@@ -867,6 +979,446 @@ class SMLApplicationBlueprint:
             phase=str(data.get("phase") or SMLSynthesisPhase.ARCHITECT.value),
             metadata=dict(data.get("metadata") or {}),
         )
+
+
+@dataclass
+class SMLIndustrialParameterContract:
+    """Typed machine parameter evidence.
+
+    Parameter contracts describe imported machine facts. They do not authorize
+    writes, downloads, PLC operations, live motion, torch/spindle activation, or
+    safety-setting changes.
+    """
+    parameter_id: str = field(default_factory=lambda: "mparam_" + uuid.uuid4().hex[:12])
+    name: str = ""
+    value: Any = None
+    data_type: str = SMLDataType.UNKNOWN.value
+    unit: str = ""
+    minimum: Any = None
+    maximum: Any = None
+    default: Any = None
+    owner: str = "machine_profile"
+    safety_class: str = SMLIndustrialSafetyClass.CONFIGURATION.value
+    mutable: bool = False
+    source: str = "imported_contract"
+    source_ref: str = ""
+    confidence: float = 0.75
+    description: str = ""
+    authority_required: List[str] = field(default_factory=lambda: [Authority.READ.value])
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "parameter_id": self.parameter_id,
+            "name": self.name,
+            "value": copy.deepcopy(self.value),
+            "data_type": self.data_type,
+            "unit": self.unit,
+            "minimum": copy.deepcopy(self.minimum),
+            "maximum": copy.deepcopy(self.maximum),
+            "default": copy.deepcopy(self.default),
+            "owner": self.owner,
+            "safety_class": self.safety_class,
+            "mutable": bool(self.mutable),
+            "source": self.source,
+            "source_ref": self.source_ref,
+            "confidence": max(0.0, min(1.0, float(self.confidence))),
+            "description": _bounded_text(self.description, 2000),
+            "authority_required": list(self.authority_required),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialParameterContract":
+        return cls(
+            parameter_id=str(data.get("parameter_id") or data.get("id") or "mparam_" + uuid.uuid4().hex[:12]),
+            name=str(data.get("name") or data.get("key") or data.get("parameter") or ""),
+            value=copy.deepcopy(data.get("value")),
+            data_type=str(data.get("data_type") or data.get("type") or SMLDataType.UNKNOWN.value),
+            unit=str(data.get("unit") or data.get("units") or ""),
+            minimum=copy.deepcopy(data.get("minimum", data.get("min"))),
+            maximum=copy.deepcopy(data.get("maximum", data.get("max"))),
+            default=copy.deepcopy(data.get("default")),
+            owner=str(data.get("owner") or "machine_profile"),
+            safety_class=str(data.get("safety_class") or SMLIndustrialSafetyClass.CONFIGURATION.value),
+            mutable=bool(data.get("mutable", False)),
+            source=str(data.get("source") or "imported_contract"),
+            source_ref=str(data.get("source_ref") or data.get("section") or ""),
+            confidence=float(data.get("confidence") if data.get("confidence") is not None else 0.75),
+            description=str(data.get("description") or data.get("notes") or ""),
+            authority_required=_coerce_list(data.get("authority_required") or data.get("authority")) or [Authority.READ.value],
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialAxisContract:
+    axis_id: str = field(default_factory=lambda: "axis_" + uuid.uuid4().hex[:12])
+    name: str = ""
+    axis_type: str = "linear"
+    unit: str = ""
+    minimum: Any = None
+    maximum: Any = None
+    home: Any = None
+    max_velocity: Any = None
+    max_acceleration: Any = None
+    slave_of: str = ""
+    command_capable: bool = False
+    telemetry_keys: List[str] = field(default_factory=list)
+    io_refs: List[str] = field(default_factory=list)
+    safety_class: str = SMLIndustrialSafetyClass.MOTION_CAPABLE.value
+    authority_required: List[str] = field(default_factory=lambda: [Authority.READ.value])
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "axis_id": self.axis_id,
+            "name": self.name,
+            "axis_type": self.axis_type,
+            "unit": self.unit,
+            "minimum": copy.deepcopy(self.minimum),
+            "maximum": copy.deepcopy(self.maximum),
+            "home": copy.deepcopy(self.home),
+            "max_velocity": copy.deepcopy(self.max_velocity),
+            "max_acceleration": copy.deepcopy(self.max_acceleration),
+            "slave_of": self.slave_of,
+            "command_capable": bool(self.command_capable),
+            "telemetry_keys": list(self.telemetry_keys),
+            "io_refs": list(self.io_refs),
+            "safety_class": self.safety_class,
+            "authority_required": list(self.authority_required),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialAxisContract":
+        return cls(
+            axis_id=str(data.get("axis_id") or data.get("id") or "axis_" + uuid.uuid4().hex[:12]),
+            name=str(data.get("name") or data.get("axis") or data.get("axis_name") or ""),
+            axis_type=str(data.get("axis_type") or data.get("type") or "linear"),
+            unit=str(data.get("unit") or data.get("units") or ""),
+            minimum=copy.deepcopy(data.get("minimum", data.get("min", data.get("min_position")))),
+            maximum=copy.deepcopy(data.get("maximum", data.get("max", data.get("max_position")))),
+            home=copy.deepcopy(data.get("home", data.get("home_position"))),
+            max_velocity=copy.deepcopy(data.get("max_velocity", data.get("velocity", data.get("speed")))),
+            max_acceleration=copy.deepcopy(data.get("max_acceleration", data.get("acceleration"))),
+            slave_of=str(data.get("slave_of") or data.get("master_axis") or ""),
+            command_capable=bool(data.get("command_capable", data.get("motion_capable", False))),
+            telemetry_keys=_coerce_list(data.get("telemetry_keys") or data.get("telemetry")),
+            io_refs=_coerce_list(data.get("io_refs") or data.get("signals")),
+            safety_class=str(data.get("safety_class") or SMLIndustrialSafetyClass.MOTION_CAPABLE.value),
+            authority_required=_coerce_list(data.get("authority_required") or data.get("authority")) or [Authority.READ.value],
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialIOContract:
+    signal_id: str = field(default_factory=lambda: "io_" + uuid.uuid4().hex[:12])
+    name: str = ""
+    direction: str = SMLIndustrialSignalDirection.UNKNOWN.value
+    driver: str = ""
+    channel: str = ""
+    bit: str = ""
+    active_state: str = ""
+    unit: str = ""
+    safety_class: str = SMLIndustrialSafetyClass.UNKNOWN.value
+    authority_required: List[str] = field(default_factory=lambda: [Authority.READ.value])
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "signal_id": self.signal_id,
+            "name": self.name,
+            "direction": self.direction,
+            "driver": self.driver,
+            "channel": self.channel,
+            "bit": self.bit,
+            "active_state": self.active_state,
+            "unit": self.unit,
+            "safety_class": self.safety_class,
+            "authority_required": list(self.authority_required),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialIOContract":
+        return cls(
+            signal_id=str(data.get("signal_id") or data.get("id") or "io_" + uuid.uuid4().hex[:12]),
+            name=str(data.get("name") or data.get("signal") or data.get("tag") or ""),
+            direction=str(data.get("direction") or data.get("dir") or SMLIndustrialSignalDirection.UNKNOWN.value).upper(),
+            driver=str(data.get("driver") or data.get("driver_id") or ""),
+            channel=str(data.get("channel") or data.get("address") or data.get("register") or ""),
+            bit=str(data.get("bit") or data.get("offset") or ""),
+            active_state=str(data.get("active_state") or data.get("active") or data.get("polarity") or ""),
+            unit=str(data.get("unit") or data.get("units") or ""),
+            safety_class=str(data.get("safety_class") or SMLIndustrialSafetyClass.UNKNOWN.value),
+            authority_required=_coerce_list(data.get("authority_required") or data.get("authority")) or [Authority.READ.value],
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialCommandDialectEntry:
+    command_id: str = field(default_factory=lambda: "cmd_" + uuid.uuid4().hex[:12])
+    dialect: str = "generic"
+    external_code: str = ""
+    normalized_command: str = ""
+    capability: str = ""
+    domain: str = ""
+    safety_class: str = SMLIndustrialSafetyClass.UNKNOWN.value
+    requires_authority: List[str] = field(default_factory=lambda: [Authority.READ.value])
+    description: str = ""
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "command_id": self.command_id,
+            "dialect": self.dialect,
+            "external_code": self.external_code,
+            "normalized_command": self.normalized_command,
+            "capability": self.capability,
+            "domain": self.domain,
+            "safety_class": self.safety_class,
+            "requires_authority": list(self.requires_authority),
+            "description": _bounded_text(self.description, 2000),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialCommandDialectEntry":
+        external = str(data.get("external_code") or data.get("code") or data.get("word") or data.get("gcode") or data.get("mcode") or "")
+        normalized = str(data.get("normalized_command") or data.get("semantic") or data.get("function") or data.get("command") or external)
+        safety = str(data.get("safety_class") or SMLIndustrialSafetyClass.UNKNOWN.value)
+        auth = _coerce_list(data.get("requires_authority") or data.get("authority")) or [Authority.READ.value]
+        if safety in {SMLIndustrialSafetyClass.MOTION_CAPABLE.value, SMLIndustrialSafetyClass.PROCESS_EXECUTION.value, SMLIndustrialSafetyClass.SAFETY_CRITICAL.value} and Authority.EXECUTE.value not in auth:
+            auth.append(Authority.EXECUTE.value)
+        return cls(
+            command_id=str(data.get("command_id") or data.get("id") or "cmd_" + uuid.uuid4().hex[:12]),
+            dialect=str(data.get("dialect") or data.get("language") or "generic"),
+            external_code=external,
+            normalized_command=normalized,
+            capability=str(data.get("capability") or normalized),
+            domain=str(data.get("domain") or data.get("class") or ""),
+            safety_class=safety,
+            requires_authority=auth,
+            description=str(data.get("description") or data.get("comment") or ""),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialProcessRecipeContract:
+    recipe_id: str = field(default_factory=lambda: "recipe_" + uuid.uuid4().hex[:12])
+    name: str = ""
+    process_type: str = ""
+    material: str = ""
+    thickness: Any = None
+    unit: str = ""
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    safety_class: str = SMLIndustrialSafetyClass.PROCESS_PARAMETER.value
+    authority_required: List[str] = field(default_factory=lambda: [Authority.READ.value])
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "recipe_id": self.recipe_id,
+            "name": self.name,
+            "process_type": self.process_type,
+            "material": self.material,
+            "thickness": copy.deepcopy(self.thickness),
+            "unit": self.unit,
+            "parameters": copy.deepcopy(self.parameters),
+            "safety_class": self.safety_class,
+            "authority_required": list(self.authority_required),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialProcessRecipeContract":
+        return cls(
+            recipe_id=str(data.get("recipe_id") or data.get("id") or "recipe_" + uuid.uuid4().hex[:12]),
+            name=str(data.get("name") or data.get("recipe") or data.get("program") or ""),
+            process_type=str(data.get("process_type") or data.get("process") or data.get("type") or ""),
+            material=str(data.get("material") or ""),
+            thickness=copy.deepcopy(data.get("thickness", data.get("gauge"))),
+            unit=str(data.get("unit") or data.get("units") or ""),
+            parameters=dict(data.get("parameters") or {k: v for k, v in dict(data).items() if k not in {"recipe_id", "id", "name", "recipe", "program", "process_type", "process", "type", "material", "thickness", "gauge", "unit", "units", "safety_class", "authority_required", "metadata"}}),
+            safety_class=str(data.get("safety_class") or SMLIndustrialSafetyClass.PROCESS_PARAMETER.value),
+            authority_required=_coerce_list(data.get("authority_required") or data.get("authority")) or [Authority.READ.value],
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialSafetyContract:
+    safety_id: str = field(default_factory=lambda: "safety_" + uuid.uuid4().hex[:12])
+    name: str = "machine_safety"
+    safety_class: str = SMLIndustrialSafetyClass.SAFETY_CRITICAL.value
+    physical_authority_owner: str = "machine_controller_or_safety_plc"
+    required_interlocks: List[str] = field(default_factory=list)
+    hard_block_conditions: List[str] = field(default_factory=list)
+    safe_stop_action: str = "safe_stop"
+    verification_required: bool = True
+    ai_override_allowed: bool = False
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "safety_id": self.safety_id,
+            "name": self.name,
+            "safety_class": self.safety_class,
+            "physical_authority_owner": self.physical_authority_owner,
+            "required_interlocks": list(self.required_interlocks),
+            "hard_block_conditions": list(self.hard_block_conditions),
+            "safe_stop_action": self.safe_stop_action,
+            "verification_required": bool(self.verification_required),
+            "ai_override_allowed": False,
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialSafetyContract":
+        return cls(
+            safety_id=str(data.get("safety_id") or data.get("id") or "safety_" + uuid.uuid4().hex[:12]),
+            name=str(data.get("name") or "machine_safety"),
+            safety_class=str(data.get("safety_class") or SMLIndustrialSafetyClass.SAFETY_CRITICAL.value),
+            physical_authority_owner=str(data.get("physical_authority_owner") or data.get("authority_owner") or "machine_controller_or_safety_plc"),
+            required_interlocks=_coerce_list(data.get("required_interlocks") or data.get("interlocks")),
+            hard_block_conditions=_coerce_list(data.get("hard_block_conditions") or data.get("blocks")),
+            safe_stop_action=str(data.get("safe_stop_action") or data.get("safe_stop") or "safe_stop"),
+            verification_required=bool(data.get("verification_required", True)),
+            ai_override_allowed=False,
+            metadata=dict(data.get("metadata") or {}),
+        )
+
+
+@dataclass
+class SMLIndustrialMachineContract:
+    """Universal, vendor-neutral, non-executing machine contract.
+
+    This contract lets SML/QSML represent arbitrary industrial machinery without
+    becoming a driver, PLC runtime, CNC kernel, safety controller, HMI, or cloud
+    authority. It is safe to serialize, validate, route, compare, and audit.
+    """
+    contract_id: str = field(default_factory=lambda: "mach_" + uuid.uuid4().hex[:16])
+    schema: str = INDUSTRIAL_CONTRACT_SCHEMA_VERSION
+    asset_id: str = ""
+    name: str = ""
+    asset_class: str = SMLIndustrialAssetClass.INDUSTRIAL_MACHINE.value
+    vendor: str = ""
+    model: str = ""
+    controller: str = ""
+    firmware_version: str = ""
+    host_environment: str = "unknown"
+    protocols: List[str] = field(default_factory=list)
+    capabilities: List[str] = field(default_factory=list)
+    states: Dict[str, Any] = field(default_factory=dict)
+    parameters: List[SMLIndustrialParameterContract] = field(default_factory=list)
+    axes: List[SMLIndustrialAxisContract] = field(default_factory=list)
+    io: List[SMLIndustrialIOContract] = field(default_factory=list)
+    commands: List[SMLIndustrialCommandDialectEntry] = field(default_factory=list)
+    recipes: List[SMLIndustrialProcessRecipeContract] = field(default_factory=list)
+    safety: List[SMLIndustrialSafetyContract] = field(default_factory=list)
+    telemetry: Dict[str, Any] = field(default_factory=dict)
+    faults: Dict[str, Any] = field(default_factory=dict)
+    maintenance: Dict[str, Any] = field(default_factory=dict)
+    recovery: Dict[str, Any] = field(default_factory=dict)
+    dependencies: List[Dict[str, Any]] = field(default_factory=list)
+    provenance: Dict[str, Any] = field(default_factory=dict)
+    governance: Dict[str, Any] = field(default_factory=dict)
+    validation: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "contract_id": self.contract_id,
+            "schema": self.schema,
+            "asset_id": self.asset_id,
+            "name": self.name,
+            "asset_class": self.asset_class,
+            "vendor": self.vendor,
+            "model": self.model,
+            "controller": self.controller,
+            "firmware_version": self.firmware_version,
+            "host_environment": self.host_environment,
+            "protocols": list(self.protocols),
+            "capabilities": list(self.capabilities),
+            "states": copy.deepcopy(self.states),
+            "parameters": [x.to_dict() for x in self.parameters],
+            "axes": [x.to_dict() for x in self.axes],
+            "io": [x.to_dict() for x in self.io],
+            "commands": [x.to_dict() for x in self.commands],
+            "recipes": [x.to_dict() for x in self.recipes],
+            "safety": [x.to_dict() for x in self.safety],
+            "telemetry": copy.deepcopy(self.telemetry),
+            "faults": copy.deepcopy(self.faults),
+            "maintenance": copy.deepcopy(self.maintenance),
+            "recovery": copy.deepcopy(self.recovery),
+            "dependencies": copy.deepcopy(self.dependencies),
+            "provenance": copy.deepcopy(self.provenance),
+            "governance": copy.deepcopy(self.governance),
+            "validation": copy.deepcopy(self.validation),
+            "metadata": copy.deepcopy(self.metadata),
+            "execution_authority": False,
+            "machine_control_authority": False,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "SMLIndustrialMachineContract":
+        def _items(raw: Any, item_cls: Any) -> List[Any]:
+            if raw is None:
+                return []
+            if isinstance(raw, Mapping):
+                out = []
+                for key, value in raw.items():
+                    if isinstance(value, Mapping):
+                        merged = {"name": str(key), **dict(value)} if "name" not in value else dict(value)
+                    else:
+                        merged = {"name": str(key), "value": value}
+                    out.append(item_cls.from_dict(merged))
+                return out
+            if isinstance(raw, (list, tuple)):
+                return [item_cls.from_dict(x if isinstance(x, Mapping) else {"name": str(x)}) for x in raw]
+            return []
+
+        return cls(
+            contract_id=str(data.get("contract_id") or data.get("id") or "mach_" + uuid.uuid4().hex[:16]),
+            schema=str(data.get("schema") or INDUSTRIAL_CONTRACT_SCHEMA_VERSION),
+            asset_id=str(data.get("asset_id") or data.get("machine_id") or data.get("id") or ""),
+            name=str(data.get("name") or data.get("machine_name") or data.get("title") or ""),
+            asset_class=str(data.get("asset_class") or data.get("machine_class") or SMLIndustrialAssetClass.INDUSTRIAL_MACHINE.value),
+            vendor=str(data.get("vendor") or data.get("manufacturer") or ""),
+            model=str(data.get("model") or ""),
+            controller=str(data.get("controller") or data.get("plc") or data.get("cnc") or ""),
+            firmware_version=str(data.get("firmware_version") or data.get("version") or ""),
+            host_environment=str(data.get("host_environment") or data.get("host") or "unknown"),
+            protocols=_coerce_list(data.get("protocols") or data.get("communications") or data.get("transport")),
+            capabilities=_coerce_list(data.get("capabilities") or data.get("capability") or data.get("actions")),
+            states=dict(data.get("states") or data.get("state") or {}),
+            parameters=_items(data.get("parameters") or data.get("params"), SMLIndustrialParameterContract),
+            axes=_items(data.get("axes") or data.get("axis"), SMLIndustrialAxisContract),
+            io=_items(data.get("io") or data.get("signals") or data.get("iomap"), SMLIndustrialIOContract),
+            commands=_items(data.get("commands") or data.get("command_dialect") or data.get("dialect"), SMLIndustrialCommandDialectEntry),
+            recipes=_items(data.get("recipes") or data.get("process_recipes") or data.get("cut_charts"), SMLIndustrialProcessRecipeContract),
+            safety=_items(data.get("safety") or data.get("safety_contracts"), SMLIndustrialSafetyContract),
+            telemetry=dict(data.get("telemetry") or {}),
+            faults=dict(data.get("faults") or data.get("alarms") or {}),
+            maintenance=dict(data.get("maintenance") or {}),
+            recovery=dict(data.get("recovery") or data.get("backup") or {}),
+            dependencies=[dict(x) for x in list(data.get("dependencies") or []) if isinstance(x, Mapping)],
+            provenance=dict(data.get("provenance") or {}),
+            governance=dict(data.get("governance") or {}),
+            validation=dict(data.get("validation") or {}),
+            metadata=dict(data.get("metadata") or {}),
+        )
+
 
 
 @dataclass
@@ -1532,7 +2084,7 @@ class SarahMemorySMLProtocol:
         self.register_organ(SMLOrganMetadata(
             name=MODULE_NAME,
             category=OrganCategory.PROTOCOL.value,
-            capabilities=["packet", "routing", "omega", "serialization", "diagnostics", "health", "compatibility", "negotiation", "qsml_compiler", "type_system", "variable_registry", "cognitive_ast", "operator_evaluator", "organ_contracts", "application_blueprints", "arbitrary_application_synthesis_contracts"],
+            capabilities=["packet", "routing", "omega", "serialization", "diagnostics", "health", "compatibility", "negotiation", "qsml_compiler", "type_system", "variable_registry", "cognitive_ast", "operator_evaluator", "organ_contracts", "application_blueprints", "arbitrary_application_synthesis_contracts", "industrial_contracts", "machine_contract_import", "machine_contract_validation", "machine_contract_governance"],
             supported_missions=[m.value for m in MissionType],
             supported_omega=list(self.omega_registry.keys()),
             required_authority=[Authority.READ.value],
@@ -1544,10 +2096,10 @@ class SarahMemorySMLProtocol:
         self.register_organ_contract(SMLOrganContract(
             name=MODULE_NAME,
             accepts_types=[x.value for x in SMLDataType],
-            produces_types=[SMLDataType.PACKET.value, SMLDataType.ROUTE.value, SMLDataType.PIPELINE.value, SMLDataType.STATE.value, SMLDataType.APPLICATION_BLUEPRINT.value],
+            produces_types=[SMLDataType.PACKET.value, SMLDataType.ROUTE.value, SMLDataType.PIPELINE.value, SMLDataType.STATE.value, SMLDataType.APPLICATION_BLUEPRINT.value, SMLDataType.INDUSTRIAL_MACHINE_CONTRACT.value],
             reads_packet_fields=["payload", "context", "identity", "adaptive", "knowledge", "authority", "governance"],
             owns_packet_fields=["mission", "pipeline", "current_omega", "extensions.qsml_program"],
-            writes_packet_fields=["mission", "pipeline", "authority.required", "extensions.qsml_program", "extensions.qsml_program.synthesis_blueprint"],
+            writes_packet_fields=["mission", "pipeline", "authority.required", "extensions.qsml_program", "extensions.qsml_program.synthesis_blueprint", "extensions.industrial.machine_contract"],
             supported_missions=[m.value for m in MissionType],
             supported_operators=[q.value for q in QMathState],
             supported_omega=list(self.omega_registry.keys()),
@@ -1864,6 +2416,542 @@ class SarahMemorySMLProtocol:
             "route_definition_owner": MODULE_NAME,
             "route_activation_owner": "SarahMemoryNeuron",
         }
+
+    @staticmethod
+    def industrial_contract_schema() -> Dict[str, Any]:
+        """Return the universal non-executing industrial contract ABI."""
+        return {
+            "schema": INDUSTRIAL_CONTRACT_SCHEMA_VERSION,
+            "purpose": "Import, normalize, validate, govern, route, compare, and audit arbitrary machine contracts without granting actuation authority.",
+            "required": ["asset_id", "name", "asset_class", "capabilities", "parameters", "axes", "io", "commands", "safety"],
+            "subcontracts": [
+                "SMLIndustrialParameterContract",
+                "SMLIndustrialAxisContract",
+                "SMLIndustrialIOContract",
+                "SMLIndustrialCommandDialectEntry",
+                "SMLIndustrialProcessRecipeContract",
+                "SMLIndustrialSafetyContract",
+            ],
+            "supported_source_types": [x.value for x in SMLIndustrialSourceType],
+            "safety_policy": {
+                "sml_executes_machine_actions": False,
+                "machine_control_authority": False,
+                "ai_override_of_physical_safety": False,
+                "unknown_assets_default_mode": "observe_validate_only",
+                "state_changing_modes_require": ["SecurityGovernor", "AssuranceGate", "OperatorCore", "MSDC_or_domain_adapter", "fresh_telemetry", "Ledger"],
+                "physical_safety_authority_owner": "PLC/machine_controller/safety_PLC/interlocks",
+            },
+            "execution_authority": False,
+        }
+
+    @staticmethod
+    def _industrial_number(value: Any) -> Optional[float]:
+        try:
+            if value is None or isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                v = float(value)
+            else:
+                s = str(value).strip().replace(",", "")
+                if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", s):
+                    return None
+                v = float(s)
+            return v if v == v and abs(v) != float("inf") else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _industrial_infer_asset_class(blob: str) -> str:
+        t = str(blob or "").lower()
+        if any(x in t for x in ("plasma", "torch", "oxyfuel", "oxy fuel", "burny", "xpr")):
+            return SMLIndustrialAssetClass.PLASMA_TABLE.value
+        if any(x in t for x in ("press brake", "backgauge", "ram", "bend", "tonnage")):
+            return SMLIndustrialAssetClass.PRESS_BRAKE.value
+        if any(x in t for x in ("robot", "joint", "end effector", "end-effector")):
+            return SMLIndustrialAssetClass.ROBOT.value
+        if any(x in t for x in ("cnc", "gcode", "g-code", "spindle", "axis")):
+            return SMLIndustrialAssetClass.CNC.value
+        if any(x in t for x in ("plc", "ladder", "i/o", "iomap", "modbus", "opc")):
+            return SMLIndustrialAssetClass.PLC.value
+        if any(x in t for x in ("conveyor", "belt", "roller")):
+            return SMLIndustrialAssetClass.CONVEYOR.value
+        return SMLIndustrialAssetClass.INDUSTRIAL_MACHINE.value
+
+    @staticmethod
+    def _industrial_infer_source_type(text_value: str) -> str:
+        s = str(text_value or "").lstrip("\ufeff\x00\r\n\t ")
+        if not s:
+            return SMLIndustrialSourceType.TEXT.value
+        if s[0] in "[{":
+            return SMLIndustrialSourceType.JSON.value
+        if s.startswith("<"):
+            return SMLIndustrialSourceType.XML.value
+        if re.search(r"(?m)^\s*\[[^\]]{1,120}\]\s*$", s):
+            return SMLIndustrialSourceType.INI.value
+        first = s.splitlines()[0] if s.splitlines() else ""
+        if "," in first or "\t" in first:
+            return SMLIndustrialSourceType.CSV.value
+        return SMLIndustrialSourceType.TEXT.value
+
+    @staticmethod
+    def _xml_to_industrial_dict(elem: ET.Element, *, depth: int = 0, max_depth: int = 5, max_children: int = 256) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"tag": elem.tag, "attributes": dict(elem.attrib)}
+        text_value = (elem.text or "").strip()
+        if text_value:
+            out["text"] = _bounded_text(text_value, 2000)
+        if depth >= max_depth:
+            return out
+        children = []
+        for child in list(elem)[:max_children]:
+            children.append(SarahMemorySMLProtocol._xml_to_industrial_dict(child, depth=depth + 1, max_depth=max_depth, max_children=max_children))
+        if children:
+            out["children"] = children
+        return out
+
+    def _parse_industrial_contract_source(
+        self,
+        source: Union[str, bytes, Mapping[str, Any], Sequence[Any], SMLIndustrialMachineContract],
+        *,
+        source_type: str = "auto",
+        source_name: str = "",
+    ) -> Dict[str, Any]:
+        """Parse supplied machine-contract evidence without reading paths or executing code."""
+        if isinstance(source, SMLIndustrialMachineContract):
+            return {"ok": True, "source_type": "contract", "data": source.to_dict(), "source_name": source_name, "execution_authority": False}
+        if isinstance(source, Mapping):
+            return {"ok": True, "source_type": SMLIndustrialSourceType.GENERIC_MAPPING.value, "data": copy.deepcopy(dict(source)), "source_name": source_name, "execution_authority": False}
+        if isinstance(source, (list, tuple)):
+            return {"ok": True, "source_type": SMLIndustrialSourceType.GENERIC_MAPPING.value, "data": {"rows": copy.deepcopy(list(source))}, "source_name": source_name, "execution_authority": False}
+        if isinstance(source, bytes):
+            text_value = source[:2_000_000].decode("utf-8", errors="replace")
+        else:
+            text_value = str(source or "")[:2_000_000]
+        kind = source_type.lower().strip() if source_type and source_type != "auto" else self._industrial_infer_source_type(text_value)
+        try:
+            if kind == SMLIndustrialSourceType.JSON.value:
+                return {"ok": True, "source_type": kind, "data": json.loads(text_value), "source_name": source_name, "execution_authority": False}
+            if kind == SMLIndustrialSourceType.INI.value:
+                parser = configparser.ConfigParser(interpolation=None, strict=False)
+                parser.optionxform = str
+                parser.read_string(text_value)
+                sections: Dict[str, Dict[str, Any]] = {}
+                for section in parser.sections():
+                    sections[section] = {k: v for k, v in parser.items(section)}
+                return {"ok": True, "source_type": kind, "data": {"sections": sections}, "source_name": source_name, "execution_authority": False}
+            if kind == SMLIndustrialSourceType.CSV.value:
+                sample = text_value.splitlines()[0] if text_value.splitlines() else ""
+                dialect = csv.excel_tab if "\t" in sample and "," not in sample else csv.excel
+                reader = csv.DictReader(io.StringIO(text_value), dialect=dialect)
+                rows = [dict(row) for _, row in zip(range(2000), reader)]
+                if not rows:
+                    raw_rows = [row for _, row in zip(range(2000), csv.reader(io.StringIO(text_value), dialect=dialect))]
+                    return {"ok": True, "source_type": kind, "data": {"rows": raw_rows}, "source_name": source_name, "execution_authority": False}
+                return {"ok": True, "source_type": kind, "data": {"rows": rows, "columns": list(reader.fieldnames or [])}, "source_name": source_name, "execution_authority": False}
+            if kind == SMLIndustrialSourceType.XML.value:
+                root = ET.fromstring(text_value)
+                return {"ok": True, "source_type": kind, "data": self._xml_to_industrial_dict(root), "source_name": source_name, "execution_authority": False}
+        except Exception as exc:
+            return {"ok": False, "source_type": kind, "error": _redact_sensitive_text(str(exc)), "source_name": source_name, "execution_authority": False}
+        return {"ok": True, "source_type": SMLIndustrialSourceType.TEXT.value, "data": {"text": _bounded_text(text_value, 20000)}, "source_name": source_name, "execution_authority": False}
+
+    def normalize_machine_contract(
+        self,
+        source: Union[str, bytes, Mapping[str, Any], Sequence[Any], SMLIndustrialMachineContract],
+        *,
+        source_type: str = "auto",
+        source_name: str = "",
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> SMLIndustrialMachineContract:
+        """Normalize arbitrary machine evidence into the SML industrial ABI.
+
+        This accepts an explicit SML contract, generic mapping, JSON text, INI,
+        CSV, XML, or raw text. It imports evidence only; it does not touch files,
+        drivers, controllers, PLCs, networks, shells, or hardware.
+        """
+        parsed = self._parse_industrial_contract_source(source, source_type=source_type, source_name=source_name)
+        meta = dict(metadata or {})
+        if not parsed.get("ok"):
+            contract = SMLIndustrialMachineContract(
+                asset_id=_normalize_token(source_name or "unknown_machine"),
+                name=source_name or "Unknown Industrial Machine",
+                asset_class=SMLIndustrialAssetClass.UNKNOWN.value,
+                provenance={"source_name": source_name, "source_type": parsed.get("source_type"), "parse_error": parsed.get("error")},
+                metadata={**meta, "parse_ok": False},
+            )
+            contract.validation = self.validate_machine_contract(contract).get("validation", {})
+            return contract
+
+        data = parsed.get("data")
+        source_kind = str(parsed.get("source_type") or SMLIndustrialSourceType.UNKNOWN.value)
+        if isinstance(data, Mapping) and str(data.get("schema") or "") == INDUSTRIAL_CONTRACT_SCHEMA_VERSION:
+            contract = SMLIndustrialMachineContract.from_dict(data)
+            contract.provenance.setdefault("source_type", source_kind)
+            contract.provenance.setdefault("source_name", source_name)
+            contract.metadata.update(meta)
+            return contract
+
+        raw_map = copy.deepcopy(dict(data or {})) if isinstance(data, Mapping) else {"raw": copy.deepcopy(data)}
+        identity = raw_map.get("identity") if isinstance(raw_map.get("identity"), Mapping) else {}
+        asset = raw_map.get("asset") if isinstance(raw_map.get("asset"), Mapping) else {}
+        machine = raw_map.get("machine") if isinstance(raw_map.get("machine"), Mapping) else {}
+        combined_identity = {**dict(identity), **dict(asset), **dict(machine)}
+        blob_for_inference = _bounded_text(_stable_json(raw_map), 20000) + " " + str(source_name or "")
+
+        contract = SMLIndustrialMachineContract(
+            asset_id=str(combined_identity.get("asset_id") or combined_identity.get("machine_id") or raw_map.get("asset_id") or _normalize_token(source_name or "industrial_machine")),
+            name=str(combined_identity.get("name") or combined_identity.get("machine_name") or raw_map.get("name") or source_name or "Industrial Machine"),
+            asset_class=str(combined_identity.get("asset_class") or combined_identity.get("machine_class") or self._industrial_infer_asset_class(blob_for_inference)),
+            vendor=str(combined_identity.get("vendor") or combined_identity.get("manufacturer") or raw_map.get("vendor") or raw_map.get("manufacturer") or ""),
+            model=str(combined_identity.get("model") or raw_map.get("model") or ""),
+            controller=str(combined_identity.get("controller") or raw_map.get("controller") or raw_map.get("plc") or raw_map.get("cnc") or ""),
+            firmware_version=str(combined_identity.get("firmware_version") or raw_map.get("firmware_version") or raw_map.get("version") or ""),
+            host_environment=str(combined_identity.get("host_environment") or raw_map.get("host_environment") or "unknown"),
+            protocols=list(dict.fromkeys(_coerce_list(raw_map.get("protocols") or raw_map.get("communications") or raw_map.get("transport"))))[:64],
+            capabilities=list(dict.fromkeys(_normalize_token(x).upper() for x in _coerce_list(raw_map.get("capabilities") or raw_map.get("actions")) if str(x).strip()))[:128],
+            states=dict(raw_map.get("states") or raw_map.get("state") or {}),
+            telemetry=dict(raw_map.get("telemetry") or {}),
+            faults=dict(raw_map.get("faults") or raw_map.get("alarms") or {}),
+            maintenance=dict(raw_map.get("maintenance") or {}),
+            recovery=dict(raw_map.get("recovery") or raw_map.get("backup") or {}),
+            dependencies=[dict(x) for x in list(raw_map.get("dependencies") or []) if isinstance(x, Mapping)],
+            provenance={"source_name": source_name, "source_type": source_kind, "imported_at": _utc_now(), "raw_hash": _sha256_obj(raw_map), "source_truncated": False},
+            governance={
+                "owner": MODULE_NAME,
+                "default_mode": "observe_validate_only",
+                "local_first": True,
+                "cloud_authority": False,
+                "machine_control_authority": False,
+                "execution_authority": False,
+            },
+            metadata={**meta, "parse_ok": True},
+        )
+
+        explicit = SMLIndustrialMachineContract.from_dict(raw_map)
+        for attr in ("parameters", "axes", "io", "commands", "recipes", "safety"):
+            value = getattr(explicit, attr)
+            if value:
+                setattr(contract, attr, value)
+
+        sections = raw_map.get("sections") if isinstance(raw_map.get("sections"), Mapping) else {}
+        if sections:
+            axis_name_re = re.compile(r"^(x|y|z|a|b|c|u|v|w|r|axis|gantry|slave|vhc|torch|ram|backgauge|spindle)", re.I)
+            io_re = re.compile(r"(input|output|gpi|gpo|dio|aio|adc|dac|encoder|limit|home|estop|e-stop|interlock|ready|fault|alarm|torch|arc)", re.I)
+            safety_re = re.compile(r"(safety|interlock|e-?stop|guard|light.?curtain|safe.?stop|limit|fault|alarm)", re.I)
+            for section, values in list(sections.items())[:512]:
+                section_text = str(section)
+                values_map = dict(values) if isinstance(values, Mapping) else {}
+                low_section = section_text.lower()
+                if axis_name_re.search(section_text) and any(k.lower() in {"min", "max", "minimum", "maximum", "home", "velocity", "speed", "acceleration"} or "axis" in k.lower() for k in values_map):
+                    contract.axes.append(SMLIndustrialAxisContract.from_dict({"name": section_text, "metadata": {"source_section": section_text}, **values_map}))
+                    continue
+                if safety_re.search(section_text):
+                    contract.safety.append(SMLIndustrialSafetyContract.from_dict({"name": section_text, "required_interlocks": list(values_map.keys())[:64], "metadata": {"source_section": section_text}}))
+                    continue
+                if io_re.search(section_text) or any(io_re.search(str(k)) for k in values_map):
+                    for key, val in list(values_map.items())[:256]:
+                        direction = SMLIndustrialSignalDirection.INPUT.value if re.search(r"input|gpi|adc|sense|limit|home|fault|ready", str(key), re.I) else SMLIndustrialSignalDirection.OUTPUT.value if re.search(r"output|gpo|dac|start|enable|command", str(key), re.I) else SMLIndustrialSignalDirection.UNKNOWN.value
+                        contract.io.append(SMLIndustrialIOContract.from_dict({"name": str(key), "direction": direction, "channel": str(val), "metadata": {"source_section": section_text}}))
+                    continue
+                for key, val in list(values_map.items())[:256]:
+                    contract.parameters.append(SMLIndustrialParameterContract.from_dict({"name": str(key), "value": val, "source_ref": section_text, "metadata": {"source_section": section_text}}))
+
+        rows = raw_map.get("rows") if isinstance(raw_map.get("rows"), list) else []
+        if rows:
+            for idx, row in enumerate(rows[:2000]):
+                if isinstance(row, Mapping):
+                    keys = {str(k).lower(): k for k in row.keys()}
+                    joined = " ".join(keys)
+                    if any(k in joined for k in ("code", "gcode", "mcode", "command", "function", "essi", "word")):
+                        contract.commands.append(SMLIndustrialCommandDialectEntry.from_dict({**dict(row), "metadata": {"row_index": idx}}))
+                    elif any(k in joined for k in ("material", "thickness", "feed", "kerf", "pierce", "gas", "pressure", "recipe")):
+                        contract.recipes.append(SMLIndustrialProcessRecipeContract.from_dict({**dict(row), "metadata": {"row_index": idx}}))
+                    else:
+                        for key, val in row.items():
+                            contract.parameters.append(SMLIndustrialParameterContract.from_dict({"name": str(key), "value": val, "source_ref": f"row[{idx}]"}))
+                elif isinstance(row, (list, tuple)):
+                    contract.parameters.append(SMLIndustrialParameterContract.from_dict({"name": f"row_{idx}", "value": list(row), "source_ref": "csv_row"}))
+
+        # XML evidence is normalized conservatively into parameter/IO/safety hints.
+        if source_kind == SMLIndustrialSourceType.XML.value and isinstance(raw_map, Mapping):
+            def walk_xml(node: Mapping[str, Any], path: str = "") -> None:
+                tag = str(node.get("tag") or "node")
+                here = f"{path}/{tag}" if path else tag
+                attrs = dict(node.get("attributes") or {})
+                low = (tag + " " + " ".join(attrs.keys())).lower()
+                if "axis" in low:
+                    contract.axes.append(SMLIndustrialAxisContract.from_dict({"name": attrs.get("name") or tag, "metadata": {"xml_path": here, "attributes": attrs}}))
+                elif any(x in low for x in ("io", "input", "output", "signal", "var", "tag")):
+                    contract.io.append(SMLIndustrialIOContract.from_dict({"name": attrs.get("name") or attrs.get("id") or tag, "metadata": {"xml_path": here, "attributes": attrs}}))
+                elif any(x in low for x in ("safety", "estop", "interlock", "limit", "fault")):
+                    contract.safety.append(SMLIndustrialSafetyContract.from_dict({"name": attrs.get("name") or tag, "metadata": {"xml_path": here, "attributes": attrs}}))
+                for k, v in list(attrs.items())[:64]:
+                    contract.parameters.append(SMLIndustrialParameterContract.from_dict({"name": f"{tag}.{k}", "value": v, "source_ref": here, "metadata": {"xml_path": here}}))
+                for child in list(node.get("children") or [])[:256]:
+                    if isinstance(child, Mapping):
+                        walk_xml(child, here)
+            walk_xml(raw_map)
+
+        if not contract.capabilities:
+            caps = set()
+            if contract.axes:
+                caps.update(["READ_POSITION", "READ_MOTION_STATE"])
+            if contract.commands:
+                caps.update(["PARSE_COMMAND_DIALECT"])
+            if contract.io:
+                caps.update(["READ_IO_STATE"])
+            if contract.recipes:
+                caps.update(["READ_PROCESS_RECIPE"])
+            if contract.parameters:
+                caps.update(["READ_PARAMETERS"])
+            contract.capabilities = sorted(caps or {"READ_STATUS"})
+        contract.parameters = contract.parameters[:4096]
+        contract.axes = contract.axes[:256]
+        contract.io = contract.io[:4096]
+        contract.commands = contract.commands[:2048]
+        contract.recipes = contract.recipes[:2048]
+        contract.safety = contract.safety[:256]
+        contract.validation = self.validate_machine_contract(contract).get("validation", {})
+        return contract
+
+    def validate_machine_contract(self, contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]]) -> Dict[str, Any]:
+        """Validate a normalized industrial machine contract without authorizing execution."""
+        c = contract if isinstance(contract, SMLIndustrialMachineContract) else SMLIndustrialMachineContract.from_dict(contract)
+        issues: List[SMLValidationIssue] = []
+        warnings: List[SMLValidationIssue] = []
+
+        def issue(code: str, message: str, field: str = "", severity: str = "ERROR", error_class: str = ErrorClass.PROTOCOL.value) -> None:
+            target = warnings if severity.upper() == "WARNING" else issues
+            target.append(SMLValidationIssue(code=code, message=message, severity=severity, field=field, error_class=error_class))
+
+        if not c.asset_id.strip():
+            issue("SML-IND-001", "Industrial contract requires a stable asset_id.", "asset_id")
+        if not c.name.strip():
+            issue("SML-IND-002", "Industrial contract requires a human-readable name.", "name", "WARNING")
+        if c.asset_class not in {x.value for x in SMLIndustrialAssetClass}:
+            issue("SML-IND-003", "Unknown industrial asset_class; imported as generic industrial_machine.", "asset_class", "WARNING")
+        if not c.capabilities:
+            issue("SML-IND-004", "Industrial contract should declare at least one capability.", "capabilities", "WARNING")
+
+        names_seen: Set[str] = set()
+        for idx, p in enumerate(c.parameters):
+            key = p.name.strip().lower()
+            if not key:
+                issue("SML-IND-PARAM-001", "Machine parameter requires a name.", f"parameters[{idx}].name")
+                continue
+            if key in names_seen:
+                issue("SML-IND-PARAM-002", "Duplicate machine parameter name.", f"parameters[{idx}].name", "WARNING")
+            names_seen.add(key)
+            lo = self._industrial_number(p.minimum)
+            hi = self._industrial_number(p.maximum)
+            val = self._industrial_number(p.value)
+            if lo is not None and hi is not None and hi < lo:
+                issue("SML-IND-PARAM-003", "Machine parameter maximum is below minimum.", f"parameters[{idx}]", "ERROR")
+            if lo is not None and hi is not None and val is not None and not (lo <= val <= hi):
+                issue("SML-IND-PARAM-004", "Machine parameter value is outside declared range.", f"parameters[{idx}].value", "ERROR")
+            if p.safety_class == SMLIndustrialSafetyClass.SAFETY_CRITICAL.value and p.mutable:
+                issue("SML-IND-PARAM-005", "Safety-critical parameter is marked mutable; require manufacturer/engineering procedure.", f"parameters[{idx}].mutable", "ERROR", ErrorClass.GOVERNANCE.value)
+
+        axis_names: Set[str] = set()
+        for idx, a in enumerate(c.axes):
+            name = a.name.strip().lower()
+            if not name:
+                issue("SML-IND-AXIS-001", "Axis contract requires a name.", f"axes[{idx}].name")
+            elif name in axis_names:
+                issue("SML-IND-AXIS-002", "Duplicate axis name.", f"axes[{idx}].name", "WARNING")
+            axis_names.add(name)
+            lo = self._industrial_number(a.minimum)
+            hi = self._industrial_number(a.maximum)
+            if lo is not None and hi is not None and hi <= lo:
+                issue("SML-IND-AXIS-003", "Axis maximum must be greater than minimum.", f"axes[{idx}]", "ERROR")
+            if a.command_capable and Authority.EXECUTE.value not in set(a.authority_required):
+                issue("SML-IND-AXIS-004", "Command-capable axis should declare Execute authority requirement.", f"axes[{idx}].authority_required", "WARNING")
+
+        io_names: Set[str] = set()
+        valid_dirs = {x.value for x in SMLIndustrialSignalDirection}
+        for idx, sig in enumerate(c.io):
+            key = sig.name.strip().lower()
+            if not key:
+                issue("SML-IND-IO-001", "I/O signal requires a name.", f"io[{idx}].name")
+            elif key in io_names:
+                issue("SML-IND-IO-002", "Duplicate I/O signal name.", f"io[{idx}].name", "WARNING")
+            io_names.add(key)
+            if sig.direction not in valid_dirs:
+                issue("SML-IND-IO-003", "I/O signal direction is not a recognized SML direction.", f"io[{idx}].direction", "WARNING")
+
+        for idx, cmd in enumerate(c.commands):
+            if not cmd.external_code and not cmd.normalized_command:
+                issue("SML-IND-CMD-001", "Command dialect entry requires an external code or normalized command.", f"commands[{idx}]")
+            if cmd.safety_class in {SMLIndustrialSafetyClass.MOTION_CAPABLE.value, SMLIndustrialSafetyClass.PROCESS_EXECUTION.value, SMLIndustrialSafetyClass.SAFETY_CRITICAL.value} and Authority.EXECUTE.value not in set(cmd.requires_authority):
+                issue("SML-IND-CMD-002", "Motion/process/safety command must require Execute authority.", f"commands[{idx}].requires_authority", "ERROR", ErrorClass.GOVERNANCE.value)
+
+        physical_capable = bool(c.axes or any(x.safety_class in {SMLIndustrialSafetyClass.MOTION_CAPABLE.value, SMLIndustrialSafetyClass.PROCESS_EXECUTION.value, SMLIndustrialSafetyClass.SAFETY_CRITICAL.value} for x in c.commands))
+        if physical_capable and not c.safety:
+            issue("SML-IND-SAFE-001", "Physical/motion-capable contract has no safety contract; govern as observe/simulate only.", "safety", "ERROR", ErrorClass.GOVERNANCE.value)
+        for idx, safety in enumerate(c.safety):
+            if safety.ai_override_allowed:
+                issue("SML-IND-SAFE-002", "AI override of physical safety is forbidden.", f"safety[{idx}].ai_override_allowed", "ERROR", ErrorClass.GOVERNANCE.value)
+            if not safety.physical_authority_owner:
+                issue("SML-IND-SAFE-003", "Safety contract should declare physical safety authority owner.", f"safety[{idx}].physical_authority_owner", "WARNING")
+
+        if bool((c.governance or {}).get("cloud_authority")):
+            issue("SML-IND-GOV-001", "Cloud authority over physical machine action is forbidden by local-first industrial governance.", "governance.cloud_authority", "ERROR", ErrorClass.GOVERNANCE.value)
+        if bool((c.governance or {}).get("execution_authority")) or bool((c.governance or {}).get("machine_control_authority")):
+            issue("SML-IND-GOV-002", "SML machine contracts may not grant execution or machine-control authority.", "governance", "ERROR", ErrorClass.GOVERNANCE.value)
+
+        all_issues = issues + warnings
+        status = SMLStatus.OK.value if not issues and not warnings else (SMLStatus.WARNING.value if not issues else SMLStatus.ERROR.value)
+        validation = {
+            "schema": "SarahMemory.sml.industrial_machine_contract.validation.v1",
+            "ok": not issues,
+            "status": status,
+            "error_count": len(issues),
+            "warning_count": len(warnings),
+            "physical_capable": physical_capable,
+            "requires_safety_contract": physical_capable,
+            "execution_authority": False,
+            "issues": [x.to_dict() for x in all_issues],
+            "metrics": {
+                "parameters": len(c.parameters),
+                "axes": len(c.axes),
+                "io": len(c.io),
+                "commands": len(c.commands),
+                "recipes": len(c.recipes),
+                "safety": len(c.safety),
+            },
+        }
+        return {"ok": not issues, "status": status, "validation": validation, "execution_authority": False}
+
+    def govern_machine_contract(
+        self,
+        contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]],
+        *,
+        requested_mode: str = "observe",
+        caller: str = "unknown",
+        user_confirmed: bool = False,
+    ) -> Dict[str, Any]:
+        """Return a governance verdict for a machine contract without executing it."""
+        c = contract if isinstance(contract, SMLIndustrialMachineContract) else SMLIndustrialMachineContract.from_dict(contract)
+        validation = self.validate_machine_contract(c)
+        mode = str(requested_mode or "observe").strip().lower()
+        if mode not in {x.value for x in SMLIndustrialGovernanceMode}:
+            mode = SMLIndustrialGovernanceMode.OBSERVE.value
+        physical_capable = bool((validation.get("validation") or {}).get("physical_capable"))
+        high_consequence = physical_capable or bool(c.commands) or bool(c.axes)
+        errors = list((validation.get("validation") or {}).get("issues") or [])
+        error_codes = {str(x.get("code") or "") for x in errors if str(x.get("severity") or "").upper() == "ERROR"}
+
+        required_gates = ["SMLProtocol", "Compare", "SecurityGovernor", "AssuranceGate", "OperatorCore", "MSDC_or_domain_adapter", "Ledger"]
+        constraints = {
+            "sml_execution_authority": False,
+            "machine_control_authority": False,
+            "llm_final_authority": False,
+            "cloud_may_coordinate_not_command": True,
+            "physical_safety_owner": "PLC/machine_controller/safety_PLC/interlocks",
+            "default_unknown_asset_mode": "observe_validate_only",
+            "verify_before_success": True,
+            "audit_required": True,
+        }
+        reasons: List[str] = ["SML industrial contract governance is non-executing and contract-only."]
+
+        if mode in {SMLIndustrialGovernanceMode.OBSERVE.value, SMLIndustrialGovernanceMode.IMPORT.value, SMLIndustrialGovernanceMode.VALIDATE.value}:
+            decision = GovernanceDecision.APPROVED.value if validation.get("ok") else GovernanceDecision.REQUIRE_USER.value
+            allow = bool(validation.get("ok"))
+            if validation.get("ok"):
+                reasons.append("Read-only import/validation may proceed under least authority.")
+            else:
+                reasons.append("Contract imported but requires review before trusted use.")
+        elif mode == SMLIndustrialGovernanceMode.SIMULATE.value:
+            decision = GovernanceDecision.APPROVED.value if "SML-IND-GOV-001" not in error_codes and "SML-IND-GOV-002" not in error_codes else GovernanceDecision.DENIED.value
+            allow = decision == GovernanceDecision.APPROVED.value
+            reasons.append("Simulation is allowed only as non-actuating dry evaluation.")
+        else:
+            if not validation.get("ok"):
+                decision = GovernanceDecision.DENIED.value
+                allow = False
+                reasons.append("Apply/execute denied because the machine contract has validation errors.")
+            elif not user_confirmed:
+                decision = GovernanceDecision.REQUIRE_USER.value
+                allow = False
+                reasons.append("Physical or state-changing machine action requires explicit operator confirmation and downstream gates.")
+            else:
+                decision = GovernanceDecision.REQUIRE_USER.value
+                allow = False
+                reasons.append("SML cannot approve physical execution; it may only prepare a governed ActionContract for downstream authorities.")
+
+        risk_score = 15
+        if high_consequence:
+            risk_score += 45
+        if c.safety:
+            risk_score += 10
+        if mode in {SMLIndustrialGovernanceMode.APPLY.value, SMLIndustrialGovernanceMode.EXECUTE.value}:
+            risk_score += 35
+        if not validation.get("ok"):
+            risk_score += 25
+
+        return {
+            "ok": bool(allow),
+            "schema": "SarahMemory.sml.industrial_machine_contract.governance.v1",
+            "decision": decision,
+            "requested_mode": mode,
+            "caller": caller,
+            "risk_score": min(100, risk_score),
+            "risk_tier": "TIER_4_PHYSICAL_OR_REMOTE" if high_consequence else "TIER_1_READONLY_CONTRACT",
+            "required_authority": [Authority.READ.value] if mode in {"observe", "import", "validate"} else [Authority.READ.value, Authority.EXECUTE.value],
+            "required_gates": required_gates if high_consequence or mode in {"apply", "execute"} else ["SMLProtocol", "Compare", "Ledger"],
+            "constraints": constraints,
+            "validation": validation.get("validation"),
+            "reasons": reasons,
+            "execution_authority": False,
+            "machine_control_authority": False,
+        }
+
+    def import_machine_contract(
+        self,
+        source: Union[str, bytes, Mapping[str, Any], Sequence[Any], SMLIndustrialMachineContract],
+        *,
+        source_type: str = "auto",
+        source_name: str = "",
+        requested_mode: str = "import",
+        caller: str = MODULE_NAME,
+        metadata: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Import, normalize, validate, and govern arbitrary machine-contract evidence."""
+        contract = self.normalize_machine_contract(source, source_type=source_type, source_name=source_name, metadata=metadata)
+        validation = self.validate_machine_contract(contract)
+        contract.validation = copy.deepcopy(validation.get("validation") or {})
+        governance = self.govern_machine_contract(contract, requested_mode=requested_mode, caller=caller)
+        contract.governance.update({k: v for k, v in governance.items() if k not in {"validation"}})
+        return {
+            "ok": bool(validation.get("ok")),
+            "schema": "SarahMemory.sml.industrial_machine_contract.import_result.v1",
+            "contract": contract.to_dict(),
+            "validation": validation.get("validation"),
+            "governance": governance,
+            "execution_authority": False,
+            "machine_control_authority": False,
+        }
+
+    def attach_machine_contract(
+        self,
+        packet: SMLPacket,
+        contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]],
+        *,
+        note: str = "industrial machine contract attached",
+    ) -> SMLPacket:
+        """Attach a normalized machine contract to an SML packet for routing/audit."""
+        c = contract if isinstance(contract, SMLIndustrialMachineContract) else SMLIndustrialMachineContract.from_dict(contract)
+        validation = self.validate_machine_contract(c)
+        c.validation = copy.deepcopy(validation.get("validation") or {})
+        packet.extensions.setdefault("industrial", {})["machine_contract"] = c.to_dict()
+        packet.authority.setdefault("required", [])
+        for auth in [Authority.READ.value]:
+            if auth not in packet.authority["required"]:
+                packet.authority["required"].append(auth)
+        packet.current_omega = "Ω020"
+        packet.add_history(MODULE_NAME, "attach_machine_contract", "Ω020", note)
+        packet.add_ledger_entry("Ω020", MODULE_NAME, GovernanceDecision.PENDING.value, note, {"contract_id": c.contract_id, "asset_id": c.asset_id, "validation_status": validation.get("status")})
+        packet.seal()
+        return packet
 
     @staticmethod
     def _blueprint_path_issue(path: str) -> Optional[str]:
@@ -2648,6 +3736,9 @@ class SarahMemorySMLProtocol:
             " uninstall ", " download ", " upload ", " send ", " email ", " shell ",
             " powershell ", " cmd ", " terminal ", " driver ", " hardware ", " camera ",
             " microphone ", " robot ", " motor ", " filesystem ", " registry ",
+            " jog ", " cut ", " weld ", " drill ", " mill ", " home axis ",
+            " move axis ", " activate torch ", " fire torch ", " start spindle ",
+            " enable drive ", " reset fault ", " start conveyor ",
         )
         return any(term in t for term in action_terms)
 
@@ -2708,9 +3799,19 @@ class SarahMemorySMLProtocol:
             return True
         return bool(re.search(r"\b(which|what)\s+(meaning|definition|word|sense)\b", t) or "ambiguous" in t or "disambiguate" in t)
 
+    def _looks_like_industrial_contract_request(self, text: str) -> bool:
+        t = self._sml_normalize_user_text(text)
+        if not t:
+            return False
+        industrial_terms = r"\b(machine contract|industrial contract|plc|cnc|servo|drive|robot|plasma|press brake|conveyor|fieldbus|modbus|opc ua|ethernet/ip|profinet|ethercat|io map|i/o map|g-code|gcode|m-code|mcode|axis|interlock|safety plc|factory device|industrial machinery|machine profile)\b"
+        contract_verbs = r"\b(import|normalize|validate|govern|model|profile|contract|schema|map|parse|ingest|convert|represent)\b"
+        return bool(re.search(industrial_terms, t) and (re.search(contract_verbs, t) or "industrial machinery" in t or "machine contract" in t))
+
     def _classify_text_to_mission(self, text: str) -> Tuple[str, List[str], float]:
         t = (text or "").lower()
         normalized = self._sml_normalize_user_text(text)
+        if self._looks_like_industrial_contract_request(normalized):
+            return MissionType.INDUSTRIAL.value, [MissionType.HARDWARE.value, MissionType.GOVERNANCE.value, MissionType.DIAGNOSTICS.value], 0.92
         if self._looks_like_self_state_request(normalized):
             return MissionType.SELF_STATE.value, [MissionType.AFFECTIVE_STATE.value, MissionType.DIAGNOSTICS.value], 0.93
         if re.search(r"^\s*(remember|save this|store this|note that|remember that)\b", normalized) or re.search(r"\bwhat\s+did\s+i\s+ask\s+you\s+to\s+remember\b", normalized):
@@ -2739,6 +3840,7 @@ class SarahMemorySMLProtocol:
             MissionType.REPAIR.value: ["repair", "fix", "recover", "rollback"],
             MissionType.EXECUTION.value: ["run", "execute", "launch", "start", "open", "shutdown"],
             MissionType.NETWORK.value: ["network", "internet", "api", "http", "web", "sarahnet", "sml-rt", "xr", "vr", "augmented reality", "virtual reality", "world fabric", "region", "authority lease"],
+            MissionType.INDUSTRIAL.value: ["machine contract", "industrial contract", "plc", "cnc", "servo", "drive", "robot", "plasma", "press brake", "conveyor", "fieldbus", "modbus", "opc ua", "ethercat", "profinet", "gcode", "io map", "axis", "interlock", "industrial machinery"],
             MissionType.VISION.value: ["image", "vision", "screenshot", "photo"],
             MissionType.VOICE.value: ["voice", "audio", "speech"],
             MissionType.LEARNING.value: ["learn", "train", "optimize", "evolve"],
@@ -2915,9 +4017,9 @@ class SarahMemorySMLProtocol:
             add(QMathState.IF, "mission_requires_cognitive_evaluation")
         if mission == MissionType.LANGUAGE_DISAMBIGUATION.value:
             add(QMathState.OR, "language_disambiguation_keeps_alternatives_visible")
-        if mission in {MissionType.RESEARCH.value, MissionType.PROGRAMMING.value, MissionType.PLANNING.value}:
+        if mission in {MissionType.RESEARCH.value, MissionType.PROGRAMMING.value, MissionType.PLANNING.value, MissionType.INDUSTRIAL.value}:
             add(QMathState.AND, "mission_may_require_composed_organs_or_sources")
-        if mission in {MissionType.EXECUTION.value, MissionType.FILESYSTEM.value, MissionType.HARDWARE.value}:
+        if mission in {MissionType.EXECUTION.value, MissionType.FILESYSTEM.value, MissionType.HARDWARE.value, MissionType.INDUSTRIAL.value}:
             add(QMathState.NOT, "execution_path_requires_governance_before_action")
 
         priority = [
@@ -3146,6 +4248,7 @@ class SarahMemorySMLProtocol:
             MissionType.DIAGNOSTICS.value: ["Diagnostics", "Ledger", "Filesystem"],
             MissionType.SECURITY.value: ["AgentFirewall", "SecurityGovernor", "Ledger"],
             MissionType.PATCH.value: ["Filesystem", "Diagnostics", "Ledger", "Compare"],
+            MissionType.INDUSTRIAL.value: ["Machine Contracts", "MSDC", "LogicCalc", "Compare", "SecurityGovernor", "AssuranceGate", "OperatorCore", "Ledger"],
         }
         return list(mapping.get(mission, ["Local LLM", "Memory"]))
 
@@ -3201,6 +4304,7 @@ class SarahMemorySMLProtocol:
             MissionType.DIAGNOSTICS.value: ["diagnostics", "comparison", "ledger"],
             MissionType.REPAIR.value: ["diagnostics", "sandbox_experimentation", "comparison", "ledger"],
             MissionType.PATCH.value: ["sandbox_experimentation", "diagnostics", "comparison", "ledger"],
+            MissionType.INDUSTRIAL.value: ["industrial_contracts", "machine_contract_import", "machine_contract_validation", "machine_contract_governance", "deterministic_reasoning", "comparison", "authority", "ledger"],
             MissionType.MEMORY.value: ["persistent_knowledge", "ledger"],
             MissionType.LEARNING.value: ["learning", "ledger"],
         }
@@ -3214,6 +4318,8 @@ class SarahMemorySMLProtocol:
             req.add(Authority.NETWORK.value if mission == MissionType.NETWORK.value else Authority.RESEARCH.value)
         if mission in (MissionType.EXECUTION.value, MissionType.HARDWARE.value):
             req.add(Authority.EXECUTE.value)
+        if mission == MissionType.INDUSTRIAL.value:
+            req.add(Authority.DIAGNOSTICS.value)
         if mission in (MissionType.MEMORY.value,):
             req.add(Authority.MEMORY.value)
         if mission in (MissionType.LEARNING.value,):
@@ -3224,7 +4330,7 @@ class SarahMemorySMLProtocol:
             raw = str(packet.payload.get("raw_request", "")).lower()
             if any(x in raw for x in ["delete", "remove", "overwrite", "write", "modify", "patch"]):
                 req.add(Authority.MODIFY.value)
-            if any(x in raw for x in ["run", "execute", "launch", "shell", "driver", "hardware"]):
+            if any(x in raw for x in ["run", "execute", "launch", "shell", "driver", "hardware", "jog", "move axis", "cut", "weld", "activate torch", "fire torch", "start spindle", "enable drive"]):
                 req.add(Authority.EXECUTE.value)
         return sorted(req)
 
@@ -3267,6 +4373,8 @@ class SarahMemorySMLProtocol:
     def _minimum_symbolic_pipeline(self, mission: str) -> List[str]:
         if mission in (MissionType.FILESYSTEM.value, MissionType.EXECUTION.value, MissionType.NETWORK.value, MissionType.PATCH.value):
             return ["PreTokenizer", MODULE_NAME, "MissionEngine", "AgentFirewall", "Compare", "OperatorCore", "Ledger"]
+        if mission == MissionType.INDUSTRIAL.value:
+            return ["PreTokenizer", MODULE_NAME, "MachineContractImporter", "LogicCalc", "MSDC", "Compare", "SecurityGovernor", "AssuranceGate", "OperatorCore", "Ledger"]
         if mission in (MissionType.DIAGNOSTICS.value, MissionType.REPAIR.value):
             return ["PreTokenizer", MODULE_NAME, "MissionEngine", "Diagnostics", "Compare", "Ledger"]
         if mission == MissionType.MEMORY.value:
@@ -3751,7 +4859,7 @@ class SarahMemorySMLProtocol:
             "protocol_version": self.protocol_version,
             "packet_version": self.packet_version,
             "omega_registry_version": self.omega_registry_version,
-            "language": {"version": QSML_LANGUAGE_VERSION, "type_system_version": SML_TYPE_SYSTEM_VERSION, "natural_language_compiler": True, "typed_variables": True, "cognitive_ast": True, "qmath_evaluator": True, "organ_contracts": True, "arbitrary_application_blueprints": True, "synthesis_schema": "SarahMemory.qsml.application_blueprint.v0_2"},
+            "language": {"version": QSML_LANGUAGE_VERSION, "type_system_version": SML_TYPE_SYSTEM_VERSION, "natural_language_compiler": True, "typed_variables": True, "cognitive_ast": True, "qmath_evaluator": True, "organ_contracts": True, "arbitrary_application_blueprints": True, "synthesis_schema": "SarahMemory.qsml.application_blueprint.v0_2", "industrial_contracts": True, "industrial_schema": INDUSTRIAL_CONTRACT_SCHEMA_VERSION},
             "organs": {name: organ.to_dict() for name, organ in sorted(self.organs.items())},
             "organ_contracts": {name: contract.to_dict() for name, contract in sorted(self.organ_contracts.items())},
             "omega": {tid: trans.to_dict() for tid, trans in sorted(self.omega_registry.items())},
@@ -3825,8 +4933,18 @@ class SarahMemorySMLProtocol:
         blueprint_ok = bool(bp_check.get("ok"))
         eval_node = SMLASTNode(kind=SMLASTKind.OPERATOR.value, operator=QMathState.SAME.value, children=[SMLASTNode(kind=SMLASTKind.LITERAL.value, value=3), SMLASTNode(kind=SMLASTKind.LITERAL.value, value=3)])
         evaluator_ok = bool(local.evaluate_qmath_ast(eval_node).get("value") is True)
+        industrial_check = local.import_machine_contract({
+            "asset_id": "SELFTEST_MACHINE_01",
+            "name": "SML Industrial Contract Self Test",
+            "asset_class": SMLIndustrialAssetClass.INDUSTRIAL_MACHINE.value,
+            "capabilities": ["READ_STATUS", "READ_POSITION"],
+            "axes": [{"name": "X", "minimum": 0, "maximum": 10, "unit": "inch", "command_capable": False}],
+            "parameters": [{"name": "travel_limit_x", "value": 10, "minimum": 0, "maximum": 20, "unit": "inch"}],
+            "safety": [{"name": "machine_safety", "required_interlocks": ["safe_stop"], "physical_authority_owner": "controller"}],
+        }, requested_mode="validate", source_name="self_test")
+        industrial_ok = bool(industrial_check.get("validation", {}).get("ok")) and bool(industrial_check.get("contract")) and not bool(industrial_check.get("execution_authority"))
         return {
-            "status": SMLStatus.OK.value if validation["status"] in (SMLStatus.OK.value, SMLStatus.WARNING.value) and restored_ok and bool(grammar) and bool(qsml) and typed_ok and route_owner_ok and arbitrary_contract_ok and no_prompt_template_ok and blueprint_ok and evaluator_ok else SMLStatus.ERROR.value,
+            "status": SMLStatus.OK.value if validation["status"] in (SMLStatus.OK.value, SMLStatus.WARNING.value) and restored_ok and bool(grammar) and bool(qsml) and typed_ok and route_owner_ok and arbitrary_contract_ok and no_prompt_template_ok and blueprint_ok and evaluator_ok and industrial_ok else SMLStatus.ERROR.value,
             "elapsed_ms": elapsed_ms,
             "packet_id": packet.packet_id,
             "mission": packet.mission,
@@ -3842,6 +4960,8 @@ class SarahMemorySMLProtocol:
             "qsml_no_prompt_specific_template_selection": no_prompt_template_ok,
             "qsml_application_blueprint_validation": blueprint_ok,
             "qsml_operator_evaluator": evaluator_ok,
+            "sml_industrial_contract_import": industrial_ok,
+            "sml_industrial_contract_validation": industrial_check.get("validation"),
         }
 
 
@@ -4866,6 +5986,56 @@ def sml_compile_application_blueprint(
     return get_protocol().compile_application_blueprint(blueprint, source_program=program_obj)
 
 
+def sml_industrial_contract_schema() -> Dict[str, Any]:
+    return get_protocol().industrial_contract_schema()
+
+
+def sml_normalize_machine_contract(
+    source: Union[str, bytes, Mapping[str, Any], Sequence[Any], SMLIndustrialMachineContract],
+    *,
+    source_type: str = "auto",
+    source_name: str = "",
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    return get_protocol().normalize_machine_contract(source, source_type=source_type, source_name=source_name, metadata=metadata).to_dict()
+
+
+def sml_validate_machine_contract(contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]]) -> Dict[str, Any]:
+    return get_protocol().validate_machine_contract(contract)
+
+
+def sml_govern_machine_contract(
+    contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]],
+    *,
+    requested_mode: str = "observe",
+    caller: str = "unknown",
+    user_confirmed: bool = False,
+) -> Dict[str, Any]:
+    return get_protocol().govern_machine_contract(contract, requested_mode=requested_mode, caller=caller, user_confirmed=user_confirmed)
+
+
+def sml_import_machine_contract(
+    source: Union[str, bytes, Mapping[str, Any], Sequence[Any], SMLIndustrialMachineContract],
+    *,
+    source_type: str = "auto",
+    source_name: str = "",
+    requested_mode: str = "import",
+    caller: str = MODULE_NAME,
+    metadata: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    return get_protocol().import_machine_contract(source, source_type=source_type, source_name=source_name, requested_mode=requested_mode, caller=caller, metadata=metadata)
+
+
+def sml_attach_machine_contract(
+    packet: Union[SMLPacket, Mapping[str, Any]],
+    contract: Union[SMLIndustrialMachineContract, Mapping[str, Any]],
+    *,
+    note: str = "industrial machine contract attached",
+) -> SMLPacket:
+    pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
+    return get_protocol().attach_machine_contract(pkt, contract, note=note)
+
+
 # =============================================================================
 # Persistent Governed Cognitive Operation (GCOP)
 # =============================================================================
@@ -5611,6 +6781,19 @@ __all__ = [
     "SMLCompileStatus",
     "SMLSynthesisPhase",
     "SMLArtifactRole",
+    "INDUSTRIAL_CONTRACT_SCHEMA_VERSION",
+    "SMLIndustrialSourceType",
+    "SMLIndustrialAssetClass",
+    "SMLIndustrialSafetyClass",
+    "SMLIndustrialSignalDirection",
+    "SMLIndustrialGovernanceMode",
+    "SMLIndustrialParameterContract",
+    "SMLIndustrialAxisContract",
+    "SMLIndustrialIOContract",
+    "SMLIndustrialCommandDialectEntry",
+    "SMLIndustrialProcessRecipeContract",
+    "SMLIndustrialSafetyContract",
+    "SMLIndustrialMachineContract",
     "SMLVariable",
     "SMLVariableRegistry",
     "SMLASTNode",
@@ -5652,6 +6835,12 @@ __all__ = [
     "sml_application_blueprint_schema",
     "sml_validate_application_blueprint",
     "sml_compile_application_blueprint",
+    "sml_industrial_contract_schema",
+    "sml_normalize_machine_contract",
+    "sml_validate_machine_contract",
+    "sml_govern_machine_contract",
+    "sml_import_machine_contract",
+    "sml_attach_machine_contract",
     "GCAIOS_PROFILE",
     "sml_gcaios_manifest",
     "SARAHNET_RT_PROFILE",
