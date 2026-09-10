@@ -25,6 +25,7 @@ Enterprise intent
 API contract (high level)
 - POST /api/media/job/create
 - POST /api/media/job/render
+- POST /api/media/job/cancel
 - GET  /api/media/job/status?job_id=...
 - GET  /api/media/job/download?job_id=...&filename=...
 - GET  /api/media/job/manifest?job_id=...
@@ -306,6 +307,9 @@ def _job_dir(job_id: str) -> str:
 def _manifest_path(job_id: str) -> str:
     return os.path.join(_job_dir(job_id), "manifest.json")
 
+def _cancel_path(job_id: str) -> str:
+    return os.path.join(_job_dir(job_id), "cancel.requested.json")
+
 def _write_json(path: str, obj: Dict[str, Any]) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -319,6 +323,71 @@ def _read_json(path: str) -> Dict[str, Any]:
             return obj if isinstance(obj, dict) else {}
     except Exception:
         return {}
+
+def _job_cancel_requested(job_id: str) -> bool:
+    return os.path.isfile(_cancel_path(job_id))
+
+def _mark_job_cancel_requested(job_id: str, kind: str, req: Dict[str, Any], reason: str = "") -> Dict[str, Any]:
+    """Persist a governed stop request for a media job.
+
+    The UI may ask for a stop, but this API broker owns the auditable job state.
+    Long-running CORE engines are not force-killed here; they see a durable cancel
+    marker at safe checkpoints and the manifest/DB stop reporting completion.
+    """
+    job_id = _sanitize_job_id(job_id)
+    marker = {
+        "job_id": job_id,
+        "kind": kind or "unknown",
+        "status": "cancel_requested",
+        "reason": (reason or "user_requested_stop")[:500],
+        "requested_at": _iso(),
+        "execution_authority": False,
+        "owner": "appmedia",
+    }
+    _write_json(_cancel_path(job_id), marker)
+
+    manifest = _read_json(_manifest_path(job_id)) or {
+        "job_id": job_id,
+        "kind": kind or "unknown",
+        "created_at": _iso(),
+        "export_root": _get_export_root(),
+        "job_dir": _job_dir(job_id),
+        "request": req or {},
+        "artifacts": [],
+        "errors": [],
+        "notes": [],
+        "version": PROJECT_VERSION,
+    }
+    manifest["kind"] = manifest.get("kind") or kind or "unknown"
+    manifest["status"] = "cancel_requested"
+    manifest["updated_at"] = _iso()
+    manifest["cancel"] = marker
+    notes = list(manifest.get("notes") or [])
+    if "cancel_requested" not in notes:
+        notes.append("cancel_requested")
+    manifest["notes"] = notes
+    _write_json(_manifest_path(job_id), manifest)
+    _db_upsert_job(job_id, "cancel_requested", manifest.get("kind") or kind or "unknown", req or manifest.get("request") or {}, result={"manifest": "manifest.json", "cancel": marker})
+    return marker
+
+def _cancelled_result(job_id: str, kind: str, payload: Dict[str, Any], manifest: Dict[str, Any]) -> Dict[str, Any]:
+    manifest["status"] = "cancelled"
+    manifest["updated_at"] = _iso()
+    notes = list(manifest.get("notes") or [])
+    if "cancelled_before_completion" not in notes:
+        notes.append("cancelled_before_completion")
+    manifest["notes"] = notes
+    _write_json(_manifest_path(job_id), manifest)
+    _db_upsert_job(job_id, "cancelled", kind or manifest.get("kind") or "unknown", payload or {}, result={"manifest": "manifest.json", "cancelled": True})
+    return {
+        "ok": False,
+        "success": False,
+        "status": "cancelled",
+        "error": "job_cancelled",
+        "job_id": job_id,
+        "manifest": manifest,
+        "execution_authority": False,
+    }
 
 def _b64d(s: str) -> bytes:
     return base64.b64decode((s or "").encode("ascii"), validate=False)
@@ -675,6 +744,9 @@ def run_creative_image_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     manifest["updated_at"] = _iso()
     manifest["request"] = payload
 
+    if _job_cancel_requested(job_id):
+        return _cancelled_result(job_id, "image", payload, manifest)
+
     try:
         import SarahMemoryCanvasStudio as CS  # type: ignore
         studio_cls = getattr(CS, "CanvasStudio", None)
@@ -695,6 +767,9 @@ def run_creative_image_job(payload: Dict[str, Any]) -> Dict[str, Any]:
         ok = studio.export_canvas(canvas, out_path, format=fmt.upper(), quality=int(payload.get("image_quality") or 90), flatten=True)
         if not ok:
             raise RuntimeError("canvas_export_failed")
+
+        if _job_cancel_requested(job_id):
+            return _cancelled_result(job_id, "image", payload, manifest)
 
         # Normalize out_path if export_canvas appends extension
         if not os.path.isfile(out_path):
@@ -725,6 +800,9 @@ def run_creative_image_job(payload: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:
         err = str(e)
         try:
+            if _job_cancel_requested(job_id):
+                return _cancelled_result(job_id, "image", payload, manifest)
+
             from PIL import Image, ImageDraw, ImageFont  # type: ignore
 
             seed = hashlib.sha256(prompt.encode("utf-8", "ignore")).digest()
@@ -771,6 +849,9 @@ def run_creative_image_job(payload: Dict[str, Any]) -> Dict[str, Any]:
                 y += max(26, height // 32)
             draw.text((margin + 32, height - margin - 56), "Local prompt-render fallback. CanvasStudio engine reported: " + err[:80], font=font_body, fill=(190, 200, 220))
             image.save(out_path, "PNG")
+
+            if _job_cancel_requested(job_id):
+                return _cancelled_result(job_id, "image", payload, manifest)
 
             art = _artifact_to_dict(_artifact_from_path("image", out_path, _mime_from_ext(out_path)))
             manifest["artifacts"] = [art]
@@ -823,6 +904,44 @@ def creative_image():
         code = 400 if result.get("error") == "missing_prompt" else 500
         return _err(str(result.get("error") or "image_generation_failed"), code, **{k: v for k, v in result.items() if k not in {"ok", "success", "error"}})
     return _ok(**{k: v for k, v in result.items() if k not in {"ok", "success"}})
+
+@bp.post("/api/media/job/cancel")
+def media_job_cancel():
+    """Governed stop request for a Creative Studio job."""
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+
+    payload = _j()
+    raw_job_id = str(payload.get("job_id") or "").strip()
+    if not raw_job_id:
+        return _err("missing_job_id", 400)
+    job_id = _sanitize_job_id(raw_job_id)
+    kind = (payload.get("kind") or "").strip().lower()
+    reason = (payload.get("reason") or "user_requested_stop").strip()
+    _ensure_tables()
+    marker = _mark_job_cancel_requested(job_id, kind, payload, reason=reason)
+    return _ok(job_id=job_id, status="cancel_requested", cancel=marker, execution_authority=False)
+
+@bp.post("/api/media/voice/stop")
+@bp.post("/api/voice/stop")
+def media_voice_stop():
+    """Thin API bridge to the CORE-owned SarahMemoryVoice stop function."""
+    body = _body_bytes()
+    if not _verify_auth(body):
+        return _err("unauthorized", 401)
+
+    payload = _j()
+    clear_queue = payload.get("clear_queue", True) is not False
+    try:
+        import SarahMemoryVoice as SV  # type: ignore
+        stop_fn = getattr(SV, "stop_speaking", None)
+        if not callable(stop_fn):
+            return _err("voice_stop_unavailable", 501, execution_authority=False)
+        stop_fn(clear_queue=clear_queue)
+        return _ok(status="stopped", clear_queue=clear_queue, owner="SarahMemoryVoice", execution_authority=False)
+    except Exception as exc:
+        return _err("voice_stop_failed", 500, detail=str(exc), execution_authority=False)
 
 @bp.post("/api/media/job/create")
 def media_job_create():
@@ -922,6 +1041,10 @@ def media_job_render():
 
     artifacts: List[RenderArtifact] = []
 
+    if _job_cancel_requested(job_id):
+        result = _cancelled_result(job_id, kind, payload, manifest)
+        return _ok(result={k: v for k, v in result.items() if k != "ok"}, status="cancelled", job_id=job_id, execution_authority=False)
+
     try:
         if kind in ("image", "img", "canvas"):
             out = payload.get("output") or {}
@@ -970,6 +1093,10 @@ def media_job_render():
                     ok = exp(canvas, out_path, format=fmt.upper(), quality=int(payload.get("image_quality") or 90), flatten=True)
                     if not ok:
                         raise RuntimeError("canvas_export_failed")
+
+                    if _job_cancel_requested(job_id):
+                        result = _cancelled_result(job_id, kind, payload, manifest)
+                        return _ok(result={k: v for k, v in result.items() if k != "ok"}, status="cancelled", job_id=job_id, execution_authority=False)
 
                     if not os.path.isfile(out_path):
                         guess = f"{out_path}.{fmt}"
@@ -1054,6 +1181,10 @@ def media_job_render():
                         else:
                             raise RuntimeError("music_generator_missing_entrypoints")
 
+                    if _job_cancel_requested(job_id):
+                        result = _cancelled_result(job_id, kind, payload, manifest)
+                        return _ok(result={k: v for k, v in result.items() if k != "ok"}, status="cancelled", job_id=job_id, execution_authority=False)
+
                 except Exception as e:
                     raise RuntimeError(f"music_render_failed:{e}")
 
@@ -1127,6 +1258,10 @@ def media_job_render():
                     else:
                         raise RuntimeError("video_editor_missing_entrypoints")
 
+                    if _job_cancel_requested(job_id):
+                        result = _cancelled_result(job_id, kind, payload, manifest)
+                        return _ok(result={k: v for k, v in result.items() if k != "ok"}, status="cancelled", job_id=job_id, execution_authority=False)
+
                 except Exception as e:
                     raise RuntimeError(f"video_render_failed:{e}")
 
@@ -1156,6 +1291,10 @@ def media_job_render():
 
         else:
             raise ValueError(f"unsupported_kind:{kind}")
+
+        if _job_cancel_requested(job_id):
+            result = _cancelled_result(job_id, kind, payload, manifest)
+            return _ok(result={k: v for k, v in result.items() if k != "ok"}, status="cancelled", job_id=job_id, execution_authority=False)
 
         artifact_list = [
             {

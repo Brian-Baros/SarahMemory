@@ -1998,16 +1998,21 @@ def _extract_research_query(text: str) -> str:
     return cleaned or t
 
 def _sm_is_information_question(text: str) -> bool:
-    t = re.sub(r"\s+", " ", str(text or "").strip().lower())
-    if not t:
-        return False
-    if re.match(r"^(what|who|when|where|why|how|which)", t):
-        return True
-    if re.match(r"^(do|does|did|is|are|was|were|can|could|should|would)\s+(you|i|we|this|that)", t):
-        return True
-    if t.startswith(("tell me", "explain", "define", "describe")):
-        return True
-    return False
+    try:
+        from SarahMemorySMLProtocol import sml_is_information_question  # type: ignore
+        return bool(sml_is_information_question(text))
+    except Exception:
+        t = re.sub(r"\s+", " ", str(text or "").strip().lower())
+        if not t:
+            return False
+        if re.match(r"^(what|who|when|where|why|how|which)\b", t):
+            return True
+        if re.match(r"^(do|does|did|is|are|was|were|can|could|should|would)\s+(you|i|we|this|that)\b", t):
+            return True
+        return t.startswith((
+            "tell me", "explain", "define", "describe", "say ", "reply",
+            "respond", "answer", "summarize", "summarise",
+        ))
 
 
 def _sm_is_explicit_panel_command(text: str) -> bool:
@@ -4469,12 +4474,65 @@ def _sm_present_text(raw_text: str, *, intent: str = "", meta: dict | None = Non
     return text
 
 
+def _sm_recover_presentable_text(value) -> str:
+    """Recover display text from governed Compare/artifact bundles."""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, dict):
+        return ""
+
+    direct = str(
+        value.get("presentation_reply")
+        or value.get("reply")
+        or value.get("response")
+        or value.get("content")
+        or value.get("text")
+        or value.get("answer")
+        or value.get("raw_answer")
+        or ""
+    ).strip()
+    if direct:
+        return direct
+
+    artifacts = value.get("artifacts")
+    if isinstance(artifacts, dict):
+        recovered = _sm_recover_presentable_text(artifacts.get("compare") or artifacts.get("path"))
+        if recovered:
+            return recovered
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            recovered = _sm_recover_presentable_text(item)
+            if recovered:
+                return recovered
+
+    path = value.get("path")
+    if isinstance(path, dict):
+        recovered = _sm_recover_presentable_text(path)
+        if recovered:
+            return recovered
+
+    guarddogs = value.get("guarddogs")
+    if isinstance(guarddogs, dict):
+        validity = guarddogs.get("validity")
+        if isinstance(validity, dict):
+            recovered = str(validity.get("normalized_response") or "").strip()
+            if recovered:
+                return recovered
+
+    return str(value.get("api_response") or value.get("normalized_response") or "").strip()
+
+
 def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None, artifacts=None, actions=None, errors=None, raw_answer: str | None = None):
     meta = dict(meta or {})
     meta.setdefault("presentation_only", True)
     meta.setdefault("outward_formatter", "app.py")
     meta.pop("raw_answer", None)
     meta.pop("canonical_answer", None)
+    presentation_text = _sm_recover_presentable_text({
+        "presentation_reply": presentation_text,
+        "raw_answer": raw_answer,
+        "artifacts": artifacts or [],
+    }) or str(presentation_text or "").strip()
 
     try:
         import SarahMemoryReply as R  # type: ignore
@@ -4498,7 +4556,7 @@ def _sm_make_outward_bundle(presentation_text: str, *, meta: dict | None = None,
                     pass
             if isinstance(bundle, dict):
                 bundle["ok"] = True
-                visible_text = bundle.get("presentation_reply") or bundle.get("response") or bundle.get("content") or presentation_text
+                visible_text = _sm_recover_presentable_text(bundle) or presentation_text
                 bundle["presentation_reply"] = bundle.get("presentation_reply") or visible_text
                 bundle["reply"] = bundle.get("reply") or visible_text
                 bundle["response"] = bundle.get("response") or visible_text
@@ -8710,8 +8768,12 @@ def api_chat():
 
         try:
             import SarahMemoryGlobals as G  # type: ignore
+            payload_lane = str(payload.get("lane") or payload.get("api_mode") or payload.get("mode") or "").strip().lower()
+            explicit_local_lane = payload_lane in {"local", "local_only", "offline"}
+            explicit_external_lane = payload_lane in {"any", "auto", "web", "api", "cloud"} and bool(payload.get("external_api_allowed_by_ui_lane"))
             payload_local_only = bool(payload.get("local_only") or payload.get("offline") or payload.get("LOCAL_ONLY_MODE") or payload.get("force_local_only"))
-            local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False) or payload_local_only)
+            global_local_only = bool(getattr(G, "LOCAL_ONLY_MODE", False))
+            local_only = bool(explicit_local_lane or payload_local_only or (global_local_only and not explicit_external_lane))
             payload_safe_mode = bool(payload.get("safe_mode") or payload.get("SAFE_MODE") or payload.get("force_safe_mode"))
             safe_mode = bool(getattr(G, "SAFE_MODE", False) or payload_safe_mode)
             neoskymatrix = bool(getattr(G, "NEOSKYMATRIX", False))
@@ -9409,6 +9471,9 @@ def api_chat():
                     "complexity": complexity,
                     "avatar_request": avatar_request,
                     "ui": context_packet.get("ui"),
+                    "lane": str(payload.get("lane") or payload.get("api_mode") or payload.get("mode") or "").strip().lower(),
+                    "api_mode": str(payload.get("api_mode") or payload.get("lane") or payload.get("mode") or "").strip().lower(),
+                    "external_api_allowed_by_ui_lane": bool(payload.get("external_api_allowed_by_ui_lane")),
                     "local_only": local_only,
                     "offline": local_only,
                     "safe_mode": bool(safe_mode),
@@ -9445,6 +9510,19 @@ def api_chat():
                     or nres_dict.get("raw_answer")
                     or ""
                 )
+                if not raw_reply.strip():
+                    try:
+                        nres_artifacts = nres_dict.get("artifacts") if isinstance(nres_dict.get("artifacts"), dict) else {}
+                        compare_art = nres_artifacts.get("compare") if isinstance(nres_artifacts, dict) else {}
+                        guarddogs = compare_art.get("guarddogs") if isinstance(compare_art, dict) else {}
+                        validity = guarddogs.get("validity") if isinstance(guarddogs, dict) else {}
+                        raw_reply = str(
+                            (compare_art.get("api_response") if isinstance(compare_art, dict) else "")
+                            or (validity.get("normalized_response") if isinstance(validity, dict) else "")
+                            or ""
+                        )
+                    except Exception:
+                        raw_reply = ""
                 resolved_intent = str(nres_dict.get("intent") or intent or "chat")
                 source_label = str(nres_dict.get("source") or "neuron")
                 if not raw_reply.strip() or raw_reply.strip().lower() in {"i’m having trouble generating a response right now.", "i'm having trouble generating a response right now."}:
@@ -12638,56 +12716,24 @@ def _avatar_update_state(**updates) -> dict:
             clean[k] = bool(v)
         elif k in {"event", "result"}:
             event = str(v or "").strip().lower()
-            if event in {"boot", "startup", "hello", "greeting"}:
-                clean["current_action"] = "boot_greeting"
-                clean["expression"] = "hello"
-                clean["emotion"] = "hello"
-                clean["life_state"] = "boot_greeting"
-                lock_seconds = max(lock_seconds, 5.0)
-            elif event in {"success", "correct", "complete", "completed", "done", "ok", "approved"}:
-                clean["current_action"] = "success"
-                clean["expression"] = "success"
-                clean["emotion"] = "success"
-                clean["life_state"] = "success"
-                clean["last_success_at"] = time.time()
-                lock_seconds = max(lock_seconds, 4.0)
-            elif event in {"thumbs_up", "approval", "confirmed", "good"}:
-                clean["current_action"] = "thumbs_up"
-                clean["expression"] = "thumbs_up"
-                clean["emotion"] = "thumbs_up"
-                clean["life_state"] = "success"
-                clean["last_success_at"] = time.time()
-                lock_seconds = max(lock_seconds, 4.0)
-            elif event in {"error", "failed", "failure", "confused"}:
-                clean["current_action"] = "error"
-                clean["expression"] = "concerned"
-                clean["emotion"] = "concerned"
-                clean["life_state"] = "error"
-                clean["last_error_at"] = time.time()
-                lock_seconds = max(lock_seconds, 4.0)
-            elif event in {"diagnostics", "diagnostic", "self_check", "self_diagnostics"}:
-                clean["diagnostics"] = True
-                clean["current_action"] = "diagnostics"
-                clean["expression"] = "serious_focus"
-                clean["emotion"] = "serious_focus"
-                clean["life_state"] = "diagnostics"
-                lock_seconds = max(lock_seconds, 3.0)
-            elif event in {"busy", "working", "processing"}:
-                clean["busy"] = True
-                clean["current_action"] = "busy"
-                clean["expression"] = "pondering"
-                clean["emotion"] = "pondering"
-                clean["life_state"] = "busy"
-                lock_seconds = max(lock_seconds, 3.0)
-            elif event in {"idle", "ready", "reset"}:
-                clean["busy"] = False
-                clean["diagnostics"] = False
-                clean["thinking"] = False
-                clean["current_action"] = "idle"
-                clean["expression"] = "ready"
-                clean["emotion"] = "ready"
-                clean["life_state"] = "ready"
-                lock_seconds = max(lock_seconds, 1.0)
+            try:
+                from SarahMemoryAvatar import resolve_live_avatar_event  # type: ignore
+                resolved = resolve_live_avatar_event(event, current_state=dict(_AVATAR_LIVE_STATE))
+                if isinstance(resolved, dict):
+                    event_updates = resolved.get("updates") if isinstance(resolved.get("updates"), dict) else {}
+                    clean.update(event_updates)
+                    lock_seconds = max(lock_seconds, float(resolved.get("lock_seconds") or 0.0))
+                    mark_interaction = bool(mark_interaction or resolved.get("mark_interaction"))
+            except Exception:
+                if event in {"idle", "ready", "reset", "success", "complete", "completed", "done", "ok"}:
+                    clean["busy"] = False
+                    clean["diagnostics"] = False
+                    clean["thinking"] = False
+                    clean["current_action"] = "idle" if event in {"idle", "ready", "reset"} else "success"
+                    clean["expression"] = "ready" if event in {"idle", "ready", "reset"} else "success"
+                    clean["emotion"] = clean["expression"]
+                    clean["life_state"] = "ready" if event in {"idle", "ready", "reset"} else "success"
+                    lock_seconds = max(lock_seconds, 1.0)
         elif k in {"touch", "interaction", "user_interaction"} and bool(v):
             mark_interaction = True
 

@@ -663,8 +663,10 @@ def _classify_target_path(rel: str) -> Dict[str, Any]:
         zone = "devbridge_owned"
     elif low.startswith("data/addons/"):
         zone = "addon"
-    elif low.startswith("data/drivers/"):
+    elif low.startswith("drivers/") or low.startswith("data/drivers/"):
         zone = "driver"
+    elif low.startswith("data/mods/"):
+        zone = "mod"
     elif low.startswith("data/exports/"):
         zone = "export"
     elif low.startswith("data/ui/"):
@@ -701,11 +703,11 @@ def _path_policy_for_candidate(rel: str, *, allow_create: bool = False, expected
             checks.append("new_file_creation_explicitly_approved")
             warnings.append("new_file_creation_will_delete_on_rollback_if_applied")
 
-    if info["zone"] in {"driver", "addon", "export"} and not allow_create and not info["exists"]:
+    if info["zone"] in {"driver", "addon", "mod", "export"} and not allow_create and not info["exists"]:
         errors.append("promotion_target_requires_explicit_create_approval")
     if info["zone"] == "devbridge_sandbox":
         checks.append("sandbox_zone")
-    if info["zone"] in {"driver", "addon"}:
+    if info["zone"] in {"driver", "addon", "mod"}:
         warnings.append("runtime_extension_zone_requires_manifest_validation_before_activation")
     if arile_is_protected_core_file(rel):
         errors.append("direct_patch_blocked_by_arile_policy")
@@ -3139,4 +3141,3 @@ def sml_health():
 def sml_diagnostics():
     return {"status": "OK", "component": 'appdevbridge', "sml_adapter": True, "metadata": dict(SML_ORGAN_METADATA), "health": sml_health()}
 # --- SML ORGAN ADAPTER END ---
-
