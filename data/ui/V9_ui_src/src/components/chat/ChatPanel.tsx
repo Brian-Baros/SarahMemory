@@ -609,6 +609,8 @@ if (hasFiles) {
 
       const response = await api.chat.sendMessage(messageHistory, {
         conversationId: activeThreadId || undefined,
+        lane: String((settings as any)?.mode || "any"),
+        localOnly: Boolean((settings as any)?.localOnlyMode || (settings as any)?.mode === "local"),
         signal: requestController.signal,
       });
 

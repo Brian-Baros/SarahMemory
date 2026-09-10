@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Image, Upload, Loader2, Sparkles, Download, Trash2, X } from 'lucide-react';
+import { Image, Upload, Loader2, Sparkles, Download, Trash2, X, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
@@ -16,6 +16,8 @@ export function ImageGenerationModule() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
@@ -58,6 +60,10 @@ export function ImageGenerationModule() {
 
     setIsGenerating(true);
     setProgress(0);
+    const controller = new AbortController();
+    const jobId = api.media.createJobId('image');
+    generationAbortRef.current = controller;
+    currentJobIdRef.current = jobId;
 
     // Log to chat
     addMessage({
@@ -72,7 +78,10 @@ export function ImageGenerationModule() {
     try {
       const response = await api.proxy.call('/api/creative/image', {
         method: 'POST',
+        signal: controller.signal,
+        timeoutMs: 180000,
         body: {
+          job_id: jobId,
           prompt: prompt.trim(),
           seed_image: seedImage,
         },
@@ -112,6 +121,14 @@ export function ImageGenerationModule() {
       setSeedImage(null);
     } catch (error) {
       clearInterval(progressInterval);
+      if (controller.signal.aborted) {
+        addMessage({
+          role: 'assistant',
+          content: `[Image Stopped] Image generation was stopped before an artifact was created.`,
+        });
+        toast.info('Image generation stopped.');
+        return;
+      }
       console.error('[ImageGenerationModule] Generation failed:', error);
 
       addMessage({
@@ -121,9 +138,19 @@ export function ImageGenerationModule() {
 
       toast.error('Image generation unavailable or failed. No demo placeholder was created.');
     } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      if (currentJobIdRef.current === jobId) currentJobIdRef.current = null;
       setIsGenerating(false);
       setProgress(0);
     }
+  };
+
+  const handleStop = () => {
+    const jobId = currentJobIdRef.current;
+    if (jobId) {
+      void api.media.cancelJob(jobId, 'image', 'ui_stop_requested').catch(() => undefined);
+    }
+    generationAbortRef.current?.abort(new Error('Image generation stopped by user'));
   };
 
   return (
@@ -178,14 +205,14 @@ export function ImageGenerationModule() {
 
       {/* Generate Button */}
       <Button
-        onClick={handleGenerate}
-        disabled={isGenerating || !prompt.trim()}
+        onClick={isGenerating ? handleStop : handleGenerate}
+        disabled={!isGenerating && !prompt.trim()}
         className="w-full h-8 text-sm"
       >
         {isGenerating ? (
           <>
-            <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-            Generating...
+            <Square className="h-3 w-3 mr-1.5" />
+            Stop Image
           </>
         ) : (
           <>

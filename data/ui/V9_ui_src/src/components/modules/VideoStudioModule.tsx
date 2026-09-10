@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Video, Loader2, Sparkles, Download, Trash2, X, Play, Plus, Image, Music, Mic } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Video, Loader2, Sparkles, Download, Trash2, X, Play, Plus, Image, Music, Mic, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
@@ -15,6 +15,8 @@ export function VideoStudioModule() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
@@ -50,6 +52,10 @@ export function VideoStudioModule() {
 
     setIsGenerating(true);
     setProgress(0);
+    const controller = new AbortController();
+    const jobId = api.media.createJobId('video');
+    generationAbortRef.current = controller;
+    currentJobIdRef.current = jobId;
 
     // Log to chat
     const stackInfo = selectedItems.length > 0 ? ` (stacking ${selectedItems.length} items)` : '';
@@ -65,7 +71,10 @@ export function VideoStudioModule() {
     try {
       const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
-        body: { kind: 'video',
+        signal: controller.signal,
+        timeoutMs: 240000,
+        body: { job_id: jobId,
+          kind: 'video',
           prompt: prompt.trim(),
           source_items: selectedItems,
         },
@@ -107,6 +116,14 @@ export function VideoStudioModule() {
       setSelectedItems([]);
     } catch (error) {
       clearInterval(progressInterval);
+      if (controller.signal.aborted) {
+        addMessage({
+          role: 'assistant',
+          content: `[Video Stopped] Video generation was stopped before an artifact was created.`,
+        });
+        toast.info('Video generation stopped.');
+        return;
+      }
       console.error('[VideoStudioModule] Generation failed:', error);
 
       addMessage({
@@ -116,9 +133,19 @@ export function VideoStudioModule() {
 
       toast.error('Video generation unavailable or failed. No demo placeholder was created.');
     } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      if (currentJobIdRef.current === jobId) currentJobIdRef.current = null;
       setIsGenerating(false);
       setProgress(0);
     }
+  };
+
+  const handleStop = () => {
+    const jobId = currentJobIdRef.current;
+    if (jobId) {
+      void api.media.cancelJob(jobId, 'video', 'ui_stop_requested').catch(() => undefined);
+    }
+    generationAbortRef.current?.abort(new Error('Video generation stopped by user'));
   };
 
   return (
@@ -161,14 +188,14 @@ export function VideoStudioModule() {
 
       {/* Generate Button */}
       <Button
-        onClick={handleGenerate}
-        disabled={isGenerating || (!prompt.trim() && selectedItems.length === 0)}
+        onClick={isGenerating ? handleStop : handleGenerate}
+        disabled={!isGenerating && !prompt.trim() && selectedItems.length === 0}
         className="w-full h-8 text-sm"
       >
         {isGenerating ? (
           <>
-            <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-            Rendering...
+            <Square className="h-3 w-3 mr-1.5" />
+            Stop Video
           </>
         ) : (
           <>

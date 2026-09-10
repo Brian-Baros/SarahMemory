@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Mic, Loader2, Sparkles, Download, Trash2, X, Play, Pause } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Mic, Loader2, Sparkles, Download, Trash2, X, Play, Pause, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
@@ -18,6 +18,9 @@ export function VoiceLyricsModule() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
+  const currentModeRef = useRef<VoiceMode>('tts');
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const voices = useSarahStore((s) => s.voices);
@@ -34,6 +37,11 @@ export function VoiceLyricsModule() {
 
     setIsGenerating(true);
     setProgress(0);
+    const controller = new AbortController();
+    const jobId = mode === 'lyrics' ? api.media.createJobId('lyrics') : null;
+    generationAbortRef.current = controller;
+    currentJobIdRef.current = jobId;
+    currentModeRef.current = mode;
 
     const label = mode === 'tts' ? 'Voice TTS' : 'Lyrics to Song';
 
@@ -51,9 +59,11 @@ export function VoiceLyricsModule() {
       const endpoint = mode === 'tts' ? '/api/tts/speak' : '/api/media/job/render';
       const response = await api.proxy.call(endpoint, {
         method: 'POST',
+        signal: controller.signal,
+        timeoutMs: 180000,
         body: mode === 'tts'
           ? { text: text.trim(), voice: settings.selectedVoice }
-          : { kind: 'music', prompt: text.trim(), lyrics: text.trim(), voice: settings.selectedVoice, output: { format: 'wav', filename: 'lyrics_song.wav' } },
+          : { job_id: jobId, kind: 'music', prompt: text.trim(), lyrics: text.trim(), voice: settings.selectedVoice, output: { format: 'wav', filename: 'lyrics_song.wav' } },
       });
 
       clearInterval(progressInterval);
@@ -91,6 +101,14 @@ export function VoiceLyricsModule() {
       setText('');
     } catch (error) {
       clearInterval(progressInterval);
+      if (controller.signal.aborted) {
+        addMessage({
+          role: 'assistant',
+          content: `[${label} Stopped] Generation was stopped before an artifact was created.`,
+        });
+        toast.info(`${label} stopped.`);
+        return;
+      }
       console.error('[VoiceLyricsModule] Generation failed:', error);
 
       addMessage({
@@ -100,9 +118,21 @@ export function VoiceLyricsModule() {
 
       toast.error(`${label} unavailable or failed. No demo placeholder was created.`);
     } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      if (currentJobIdRef.current === jobId) currentJobIdRef.current = null;
       setIsGenerating(false);
       setProgress(0);
     }
+  };
+
+  const handleStop = () => {
+    const jobId = currentJobIdRef.current;
+    if (currentModeRef.current === 'tts') {
+      void api.media.stopVoice(true).catch(() => undefined);
+    } else if (jobId) {
+      void api.media.cancelJob(jobId, 'music', 'ui_stop_requested').catch(() => undefined);
+    }
+    generationAbortRef.current?.abort(new Error('Voice generation stopped by user'));
   };
 
   const togglePlay = (id: string, url?: string) => {
@@ -144,14 +174,14 @@ export function VoiceLyricsModule() {
 
       {/* Generate Button */}
       <Button
-        onClick={handleGenerate}
-        disabled={isGenerating || !text.trim()}
+        onClick={isGenerating ? handleStop : handleGenerate}
+        disabled={!isGenerating && !text.trim()}
         className="w-full h-8 text-sm"
       >
         {isGenerating ? (
           <>
-            <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-            Generating...
+            <Square className="h-3 w-3 mr-1.5" />
+            Stop {mode === 'tts' ? 'Speech' : 'Song'}
           </>
         ) : (
           <>

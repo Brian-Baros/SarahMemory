@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Music, Loader2, Sparkles, Download, Trash2, X, Play, Pause } from 'lucide-react';
+import { useRef, useState } from 'react';
+import { Music, Loader2, Sparkles, Download, Trash2, X, Play, Pause, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
@@ -14,6 +14,8 @@ export function MusicSynthModule() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const currentJobIdRef = useRef<string | null>(null);
   
   const addMessage = useSarahStore((s) => s.addMessage);
   const { items, addItem, removeItem, clearModule, downloadItem } = useCreativeCacheStore();
@@ -28,6 +30,10 @@ export function MusicSynthModule() {
 
     setIsGenerating(true);
     setProgress(0);
+    const controller = new AbortController();
+    const jobId = api.media.createJobId('music');
+    generationAbortRef.current = controller;
+    currentJobIdRef.current = jobId;
 
     // Log to chat
     addMessage({
@@ -42,7 +48,9 @@ export function MusicSynthModule() {
     try {
       const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
-        body: { kind: 'music', prompt: prompt.trim(), output: { format: 'wav', filename: 'music.wav' } },
+        signal: controller.signal,
+        timeoutMs: 180000,
+        body: { job_id: jobId, kind: 'music', prompt: prompt.trim(), output: { format: 'wav', filename: 'music.wav' } },
       });
 
       clearInterval(progressInterval);
@@ -79,6 +87,14 @@ export function MusicSynthModule() {
       setPrompt('');
     } catch (error) {
       clearInterval(progressInterval);
+      if (controller.signal.aborted) {
+        addMessage({
+          role: 'assistant',
+          content: `[Music Stopped] Music generation was stopped before an artifact was created.`,
+        });
+        toast.info('Music generation stopped.');
+        return;
+      }
       console.error('[MusicSynthModule] Generation failed:', error);
 
       addMessage({
@@ -88,9 +104,19 @@ export function MusicSynthModule() {
 
       toast.error('Music generation unavailable or failed. No demo placeholder was created.');
     } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      if (currentJobIdRef.current === jobId) currentJobIdRef.current = null;
       setIsGenerating(false);
       setProgress(0);
     }
+  };
+
+  const handleStop = () => {
+    const jobId = currentJobIdRef.current;
+    if (jobId) {
+      void api.media.cancelJob(jobId, 'music', 'ui_stop_requested').catch(() => undefined);
+    }
+    generationAbortRef.current?.abort(new Error('Music generation stopped by user'));
   };
 
   const togglePlay = (id: string, url?: string) => {
@@ -121,14 +147,14 @@ export function MusicSynthModule() {
 
       {/* Generate Button */}
       <Button
-        onClick={handleGenerate}
-        disabled={isGenerating || !prompt.trim()}
+        onClick={isGenerating ? handleStop : handleGenerate}
+        disabled={!isGenerating && !prompt.trim()}
         className="w-full h-8 text-sm"
       >
         {isGenerating ? (
           <>
-            <Loader2 className="h-3 w-3 mr-1.5 animate-spin" />
-            Generating...
+            <Square className="h-3 w-3 mr-1.5" />
+            Stop Music
           </>
         ) : (
           <>
