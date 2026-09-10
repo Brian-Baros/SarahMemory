@@ -823,6 +823,25 @@ function extractChatReplyText(data: any): string {
     if (nestedText) return nestedText;
   }
 
+  if (Array.isArray(data.artifacts)) {
+    for (const artifact of data.artifacts) {
+      const artifactText = extractChatReplyText(artifact?.path ?? artifact);
+      if (artifactText) return artifactText;
+    }
+  }
+
+  const compare = data.compare ?? data.artifacts?.compare ?? data.path;
+  if (compare && typeof compare === "object") {
+    const compareText = extractChatReplyText(compare);
+    if (compareText) return compareText;
+    const normalized = firstNonEmptyString(
+      compare.api_response,
+      compare.normalized_response,
+      compare.guarddogs?.validity?.normalized_response,
+    );
+    if (normalized) return normalized;
+  }
+
   for (const value of [data.content, data.response, data.answer, data.output]) {
     if (value && typeof value === "object" && Object.keys(value).length > 0) {
       try {
@@ -890,6 +909,8 @@ export const chatApi = {
       intent?: string;
       tone?: string;
       complexity?: string;
+      lane?: string;
+      localOnly?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<ChatResponse> {
@@ -907,6 +928,10 @@ export const chatApi = {
           intent: options?.intent || "question",
           tone: options?.tone || "friendly",
           complexity: options?.complexity || "adult",
+          lane: options?.lane || "any",
+          api_mode: options?.lane || "any",
+          local_only: Boolean(options?.localOnly || options?.lane === "local"),
+          external_api_allowed_by_ui_lane: Boolean(options?.lane && ["any", "auto", "web", "api"].includes(String(options.lane).toLowerCase())),
           conversation_id: options?.conversationId,
           thread_id: options?.conversationId,
           research_mode: options?.researchMode || false,
@@ -1499,6 +1524,11 @@ export const rankingApi = {
 // ============================================================================
 
 export const mediaApi = {
+  createJobId(prefix = "mediajob"): string {
+    const token = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    return `${prefix}_${token}`.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 128);
+  },
+
   async capabilities(): Promise<any> {
     return directCall<any>("/api/media/capabilities", { method: "GET" });
   },
@@ -1525,6 +1555,20 @@ export const mediaApi = {
 
   async getJobStatus(jobId: string): Promise<MediaResponse> {
     return directCall<MediaResponse>(`/api/media/job/status?job_id=${encodeURIComponent(jobId)}`, { method: "GET" });
+  },
+
+  async cancelJob(jobId: string, kind?: string, reason = "user_requested_stop"): Promise<MediaResponse> {
+    return directCall<MediaResponse>("/api/media/job/cancel", {
+      method: "POST",
+      body: JSON.stringify({ job_id: jobId, kind, reason }),
+    });
+  },
+
+  async stopVoice(clearQueue = true): Promise<MediaResponse> {
+    return directCall<MediaResponse>("/api/media/voice/stop", {
+      method: "POST",
+      body: JSON.stringify({ clear_queue: clearQueue }),
+    });
   },
 
   async download(jobId: string, filename = ""): Promise<{ url: string }> {
@@ -2485,14 +2529,23 @@ export const naildeApi = {
 export const proxyApi = {
   async call(
     endpoint: string,
-    options?: { method?: "GET" | "POST" | "PUT" | "DELETE"; body?: Record<string, unknown> },
+    options?: {
+      method?: "GET" | "POST" | "PUT" | "DELETE";
+      body?: Record<string, unknown>;
+      signal?: AbortSignal;
+      timeoutMs?: number;
+      allowStatuses?: number[];
+    },
   ): Promise<unknown> {
-    const looksLikeRequestOptions = Boolean(options && ("method" in options || "body" in options));
+    const looksLikeRequestOptions = Boolean(options && ("method" in options || "body" in options || "signal" in options || "timeoutMs" in options || "allowStatuses" in options));
     const method = looksLikeRequestOptions ? (options?.method || "GET") : (options ? "POST" : "GET");
     const payload = looksLikeRequestOptions ? (options?.body || {}) : (options || {});
-    const requestOptions: RequestInit = {
+    const requestOptions: SarahRequestInit = {
       method,
       body: method === "GET" ? undefined : JSON.stringify(payload),
+      signal: options?.signal,
+      timeoutMs: options?.timeoutMs,
+      allowStatuses: options?.allowStatuses,
     };
 
     // Local-first path.  The UI must never require Supabase/cloud just to talk to

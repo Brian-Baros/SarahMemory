@@ -67,11 +67,27 @@ export const getApiBase = (): string => {
 
 export type SarahRequestInit = RequestInit & {
   timeoutMs?: number;
+  allowStatuses?: number[];
 };
 
 function timeoutForPath(path: string): number {
   if (path.includes("/api/health")) return config.timeouts.health;
   if (path.includes("/api/voice")) return config.timeouts.voice;
+  if (path.includes("/api/nailde/auto-build")) return 120000;
+  if (path.includes("/api/nailde/code/draft")) return 90000;
+  if (path.includes("/api/nailde/editor/create-application")) return 90000;
+  if (path.includes("/api/nailde/mission/create")) return 120000;
+  if (path.includes("/api/models/download")) return 180000;
+  if (path.includes("/api/models/scan")) return 120000;
+  if (path.includes("/api/models/verify") || path.includes("/api/models/classify")) return 90000;
+  if (path.includes("/api/models/status")) return 45000;
+  if (path.includes("/api/drivers/") && (path.includes("/connect") || path.includes("/disconnect") || path.includes("/actions/"))) return 45000;
+  if (path.includes("/api/drivers/") && path.includes("/discover")) return 30000;
+  if (path.includes("/api/drivers")) return 15000;
+  if (path.includes("/api/store/package/scan") || path.includes("/api/store/package/verify") || path.includes("/api/store/powerstore/install/authorize")) return 120000;
+  if (path.includes("/api/store/powerstore/publish/prepare") || path.includes("/api/store/powerstore/download/verify")) return 90000;
+  if (path.includes("/api/store/addons/run") || path.includes("/api/store/addons/install") || path.includes("/api/store/addons/copy") || path.includes("/api/store/addons/remove")) return 45000;
+  if (path.includes("/api/store")) return 20000;
   return config.timeouts.api;
 }
 
@@ -86,7 +102,7 @@ export async function apiFetch<T = unknown>(
   const baseUrl = getApiBase();
   const url = `${baseUrl}${path}`;
 
-  const { timeoutMs, signal, ...fetchOptions } = options;
+  const { timeoutMs, signal, allowStatuses, ...fetchOptions } = options;
   const requestTimeoutMs = timeoutMs ?? timeoutForPath(path);
   const controller = new AbortController();
   const abortFromCaller = () => {
@@ -144,7 +160,8 @@ export async function apiFetch<T = unknown>(
     data = { error: text || `HTTP ${response.status}`, status: response.status };
   }
   
-  if (!response.ok) {
+  const statusAllowed = Array.isArray(allowStatuses) && allowStatuses.includes(response.status);
+  if (!response.ok && !statusAllowed) {
     const errorMessage = (data as any)?.error || `Backend returned ${response.status}`;
     throw new Error(errorMessage);
   }

@@ -206,6 +206,12 @@ function ensureCommandRailSettings(s: any): any {
   next.balance = clampNumber(next.balance, DEFAULT_AUDIO_SETTINGS.balance, -50, 50);
   next.spatialAudio = coerceBool(next.spatialAudio, DEFAULT_AUDIO_SETTINGS.spatialAudio);
   next.noiseSuppression = coerceBool(next.noiseSuppression, DEFAULT_AUDIO_SETTINGS.noiseSuppression);
+  next.mode = safeString(next.mode || "any").trim().toLowerCase();
+  if (!["any", "auto", "local", "web", "api"].includes(next.mode)) next.mode = "any";
+  if (next.mode === "auto") next.mode = "any";
+  next.localOnlyMode = coerceBool(next.localOnlyMode, false);
+  if (next.mode === "local") next.localOnlyMode = true;
+  if (next.localOnlyMode && next.mode !== "local") next.mode = "local";
 
   if (!Array.isArray(next.desktopShortcuts)) {
     next.desktopShortcuts = [];
@@ -238,6 +244,30 @@ function ensureCommandRailSettings(s: any): any {
   }
 
   return next;
+}
+
+function normalizeSettingsUpdate(current: Settings, updates: Partial<Settings>): Settings {
+  const patch: Partial<Settings> = { ...(updates || {}) };
+  const hasMode = Object.prototype.hasOwnProperty.call(patch, "mode");
+  const hasLocalOnly = Object.prototype.hasOwnProperty.call(patch, "localOnlyMode");
+
+  if (hasMode) {
+    const mode = safeString(patch.mode || "any").trim().toLowerCase();
+    patch.mode = mode || "any";
+    if (!hasLocalOnly) {
+      patch.localOnlyMode = mode === "local";
+    }
+  } else if (hasLocalOnly) {
+    const locked = coerceBool(patch.localOnlyMode, false);
+    patch.localOnlyMode = locked;
+    if (locked) {
+      patch.mode = "local";
+    } else if (safeString(current?.mode || "any").trim().toLowerCase() === "local") {
+      patch.mode = "any";
+    }
+  }
+
+  return ensureCommandRailSettings({ ...current, ...patch }) as Settings;
 }
 
 interface SarahState {
@@ -621,7 +651,7 @@ export const useSarahStore = create<SarahState>()(
       }),
       updateSettings: (updates) =>
         set((state) => ({
-          settings: ensureCommandRailSettings({ ...state.settings, ...updates }),
+          settings: normalizeSettingsUpdate(state.settings, updates),
         })),
 
       // Fallback options
