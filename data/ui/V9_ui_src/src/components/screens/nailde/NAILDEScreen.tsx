@@ -29,6 +29,7 @@ import {
   Search,
   ShieldCheck,
   SlidersHorizontal,
+  Square,
   Sparkles,
   Terminal,
   Usb,
@@ -193,12 +194,26 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function redactLocalPaths(text: string): string {
+  return text
+    .replace(/C:\\SarahMemory\\/gi, "SARAHMEMORY_ROOT\\")
+    .replace(/C:\\\\SarahMemory\\\\/gi, "SARAHMEMORY_ROOT\\\\")
+    .replace(/"absolute_path":\s*"[^"]*"/gi, '"absolute_path": "[redacted: local path]"')
+    .replace(/"manifest_path":\s*"[^"]*"/gi, '"manifest_path": "[redacted: local path]"')
+    .replace(/"workspace_root":\s*"[^"]*"/gi, '"workspace_root": "[redacted: local path]"');
+}
+
 function pretty(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2);
+    return redactLocalPaths(JSON.stringify(value, null, 2));
   } catch {
-    return String(value ?? "");
+    return redactLocalPaths(String(value ?? ""));
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  const text = String((err as any)?.message || err || "").toLowerCase();
+  return text.includes("abort") || text.includes("cancel");
 }
 
 function short(value: unknown, limit = 96): string {
@@ -405,6 +420,7 @@ export default function NAILDEScreen() {
   const [postBuildPopup, setPostBuildPopup] = useState<any | null>(null);
   const [recoveryPopup, setRecoveryPopup] = useState<any | null>(null);
   const [noviceMode, setNoviceMode] = useState(true);
+  const operationAbortRef = useRef<AbortController | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -644,10 +660,32 @@ export default function NAILDEScreen() {
     }
   }, [addLog, workspaceId]);
 
-  const postNailde = useCallback(async (path: string, body: Record<string, unknown>) => {
+  const beginOperation = useCallback(() => {
+    operationAbortRef.current?.abort();
+    const controller = new AbortController();
+    operationAbortRef.current = controller;
+    return controller;
+  }, []);
+
+  const finishOperation = useCallback((controller: AbortController) => {
+    const isCurrent = operationAbortRef.current === controller;
+    if (isCurrent) operationAbortRef.current = null;
+    return isCurrent;
+  }, []);
+
+  const stopOperation = useCallback(() => {
+    operationAbortRef.current?.abort();
+    operationAbortRef.current = null;
+    setBusy(false);
+    addLog("warn", "NAILDE operation stopped by user.");
+  }, [addLog]);
+
+  const postNailde = useCallback(async (path: string, body: Record<string, unknown>, options: { allowStatuses?: number[]; signal?: AbortSignal } = {}) => {
     return await apiFetch<any>(path, {
       method: "POST",
       body: JSON.stringify(body),
+      allowStatuses: options.allowStatuses,
+      signal: options.signal,
     });
   }, []);
 
@@ -725,6 +763,7 @@ export default function NAILDEScreen() {
 
 
   const runAutoBuild = useCallback(async (promptChangeDecision?: string) => {
+    const controller = beginOperation();
     setBusy(true);
     try {
       const packet = await postNailde("/api/nailde/auto-build", {
@@ -738,7 +777,7 @@ export default function NAILDEScreen() {
         editor_text: editorText,
         file_path: filePath,
         novice_mode: noviceMode,
-      });
+      }, { allowStatuses: [409], signal: controller.signal });
       if (packet?.requires_workspace_decision) {
         setWorkspaceDecision(packet);
         addLog("warn", "Top prompt changed. Waiting for workspace save/discard decision before creating a new sandbox.");
@@ -767,11 +806,11 @@ export default function NAILDEScreen() {
       openWindow("validation");
       openWindow("output");
     } catch (err) {
-      addLog("error", `Auto-build failed: ${String(err)}`);
+      if (!isAbortError(err)) addLog("error", `Auto-build failed: ${String(err)}`);
     } finally {
-      setBusy(false);
+      if (finishOperation(controller)) setBusy(false);
     }
-  }, [addLog, battlePlan, editorText, filePath, goal, lastTopPrompt, noviceMode, openWindow, postNailde, projectSeedHash, prompt, refreshFiles, workspaceId]);
+  }, [addLog, battlePlan, beginOperation, editorText, filePath, finishOperation, goal, lastTopPrompt, noviceMode, openWindow, postNailde, projectSeedHash, prompt, refreshFiles, workspaceId]);
 
   const resolveWorkspacePromptChange = useCallback(async (decision: string) => {
     setWorkspaceDecision(null);
@@ -779,9 +818,10 @@ export default function NAILDEScreen() {
   }, [runAutoBuild]);
 
   const draftFromLanguage = useCallback(async () => {
+    const controller = beginOperation();
     setBusy(true);
     try {
-      const packet = await api.nailde.codeDraft({ workspace_id: workspaceId, prompt, target: "extreme_workbench_addon" });
+      const packet = await postNailde("/api/nailde/code/draft", { workspace_id: workspaceId, prompt, target: "extreme_workbench_addon" }, { signal: controller.signal });
       const wid = String((packet as any)?.workspace_id || workspaceId);
       if (wid) setWorkspaceId(wid);
       const firstFile = Array.isArray((packet as any)?.files) ? (packet as any).files[0] : null;
@@ -795,16 +835,17 @@ export default function NAILDEScreen() {
       await refreshFiles(wid);
       openWindow("editor");
     } catch (err) {
-      addLog("error", `Draft failed: ${String(err)}`);
+      if (!isAbortError(err)) addLog("error", `Draft failed: ${String(err)}`);
     } finally {
-      setBusy(false);
+      if (finishOperation(controller)) setBusy(false);
     }
-  }, [addLog, openWindow, prompt, refreshFiles, workspaceId]);
+  }, [addLog, beginOperation, finishOperation, openWindow, postNailde, prompt, refreshFiles, workspaceId]);
 
   const scaffoldExtreme = useCallback(async () => {
+    const controller = beginOperation();
     setBusy(true);
     try {
-      const packet = await api.nailde.scaffold({ workspace_id: workspaceId, goal: prompt, target: "extreme_workbench_addon" });
+      const packet = await postNailde("/api/nailde/scaffold", { workspace_id: workspaceId, goal: prompt, target: "extreme_workbench_addon" }, { signal: controller.signal });
       const wid = String((packet as any)?.workspace_id || workspaceId);
       if (wid) setWorkspaceId(wid);
       setOutputText(pretty(packet).slice(0, 30000));
@@ -815,11 +856,11 @@ export default function NAILDEScreen() {
       openWindow("blockforge");
       openWindow("form_designer");
     } catch (err) {
-      addLog("error", `Scaffold failed: ${String(err)}`);
+      if (!isAbortError(err)) addLog("error", `Scaffold failed: ${String(err)}`);
     } finally {
-      setBusy(false);
+      if (finishOperation(controller)) setBusy(false);
     }
-  }, [addLog, openWindow, prompt, refreshFiles, workspaceId]);
+  }, [addLog, beginOperation, finishOperation, openWindow, postNailde, prompt, refreshFiles, workspaceId]);
 
   const saveEditor = useCallback(async () => {
     if (!workspaceId) {
@@ -891,8 +932,10 @@ export default function NAILDEScreen() {
   }, [addLog, editorText, filePath, openWindow, workspaceId]);
 
   const createApplicationFromEditor = useCallback(async () => {
+    const controller = beginOperation();
+    setBusy(true);
     try {
-      const packet = await api.nailde.editorCreateApplication({ workspace_id: workspaceId, path: filePath, content: editorText, goal, prompt });
+      const packet = await postNailde("/api/nailde/editor/create-application", { workspace_id: workspaceId, path: filePath, content: editorText, goal, prompt }, { signal: controller.signal });
       const wid = String((packet as any)?.workspace_id || workspaceId);
       if (wid) setWorkspaceId(wid);
       setOutputText(pretty(packet).slice(0, 30000));
@@ -904,11 +947,15 @@ export default function NAILDEScreen() {
       openWindow("output");
       openWindow("filesystem");
     } catch (err) {
-      addLog("error", `Create application failed: ${String(err)}`);
+      if (!isAbortError(err)) addLog("error", `Create application failed: ${String(err)}`);
+    } finally {
+      if (finishOperation(controller)) setBusy(false);
     }
-  }, [addLog, editorText, filePath, goal, openWindow, prompt, refreshFiles, workspaceId]);
+  }, [addLog, beginOperation, editorText, filePath, finishOperation, goal, openWindow, postNailde, prompt, refreshFiles, workspaceId]);
 
   const installAddonFromSandbox = useCallback(async () => {
+    const controller = beginOperation();
+    setBusy(true);
     try {
       const packet = await apiFetch<any>('/api/nailde/addons/install-authorized', {
         method: 'POST',
@@ -918,6 +965,7 @@ export default function NAILDEScreen() {
           confirmed: true,
           user_confirmed: true,
         }),
+        signal: controller.signal,
       });
       let registryPacket: any = null;
       try {
@@ -934,9 +982,11 @@ export default function NAILDEScreen() {
       openWindow('output');
       openWindow('filesystem');
     } catch (err) {
-      addLog('error', `Install addon failed: ${String(err)}`);
+      if (!isAbortError(err)) addLog('error', `Install addon failed: ${String(err)}`);
+    } finally {
+      if (finishOperation(controller)) setBusy(false);
     }
-  }, [addLog, openWindow, workspaceId]);
+  }, [addLog, beginOperation, finishOperation, openWindow, workspaceId]);
 
   const handlePostBuildDecision = useCallback(async (action: string) => {
     if (action === "add_to_addons") {
@@ -1071,19 +1121,60 @@ export default function NAILDEScreen() {
       show_flow_graph: "graph",
       show_blockforge: "blockforge",
       show_form_designer: "form_designer",
+      show_toolbox: "toolbox",
       show_device_bay: "device_bay",
       show_holoforge: "holoforge",
+      show_simulation: "simulation",
       show_output: "output",
+      show_run_debug: "run_debug",
+      show_terminal: "terminal",
+      show_terminal_boundary: "terminal",
+      show_validation: "validation",
+      show_diagnostics: "validation",
+      show_problems: "problems",
+      show_diff: "diff",
+      show_sdk: "sdk",
+      show_database_builder: "database_builder",
+      show_model_bay: "model_bay",
+      show_properties: "properties",
+      show_github: "github",
+      show_github_settings: "github",
+      show_filesystem: "filesystem",
+      show_settings: "settings",
+      show_governance: "governance",
       show_doctrine: "governance",
       show_shortcuts: "governance",
       show_boundaries: "governance",
+      show_research_notes: "governance",
     };
     if (openMap[command]) {
       openWindow(openMap[command]);
       return;
     }
+    if (command === "show_command_palette" || command === "go_to_file" || command === "go_to_symbol" || command === "go_to_line") {
+      setCommandPaletteOpen(true);
+      return;
+    }
+    if (command === "reset_layout") return resetLayout();
+    if (command === "new_sandbox_file") {
+      const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+      setFilePath(`sandbox/untitled_${stamp}.md`);
+      setEditorText("# New NAILDE Sandbox File\n\n");
+      openWindow("editor");
+      addLog("info", "New sandbox file buffer opened.");
+      return;
+    }
+    if (command === "clear_terminal_output") {
+      setTerminalText("NAILDE governed terminal-output panel. Shell authority is false.\n");
+      return;
+    }
     if (command === "create_workspace") return createWorkspace();
     if (command === "save_workspace_file") return saveEditor();
+    if (command === "validate_sandbox" || command === "validate_text_artifact" || command === "compare_sandbox") return validateEditor();
+    if (command === "create_application_from_editor") return createApplicationFromEditor();
+    if (command === "auto_build" || command === "build_automatically") return runAutoBuild();
+    if (command === "github_plan" || command === "github_status") return planGithubOperation();
+    if (command === "search_workspace") return searchWorkspace();
     if (command === "natural_language_code_draft") return draftFromLanguage();
     if (command === "thought_loop") return runThought();
     if (command === "weightlab_simulate") return runWeightLab();
@@ -1096,7 +1187,110 @@ export default function NAILDEScreen() {
     } catch (err) {
       addLog("error", `Command failed ${command}: ${String(err)}`);
     }
-  }, [addLog, createWorkspace, draftFromLanguage, editorText, filePath, goal, openWindow, prepareAgentMission, prompt, reconcileEditor, runAutoBuild, runThought, runWeightLab, saveEditor, workspaceId]);
+  }, [addLog, createApplicationFromEditor, createWorkspace, draftFromLanguage, editorText, filePath, goal, openWindow, planGithubOperation, prepareAgentMission, prompt, reconcileEditor, resetLayout, runAutoBuild, runThought, runWeightLab, saveEditor, searchWorkspace, validateEditor, workspaceId]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const key = event.key.toLowerCase();
+      const ctrl = event.ctrlKey || event.metaKey;
+      if (ctrl && event.shiftKey && key === "p") {
+        event.preventDefault();
+        setCommandPaletteOpen(true);
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "n") {
+        event.preventDefault();
+        void createWorkspace();
+        return;
+      }
+      if (ctrl && !event.shiftKey && key === "n") {
+        event.preventDefault();
+        const stamp = new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14);
+        setFilePath(`sandbox/untitled_${stamp}.md`);
+        setEditorText("# New NAILDE Sandbox File\n\n");
+        openWindow("editor");
+        addLog("info", "New sandbox file buffer opened.");
+        return;
+      }
+      if (ctrl && !event.shiftKey && key === "o") {
+        event.preventDefault();
+        openWindow("explorer");
+        return;
+      }
+      if (ctrl && !event.shiftKey && key === "f") {
+        event.preventDefault();
+        openWindow("search");
+        return;
+      }
+      if (ctrl && !event.shiftKey && key === "h") {
+        event.preventDefault();
+        openWindow("search");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "e") {
+        event.preventDefault();
+        openWindow("explorer");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "f") {
+        event.preventDefault();
+        openWindow("search");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "g") {
+        event.preventDefault();
+        openWindow("diff");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "m") {
+        event.preventDefault();
+        openWindow("validation");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "d") {
+        event.preventDefault();
+        openWindow("run_debug");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "x") {
+        event.preventDefault();
+        openWindow("sdk");
+        return;
+      }
+      if (ctrl && event.shiftKey && key === "u") {
+        event.preventDefault();
+        openWindow("output");
+        return;
+      }
+      if (ctrl && key === "`") {
+        event.preventDefault();
+        openWindow("terminal");
+        return;
+      }
+      if (ctrl && key === "s") {
+        event.preventDefault();
+        void saveEditor();
+        return;
+      }
+      if (ctrl && key === "r") {
+        event.preventDefault();
+        void reconcileEditor();
+        return;
+      }
+      if (ctrl && event.altKey && key === "t") {
+        event.preventDefault();
+        void runThought();
+        return;
+      }
+      if (event.key === "F5") {
+        event.preventDefault();
+        void validateEditor();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [addLog, createWorkspace, openWindow, reconcileEditor, runThought, saveEditor, validateEditor]);
 
   const panelContent = useCallback((id: string) => {
     switch (id) {
@@ -1356,6 +1550,11 @@ export default function NAILDEScreen() {
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setCommandPaletteOpen(true)}><Command className="mr-1 h-3 w-3" />Command</Button>
           <Button size="sm" variant="outline" className="hidden h-7 text-xs sm:inline-flex" onClick={persistLayout}>Save Layout</Button>
           <Button size="sm" variant="outline" className="hidden h-7 text-xs sm:inline-flex" onClick={resetLayout}>Reset</Button>
+          {busy ? (
+            <Button size="sm" variant="secondary" className="h-7 text-xs" onClick={stopOperation}>
+              <Square className="mr-1 h-3 w-3" />Stop
+            </Button>
+          ) : null}
           <Button size="sm" variant="outline" className="h-7 text-xs" onClick={refreshCore} disabled={busy}>{busy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}Refresh</Button>
         </div>
       </div>

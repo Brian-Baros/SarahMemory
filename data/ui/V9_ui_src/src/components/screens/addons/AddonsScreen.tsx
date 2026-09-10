@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   LayoutGrid,
   RefreshCw,
@@ -13,6 +13,7 @@ import {
   Copy,
   Trash2,
   UploadCloud,
+  Square,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -106,31 +107,51 @@ function normalizeItems(packet: AddonRegistryPacket | null): AddonRegistryItem[]
   });
 }
 
-async function safeLocalGet(path: string): Promise<any> {
+function isAbortError(error: any): boolean {
+  return error?.name === 'AbortError' || /abort/i.test(String(error?.message || error || ''));
+}
+
+function redactLocalPathsText(value: string): string {
+  return String(value || '')
+    .replace(/[A-Za-z]:\\SarahMemory(?=\\|["\s]|$)/g, 'SARAHMEMORY_ROOT')
+    .replace(/[A-Za-z]:\\\\SarahMemory(?=\\\\|["\s]|$)/g, 'SARAHMEMORY_ROOT')
+    .replace(/"path"\s*:\s*"[^"]*"/g, '"path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"installed_path"\s*:\s*"[^"]*"/g, '"installed_path": "SARAHMEMORY_ROOT\\\\data\\\\addons\\\\..."')
+    .replace(/"stage_path"\s*:\s*"[^"]*"/g, '"stage_path": "SARAHMEMORY_ROOT\\\\data\\\\store_runtime\\\\..."')
+    .replace(/"zip_path"\s*:\s*"[^"]*"/g, '"zip_path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"sidecar_path"\s*:\s*"[^"]*"/g, '"sidecar_path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"backup"\s*:\s*"[^"]*"/g, '"backup": "SARAHMEMORY_ROOT\\\\..."');
+}
+
+async function safeLocalGet(path: string, init: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<any> {
   try {
-    return await apiFetch(path, { method: 'GET' });
+    return await apiFetch(path, { method: 'GET', signal: init.signal, timeoutMs: init.timeoutMs });
   } catch (error) {
+    if (isAbortError(error)) throw error;
     return { ok: false, fallback: true, error: String(error), path };
   }
 }
 
-async function safeLocalPost(path: string, body: Record<string, unknown>): Promise<any> {
+async function safeLocalPost(path: string, body: Record<string, unknown>, init: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<any> {
   try {
     return await apiFetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
+      signal: init.signal,
+      timeoutMs: init.timeoutMs,
     });
   } catch (error) {
+    if (isAbortError(error)) throw error;
     return { ok: false, fallback: true, error: String(error), path };
   }
 }
 
 function pretty(value: unknown): string {
   try {
-    return JSON.stringify(value, null, 2);
+    return redactLocalPathsText(JSON.stringify(value, null, 2));
   } catch {
-    return String(value ?? '');
+    return redactLocalPathsText(String(value ?? ''));
   }
 }
 
@@ -158,32 +179,68 @@ export function AddonsScreen() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [actionResult, setActionResult] = useState<any>(null);
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [operationBusy, setOperationBusy] = useState(false);
+  const activeRequestRef = useRef<AbortController | null>(null);
+
+  const beginOperation = useCallback(() => {
+    activeRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    setOperationBusy(true);
+    return controller;
+  }, []);
+
+  const finishOperation = useCallback((controller: AbortController) => {
+    if (activeRequestRef.current === controller) {
+      activeRequestRef.current = null;
+      setOperationBusy(false);
+    }
+  }, []);
+
+  const stopOperation = useCallback(() => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    setLoading(false);
+    setOperationBusy(false);
+    setRunningId(null);
+    setActionResult({ ok: false, stopped: true, execution_authority: false, message: 'Addon operation stopped.' });
+  }, []);
 
   const refresh = useCallback(async () => {
+    const controller = beginOperation();
     setLoading(true);
     try {
       const [healthResp, powerStatusResp, govResp, registryResp] = await Promise.all([
-        safeLocalGet('/api/store/health'),
-        safeLocalGet('/api/store/powerstore/status'),
-        safeLocalGet('/api/store/governance'),
-        safeLocalGet('/api/store/addons/registry'),
+        safeLocalGet('/api/store/health', { signal: controller.signal, timeoutMs: 12_000 }),
+        safeLocalGet('/api/store/powerstore/status', { signal: controller.signal, timeoutMs: 12_000 }),
+        safeLocalGet('/api/store/governance', { signal: controller.signal, timeoutMs: 12_000 }),
+        safeLocalGet('/api/store/addons/registry', { signal: controller.signal, timeoutMs: 20_000 }),
       ]);
+      if (controller.signal.aborted) return;
       setHealth(healthResp || null);
       setPowerStoreStatus(powerStatusResp || null);
       setGovernance(govResp || null);
-      const reg = registryResp && !(registryResp as any).fallback ? registryResp : await safeLocalGet('/api/store/addons/candidates');
+      const reg = registryResp && !(registryResp as any).fallback ? registryResp : await safeLocalGet('/api/store/addons/candidates', { signal: controller.signal, timeoutMs: 20_000 });
+      if (controller.signal.aborted) return;
       setRegistry((reg || null) as AddonRegistryPacket | null);
     } catch (err) {
+      if (isAbortError(err)) return;
       console.warn('[AddonsScreen] refresh failed:', err);
       setHealth({ ok: false, error: String(err) });
       setRegistry(null);
     } finally {
-      setLoading(false);
+      const wasCurrent = activeRequestRef.current === controller;
+      finishOperation(controller);
+      if (wasCurrent) setLoading(false);
     }
-  }, []);
+  }, [beginOperation, finishOperation]);
 
   useEffect(() => {
     void refresh();
+    return () => {
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
+    };
   }, [refresh]);
 
   const addons = useMemo(() => normalizeItems(registry), [registry]);
@@ -200,6 +257,7 @@ export function AddonsScreen() {
     if (!addon?.id) return;
     const confirmed = window.confirm(`Run ${addon.name}?\n\nThis starts the addon through the governed local Addons launcher path. No auto-run is performed.`);
     if (!confirmed) return;
+    const controller = beginOperation();
     setRunningId(addon.id);
     try {
       const result = await safeLocalPost('/api/store/addons/run', {
@@ -208,13 +266,20 @@ export function AddonsScreen() {
         confirmed: true,
         user_confirmed: true,
         source: 'AddonsScreen.RUN',
+      }, {
+        signal: controller.signal,
+        timeoutMs: 45_000,
       });
+      if (controller.signal.aborted) return;
       setActionResult(result);
       await refresh();
+    } catch (err: any) {
+      if (!isAbortError(err)) setActionResult({ ok: false, error: String(err?.message || err || 'Addon run failed'), execution_authority: false });
     } finally {
-      setRunningId(null);
+      finishOperation(controller);
+      if (activeRequestRef.current !== controller) setRunningId(null);
     }
-  }, [refresh]);
+  }, [beginOperation, finishOperation, refresh]);
 
   const lifecycleAction = useCallback(async (addon: AddonRegistryItem, action: 'copy' | 'remove' | 'update') => {
     if (!addon?.id) return;
@@ -231,32 +296,64 @@ export function AddonsScreen() {
       setActionResult({ ok: false, blocked: true, action, addon_id: addon.id, reason: 'UPDATE requires a validated NAILDE source package path. Use NAILDE Add to Addons or PowerStore install authorize.', execution_authority: false });
       return;
     }
-    const result = await safeLocalPost(`/api/store/addons/${action}`, body);
-    setActionResult(result);
-    await refresh();
-  }, [refresh]);
+    const controller = beginOperation();
+    try {
+      const result = await safeLocalPost(`/api/store/addons/${action}`, body, {
+        signal: controller.signal,
+        timeoutMs: 45_000,
+      });
+      if (controller.signal.aborted) return;
+      setActionResult(result);
+      await refresh();
+    } catch (err: any) {
+      if (!isAbortError(err)) setActionResult({ ok: false, error: String(err?.message || err || `${action} failed`), execution_authority: false });
+    } finally {
+      finishOperation(controller);
+    }
+  }, [beginOperation, finishOperation, refresh]);
 
   const exportForPowerStore = useCallback(async (addon: AddonRegistryItem) => {
     if (!addon?.id) return;
     const confirmed = window.confirm(`Prepare ${addon.name} for SarahMemory PowerStore?\n\nThis creates a local signed package and does not upload it yet.`);
     if (!confirmed) return;
-    const result = await safeLocalPost('/api/store/powerstore/publish/prepare', {
-      addon_id: addon.id,
-      distribution: 'private',
-      license: 'creator_defined',
-      confirm: true,
-      confirmed: true,
-      user_confirmed: true,
-      source: 'AddonsScreen.PowerStorePrepare',
-    });
-    setActionResult(result);
-  }, []);
+    const controller = beginOperation();
+    try {
+      const result = await safeLocalPost('/api/store/powerstore/publish/prepare', {
+        addon_id: addon.id,
+        distribution: 'private',
+        license: 'creator_defined',
+        confirm: true,
+        confirmed: true,
+        user_confirmed: true,
+        source: 'AddonsScreen.PowerStorePrepare',
+      }, {
+        signal: controller.signal,
+        timeoutMs: 90_000,
+      });
+      if (!controller.signal.aborted) setActionResult(result);
+    } catch (err: any) {
+      if (!isAbortError(err)) setActionResult({ ok: false, error: String(err?.message || err || 'PowerStore prepare failed'), execution_authority: false });
+    } finally {
+      finishOperation(controller);
+    }
+  }, [beginOperation, finishOperation]);
 
   const handshakePowerStore = useCallback(async () => {
-    const result = await safeLocalGet('/api/store/powerstore/handshake');
-    setPowerStoreStatus(result?.data?.store_status || result?.store_status || result);
-    setActionResult(result);
-  }, []);
+    const controller = beginOperation();
+    try {
+      const result = await safeLocalGet('/api/store/powerstore/handshake', {
+        signal: controller.signal,
+        timeoutMs: 20_000,
+      });
+      if (controller.signal.aborted) return;
+      setPowerStoreStatus(result?.data?.store_status || result?.store_status || result);
+      setActionResult(result);
+    } catch (err: any) {
+      if (!isAbortError(err)) setActionResult({ ok: false, error: String(err?.message || err || 'PowerStore handshake failed'), execution_authority: false });
+    } finally {
+      finishOperation(controller);
+    }
+  }, [beginOperation, finishOperation]);
 
   return (
     <div className="flex flex-col h-full bg-background min-h-0">
@@ -265,7 +362,13 @@ export function AddonsScreen() {
           <LayoutGrid className="h-5 w-5 text-primary" />
           <h1 className="text-lg font-semibold">Addons & Applications</h1>
           <Badge variant="secondary" className="ml-auto">Runtime icons</Badge>
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void refresh()} disabled={loading} title="Refresh Addons">
+          {operationBusy ? (
+            <Button variant="destructive" size="sm" className="h-8 gap-1" onClick={stopOperation}>
+              <Square className="h-4 w-4" />
+              Stop
+            </Button>
+          ) : null}
+          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => void refresh()} disabled={operationBusy} title="Refresh Addons">
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </Button>
         </div>
@@ -358,13 +461,13 @@ export function AddonsScreen() {
                         <Badge variant="outline">{addon.has_ui ? 'UI card' : 'No ui.json'}</Badge>
                       </div>
                       <div className="mt-3 grid grid-cols-5 gap-1">
-                        <Button size="sm" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void runAddon(addon); }} disabled={!canRun || runningId === addon.id}>
+                        <Button size="sm" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void runAddon(addon); }} disabled={operationBusy || !canRun || runningId === addon.id}>
                           {runningId === addon.id ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />} RUN
                         </Button>
-                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'copy'); }}><Copy className="h-3.5 w-3.5" /> COPY</Button>
-                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'remove'); }}><Trash2 className="h-3.5 w-3.5" /> REMOVE</Button>
-                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'update'); }}><RefreshCw className="h-3.5 w-3.5" /> UPDATE</Button>
-                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void exportForPowerStore(addon); }}><UploadCloud className="h-3.5 w-3.5" /> STORE</Button>
+                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'copy'); }} disabled={operationBusy}><Copy className="h-3.5 w-3.5" /> COPY</Button>
+                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'remove'); }} disabled={operationBusy}><Trash2 className="h-3.5 w-3.5" /> REMOVE</Button>
+                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void lifecycleAction(addon, 'update'); }} disabled={operationBusy}><RefreshCw className="h-3.5 w-3.5" /> UPDATE</Button>
+                        <Button size="sm" variant="outline" className="h-8 gap-1 text-xs" onClick={(e) => { e.stopPropagation(); void exportForPowerStore(addon); }} disabled={operationBusy}><UploadCloud className="h-3.5 w-3.5" /> STORE</Button>
                       </div>
                     </div>
                   );
@@ -424,7 +527,7 @@ export function AddonsScreen() {
                 <div className="flex items-center gap-2">
                   <UploadCloud className="h-5 w-5 text-primary" />
                   <h2 className="font-semibold">SarahMemory PowerStore Gateway</h2>
-                  <Button size="sm" variant="outline" className="ml-auto h-8 text-xs" onClick={() => void handshakePowerStore()}>Handshake</Button>
+                  <Button size="sm" variant="outline" className="ml-auto h-8 text-xs" onClick={() => void handshakePowerStore()} disabled={operationBusy}>Handshake</Button>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
                   Local Addons and NAILDE work without the PowerStore connection. This panel can detect whether store.sarahmemory.com is UP or DOWN, but local creation/install/run remains available either way. Upload is not automatic. Downloads must be staged, verified, scanned, validated, and approved before install.
@@ -439,7 +542,7 @@ export function AddonsScreen() {
                 <div className="rounded-xl border border-border bg-card p-4">
                   <h3 className="font-semibold text-sm">Selected application</h3>
                   <p className="mt-1 text-xs text-muted-foreground">{selected.name} · {selected.id}</p>
-                  <Button size="sm" className="mt-3 gap-1 text-xs" onClick={() => void exportForPowerStore(selected)}>
+                  <Button size="sm" className="mt-3 gap-1 text-xs" onClick={() => void exportForPowerStore(selected)} disabled={operationBusy}>
                     <UploadCloud className="h-3.5 w-3.5" /> Prepare Signed PowerStore Package
                   </Button>
                 </div>

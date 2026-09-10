@@ -16,6 +16,7 @@ import {
   FileCode,
   ShieldCheck,
   Send,
+  Square,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigationStore } from "@/stores/useNavigationStore";
@@ -149,6 +150,31 @@ const DEFAULT_CHATGPT_PROJECT_URL =
   "https://chatgpt.com/g/g-p-67e0408d2a048191ae36592e6e45ae89-the-sarahmemory-project-v8-0-0-aios/c/69fde7eb-0204-83e8-8b9e-65636d3ece39";
 const DEVBRIDGE_PREPARE_COOLDOWN_MS = 5000;
 
+function isAbortError(error: any): boolean {
+  return error?.name === "AbortError" || /abort/i.test(String(error?.message || error || ""));
+}
+
+function redactLocalPathsText(value: string): string {
+  return String(value || "")
+    .replace(/[A-Za-z]:\\SarahMemory(?=\\|["\s]|$)/g, "SARAHMEMORY_ROOT")
+    .replace(/[A-Za-z]:\\\\SarahMemory(?=\\\\|["\s]|$)/g, "SARAHMEMORY_ROOT")
+    .replace(/"target_abs"\s*:\s*"[^"]*"/g, '"target_abs": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"bridge_root"\s*:\s*"[^"]*"/g, '"bridge_root": "SARAHMEMORY_ROOT\\\\data\\\\devbridge"')
+    .replace(/"sandbox_root"\s*:\s*"[^"]*"/g, '"sandbox_root": "SARAHMEMORY_ROOT\\\\data\\\\devbridge\\\\sandbox"')
+    .replace(/"manifest_path"\s*:\s*"[^"]*"/g, '"manifest_path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"staged_path"\s*:\s*"[^"]*"/g, '"staged_path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"backup_path"\s*:\s*"[^"]*"/g, '"backup_path": "SARAHMEMORY_ROOT\\\\..."')
+    .replace(/"workspace_root"\s*:\s*"[^"]*"/g, '"workspace_root": "SARAHMEMORY_ROOT\\\\..."');
+}
+
+function redactDevBridgePayload<T>(value: T): T {
+  try {
+    return JSON.parse(redactLocalPathsText(JSON.stringify(value))) as T;
+  } catch {
+    return value;
+  }
+}
+
 function simpleHash(value: string): string {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -181,10 +207,12 @@ function actionType(action: ResearchAction): string {
   return String(action?.type || "").trim().toLowerCase().replace(/\./g, "_");
 }
 
-async function postJson<T>(url: string, body: any): Promise<T> {
+async function postJson<T>(url: string, body: any, init: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
   const data = await apiFetch<any>(url, {
     method: "POST",
     body: JSON.stringify(body ?? {}),
+    signal: init.signal,
+    timeoutMs: init.timeoutMs,
   });
   if (data?.ok === false) {
     const msg = data?.error || "Request failed";
@@ -194,8 +222,8 @@ async function postJson<T>(url: string, body: any): Promise<T> {
   return data as T;
 }
 
-async function getJson<T>(url: string): Promise<T> {
-  const data = await apiFetch<any>(url, { method: "GET" });
+async function getJson<T>(url: string, init: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<T> {
+  const data = await apiFetch<any>(url, { method: "GET", signal: init.signal, timeoutMs: init.timeoutMs });
   if (data?.ok === false) throw new Error(data?.error || "Request failed");
   return data as T;
 }
@@ -300,7 +328,7 @@ function describeCmdTicket(ticket: DevBridgeCmdTicketItem): string {
   return ticket.summary || ticket.error || ticket.result_error || ticket.command || ticket.ticket_id || "No summary provided.";
 }
 
-async function getDevBridgeRuntimeSnapshot(): Promise<DevBridgeRuntimeSnapshot> {
+async function getDevBridgeRuntimeSnapshot(signal?: AbortSignal): Promise<DevBridgeRuntimeSnapshot> {
   const paths = [
     "/api/devbridge/health",
     "/api/devbridge/status",
@@ -310,9 +338,10 @@ async function getDevBridgeRuntimeSnapshot(): Promise<DevBridgeRuntimeSnapshot> 
   const probes = await Promise.all(
     paths.map(async (path): Promise<DevBridgeRuntimeProbe> => {
       try {
-        const data = await getJson<unknown>(path);
+        const data = await getJson<unknown>(path, { signal, timeoutMs: 12_000 });
         const compactData = path === "/api/devbridge/latest" ? summarizeDevBridgeLatest(data) : data;
-        return { ok: true, path, data: compactData };
+        const safeData = redactDevBridgePayload(compactData);
+        return { ok: true, path, data: safeData };
       } catch (e: any) {
         return { ok: false, path, error: String(e?.message || e || "request_failed") };
       }
@@ -356,11 +385,14 @@ export function ResearchScreen() {
   const histRef = useRef<string[]>([]);
   const histIdxRef = useRef<number>(-1);
   const loadingRef = useRef(false);
+  const readerAbortRef = useRef<AbortController | null>(null);
+  const bridgeAbortRef = useRef<AbortController | null>(null);
+  const cmdTicketAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let alive = true;
 
-    getJson<DevBridgeHealthResponse>("/api/devbridge/health")
+    getJson<DevBridgeHealthResponse>("/api/devbridge/health", { timeoutMs: 12_000 })
       .then((data) => {
         if (!alive) return;
 
@@ -388,6 +420,9 @@ export function ResearchScreen() {
 
     return () => {
       alive = false;
+      readerAbortRef.current?.abort();
+      bridgeAbortRef.current?.abort();
+      cmdTicketAbortRef.current?.abort();
     };
   }, []);
 
@@ -406,6 +441,61 @@ export function ResearchScreen() {
   const cmdTicketProcessedCount = safeCount(cmdTicketCounts.processed);
   const cmdTicketArchivedFailedCount = safeCount(cmdTickets?.archived_failed_count ?? cmdTickets?.extended_counts?.archived_failed);
   const cmdTicketProcessDisabled = cmdTicketBusy || cmdTicketPendingCount <= 0;
+
+  function beginBridgeOperation() {
+    bridgeAbortRef.current?.abort();
+    const controller = new AbortController();
+    bridgeAbortRef.current = controller;
+    setBridgeBusy(true);
+    return controller;
+  }
+
+  function finishBridgeOperation(controller: AbortController) {
+    if (bridgeAbortRef.current === controller) {
+      bridgeAbortRef.current = null;
+      setBridgeBusy(false);
+    }
+  }
+
+  function stopBridgeOperation() {
+    bridgeAbortRef.current?.abort();
+    bridgeAbortRef.current = null;
+    setBridgeBusy(false);
+    setBridgeStatus("DevBridge operation stopped.");
+    toast.info("DevBridge operation stopped");
+  }
+
+  function beginCmdTicketOperation() {
+    cmdTicketAbortRef.current?.abort();
+    const controller = new AbortController();
+    cmdTicketAbortRef.current = controller;
+    setCmdTicketBusy(true);
+    return controller;
+  }
+
+  function finishCmdTicketOperation(controller: AbortController) {
+    if (cmdTicketAbortRef.current === controller) {
+      cmdTicketAbortRef.current = null;
+      setCmdTicketBusy(false);
+    }
+  }
+
+  function stopCmdTicketOperation() {
+    cmdTicketAbortRef.current?.abort();
+    cmdTicketAbortRef.current = null;
+    setCmdTicketBusy(false);
+    setCmdTicketStatus("Cmd ticket operation stopped.");
+    toast.info("Cmd ticket operation stopped");
+  }
+
+  function stopAllResearchWork() {
+    readerAbortRef.current?.abort();
+    readerAbortRef.current = null;
+    loadingRef.current = false;
+    setLoading(false);
+    if (bridgeBusy) stopBridgeOperation();
+    if (cmdTicketBusy) stopCmdTicketOperation();
+  }
 
   useEffect(() => {
     bundleRef.current = bundle;
@@ -445,11 +535,14 @@ export function ResearchScreen() {
       if (!u) return;
 
       if (loadingRef.current) return;
+      readerAbortRef.current?.abort();
+      const controller = new AbortController();
+      readerAbortRef.current = controller;
       loadingRef.current = true;
       setLoading(true);
 
       try {
-        const data = await postJson<FetchBundle>("/api/browser/fetch", { url: u });
+        const data = await postJson<FetchBundle>("/api/browser/fetch", { url: u }, { signal: controller.signal, timeoutMs: 30_000 });
         const nextUrl = data.url || u;
         setBundle(data);
         setAddress(nextUrl);
@@ -473,6 +566,10 @@ export function ResearchScreen() {
           setHistIdx(idx);
         }
       } catch (e: any) {
+        if (isAbortError(e)) {
+          toast.info("Research Browser load stopped");
+          return;
+        }
         const failBundle: FetchBundle = {
           ok: false,
           error: e?.message || "Fetch failed",
@@ -487,8 +584,11 @@ export function ResearchScreen() {
         setAddress(u);
         void syncBrowserState(failBundle, "fetch_error");
       } finally {
-        loadingRef.current = false;
-        setLoading(false);
+        if (readerAbortRef.current === controller) {
+          readerAbortRef.current = null;
+          loadingRef.current = false;
+          setLoading(false);
+        }
       }
     },
     [syncBrowserState]
@@ -699,8 +799,8 @@ export function ResearchScreen() {
         note: "Runtime probes are added when Generate Packet or Copy Packet runs through the DevBridge async path.",
       },
       frontend_contract: {
-        component: "data/ui/V8_ui_src/src/components/screens/ResearchScreen.tsx",
-        api_helper: "data/ui/V8_ui_src/src/lib/config.ts::apiFetch",
+        component: "data/ui/V9_ui_src/src/components/screens/ResearchScreen.tsx",
+        api_helper: "data/ui/V9_ui_src/src/lib/config.ts::apiFetch",
         browser_routes: ["POST /api/browser/fetch", "POST /api/browser/state", "POST /api/browser/open"],
         devbridge_routes: [
           "GET /api/devbridge/health",
@@ -752,9 +852,12 @@ export function ResearchScreen() {
 
   async function refreshCmdTickets(silent = false) {
     if (!ensureDevBridgeAllowed()) return;
-    setCmdTicketBusy(true);
+    const controller = beginCmdTicketOperation();
     try {
-      const data = await getJson<DevBridgeCmdTicketsResponse>("/api/devbridge/cmd-tickets?limit=50&detail_limit=25");
+      const data = await getJson<DevBridgeCmdTicketsResponse>("/api/devbridge/cmd-tickets?limit=50&detail_limit=25", {
+        signal: controller.signal,
+        timeoutMs: 20_000,
+      });
       setCmdTickets(data);
       const counts = data?.counts || {};
       const pending = safeCount(data?.pending_count ?? counts.pending);
@@ -764,21 +867,25 @@ export function ResearchScreen() {
       setCmdTicketStatus(status);
       if (!silent) toast.success("Cmd tickets refreshed");
     } catch (e: any) {
+      if (isAbortError(e)) return;
       setCmdTicketStatus(`Cmd ticket refresh failed: ${e?.message || e}`);
       if (!silent) toast.error("Cmd ticket refresh failed");
     } finally {
-      setCmdTicketBusy(false);
+      finishCmdTicketOperation(controller);
     }
   }
 
   async function processCmdTickets(dryRun = false) {
     if (!ensureDevBridgeAllowed()) return;
-    setCmdTicketBusy(true);
+    const controller = beginCmdTicketOperation();
     try {
       const data = await postJson<DevBridgeCmdTicketProcessResponse>("/api/devbridge/cmd-tickets/process", {
         limit: 50,
         dry_run: dryRun,
         retention_days: 3,
+      }, {
+        signal: controller.signal,
+        timeoutMs: 90_000,
       });
       setLastCmdTicketBatch(data);
       const counts = data?.counts || {};
@@ -788,46 +895,55 @@ export function ResearchScreen() {
       toast.success(dryRun ? "Cmd ticket dry-run complete" : "Cmd ticket batch processed");
       await refreshCmdTickets(true);
     } catch (e: any) {
+      if (isAbortError(e)) return;
       setCmdTicketStatus(`Cmd ticket process failed: ${e?.message || e}`);
       toast.error("Cmd ticket process failed");
     } finally {
-      setCmdTicketBusy(false);
+      finishCmdTicketOperation(controller);
     }
   }
 
   async function archiveFailedCmdTickets(all = true, file?: string) {
     if (!ensureDevBridgeAllowed()) return;
-    setCmdTicketBusy(true);
+    const controller = beginCmdTicketOperation();
     try {
       const data = await postJson<any>("/api/devbridge/cmd-tickets/failed/archive", {
         all,
         file,
+      }, {
+        signal: controller.signal,
+        timeoutMs: 30_000,
       });
       setCmdTicketStatus(`Archived ${data?.archived_count ?? 0} active failed cmd ticket(s). Active failed now ${data?.counts?.failed ?? 0}.`);
       toast.success("Failed cmd-ticket inventory archived");
       await refreshCmdTickets(true);
     } catch (e: any) {
+      if (isAbortError(e)) return;
       setCmdTicketStatus(`Failed-ticket archive failed: ${e?.message || e}`);
       toast.error("Failed-ticket archive failed");
     } finally {
-      setCmdTicketBusy(false);
+      finishCmdTicketOperation(controller);
     }
   }
 
   async function requeueFailedCmdTicket(file: string) {
     if (!ensureDevBridgeAllowed()) return;
     if (!file) return;
-    setCmdTicketBusy(true);
+    const controller = beginCmdTicketOperation();
     try {
-      const data = await postJson<any>("/api/devbridge/cmd-tickets/failed/requeue", { file });
+      const data = await postJson<any>("/api/devbridge/cmd-tickets/failed/requeue", { file }, {
+        signal: controller.signal,
+        timeoutMs: 30_000,
+      });
       setCmdTicketStatus(`Requeued ${data?.requeued_count ?? 0} failed cmd ticket(s). Pending now ${data?.counts?.pending ?? 0}.`);
       toast.success("Failed cmd ticket requeued");
       await refreshCmdTickets(true);
     } catch (e: any) {
+      if (isAbortError(e)) return;
       setCmdTicketStatus(`Failed-ticket requeue failed: ${e?.message || e}`);
       toast.error("Failed-ticket requeue failed");
     } finally {
-      setCmdTicketBusy(false);
+      finishCmdTicketOperation(controller);
     }
   }
 
@@ -851,13 +967,13 @@ export function ResearchScreen() {
     }
 
     setBridgeOpen(true);
-    setBridgeBusy(true);
+    const controller = beginBridgeOperation();
     setBridgeStatus("Preparing one-click ChatGPT package with backend probes...");
 
     try {
-      const runtimeSnapshot = await getDevBridgeRuntimeSnapshot();
+      const runtimeSnapshot = await getDevBridgeRuntimeSnapshot(controller.signal);
       const packet = buildBridgePacketObject(runtimeSnapshot);
-      const packetText = JSON.stringify(packet, null, 2);
+      const packetText = redactLocalPathsText(JSON.stringify(packet, null, 2));
       const message = buildChatGptMessage(packetText);
       const hash = simpleHash(message);
 
@@ -867,7 +983,10 @@ export function ResearchScreen() {
       setLastPreparedHash(hash);
 
       try {
-        const saved = await postJson<any>("/api/devbridge/export-packet", packet);
+        const saved = await postJson<any>("/api/devbridge/export-packet", packet, {
+          signal: controller.signal,
+          timeoutMs: 30_000,
+        });
         if (saved?.packet_id) {
           setBridgeStatus(
             `Prepared ChatGPT package ${hash}, saved packet as ${saved.packet_id}, and copied it to clipboard. Paste it into the ChatGPT session and submit manually.`
@@ -878,6 +997,7 @@ export function ResearchScreen() {
           );
         }
       } catch (e: any) {
+        if (isAbortError(e)) throw e;
         setBridgeStatus(
           `Prepared ChatGPT package ${hash} locally and copied it to clipboard. Backend export did not complete: ${e?.message || e}`
         );
@@ -891,29 +1011,43 @@ export function ResearchScreen() {
       }
 
       openChatGptSession();
+    } catch (e: any) {
+      if (!isAbortError(e)) {
+        setBridgeStatus(`DevBridge package preparation failed: ${e?.message || e}`);
+        toast.error("DevBridge package preparation failed");
+      }
     } finally {
-      setBridgeBusy(false);
+      finishBridgeOperation(controller);
     }
   }
 
   async function generateBridgePacket() {
     if (!ensureDevBridgeAllowed()) return;
-    setBridgeBusy(true);
+    const controller = beginBridgeOperation();
     setBridgeStatus("Generating packet and probing DevBridge backend status...");
     try {
-      const runtimeSnapshot = await getDevBridgeRuntimeSnapshot();
+      const runtimeSnapshot = await getDevBridgeRuntimeSnapshot(controller.signal);
       const packet = buildBridgePacketObject(runtimeSnapshot);
-      const pretty = JSON.stringify(packet, null, 2);
+      const pretty = redactLocalPathsText(JSON.stringify(packet, null, 2));
       setBridgePacket(pretty);
       setBridgeStatus("Packet generated locally with DevBridge backend probes.");
       try {
-        const saved = await postJson<any>("/api/devbridge/export-packet", packet);
+        const saved = await postJson<any>("/api/devbridge/export-packet", packet, {
+          signal: controller.signal,
+          timeoutMs: 30_000,
+        });
         if (saved?.packet_id) setBridgeStatus(`Packet generated with backend probes and saved as ${saved.packet_id}.`);
       } catch (e: any) {
+        if (isAbortError(e)) return;
         setBridgeStatus(`Packet generated locally with backend probes. Backend save not available: ${e?.message || e}`);
       }
+    } catch (e: any) {
+      if (!isAbortError(e)) {
+        setBridgeStatus(`Packet generation failed: ${e?.message || e}`);
+        toast.error("DevBridge packet generation failed");
+      }
     } finally {
-      setBridgeBusy(false);
+      finishBridgeOperation(controller);
     }
   }
 
@@ -922,7 +1056,7 @@ export function ResearchScreen() {
     let text = bridgePacket;
     if (!text) {
       const runtimeSnapshot = await getDevBridgeRuntimeSnapshot();
-      text = JSON.stringify(buildBridgePacketObject(runtimeSnapshot), null, 2);
+      text = redactLocalPathsText(JSON.stringify(buildBridgePacketObject(runtimeSnapshot), null, 2));
       setBridgePacket(text);
     }
     try {
@@ -952,7 +1086,7 @@ export function ResearchScreen() {
       toast.error("Paste the ChatGPT response first.");
       return;
     }
-    setBridgeBusy(true);
+    const controller = beginBridgeOperation();
     try {
       const data = await postJson<DevBridgeImportResponse>("/api/devbridge/import-response", {
         source: "ResearchScreen.tsx",
@@ -960,6 +1094,9 @@ export function ResearchScreen() {
         response_text: text,
         current_url: currentUrl || address,
         ts: Date.now(),
+      }, {
+        signal: controller.signal,
+        timeoutMs: 45_000,
       });
       const msg = data?.message || "Response staged to DevBridge.";
       setBridgeStatus(
@@ -969,6 +1106,7 @@ export function ResearchScreen() {
       );
       toast.success(data?.staged ? "Response imported and patch staged" : "Response imported");
     } catch (e: any) {
+      if (isAbortError(e)) return;
       try {
         window.localStorage.setItem(DEVBRIDGE_RESPONSE_KEY, text);
       } catch {
@@ -977,7 +1115,7 @@ export function ResearchScreen() {
       setBridgeStatus(`Backend staging failed. Response saved locally only: ${e?.message || e}`);
       toast.error("Backend staging failed; saved locally");
     } finally {
-      setBridgeBusy(false);
+      finishBridgeOperation(controller);
     }
   }
 
@@ -1009,18 +1147,25 @@ export function ResearchScreen() {
 
   return (
     <div className="h-full w-full flex flex-col gap-3 p-3">
-      <div className="flex items-center gap-2">
-        <Button variant="outline" size="icon" disabled={!canBack || loading} onClick={handleBack}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" size="icon" disabled={!canBack || loading} onClick={handleBack} aria-label="Research Browser back" title="Back">
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon" disabled={!canFwd || loading} onClick={handleForward}>
+        <Button variant="outline" size="icon" disabled={!canFwd || loading} onClick={handleForward} aria-label="Research Browser forward" title="Forward">
           <ArrowRight className="h-4 w-4" />
         </Button>
-        <Button variant="outline" size="icon" disabled={loading} onClick={handleReload}>
-          <RefreshCw className="h-4 w-4" />
+        <Button
+          variant="outline"
+          size="icon"
+          disabled={!loading && !currentUrl}
+          onClick={loading ? stopAllResearchWork : handleReload}
+          aria-label={loading ? "Stop Research Browser load" : "Reload Research Browser"}
+          title={loading ? "Stop loading" : "Reload"}
+        >
+          {loading ? <Square className="h-4 w-4" /> : <RefreshCw className="h-4 w-4" />}
         </Button>
 
-        <div className="flex-1 flex items-center gap-2">
+        <div className="min-w-0 flex flex-[1_1_260px] items-center gap-2">
           <Input
             value={address}
             onChange={(e) => setAddress(e.target.value)}
@@ -1031,28 +1176,28 @@ export function ResearchScreen() {
           />
           <Button onClick={() => void handleGo()} disabled={loading}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-            <span className="ml-2">Go</span>
+            <span className="ml-2 hidden sm:inline">Go</span>
           </Button>
         </div>
 
         <Button variant="secondary" onClick={() => openInLiveBrowser(currentUrl || address)} disabled={loading}>
           <Globe className="h-4 w-4" />
-          <span className="ml-2">Live Browser</span>
+          <span className="ml-2 hidden sm:inline">Live Browser</span>
         </Button>
 
         <Button variant="outline" onClick={() => void readCurrentPage()} disabled={loading || !bundle?.url}>
           <BookOpen className="h-4 w-4" />
-          <span className="ml-2">Send Page State</span>
+          <span className="ml-2 hidden sm:inline">Send Page State</span>
         </Button>
 
         {devBridgeDeveloperMode && (
           <Button variant={bridgeOpen ? "default" : "outline"} onClick={() => setBridgeOpen((v) => !v)}>
             <MessageSquare className="h-4 w-4" />
-            <span className="ml-2">ChatGPT Bridge</span>
+            <span className="ml-2 hidden sm:inline">ChatGPT Bridge</span>
           </Button>
         )}
 
-        <Button variant="outline" onClick={() => window.open(normalizeUrl(currentUrl || address) || "about:blank", "_blank")}>
+        <Button variant="outline" onClick={() => window.open(normalizeUrl(currentUrl || address) || "about:blank", "_blank")} aria-label="Open externally" title="Open externally">
           <ExternalLink className="h-4 w-4" />
         </Button>
       </div>
@@ -1069,6 +1214,12 @@ export function ResearchScreen() {
               <div className="text-xs opacity-75">Visible only when Developer Mode is enabled by the backend gate.</div>
             </div>
             <div className="flex flex-wrap gap-2">
+              {(bridgeBusy || cmdTicketBusy) && (
+                <Button size="sm" variant="destructive" onClick={stopAllResearchWork}>
+                  <Square className="h-4 w-4" />
+                  <span className="ml-2">Stop</span>
+                </Button>
+              )}
               <Button size="sm" variant="secondary" onClick={openChatGptSession}>
                 <ExternalLink className="h-4 w-4" />
                 <span className="ml-2">Open Session</span>
@@ -1077,7 +1228,7 @@ export function ResearchScreen() {
                 {bridgeBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                 <span className="ml-2">Prepare for ChatGPT</span>
               </Button>
-              <Button size="sm" variant="outline" onClick={() => void generateBridgePacket()}>
+              <Button size="sm" variant="outline" onClick={() => void generateBridgePacket()} disabled={bridgeBusy}>
                 <FileCode className="h-4 w-4" />
                 <span className="ml-2">Generate Packet</span>
               </Button>

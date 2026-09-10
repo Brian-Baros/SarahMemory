@@ -17,6 +17,7 @@ import {
   Terminal,
   User,
   Volume2,
+  Wifi,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AudioMixerPanel } from "@/components/panels/audio-mixer/AudioMixerPanel";
@@ -36,10 +37,18 @@ interface MobileShellProps {
  */
 export function MobileShell({ className }: MobileShellProps) {
   const { currentScreen, setCurrentScreen, swipeLeft, swipeRight } = useNavigationStore();
-  const { mediaState, toggleMicrophone } = useSarahStore();
+  const { mediaState, toggleMicrophone, settings, updateSettings } = useSarahStore();
   const viewport = useViewportProfile();
   const [appLauncherOpen, setAppLauncherOpen] = useState(false);
   const [audioMixerOpen, setAudioMixerOpen] = useState(false);
+  const routeModes = ["auto", "local", "web", "api"];
+  const routeMode = settings.localOnlyMode ? "local" : String(settings.mode || "auto").toLowerCase();
+  const routeLabel = routeMode === "api" ? "API" : routeMode.charAt(0).toUpperCase() + routeMode.slice(1);
+  const cycleRouteMode = () => {
+    const current = routeModes.includes(routeMode) ? routeMode : "auto";
+    const next = routeModes[(routeModes.indexOf(current) + 1) % routeModes.length];
+    updateSettings({ mode: next, localOnlyMode: next === "local" } as any);
+  };
 
   const swipeHandlers = useSwipeGesture({
     onSwipeLeft: swipeRight,
@@ -81,6 +90,7 @@ export function MobileShell({ className }: MobileShellProps) {
               { label: "Vision", icon: Camera, action: () => window.open("/vision", "_self") },
               { label: "Voice", icon: Mic, action: toggleMicrophone, active: mediaState.microphoneEnabled },
               { label: "Audio", icon: Volume2, action: () => setAudioMixerOpen((open) => !open), active: audioMixerOpen },
+              { label: routeLabel, icon: Wifi, action: cycleRouteMode, active: routeMode !== "auto", title: "Execution lane" },
               { label: "Devices", icon: MonitorCog, action: () => setCurrentScreen("device-manager") },
               { label: "Files", icon: Files, action: () => setCurrentScreen("files") },
               { label: "Avatar", icon: User, action: () => setCurrentScreen("avatar") },

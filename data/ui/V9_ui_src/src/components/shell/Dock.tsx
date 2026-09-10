@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   MessageCircle,
   Folder,
@@ -17,6 +17,7 @@ import {
   LayoutGrid,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSarahStore } from "@/stores/useSarahStore";
 import { useWindowStore, type WindowId } from "@/stores/useWindowStore";
 import {
   Tooltip,
@@ -49,8 +50,18 @@ const DOCK_ITEMS: DockItem[] = [
 type RouteMode = "Auto" | "Local" | "Web" | "API";
 const ROUTE_MODES: RouteMode[] = ["Auto", "Local", "Web", "API"];
 
+function routeModeFromSettings(settings: any): RouteMode {
+  if (settings?.localOnlyMode) return "Local";
+  const raw = String(settings?.mode || "auto").trim().toLowerCase();
+  if (raw === "local") return "Local";
+  if (raw === "web") return "Web";
+  if (raw === "api") return "API";
+  return "Auto";
+}
+
 export function Dock() {
   const barRef = useRef<HTMLDivElement>(null);
+  const { settings, updateSettings } = useSarahStore();
 
   const {
     windows,
@@ -60,14 +71,7 @@ export function Dock() {
     focusedWindowId,
   } = useWindowStore();
 
-  const [routeMode, setRouteMode] = useState<RouteMode>(() => {
-    try {
-      const v = (localStorage.getItem("route_mode") || "Auto") as RouteMode;
-      return ROUTE_MODES.includes(v) ? v : "Auto";
-    } catch {
-      return "Auto";
-    }
-  });
+  const routeMode = routeModeFromSettings(settings);
 
   const nextMode = useMemo(() => {
     const idx = ROUTE_MODES.indexOf(routeMode);
@@ -78,10 +82,10 @@ export function Dock() {
     const idx = ROUTE_MODES.indexOf(routeMode);
     const v = ROUTE_MODES[(idx + 1) % ROUTE_MODES.length];
 
-    setRouteMode(v);
     try {
       localStorage.setItem("route_mode", v);
     } catch {}
+    updateSettings({ mode: v.toLowerCase(), localOnlyMode: v === "Local" } as any);
 
     try {
       window.dispatchEvent(

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Camera,
   Cpu,
@@ -13,6 +13,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Speaker,
+  Square,
   Wifi,
   Monitor,
 } from "lucide-react";
@@ -339,6 +340,10 @@ function safeString(value: unknown, fallback = "") {
   if (value === null || value === undefined) return fallback;
   const text = String(value).trim();
   return text || fallback;
+}
+
+function isAbortError(error: any): boolean {
+  return error?.name === "AbortError" || /abort/i.test(String(error?.message || error || ""));
 }
 
 function slug(value: unknown) {
@@ -755,6 +760,7 @@ export function DeviceManagerScreen() {
   const [selectedEvidence, setSelectedEvidence] = useState<any>(null);
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("Device Manager is waiting for driver inventory.");
+  const activeRequestRef = useRef<AbortController | null>(null);
 
   const visibleDrivers = useMemo(() => {
     return drivers.filter((driver) => tab === "all" || classifyDevice(driver) === tab);
@@ -763,15 +769,38 @@ export function DeviceManagerScreen() {
   const selected = visibleDrivers.find((driver) => driverKey(driver) === selectedKey) || visibleDrivers[0] || null;
   const selectedProfile = getDeviceProfile(selected);
 
+  const beginOperation = (label: string) => {
+    activeRequestRef.current?.abort();
+    const controller = new AbortController();
+    activeRequestRef.current = controller;
+    setBusy(label);
+    return controller;
+  };
+
+  const finishOperation = (controller: AbortController) => {
+    if (activeRequestRef.current === controller) {
+      activeRequestRef.current = null;
+      setBusy("");
+    }
+  };
+
+  const stopOperation = () => {
+    activeRequestRef.current?.abort();
+    activeRequestRef.current = null;
+    setBusy("");
+    setMessage("Device operation stopped.");
+  };
+
   const loadDevices = async (preferredTab?: DeviceTab) => {
-    setBusy("refresh");
+    const controller = beginOperation("refresh");
     setMessage("Loading driver and device inventory...");
     try {
       const [caps, gov, ...inventory] = await Promise.allSettled([
-        api.proxy.call("/api/drivers/capabilities", { method: "GET" }),
-        api.proxy.call("/api/drivers/governance", { method: "GET" }),
-        ...INVENTORY_ENDPOINTS.map((endpoint) => api.proxy.call(endpoint.route, { method: "GET" })),
+        api.proxy.call("/api/drivers/capabilities", { method: "GET", signal: controller.signal, timeoutMs: 12_000 }),
+        api.proxy.call("/api/drivers/governance", { method: "GET", signal: controller.signal, timeoutMs: 12_000 }),
+        ...INVENTORY_ENDPOINTS.map((endpoint) => api.proxy.call(endpoint.route, { method: "GET", signal: controller.signal, timeoutMs: 15_000 })),
       ]);
+      if (controller.signal.aborted) return;
       setCapabilities(caps.status === "fulfilled" ? caps.value : { ok: false, error: String(caps.reason || "capabilities unavailable") });
       setGovernance(gov.status === "fulfilled" ? gov.value : { ok: false, error: String(gov.reason || "governance unavailable") });
 
@@ -788,7 +817,8 @@ export function DeviceManagerScreen() {
         }
       });
 
-      const browserDevices = await collectBrowserDevices();
+      const browserDevices = controller.signal.aborted ? [] : await collectBrowserDevices();
+      if (controller.signal.aborted) return;
       normalized.push(...browserDevices);
       sourceStates.push({ label: "Browser Runtime", ok: true, detail: `${browserDevices.length} entries` });
 
@@ -801,9 +831,10 @@ export function DeviceManagerScreen() {
       setSelectedKey((current) => (nextVisible.some((driver) => driverKey(driver) === current) ? current : firstVisible ? driverKey(firstVisible) : ""));
       setMessage(items.length ? `Detected ${items.length} dynamic device entries from ${sourceStates.filter((source) => source.ok).length} inventory sources.` : "No device inventory was returned by local sources.");
     } catch (error: any) {
+      if (isAbortError(error)) return;
       setMessage(String(error?.message || error || "Driver inventory failed."));
     } finally {
-      setBusy("");
+      finishOperation(controller);
     }
   };
 
@@ -824,7 +855,11 @@ export function DeviceManagerScreen() {
       }
     };
     window.addEventListener("sarah:device-manager", onDeviceManager);
-    return () => window.removeEventListener("sarah:device-manager", onDeviceManager);
+    return () => {
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
+      window.removeEventListener("sarah:device-manager", onDeviceManager);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -837,13 +872,19 @@ export function DeviceManagerScreen() {
       return;
     }
     let cancelled = false;
+    const controller = new AbortController();
     const loadConfig = async () => {
       try {
-        const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(selected.bridgeDriverId || selected.id)}/config`, { method: "GET" });
+        const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(selected.bridgeDriverId || selected.id)}/config`, {
+          method: "GET",
+          signal: controller.signal,
+          timeoutMs: 12_000,
+        });
         if (cancelled) return;
         const cfg = { ...(((result as any)?.defaults || {}) as Record<string, any>), ...(((result as any)?.config || {}) as Record<string, any>) };
         setConfigDraft(buildConfigDraft(profile, cfg));
       } catch (error: any) {
+        if (isAbortError(error)) return;
         if (cancelled) return;
         setConfigDraft(buildConfigDraft(profile, configSourceForDevice(selected)));
         setMessage(`${displayName(selected)} config read failed: ${String(error?.message || error || "driver bridge unavailable")}`);
@@ -852,6 +893,7 @@ export function DeviceManagerScreen() {
     void loadConfig();
     return () => {
       cancelled = true;
+      controller.abort();
     };
   }, [selected ? driverKey(selected) : ""]);
 
@@ -868,18 +910,21 @@ export function DeviceManagerScreen() {
       return;
     }
     if (!window.confirm(`Update ${displayName(driver)} registry settings?`)) return;
-    setBusy(`registry:${driver.id}`);
+    const controller = beginOperation(`registry:${driver.id}`);
     try {
       const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(driver.bridgeDriverId)}/registry`, {
         method: "POST",
         body: { registry: patch, user_confirmed: true, operator_confirmed: true, source: "frontend:device_manager" },
+        signal: controller.signal,
+        timeoutMs: 20_000,
       });
       setMessage((result as any)?.ok ? "Registry updated." : `Registry update pending/blocked: ${(result as any)?.error || "bridge authorization required"}`);
       await loadDevices(tab);
     } catch (error: any) {
+      if (isAbortError(error)) return;
       setMessage(`${displayName(driver)} registry update failed: ${String(error?.message || error || "driver bridge unavailable")}`);
     } finally {
-      setBusy("");
+      finishOperation(controller);
     }
   };
 
@@ -890,18 +935,21 @@ export function DeviceManagerScreen() {
       return;
     }
     if (!window.confirm(`Save configuration for ${displayName(selected)}?`)) return;
-    setBusy(`config:${selected.id}`);
+    const controller = beginOperation(`config:${selected.id}`);
     const configPatch = serializeConfigDraft(configDraft);
     try {
       const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(selected.bridgeDriverId)}/config`, {
         method: "POST",
         body: { config: configPatch, user_confirmed: true, operator_confirmed: true, source: "frontend:device_manager" },
+        signal: controller.signal,
+        timeoutMs: 20_000,
       });
       setMessage((result as any)?.ok ? "Device configuration saved." : `Configuration save pending/blocked: ${(result as any)?.error || "bridge authorization required"}`);
     } catch (error: any) {
+      if (isAbortError(error)) return;
       setMessage(`${displayName(selected)} configuration save failed: ${String(error?.message || error || "driver bridge unavailable")}`);
     } finally {
-      setBusy("");
+      finishOperation(controller);
     }
   };
 
@@ -911,20 +959,23 @@ export function DeviceManagerScreen() {
       return;
     }
     if (!window.confirm(`${action === "connect" ? "Connect" : "Disconnect"} ${displayName(driver)} through the governed driver bridge?`)) return;
-    setBusy(`${action}:${driver.id}`);
+    const controller = beginOperation(`${action}:${driver.id}`);
     const endpoint = `/api/drivers/${encodeURIComponent(driver.bridgeDriverId)}/${action}`;
     const configPatch = serializeConfigDraft(configDraft);
     try {
       const result = await api.proxy.call(endpoint, {
         method: "POST",
         body: { config: configPatch, user_confirmed: true, operator_confirmed: true, source: "frontend:device_manager", payload: { ...configPatch, action } },
+        signal: controller.signal,
+        timeoutMs: 45_000,
       });
       setMessage((result as any)?.ok ? `${displayName(driver)} ${action} request accepted.` : `${displayName(driver)} ${action} pending/blocked: ${(result as any)?.error || (result as any)?.reason || "governance response required"}`);
       await loadDevices(tab);
     } catch (error: any) {
+      if (isAbortError(error)) return;
       setMessage(`${displayName(driver)} ${action} failed: ${String(error?.message || error || "driver bridge unavailable")}`);
     } finally {
-      setBusy("");
+      finishOperation(controller);
     }
   };
 
@@ -933,16 +984,21 @@ export function DeviceManagerScreen() {
       setSelectedEvidence({ ok: false, reason: "No appdrivers bridge entry for this read-only detected device.", source: driver.sourceLabel });
       return;
     }
-    setBusy(`${signal}:${driver.id}`);
+    const controller = beginOperation(`${signal}:${driver.id}`);
     try {
-      const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(driver.bridgeDriverId)}/${signal}`, { method: "GET" });
+      const result = await api.proxy.call(`/api/drivers/${encodeURIComponent(driver.bridgeDriverId)}/${signal}`, {
+        method: "GET",
+        signal: controller.signal,
+        timeoutMs: signal === "discover" ? 30_000 : 12_000,
+      });
       setSelectedEvidence(result);
       setMessage(`${displayName(driver)} ${signal} response loaded.`);
     } catch (error: any) {
+      if (isAbortError(error)) return;
       setSelectedEvidence({ ok: false, error: String(error?.message || error || `${signal} failed`) });
       setMessage(`${displayName(driver)} ${signal} failed.`);
     } finally {
-      setBusy("");
+      finishOperation(controller);
     }
   };
 
@@ -963,10 +1019,18 @@ export function DeviceManagerScreen() {
               Boot-detected driver and hardware control surface. Enable, disable, configure, discover, connect, and disconnect through the governed driver bridge.
             </p>
           </div>
-          <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => void loadDevices(tab)} disabled={busy === "refresh"}>
-            {busy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            Refresh
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            {busy ? (
+              <Button type="button" variant="destructive" size="sm" className="gap-2" onClick={stopOperation}>
+                <Square className="h-4 w-4" />
+                Stop
+              </Button>
+            ) : null}
+            <Button type="button" variant="outline" size="sm" className="gap-2" onClick={() => void loadDevices(tab)} disabled={busy === "refresh"}>
+              {busy === "refresh" ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              Refresh
+            </Button>
+          </div>
         </div>
       </div>
 

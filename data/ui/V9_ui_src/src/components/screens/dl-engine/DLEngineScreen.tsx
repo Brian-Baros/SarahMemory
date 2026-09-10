@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Cpu,
   Activity,
@@ -29,6 +29,7 @@ import {
   Layers,
   RotateCcw as RollbackIcon,
   FileJson,
+  Square,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -938,6 +939,8 @@ export function DLEngineScreen() {
   const [isDlCommanding, setIsDlCommanding] = useState(false);
   const [isSavingWeights, setIsSavingWeights] = useState(false);
   const [devBridgeSummary, setDevBridgeSummary] = useState<DevBridgeSummaryState | null>(null);
+  const statusAbortRef = useRef<AbortController | null>(null);
+  const statusRunRef = useRef(false);
   const [activeConsoleTab, setActiveConsoleTab] = useState<
     "overview" | "rem" | "weights" | "trace" | "subjects" | "jobs"
   >("overview");
@@ -1055,27 +1058,32 @@ export function DLEngineScreen() {
     }
   }, [selectedWeightCategory, selectedWeightContextLabel, selectedWeightModelId]);
 
-  const tryCall = useCallback(async (path: string, payload?: any) => {
+  const tryCall = useCallback(async (path: string, payload?: any, request?: { signal?: AbortSignal; timeoutMs?: number }) => {
+    const method = typeof payload !== "undefined" ? "POST" : "GET";
     try {
-      const result = await api.proxy.call(path, payload);
+      const result = await api.proxy.call(path, {
+        method,
+        body: method === "GET" ? undefined : (payload || {}),
+        signal: request?.signal,
+        timeoutMs: request?.timeoutMs,
+      });
       if (result) return result;
-    } catch {
+    } catch (error) {
+      if (request?.signal?.aborted) throw error;
       // Fall through to direct fetch. Some API proxy builds only support a subset
       // of methods, but this panel needs the controls to work directly.
     }
 
     try {
-      const isPost = typeof payload !== "undefined";
-      const res = await fetch(path, {
-        method: isPost ? "POST" : "GET",
-        headers: isPost ? { "Content-Type": "application/json" } : undefined,
-        credentials: "include",
-        body: isPost ? JSON.stringify(payload) : undefined,
+      const body = await apiFetch<any>(path, {
+        method,
+        signal: request?.signal,
+        timeoutMs: request?.timeoutMs,
+        body: method === "GET" ? undefined : JSON.stringify(payload || {}),
       });
-      const body = await res.json().catch(() => null);
-      if (!res.ok) return body || { ok: false, error: `HTTP ${res.status}` };
       return body;
-    } catch {
+    } catch (error) {
+      if (request?.signal?.aborted) throw error;
       return null;
     }
   }, []);
@@ -1238,20 +1246,44 @@ export function DLEngineScreen() {
     });
   }, []);
 
-  const checkStatus = useCallback(async () => {
+  const checkStatus = useCallback(async (options?: { manual?: boolean }) => {
+    if (statusRunRef.current) {
+      if (options?.manual) setStatusMessage("DL Engine status refresh is already running.");
+      return;
+    }
+
+    const controller = new AbortController();
+    statusAbortRef.current = controller;
+    statusRunRef.current = true;
     setIsLoading(true);
     setStatusMessage("");
 
     try {
-      const statusResponse = await tryCall("/api/dlengine/status");
-      const modelStatusResponse = await tryCall("/api/models/status?refresh=1");
-      const remStatusResponse = await tryCall("/api/avatar/rem/status");
-      const remReportResponse = await tryCall(`/api/avatar/rem/report?limit=${DL_ENGINE_REM_REPORT_LIMIT}`);
-      const thoughtResponse = await tryCall("/api/dlengine/thoughts");
-      const subjectResponse = await tryCall("/api/dlengine/subjects");
-      const devBridgeStatusResponse = await tryCall("/api/devbridge/status");
-      const devBridgeLatestResponse = await tryCall("/api/devbridge/latest");
-      const devBridgeCmdTicketsResponse = await tryCall("/api/devbridge/cmd-tickets?limit=25&detail_limit=10");
+      const request = {
+        signal: controller.signal,
+        timeoutMs: options?.manual ? 45000 : 25000,
+      };
+      const [
+        statusResponse,
+        modelStatusResponse,
+        remStatusResponse,
+        remReportResponse,
+        thoughtResponse,
+        subjectResponse,
+        devBridgeStatusResponse,
+        devBridgeLatestResponse,
+        devBridgeCmdTicketsResponse,
+      ] = await Promise.all([
+        tryCall("/api/dlengine/status", undefined, request),
+        tryCall("/api/models/status?refresh=1", undefined, request),
+        tryCall("/api/avatar/rem/status", undefined, request),
+        tryCall(`/api/avatar/rem/report?limit=${DL_ENGINE_REM_REPORT_LIMIT}`, undefined, request),
+        tryCall("/api/dlengine/thoughts", undefined, request),
+        tryCall("/api/dlengine/subjects", undefined, request),
+        tryCall("/api/devbridge/status", undefined, request),
+        tryCall("/api/devbridge/latest", undefined, request),
+        tryCall("/api/devbridge/cmd-tickets?limit=25&detail_limit=10", undefined, request),
+      ]);
       const nextDevBridgeSummary = summarizeDevBridgeState(devBridgeLatestResponse, devBridgeStatusResponse, devBridgeCmdTicketsResponse);
       setDevBridgeSummary(nextDevBridgeSummary);
 
@@ -1357,13 +1389,26 @@ export function DLEngineScreen() {
 
       setLastUpdated(nowIso());
     } catch (error) {
+      if (controller.signal.aborted) {
+        setStatusMessage("DL Engine status refresh stopped.");
+        return;
+      }
       console.warn("[DLEngine] Not available:", error);
       setIsAvailable(false);
       setStatusMessage("DL Engine status fetch failed. Operating in local review mode.");
     } finally {
+      if (statusAbortRef.current === controller) statusAbortRef.current = null;
+      statusRunRef.current = false;
       setIsLoading(false);
     }
   }, [isLoadingWeightProfile, isSavingWeights, mergeSubjects, mergeThoughts, normalizeJobs, normalizeStats, normalizeSubjects, normalizeThoughts, remReport, remStatus, tryCall]);
+
+  const stopStatusRefresh = useCallback(() => {
+    const controller = statusAbortRef.current;
+    if (!controller || controller.signal.aborted) return;
+    setStatusMessage("Stopping DL Engine status refresh...");
+    controller.abort(new Error("DL Engine status refresh stopped by user"));
+  }, []);
 
   useEffect(() => {
     void checkStatus();
@@ -1829,16 +1874,27 @@ export function DLEngineScreen() {
             <span className={cn("rounded-full px-2 py-1 text-[11px]", remSummary.running ? "bg-blue-500/10 text-blue-500" : "bg-muted text-muted-foreground")}>
               {remSummary.running ? "REM ACTIVE" : "AWAKE"}
             </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={() => void checkStatus()}
-              disabled={isLoading}
-              title="Refresh DL Engine / REM status"
-            >
-              <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-            </Button>
+            {isLoading ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={stopStatusRefresh}
+                title="Stop DL Engine status refresh"
+              >
+                <Square className="h-4 w-4" />
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={() => void checkStatus({ manual: true })}
+                title="Refresh DL Engine / REM status"
+              >
+                <RefreshCw className="h-4 w-4" />
+              </Button>
+            )}
           </div>
         </div>
 
