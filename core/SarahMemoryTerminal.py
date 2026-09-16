@@ -401,6 +401,8 @@ _TERMINAL_AGENT_COMMAND_FIELD_ALIASES = {
     "http_methods": "allowed_methods",
     "key_alias": "api_key_alias",
     "key_aliases": "api_key_aliases",
+    "task_id": "task_id",
+    "mission_task_id": "task_id",
     "passport_id": "passport_id",
     "passport": "passport_id",
     "auto_passport": "auto_passport",
