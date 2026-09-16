@@ -1405,6 +1405,63 @@ def _validate_fetch_url(raw_url: str) -> Tuple[bool, str, str]:
 
     return True, u, ""
 
+
+def _browser_fetch_firewall_preflight(url: str, data: dict | None = None) -> dict:
+    """Apply AgentFirewall protection before Research Browser fetches a page."""
+    payload = data if isinstance(data, dict) else {}
+    agent_fetch = bool(payload.get("agent_request") or payload.get("passport_id") or payload.get("task_id") or payload.get("mission_task_id"))
+    if agent_fetch:
+        try:
+            import SarahMemoryTerminal as _terminal  # type: ignore
+            guard = getattr(_terminal, "terminal_browser_agent_fetch_guard", None)
+            if callable(guard):
+                return guard(url, payload, caller="appsys:/api/browser/fetch")
+        except Exception as exc:
+            return {
+                "ok": False,
+                "verdict": "DENY",
+                "reason": "terminal_browser_agent_guard_error:" + str(exc)[:180],
+                "execution_authority": False,
+            }
+        return {
+            "ok": False,
+            "verdict": "DENY",
+            "reason": "terminal_browser_agent_guard_unavailable",
+            "execution_authority": False,
+        }
+
+    try:
+        import SarahMemoryAgentFirewall as _agent_firewall  # type: ignore
+        inspect = getattr(_agent_firewall, "inspect_payload", None)
+        if callable(inspect):
+            verdict = inspect(
+                {
+                    "method": "GET",
+                    "url": url,
+                    "surface": "research_browser",
+                    "source": str(payload.get("source") or "research_browser"),
+                    "execution_authority": False,
+                },
+                source="appsys:/api/browser/fetch",
+                remote_addr=str(getattr(request, "remote_addr", "") or ""),
+            )
+            if isinstance(verdict, dict):
+                return {
+                    "ok": str(verdict.get("verdict") or "ALLOW").upper() != "DENY",
+                    "verdict": str(verdict.get("verdict") or "ALLOW"),
+                    "reason": str(verdict.get("reason") or "manual_browser_read_observed"),
+                    "firewall": verdict,
+                    "execution_authority": False,
+                }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "verdict": "DENY",
+            "reason": "agent_firewall_observation_error:" + str(exc)[:180],
+            "execution_authority": False,
+        }
+    return {"ok": True, "verdict": "OBSERVED", "reason": "agent_firewall_observation_unavailable", "execution_authority": False}
+
 def _extract_readable_html_and_text(html_doc: str, base_url: str) -> Tuple[str, str, str, list]:
     """Return (title, clean_html, plain_text, links)."""
     if BeautifulSoup is None or bleach is None:
@@ -1808,6 +1865,7 @@ def browser_fetch():
         return resp, 204
 
     raw_url = ""
+    data = {}
     if request.method == "GET":
         raw_url = (request.args.get("url") or request.args.get("href") or "").strip()
     else:
@@ -1817,6 +1875,10 @@ def browser_fetch():
     ok, url, err = _validate_fetch_url(raw_url)
     if not ok:
         return _err(err or "Invalid url", 400)
+
+    firewall = _browser_fetch_firewall_preflight(url, data)
+    if not bool(firewall.get("ok", False)):
+        return _err("Research Browser fetch blocked by AgentFirewall", 403, detail=str(firewall.get("reason") or "firewall_blocked"))
 
     timeout = 12
     max_bytes = 2_000_000  # 2MB cap
@@ -1845,10 +1907,12 @@ def browser_fetch():
                 url=resp.url,
                 title=resp.url,
                 clean_html=f"<pre>{bleach.clean(snippet)}</pre>",
-                text=snippet,
-                links=[],
-                content_type=ctype,
-            )
+            text=snippet,
+            links=[],
+            content_type=ctype,
+            agent_firewall=firewall,
+            execution_authority=False,
+        )
 
         chunks = []
         total = 0
@@ -1874,6 +1938,8 @@ def browser_fetch():
             text=plain_text,
             links=links,
             content_type=ctype,
+            agent_firewall=firewall,
+            execution_authority=False,
         )
     except Exception as _fetch_exc:
         if requests is not None and hasattr(requests, "exceptions") and isinstance(_fetch_exc, requests.exceptions.Timeout):

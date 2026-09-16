@@ -14953,6 +14953,76 @@ def api_terminal_status():
     result = smterm.terminal_api_status(payload, caller="Flask:/api/terminal/status")
     return jsonify(result), 200
 
+@app.get("/api/terminal/agents/status")
+def api_terminal_agents_status():
+    if smterm is None:
+        return jsonify({
+            "ok": True,
+            "schema": "SARAHMEMORY_TERMINAL_AGENT_COUNTER_V1",
+            "summary": {},
+            "agent_visibility": {},
+            "firewall_snapshot_available": False,
+            "reason": f"SarahMemoryTerminal.py unavailable: {_SM_TERMINAL_IMPORT_ERROR}",
+            "execution_authority": False,
+            "caller": "Flask:/api/terminal/agents/status",
+            "ts": time.time(),
+        }), 200
+    try:
+        result = smterm.terminal_agent_counter_status(include_firewall_snapshot=True)
+    except AttributeError:
+        result = {
+            "ok": False,
+            "schema": "SARAHMEMORY_TERMINAL_AGENT_COUNTER_V1",
+            "summary": {},
+            "agent_visibility": {},
+            "firewall_snapshot_available": False,
+            "reason": "SarahMemoryTerminal.py does not expose terminal_agent_counter_status yet.",
+            "execution_authority": False,
+            "caller": "Flask:/api/terminal/agents/status",
+            "ts": time.time(),
+        }
+    result.setdefault("execution_authority", False)
+    result.setdefault("caller", "Flask:/api/terminal/agents/status")
+    return jsonify(result), 200
+
+
+@app.get("/api/terminal/agents/scoreboard")
+def api_terminal_agents_scoreboard():
+    section = str(request.args.get("section", "overview") or "overview")
+    try:
+        limit = int(request.args.get("limit", "24") or 24)
+    except Exception:
+        limit = 24
+    if smterm is None:
+        return jsonify({
+            "ok": True,
+            "schema": "SARAHMEMORY_AGENT_SCOREBOARD_V1",
+            "section": section,
+            "summary": {},
+            "details": {},
+            "reason": f"SarahMemoryTerminal.py unavailable: {_SM_TERMINAL_IMPORT_ERROR}",
+            "execution_authority": False,
+            "caller": "Flask:/api/terminal/agents/scoreboard",
+            "ts": time.time(),
+        }), 200
+    try:
+        result = smterm.terminal_agent_scoreboard_status(section=section, limit=limit, include_firewall_snapshot=True)
+    except AttributeError:
+        result = {
+            "ok": False,
+            "schema": "SARAHMEMORY_AGENT_SCOREBOARD_V1",
+            "section": section,
+            "summary": {},
+            "details": {},
+            "reason": "SarahMemoryTerminal.py does not expose terminal_agent_scoreboard_status yet.",
+            "execution_authority": False,
+            "caller": "Flask:/api/terminal/agents/scoreboard",
+            "ts": time.time(),
+        }
+    result.setdefault("execution_authority", False)
+    result.setdefault("caller", "Flask:/api/terminal/agents/scoreboard")
+    return jsonify(result), 200
+
 @app.post("/api/terminal/execute")
 def api_terminal_execute():
     payload = request.get_json(silent=True) or {}
