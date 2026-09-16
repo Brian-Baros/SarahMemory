@@ -12,7 +12,7 @@
 **Project:** SarahMemory Project / SarahMemory AIOS  
 **R&D Start Date:** February 21, 2025  
 **First Public Release:** December 05, 2025  
-**Current Public README Rewrite:** August 20, 2026  
+**Current Public README Rewrite:** September 15, 2026  
 **License:** SarahMemory Community License (SMCL) v2.0 for v9.0.0 and later  
 **Website:** https://www.sarahmemory.com  
 **Repository:** https://github.com/brian-baros/sarahmemory  
@@ -24,23 +24,23 @@
 
 SarahMemory AIOS has completed its **v8.0.0 public proof-of-work phase** and is now entering the **v9.0.0 protected development phase**.
 
-The public repository is being reorganized. Certain source files, workflow details, development internals, and implementation-specific materials are being removed from public view while the project transitions into a more controlled release model.
+This public repository has being reorganized. Certain source files, workflow details, development internals, and implementation-specific materials have changed the project transitions into a more controlled release model.
 
-This is not a development shutdown.
+This is project is still being developed as AI has advanced into more of the Goverance and Safety centertric public view, the exact area in which SarahMemory was based and founded upon.
 
-This is an intellectual-property hardening step while SarahMemory AIOS moves from a broad public development snapshot into a more professional, protected, and collaboration-ready architecture.
+This is an intellectual-property of Brian Lee Baros while SarahMemory transitions from an AIOS into a GCAIOS a broad public development snapshot into a more professional, protected, and collaboration-ready architecture.
 
 ### During This Transition
 
-- Do **not** treat this public repository as a stable installable distribution.
-- Do **not** assume the public code view represents the full current SarahMemory AIOS system.
+- Do **not** treat this public repository as a stable installable dist.
+- Do **not** assume the public code view represents the full current SarahMemory AIOS system. The system is constantly being updated.
 - Do **not** scrape, mirror, train on, or commercially exploit this repository.
 - Do **not** treat removed files as abandoned.
 - Do **not** assume screenshots represent the final v9 or v10 interface.
 - Public documentation will remain available as proof-of-work and project history.
 - Active implementation work continues privately.
 
-The complete v8.0.0 development history and previous README have been backed up locally by the author before this rewrite.
+The complete v8.0.0 development history and previous README have been backed up as DEVREADME by the author before this rewrite.
 
 ---
 
@@ -54,7 +54,7 @@ It is not a cloud-only assistant.
 
 It is not a prompt chain pretending to be an operating system.
 
-SarahMemory AIOS is being developed as an early **Organic AI** architecture: a coordinated AI operating environment where models, tools, memory, governance, voice, vision, interface, networking, diagnostics, and hardware capability are treated as specialized organs inside a larger governed organism.
+SarahMemory GCAIOS is being developed as an early **Organic AI** architecture: a coordinated Governed Cognitive AI operating environment where models, tools, memory, governance, voice, vision, interface, networking, diagnostics, and hardware capability are treated as specialized organs inside a larger governed organism.
 
 ### Core Direction
 
@@ -249,6 +249,17 @@ Publicly documented v9 direction includes:
 - longer release cycles
 - more controlled academic and collaboration pathways
 
+### July-September 2026 — v9.0.0 UI/UX redesigning, AI-Agent Firewall, RoachMotel, CLI Terminal, SMLProtocol, QSML, NAILDE
+
+The project entered a major restructuring and advanced development phase.
+
+Publicly documented v9 includes:
+
+- A Cognitive Language Development environment and IDE (QSML and NAILDE) Natural AI Language Developers Environment, with an SDK  
+- AIAgent Terminal in SarahMemoryTerminal updated, and AI Agent Firewall for CyberSecurity 'SarahMemoryAgentFirewall.py'
+- Advance Shell Desktop Redesigning, now allows Icons and Shortcuts to be created
+- NAILDE SDK allows user to create apps in the system and add them into the ADDONS sections and execute them
+- NAILDE storefront API Bridge updated this will allow users to create Tools, and applications in NAILDE and Trade and Sell them in the SarahMemory AI Driven PowerStore.
 ---
 
 ## Confirmed v8.0.0 Proof-of-Work Areas
