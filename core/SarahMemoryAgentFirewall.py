@@ -26,6 +26,7 @@ import json
 import os
 import re
 import time
+import sys
 import ipaddress
 import socket
 import urllib.parse
@@ -114,6 +115,7 @@ SENSITIVE_TARGET_PATTERNS = (
 )
 ROACHMOTEL_SCHEMA = "SARAHMEMORY_AI_AGENT_ROACHMOTEL_V1"
 LOCAL_TASK_SCHEMA = "SARAHMEMORY_LOCAL_TASK_ENVELOPE_V1"
+AGENT_VISIBILITY_SCHEMA = "SARAHMEMORY_AGENT_VISIBILITY_V1"
 
 LOCAL_OPERATOR_SURFACES = {
     "local_ui_chat",
@@ -231,6 +233,394 @@ def _roach_dirs() -> Dict[str, str]:
 
 def _registry_path() -> str:
     return os.path.join(_roach_dirs()["root"], "outbound_agent_registry.json")
+
+
+def _agent_visibility_roach_paths() -> Dict[str, str]:
+    root = os.path.join(_data_dir(), "devbridge", "agent_firewall")
+    audit = os.path.join(_data_dir(), "audit", "ai_agent_firewall")
+    return {
+        "root": root,
+        "inbound": os.path.join(root, "inbound"),
+        "quarantine": os.path.join(root, "quarantine"),
+        "blocked": os.path.join(root, "blocked"),
+        "released_by_user": os.path.join(root, "released_by_user"),
+        "reports": os.path.join(audit, "reports"),
+        "registry": os.path.join(root, "outbound_agent_registry.json"),
+    }
+
+
+def _agent_visibility_count_dir(path: str, *, limit: int = 512) -> int:
+    try:
+        if not os.path.isdir(path):
+            return 0
+        count = 0
+        with os.scandir(path) as it:
+            for entry in it:
+                if entry.name.startswith("."):
+                    continue
+                count += 1
+                if count >= limit:
+                    break
+        return count
+    except Exception:
+        return 0
+
+
+def _agent_visibility_safe_json(path: str, *, max_bytes: int = 262144) -> Dict[str, Any]:
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > max_bytes:
+            return {}
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _agent_visibility_count_state_reports(paths: Dict[str, str], *, limit: int = 192) -> Dict[str, int]:
+    counts = {"QUARANTINED": 0, "BLOCKED": 0, "CAPTURED_REVIEW": 0}
+    seen = 0
+    for key in ("inbound", "quarantine", "blocked", "reports"):
+        root = paths.get(key) or ""
+        try:
+            if not os.path.isdir(root):
+                continue
+            with os.scandir(root) as it:
+                for entry in it:
+                    if seen >= limit:
+                        return counts
+                    if not entry.is_file() or not entry.name.lower().endswith(".json"):
+                        continue
+                    seen += 1
+                    data = _agent_visibility_safe_json(entry.path)
+                    state = str(data.get("containment_state") or data.get("state") or data.get("status") or "").upper()
+                    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+                    if not state and result:
+                        state = str(result.get("containment_state") or result.get("status") or "").upper()
+                    if state in counts:
+                        counts[state] += 1
+        except Exception:
+            continue
+    return counts
+
+
+def _agent_visibility_active_passports(limit: int = 64) -> Tuple[int, bool, str]:
+    registry = sys.modules.get("SarahMemoryTrustRegistry")
+    error = "trust_registry_not_loaded"
+    if registry is not None and callable(getattr(registry, "list_agent_passports", None)):
+        try:
+            rows = registry.list_agent_passports(status="active", limit=limit)
+            if isinstance(rows, list):
+                return len(rows[:limit]), True, "TrustRegistry"
+        except Exception as exc:
+            error = str(exc)
+    return 0, False, error
+
+
+def _agent_visibility_outbound_fallback(paths: Dict[str, str], *, limit: int = 512) -> int:
+    data = _agent_visibility_safe_json(paths.get("registry") or "")
+    agents = data.get("agents")
+    if isinstance(agents, dict):
+        return min(len(agents), limit)
+    if isinstance(agents, list):
+        return min(len(agents), limit)
+    return 0
+
+
+def _agent_visibility_surface_from_text(text: str) -> str:
+    low = str(text or "").lower()
+    if "codex" in low:
+        return "codex"
+    if "openai" in low or "chatgpt" in low:
+        return "openai"
+    if "mcp" in low:
+        return "mcp"
+    if "browser agent" in low or ("browser" in low and "agent" in low):
+        return "browser_agent"
+    if "nailde" in low:
+        return "nailde"
+    if "devbridge" in low:
+        return "devbridge"
+    if "terminal" in low:
+        return "terminal"
+    return "chat_ui" if "chat" in low else ""
+
+
+def _agent_visibility_redact_text(value: Any, *, limit: int = 180) -> str:
+    text = str(value or "")
+    text = re.sub(r"(?i)(authorization|bearer|token|secret|api[_-]?key|password|cookie)=?\s*[^\\s]+", r"\1=<redacted>", text)
+    text = re.sub(r"(?i)(?<![A-Za-z0-9_-])sk-[A-Za-z0-9_-]{12,}", "sk-<redacted>", text)
+    text = text.replace("\\", "/")
+    parts = [p for p in re.split(r"\s+", text) if p]
+    safe: List[str] = []
+    for part in parts[:24]:
+        if "/" in part or ":" in part:
+            safe.append(os.path.basename(part)[:80] or "<path>")
+        else:
+            safe.append(part[:80])
+    return " ".join(safe)[:limit]
+
+
+def _agent_visibility_match_tokens(text: str) -> List[str]:
+    haystack = str(text or "").lower()
+    strong_tokens = (
+        "codex", "chatgpt", "openai", "claude", "cursor", "windsurf",
+        "mcp", "langchain", "autogpt", "crew", "browser agent",
+    )
+    matched = [tok for tok in strong_tokens if tok in haystack]
+    agent_word = bool(re.search(r"(?<![a-z0-9_-])agent(?![a-z0-9_-])", haystack))
+    agent_context = any(tok in haystack for tok in ("ai", "llm", "browser", "autonomous", "remote", "operator", "tool", "swarm"))
+    if agent_word and agent_context:
+        matched.append("agent")
+    return matched
+
+
+def _agent_visibility_conn_addr(addr: Any) -> Dict[str, Any]:
+    try:
+        ip = getattr(addr, "ip", "")
+        port = getattr(addr, "port", 0)
+        if not ip and isinstance(addr, (tuple, list)) and len(addr) >= 2:
+            ip = addr[0]
+            port = addr[1]
+        return {"ip": str(ip or ""), "port": int(port or 0)}
+    except Exception:
+        return {"ip": "", "port": 0}
+
+
+def _agent_visibility_is_local_ip(ip: str) -> bool:
+    value = str(ip or "").strip().lower()
+    if value in ("127.0.0.1", "::1", "localhost", "0.0.0.0", "::", ""):
+        return True
+    try:
+        parsed = ipaddress.ip_address(value)
+        return bool(parsed.is_loopback or parsed.is_private or parsed.is_link_local)
+    except Exception:
+        return False
+
+
+def _agent_visibility_is_sarahmemory_endpoint(addr: Dict[str, Any]) -> bool:
+    port = int((addr or {}).get("port") or 0)
+    ip = str((addr or {}).get("ip") or "")
+    return port in {8000, 5055} and _agent_visibility_is_local_ip(ip)
+
+
+def _collect_os_agent_surface(max_process_rows: int = 64, psutil_module: Any = None) -> Dict[str, Any]:
+    observations: List[Dict[str, Any]] = []
+    surfaces = {k: 0 for k in ("terminal", "chat_ui", "nailde", "devbridge", "codex", "openai", "browser_agent", "mcp")}
+    risk = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    observed_external_ai_pids = set()
+    sarahmemory_facing_pids = set()
+    active_sarahmemory_connection_count = 0
+    observed_external_network_connections = 0
+    psutil_available = True
+    psutil_error = ""
+
+    try:
+        psutil = psutil_module
+        if psutil is None:
+            import psutil as psutil  # type: ignore
+    except Exception as exc:
+        return {
+            "os_surface_available": False,
+            "psutil_available": False,
+            "psutil_error": str(exc)[:180],
+            "surfaces": surfaces,
+            "risk": risk,
+            "observations": observations,
+            "active_external_ai_processes": 0,
+            "active_external_ai_connections": 0,
+            "observed_external_ai_processes": 0,
+            "observed_external_ai_network_connections": 0,
+            "sarahmemory_facing_external_ai_processes": 0,
+        }
+
+    try:
+        process_iter = getattr(psutil, "process_iter")
+        for idx, proc in enumerate(process_iter(["pid", "name", "exe", "cmdline", "status"])):
+            if idx >= max(0, int(max_process_rows or 64)):
+                break
+            try:
+                info = getattr(proc, "info", {}) or {}
+                name = str(info.get("name") or "")
+                cmdline = " ".join(str(x) for x in list(info.get("cmdline") or [])[:24])
+                exe = str(info.get("exe") or "")
+                haystack = f"{name} {exe} {cmdline}".lower()
+                matched = _agent_visibility_match_tokens(haystack)
+                if not matched:
+                    continue
+                surface = _agent_visibility_surface_from_text(haystack) or ("browser_agent" if "agent" in matched else "chat_ui")
+                if surface in surfaces:
+                    surfaces[surface] += 1
+                pid = int(info.get("pid") or 0)
+                if pid:
+                    observed_external_ai_pids.add(pid)
+                risk_tier = "medium" if surface in {"codex", "openai", "mcp", "browser_agent"} else "low"
+                risk[risk_tier] += 1
+                observations.append({
+                    "classification": "OBSERVED_LOCAL_AI_PROCESS",
+                    "surface": surface,
+                    "risk": risk_tier.upper(),
+                    "pid": pid,
+                    "who": _agent_visibility_redact_text(name, limit=96),
+                    "what": "local_os_process",
+                    "where": "local_host_process_table",
+                    "process": _agent_visibility_redact_text(name, limit=96),
+                    "matched": matched[:6],
+                    "relation_to_sarahmemory": "observed_only_not_confirmed_connected",
+                    "execution_authority": False,
+                })
+            except Exception:
+                continue
+    except Exception as exc:
+        psutil_available = False
+        psutil_error = str(exc)[:180]
+
+    try:
+        net_connections = getattr(psutil, "net_connections", None)
+        if callable(net_connections) and observed_external_ai_pids:
+            for idx, conn in enumerate(net_connections(kind="inet")):
+                if idx >= max(32, int(max_process_rows or 64) * 4):
+                    break
+                pid = getattr(conn, "pid", None)
+                if pid not in observed_external_ai_pids:
+                    continue
+                status = str(getattr(conn, "status", "") or "").upper()
+                laddr = _agent_visibility_conn_addr(getattr(conn, "laddr", None))
+                raddr = _agent_visibility_conn_addr(getattr(conn, "raddr", None))
+                sarahmemory_endpoint = _agent_visibility_is_sarahmemory_endpoint(laddr) or _agent_visibility_is_sarahmemory_endpoint(raddr)
+                if status in {"LISTEN", "ESTABLISHED"}:
+                    observed_external_network_connections += 1
+                    if sarahmemory_endpoint or status == "LISTEN":
+                        active_sarahmemory_connection_count += 1
+                        if pid:
+                            sarahmemory_facing_pids.add(pid)
+                        risk["high"] += 1
+                        observations.append({
+                            "classification": "UNKNOWN_REMOTE_CONTROL" if status == "LISTEN" else "KNOWN_OUTBOUND",
+                            "surface": "browser_agent",
+                            "risk": "HIGH",
+                            "pid": int(pid or 0),
+                            "who": "observed_ai_process",
+                            "what": "listener" if status == "LISTEN" else "sarahmemory_facing_connection",
+                            "where": "local_loopback_or_sarahmemory_port",
+                            "connection_state": status,
+                            "local_port": int(laddr.get("port") or 0),
+                            "remote_port": int(raddr.get("port") or 0),
+                            "relation_to_sarahmemory": "active_connection_or_listener",
+                            "execution_authority": False,
+                        })
+    except Exception as exc:
+        psutil_error = psutil_error or str(exc)[:180]
+
+    return {
+        "os_surface_available": bool(psutil_available),
+        "psutil_available": bool(psutil_available),
+        "psutil_error": psutil_error,
+        "surfaces": surfaces,
+        "risk": risk,
+        "observations": observations[:max(0, int(max_process_rows or 64))],
+        "active_external_ai_processes": len(sarahmemory_facing_pids),
+        "active_external_ai_connections": active_sarahmemory_connection_count,
+        "observed_external_ai_processes": len(observed_external_ai_pids),
+        "observed_external_ai_network_connections": observed_external_network_connections,
+        "sarahmemory_facing_external_ai_processes": len(sarahmemory_facing_pids),
+    }
+
+
+def collect_agent_visibility_snapshot(include_os_surface: bool = True, max_process_rows: int = 64) -> Dict[str, Any]:
+    """Return bounded read-only AI-agent visibility counters without authority."""
+    max_rows = max(0, min(int(max_process_rows or 64), 256))
+    paths = _agent_visibility_roach_paths()
+    active_passports, trust_available, trust_error = _agent_visibility_active_passports(limit=64)
+    fallback_outbound = 0 if trust_available else _agent_visibility_outbound_fallback(paths)
+    roach_counts = {key: _agent_visibility_count_dir(paths.get(key) or "") for key in ("inbound", "quarantine", "blocked", "released_by_user", "reports")}
+    state_counts = _agent_visibility_count_state_reports(paths)
+
+    surfaces = {k: 0 for k in ("terminal", "chat_ui", "nailde", "devbridge", "codex", "openai", "browser_agent", "mcp")}
+    risk = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    observations: List[Dict[str, Any]] = []
+    os_surface = {
+        "os_surface_available": False,
+        "psutil_available": False,
+        "psutil_error": "",
+        "surfaces": dict(surfaces),
+        "risk": dict(risk),
+        "observations": [],
+        "active_external_ai_processes": 0,
+        "active_external_ai_connections": 0,
+        "observed_external_ai_processes": 0,
+        "observed_external_ai_network_connections": 0,
+        "sarahmemory_facing_external_ai_processes": 0,
+    }
+    if include_os_surface:
+        os_surface = _collect_os_agent_surface(max_rows)
+        for key, value in dict(os_surface.get("surfaces") or {}).items():
+            if key in surfaces:
+                surfaces[key] += int(value or 0)
+        for key, value in dict(os_surface.get("risk") or {}).items():
+            if key in risk:
+                risk[key] += int(value or 0)
+        observations.extend(list(os_surface.get("observations") or [])[:max_rows])
+
+    incoming = int(roach_counts.get("inbound") or 0)
+    quarantined = int(roach_counts.get("quarantine") or 0) + int(state_counts.get("QUARANTINED") or 0)
+    blocked = int(roach_counts.get("blocked") or 0) + int(state_counts.get("BLOCKED") or 0)
+    review_required = int(state_counts.get("CAPTURED_REVIEW") or 0) + int(roach_counts.get("reports") or 0)
+    outbound = int(active_passports or fallback_outbound)
+    internal = int(surfaces.get("terminal") or 0) + int(surfaces.get("nailde") or 0) + int(surfaces.get("devbridge") or 0)
+
+    if quarantined or blocked:
+        risk["high"] += quarantined + blocked
+    if review_required:
+        risk["medium"] += review_required
+    if incoming:
+        risk["low"] += incoming
+
+    for classification, count, tier, surface in (
+        ("KNOWN_INCOMING", incoming, "LOW", "terminal"),
+        ("QUARANTINED", quarantined, "HIGH", "browser_agent"),
+        ("BLOCKED", blocked, "HIGH", "browser_agent"),
+        ("REVIEW_REQUIRED", review_required, "MEDIUM", "terminal"),
+    ):
+        if count:
+            observations.append({
+                "classification": classification,
+                "surface": surface,
+                "count": int(count),
+                "risk": tier,
+                "execution_authority": False,
+            })
+
+    return {
+        "schema": AGENT_VISIBILITY_SCHEMA,
+        "ok": True,
+        "timestamp": time.time(),
+        "summary": {
+            "outbound": int(outbound),
+            "internal": int(internal),
+            "incoming": int(incoming),
+            "quarantined": int(quarantined),
+            "blocked": int(blocked),
+            "review_required": int(review_required),
+            "active_passports": int(active_passports),
+            "active_external_ai_processes": int(os_surface.get("active_external_ai_processes") or 0),
+            "active_external_ai_connections": int(os_surface.get("active_external_ai_connections") or 0),
+            "observed_external_ai_processes": int(os_surface.get("observed_external_ai_processes") or 0),
+            "observed_external_ai_network_connections": int(os_surface.get("observed_external_ai_network_connections") or 0),
+            "sarahmemory_facing_external_ai_processes": int(os_surface.get("sarahmemory_facing_external_ai_processes") or 0),
+        },
+        "risk": {k: int(v or 0) for k, v in risk.items()},
+        "surfaces": {k: int(v or 0) for k, v in surfaces.items()},
+        "observations": observations[:max_rows],
+        "trust_registry_available": bool(trust_available),
+        "trust_registry_error": "" if trust_available else str(trust_error or "")[:180],
+        "os_surface_available": bool(os_surface.get("os_surface_available")),
+        "psutil_available": bool(os_surface.get("psutil_available")),
+        "psutil_error": str(os_surface.get("psutil_error") or "")[:180],
+        "ledger_count_available": False,
+        "verdict": "OBSERVED",
+        "execution_authority": False,
+    }
 
 
 def _safe_json_write(path: str, payload: Dict[str, Any]) -> None:
@@ -1419,6 +1809,18 @@ def _run_firewall_assurance_tests() -> List[Dict[str, Any]]:
     tests.append(_guard_test("max_parallel_returns_fifo", int(status["flags"].get("SARAH_AGENT_MAX_PARALLEL_RETURNS") or 0) == 1, "SARAH_AGENT_MAX_PARALLEL_RETURNS should remain 1 for FIFO passport security."))
     tests.append(_guard_test("collision_policy_reject_all", status["flags"].get("SARAH_AGENT_PASSPORT_COLLISION_POLICY") == "reject_all", "Duplicate passports must reject all involved returns."))
     tests.append(_guard_test("replay_policy_collision_lock", status["flags"].get("SARAH_AGENT_PASSPORT_REPLAY_POLICY") == "collision_lock", "Replay attempts must collision-lock passports."))
+    visibility = collect_agent_visibility_snapshot(include_os_surface=False, max_process_rows=0)
+    visibility_counts_ok = (
+        visibility.get("schema") == AGENT_VISIBILITY_SCHEMA
+        and visibility.get("execution_authority") is False
+        and all(isinstance(v, int) for v in dict(visibility.get("summary") or {}).values())
+    )
+    no_psutil = _collect_os_agent_surface(max_process_rows=0, psutil_module=False)
+    tests.append(_guard_test(
+        "agent_visibility_snapshot_returns_counts_without_execution",
+        bool(visibility_counts_ok and no_psutil.get("psutil_available") is False and no_psutil.get("active_external_ai_processes") == 0),
+        "AgentRadar must return integer counters and fail soft when psutil is unavailable.",
+    ))
     return tests
 
 

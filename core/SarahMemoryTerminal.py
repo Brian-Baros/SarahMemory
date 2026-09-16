@@ -2,7 +2,7 @@
 File: SarahMemoryTerminal.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.0.0
-Date: 2026-07-11
+Date: 2026-09-10
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -726,7 +726,9 @@ def _resolve_terminal_agent_skill(payload: Dict[str, Any], task: str) -> Tuple[s
     skill_id = str(payload.get("skill_id") or payload.get("skill") or "").strip()
     low = str(task or "").lower()
     if not skill_id:
-        if any(x in low for x in ("webscrap", "web scrap", "scrape", "crawl", "public web", "website", "news", "latest")):
+        if _terminal_public_market_quote_scope(task, payload):
+            skill_id = "research.public_web"
+        elif any(x in low for x in ("webscrap", "web scrap", "scrape", "crawl", "public web", "website", "news", "latest", "browser", "broswer")):
             skill_id = "research.public_web"
         elif any(x in low for x in ("api", "endpoint", "rest", "graphql")):
             skill_id = "research.approved_api"
@@ -750,9 +752,31 @@ def _terminal_agent_backend(payload: Dict[str, Any], task: str) -> str:
         return "openai_agents"
     if "openclaw" in low:
         return "openclaw"
-    if "browser" in low or "web" in low or "scrape" in low:
+    if "browser" in low or "broswer" in low or "web" in low or "scrape" in low:
         return "browser_agent"
     return "local_terminal_agent"
+
+
+def _terminal_public_market_quote_scope(task: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve a small set of public market quote missions into explicit GET scope."""
+    payload = payload if isinstance(payload, dict) else {}
+    if _as_string_list(payload.get("allowed_sources") or payload.get("allowed_resources") or payload.get("source_scope") or payload.get("sources") or payload.get("source")):
+        return {}
+    text = re.sub(r"[^a-z0-9^.\s-]+", " ", str(task or "").lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    wants_quote = any(x in text for x in ("price", "closing", "close", "closed", "quote", "market", "stock", "index"))
+    wants_djia = any(x in text for x in ("djia", "dow jones", "dow-jones", "dow industrial", "^dji"))
+    if wants_quote and wants_djia:
+        return {
+            "kind": "market_quote",
+            "symbol": "^DJI",
+            "display_name": "Dow Jones Industrial Average",
+            "source_url": "https://query1.finance.yahoo.com/v8/finance/chart/%5EDJI?range=1d&interval=1d",
+            "source_label": "Yahoo Finance public chart endpoint",
+            "requires_passport": True,
+            "execution_authority": False,
+        }
+    return {}
 
 
 def _task_id_from_payload(payload: Dict[str, Any]) -> str:
@@ -777,7 +801,10 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
     payload = _merge_terminal_agent_payload(task, payload)
     skill_id, skill = _resolve_terminal_agent_skill(payload, task)
     backend = _terminal_agent_backend(payload, task)
+    resolved_public_data_scope = _terminal_public_market_quote_scope(task, payload)
     allowed_sources = _as_string_list(payload.get("allowed_sources") or payload.get("allowed_resources") or payload.get("source_scope") or payload.get("sources") or payload.get("source"))
+    if not allowed_sources and resolved_public_data_scope.get("source_url"):
+        allowed_sources = [str(resolved_public_data_scope.get("source_url") or "")]
     denied_sources = _as_string_list(payload.get("denied_sources") or payload.get("denied_resources") or payload.get("denied_source") or payload.get("denied_resource")) or list(_DEFAULT_TERMINAL_AGENT_DENIED_RESOURCES)
     allowed_capabilities = _as_string_list(payload.get("allowed_capabilities") or payload.get("capabilities") or payload.get("capability")) or list(skill.get("allowed_capabilities") or [])
     denied_capabilities = _as_string_list(payload.get("denied_capabilities")) or list(skill.get("denied_capabilities") or _DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES)
@@ -833,6 +860,7 @@ def _build_terminal_task_truth(task: str, payload: Optional[Dict[str, Any]], *, 
         "session_id": str(session_id or "")[:180],
         "cwd": str(cwd or "")[:500],
         "pretoken": pretoken,
+        "resolved_public_data_scope": _redact_terminal_agent_payload(resolved_public_data_scope),
     }
 
 
@@ -1222,7 +1250,9 @@ def _terminal_adapter_firewall_fallback(request_packet: Dict[str, Any], *, exter
     blocked = {"shell", "filesystem_write", "credential_access", "post_mutation", "delete", "device_control", "devbridge_apply", "self_authorization"}
     if requested_caps.intersection(blocked):
         return {"ok": False, "verdict": "DENY", "reason": "dangerous_capability_requested", "execution_authority": False}
-    if not blocked.issubset(denied_caps.union(blocked)):
+    # hardened change to denided_caps instead of denied_caps.union- blocked
+    if not blocked.issubset(denied_caps):
+    #if not blocked.issubset(denied_caps.union(blocked)): # old line Change for firewall capablity designer note
         return {"ok": False, "verdict": "DENY", "reason": "dangerous_capability_boundary_missing", "execution_authority": False}
     if external:
         parsed = urllib.parse.urlparse(resource)
@@ -1816,6 +1846,177 @@ def _execute_passported_external_get_adapter(task_text: str, task_truth: Dict[st
         "verified_answer_state": compare_result.get("verified_answer_state") or ("verified_external_read_only_adapter_result" if accepted else "external_adapter_result_rejected"),
         "execution_authority": False,
     }
+
+
+def _terminal_public_market_quote_answer(task_text: str, task_truth: Dict[str, Any], adapter_execution: Dict[str, Any]) -> str:
+    """Build a bounded presentation line from verified public market quote JSON."""
+    scope = task_truth.get("resolved_public_data_scope") if isinstance(task_truth, dict) else {}
+    if not isinstance(scope, dict) or str(scope.get("kind") or "") != "market_quote":
+        return ""
+    if not isinstance(adapter_execution, dict) or not bool(adapter_execution.get("ok")):
+        return ""
+    adapter_result = adapter_execution.get("adapter_result") if isinstance(adapter_execution.get("adapter_result"), dict) else {}
+    responses = [x for x in list(adapter_result.get("responses") or []) if isinstance(x, dict)]
+    if not responses:
+        return ""
+    body = responses[0].get("body_json") if isinstance(responses[0].get("body_json"), dict) else {}
+    try:
+        result = ((body.get("chart") or {}).get("result") or [])[0]
+        meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+        quote = (((result.get("indicators") or {}).get("quote") or [{}])[0])
+        closes = [x for x in list((quote or {}).get("close") or []) if isinstance(x, (int, float))]
+        timestamps = [x for x in list(result.get("timestamp") or []) if isinstance(x, (int, float))]
+    except Exception:
+        return ""
+    close_value = closes[-1] if closes else None
+    live_value = meta.get("regularMarketPrice")
+    previous_close = meta.get("previousClose") or meta.get("chartPreviousClose")
+    value = close_value if isinstance(close_value, (int, float)) else live_value if isinstance(live_value, (int, float)) else previous_close
+    if not isinstance(value, (int, float)):
+        return ""
+    label = "latest reported close" if isinstance(close_value, (int, float)) else "latest reported value"
+    date_text = ""
+    if timestamps:
+        try:
+            date_text = datetime.fromtimestamp(float(timestamps[-1])).date().isoformat()
+        except Exception:
+            date_text = ""
+    source_label = str(scope.get("source_label") or "public market-data source")
+    display_name = str(scope.get("display_name") or "Market index")
+    symbol = str(scope.get("symbol") or "").strip()
+    number = f"{float(value):,.2f}"
+    dated = f" for {date_text}" if date_text else ""
+    return (
+        f"{display_name}" + (f" ({symbol})" if symbol else "") +
+        f" {label}{dated}: {number}. "
+        f"Source: {source_label}. Captured by a passported read-only SarahMemory agent; execution_authority=false."
+    )
+
+
+def terminal_browser_agent_fetch_guard(url: str, payload: Optional[Dict[str, Any]] = None, *, caller: str = "browser") -> Dict[str, Any]:
+    """Verify an issued SarahMemory browser-agent read before Research Browser fetches it.
+
+    This helper performs no network I/O. It verifies the supplied passport scope
+    and delegates the read-only boundary decision to AgentFirewall.
+    """
+    payload = payload if isinstance(payload, dict) else {}
+    target = str(url or "").strip()
+    task_id = str(payload.get("task_id") or payload.get("mission_task_id") or "").strip()[:180]
+    if not task_id:
+        task_id = _task_id_from_payload(payload)
+    task_text = str(payload.get("task") or payload.get("text") or "browser_agent_fetch").strip()[:4000]
+    guard_payload = {
+        **payload,
+        "task_id": task_id,
+        "backend": payload.get("backend") or "browser_agent",
+        "skill": payload.get("skill") or payload.get("skill_id") or "research.public_web",
+        "allowed_sources": [target],
+        "allowed_capabilities": payload.get("allowed_capabilities") or payload.get("capabilities") or ["read_public_web", "summarize", "return_data"],
+        "denied_capabilities": payload.get("denied_capabilities") or [
+            "shell",
+            "filesystem_write",
+            "credential_access",
+            "post_mutation",
+            "delete",
+            "driver_control",
+            "devbridge_apply",
+            "self_authorization",
+        ],
+        "allowed_methods": ["GET"],
+    }
+    task_truth = _build_terminal_task_truth(task_text, guard_payload, session_id=str(payload.get("session_id") or ""), cwd=str(payload.get("workdir") or ""), operation="browser_agent_fetch")
+    passport_scope = _verify_terminal_agent_passport_scope(task_truth, task_id)
+    if not bool(passport_scope.get("ok")):
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="BROWSER_AGENT_FETCH_GUARD",
+            event_type="BROWSER_AGENT_FETCH_BLOCKED",
+            verdict="BLOCK",
+            risk="high",
+            task=task_text,
+            details=str(passport_scope.get("reason") or "passport_scope_failed"),
+            metadata={"caller": caller, "url": target, "passport_id": task_truth.get("passport_id")},
+            output=passport_scope,
+        )
+        return {"ok": False, "blocked": True, "reason": str(passport_scope.get("reason") or "passport_scope_failed"), "passport_scope": passport_scope, "execution_authority": False}
+    try:
+        import SarahMemoryAgentFirewall as firewall  # type: ignore
+        enforce = getattr(firewall, "enforce_read_only_adapter_request", None)
+    except Exception as exc:
+        enforce = None
+        fw_error = str(exc)[:180]
+    else:
+        fw_error = ""
+    request_packet = {
+        "method": "GET",
+        "resource": target,
+        "allowed_sources": [target],
+        "allowed_capabilities": list(task_truth.get("allowed_capabilities") or []),
+        "denied_capabilities": list(task_truth.get("denied_capabilities") or []),
+        "passport_scope": passport_scope,
+        "task_id": task_id,
+        "external_network": True,
+        "adapter": "browser_agent_research_fetch_v1",
+        "execution_authority": False,
+    }
+    firewall_result = enforce(request_packet) if callable(enforce) else {"ok": False, "verdict": "DENY", "reason": fw_error or "agent_firewall_enforcer_unavailable", "execution_authority": False}
+    _record_terminal_agent_task_event(
+        task_id,
+        stage="BROWSER_AGENT_FETCH_GUARD",
+        event_type="BROWSER_AGENT_FETCH_ALLOWED" if firewall_result.get("ok") else "BROWSER_AGENT_FETCH_BLOCKED",
+        verdict="ALLOW" if firewall_result.get("ok") else "BLOCK",
+        risk="medium" if firewall_result.get("ok") else "high",
+        task=task_text,
+        details=str(firewall_result.get("reason") or "browser_agent_fetch_guard_complete"),
+        metadata={"caller": caller, "url": target, "passport_id": task_truth.get("passport_id")},
+        output=firewall_result,
+    )
+    return {
+        "ok": bool(firewall_result.get("ok")),
+        "blocked": not bool(firewall_result.get("ok")),
+        "reason": None if firewall_result.get("ok") else str(firewall_result.get("reason") or "agent_firewall_blocked"),
+        "passport_scope": passport_scope,
+        "firewall": firewall_result,
+        "execution_authority": False,
+    }
+
+
+def _terminal_browser_agent_surface_requested(task_truth: Dict[str, Any], payload: Optional[Dict[str, Any]]) -> bool:
+    payload = payload if isinstance(payload, dict) else {}
+    backend = str(task_truth.get("backend") or payload.get("backend") or "").strip().lower()
+    if backend == "browser_agent":
+        return True
+    for key in ("use_browser", "browser_surface", "research_browser", "agent_browser"):
+        value = payload.get(key)
+        if isinstance(value, bool) and value:
+            return True
+        if str(value or "").strip().lower() in {"1", "true", "yes", "on", "browser", "research"}:
+            return True
+    return False
+
+
+def _terminal_browser_agent_ui_actions(task_truth: Dict[str, Any], task_id: str, task_text: str) -> List[Dict[str, Any]]:
+    sources = [str(x or "").strip() for x in list(task_truth.get("allowed_sources") or []) if str(x or "").strip()]
+    url = sources[0] if sources else ""
+    payload = {
+        "reason": "terminal_browser_agent",
+        "task_id": str(task_id or ""),
+        "passport_id": str(task_truth.get("passport_id") or ""),
+        "backend": str(task_truth.get("backend") or "browser_agent"),
+        "skill": str(task_truth.get("skill_id") or "research.public_web"),
+        "agent_request": True,
+        "task": str(task_text or "")[:500],
+    }
+    actions: List[Dict[str, Any]] = [
+        {"type": "navigate", "payload": {"screen": "research", "app": "research", "reason": "terminal_browser_agent"}},
+        {"type": "nav.set_screen", "payload": {"screen": "research", "reason": "terminal_browser_agent"}},
+        {"type": "desktop.set_app", "payload": {"app": "research", "reason": "terminal_browser_agent"}},
+        {"type": "window.open", "payload": {"id": "research", "reason": "terminal_browser_agent"}},
+        {"type": "window.focus", "payload": {"id": "research", "reason": "terminal_browser_agent"}},
+    ]
+    if url:
+        actions.append({"type": "research_open", "payload": {**payload, "url": url}})
+    return actions
 
 
 def _terminal_task_status(task_id: str) -> Dict[str, Any]:
@@ -3173,7 +3374,7 @@ def execute_terminal_agent_task(
             },
         }
         try:
-            task_verdict = firewall.inspect_payload(task_payload, source=f"{caller}.terminal_agent_task", remote_addr="127.0.0.1")
+            task_verdict = firewall.inspect_payload(task_payload, source="terminal_local", remote_addr="127.0.0.1")
         except Exception as exc:
             task_verdict = {"ok": False, "verdict": "ERROR", "reason": str(exc), "risk_tier": "UNKNOWN", "containment_state": "ERROR"}
     else:
@@ -3235,6 +3436,8 @@ def execute_terminal_agent_task(
 
     adapter_execution: Optional[Dict[str, Any]] = None
     adapter_reason = ""
+    ui_actions: List[Dict[str, Any]] = []
+    browser_agent_surface = _terminal_browser_agent_surface_requested(task_truth, payload)
 
     status = {
         "mode": "terminal_agent",
@@ -3246,7 +3449,8 @@ def execute_terminal_agent_task(
         "skill_id": str(task_truth.get("skill_id") or ""),
         "allowed_sources": list(task_truth.get("allowed_sources") or []),
         "api_key_aliases": list(task_truth.get("api_key_aliases") or []),
-        "execution_authority": "inspect_or_propose_only",
+        "authority_mode": "inspect_or_propose_only",
+        "execution_authority": False,
         "shell_execution": False,
         "tool_execution": False,
         "network_execution": False,
@@ -3340,7 +3544,37 @@ def execute_terminal_agent_task(
         else:
             response_count = len(((adapter_execution.get("adapter_result") or {}).get("responses") or []))
             receipt_line = ", ".join(str(x) for x in list(adapter_execution.get("receipt_ids") or [])[:6])
-            reply = "PASS / EXTERNAL_READ_ONLY_ADAPTER\nVerified passported external HTTPS GET adapter result captured and compared.\n" + f"Sources read: {response_count}." + (f"\nReceipt IDs: {receipt_line}" if receipt_line else "") + "\n\n" + reply
+            presentation = _terminal_public_market_quote_answer(task_text, task_truth, adapter_execution)
+            if presentation:
+                status["verified_answer"] = presentation
+            reply = (
+                "PASS / EXTERNAL_READ_ONLY_ADAPTER\n"
+                "Verified passported external HTTPS GET adapter result captured and compared.\n"
+                + f"Sources read: {response_count}."
+                + (f"\n{presentation}" if presentation else "")
+                + (f"\nReceipt IDs: {receipt_line}" if receipt_line else "")
+                + "\n\n"
+                + reply
+            )
+
+    if (
+        not blocked
+        and browser_agent_surface
+        and _terminal_agent_command_verb(task_text) == "launch"
+        and str(task_truth.get("skill_id") or "") in _EXTERNAL_GET_ADAPTER_SKILLS
+        and bool(_truthy_confirmation(payload, task_text))
+    ):
+        ui_actions = _terminal_browser_agent_ui_actions(task_truth, task_id, task_text)
+        status["browser_agent_surface"] = True
+        status["browser_agent_firewall_route"] = "Research Browser fetch -> terminal_browser_agent_fetch_guard -> AgentFirewall"
+        status["browser_agent_actions"] = ui_actions
+        reply = (
+            "PASS / BROWSER_AGENT_SURFACE\n"
+            "SarahMemory issued a passported browser-agent task to the built-in Research Browser.\n"
+            "The Research Browser is being brought to the front and its fetch route must pass Terminal passport scope plus AgentFirewall before reading the source.\n"
+            "No shell, filesystem write, driver action, DevBridge apply, or autonomous authority was granted.\n\n"
+            + reply
+        )
 
     log_terminal_event(
         "TerminalAgentTask",
@@ -3376,7 +3610,7 @@ def execute_terminal_agent_task(
         "adapter_execution": adapter_execution or {},
         "receipt_ids": list((adapter_execution or {}).get("receipt_ids") or []),
         "verified_answer_state": (adapter_execution or {}).get("verified_answer_state") if isinstance(adapter_execution, dict) else None,
-        "actions": [],
+        "actions": ui_actions,
         "execution_authority": False,
         "ts": ts,
     }
@@ -3713,6 +3947,267 @@ def terminal_api_status(payload: Optional[Dict[str, Any]] = None, *, caller: str
     }
 
 
+def _terminal_counter_connect_readonly() -> Optional[sqlite3.Connection]:
+    db_path = _system_logs_db()
+    try:
+        if not os.path.isfile(db_path):
+            return None
+        uri = "file:" + urllib.parse.quote(os.path.abspath(db_path).replace("\\", "/"), safe="/:") + "?mode=ro"
+        return sqlite3.connect(uri, uri=True)
+    except Exception:
+        return None
+
+
+def _terminal_counter_table_exists(cur: sqlite3.Cursor, table: str) -> bool:
+    try:
+        row = cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1", (table,)).fetchone()
+        return bool(row)
+    except Exception:
+        return False
+
+
+def _terminal_counter_count(cur: sqlite3.Cursor, table: str, where: str = "", params: Tuple[Any, ...] = ()) -> int:
+    try:
+        if not _terminal_counter_table_exists(cur, table):
+            return 0
+        sql = "SELECT COUNT(*) FROM " + table
+        if where:
+            sql += " WHERE " + where
+        row = cur.execute(sql, params).fetchone()
+        return int((row or [0])[0] or 0)
+    except Exception:
+        return 0
+
+
+def _terminal_scoreboard_safe_text(value: Any, limit: int = 260) -> str:
+    """Return bounded display text for read-only scoreboard rows."""
+    text = str(value or "")
+    if not text:
+        return ""
+    text = re.sub(r"(?i)(api[_-]?key|token|secret|password|passwd|authorization|bearer)\s*[:=]\s*[^,\s]+", r"\1=[REDACTED]", text)
+    text = re.sub(r"(?i)(?<![A-Za-z0-9_-])(sk-[A-Za-z0-9_-]{8,})", "[REDACTED_KEY]", text)
+    text = text.replace("\r", " ").replace("\n", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    max_len = max(32, int(limit or 260))
+    return text[:max_len]
+
+
+def _terminal_scoreboard_json(value: Any) -> Dict[str, Any]:
+    try:
+        data = json.loads(str(value or "{}"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _terminal_scoreboard_rows(cur: sqlite3.Cursor, sql: str, params: Tuple[Any, ...], limit: int) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    try:
+        for row in cur.execute(sql, params + (max(1, min(int(limit or 24), 100)),)).fetchall():
+            item = dict(row)
+            meta = _terminal_scoreboard_json(item.pop("meta_json", "") if "meta_json" in item else "")
+            passport_json = _terminal_scoreboard_json(item.pop("passport_json", "") if "passport_json" in item else "")
+            for key in list(item.keys()):
+                if item[key] is None:
+                    item[key] = ""
+                elif isinstance(item[key], str):
+                    item[key] = _terminal_scoreboard_safe_text(item[key], 360 if key in ("objective", "details") else 180)
+            if meta:
+                item["receipt_id"] = _terminal_scoreboard_safe_text(meta.get("receipt_id") or "", 180)
+                item["containment_state"] = _terminal_scoreboard_safe_text(meta.get("containment_state") or "", 80)
+                item["payload_sha256"] = _terminal_scoreboard_safe_text(meta.get("payload_sha256") or "", 96)
+            if passport_json:
+                item["network_allowed"] = bool(passport_json.get("network_allowed", False))
+                item["allowed_resources_count"] = len(list(passport_json.get("allowed_resources") or [])[:64])
+                item["denied_resources_count"] = len(list(passport_json.get("denied_resources") or [])[:64])
+            item["execution_authority"] = False
+            rows.append(item)
+    except Exception:
+        return rows
+    return rows
+
+
+def terminal_agent_scoreboard_status(section: str = "overview", limit: int = 24, include_firewall_snapshot: bool = True) -> Dict[str, Any]:
+    """Read-only sanitized Agent Scoreboard detail view."""
+    requested_section = str(section or "overview").strip().lower().replace("-", "_")
+    allowed_sections = {"overview", "observed", "outbound", "returned", "quarantined", "blocked", "review", "passports"}
+    if requested_section not in allowed_sections:
+        requested_section = "overview"
+    row_limit = max(1, min(int(limit or 24), 100))
+    status = terminal_agent_counter_status(include_firewall_snapshot=include_firewall_snapshot)
+    details: Dict[str, List[Dict[str, Any]]] = {
+        "outbound": [],
+        "observed": [],
+        "returned": [],
+        "quarantined": [],
+        "blocked": [],
+        "review": [],
+        "passports": [],
+    }
+    tables_available: Dict[str, bool] = dict(status.get("tables_available") or {})
+    con = _terminal_counter_connect_readonly()
+    try:
+        if con is not None:
+            con.row_factory = sqlite3.Row
+            cur = con.cursor()
+            for table in ("terminal_agent_tasks", "terminal_agent_events", "terminal_agent_passports", "terminal_agent_artifacts"):
+                tables_available[table] = _terminal_counter_table_exists(cur, table)
+
+            if requested_section in ("overview", "outbound", "passports"):
+                details["outbound"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT passport_id,task_id,agent_id,mission_id,backend,skill_id,status,issued_ts,expires_ts,passport_hash,passport_json "
+                    "FROM terminal_agent_passports WHERE LOWER(status) IN ('active','issued','departed') ORDER BY issued_ts DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+                details["passports"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT passport_id,task_id,agent_id,mission_id,backend,skill_id,status,issued_ts,expires_ts,passport_hash,passport_json "
+                    "FROM terminal_agent_passports ORDER BY issued_ts DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+
+            if requested_section in ("overview", "returned"):
+                details["returned"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT ts,task_id,stage,event_type,verdict,risk,receipt_hash,details,meta_json "
+                    "FROM terminal_agent_events WHERE LOWER(event_type) LIKE '%return%' OR LOWER(event_type) LIKE '%result%' OR LOWER(stage)='roachmotel' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+
+            if requested_section in ("overview", "quarantined"):
+                details["quarantined"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT artifact_id,task_id,agent_id,passport_id,artifact_type,source_type,payload_hash,quarantine_status,compare_status,memory_write_status,meta_json "
+                    "FROM terminal_agent_artifacts WHERE LOWER(COALESCE(quarantine_status,'')) IN ('quarantined','quarantine','captured_review') "
+                    "ORDER BY artifact_id DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+
+            if requested_section in ("overview", "blocked"):
+                details["blocked"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT task_id,created_ts,updated_ts,status,objective,backend,skill_id,risk_level,session_id,cwd,current_stage,completion_state "
+                    "FROM terminal_agent_tasks WHERE LOWER(status) IN ('blocked','denied','hold','failed') ORDER BY updated_ts DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+
+            if requested_section in ("overview", "review"):
+                details["review"] = _terminal_scoreboard_rows(
+                    cur,
+                    "SELECT ts,task_id,stage,event_type,verdict,risk,receipt_hash,details,meta_json "
+                    "FROM terminal_agent_events WHERE LOWER(COALESCE(verdict,'')) LIKE '%review%' OR LOWER(COALESCE(event_type,'')) LIKE '%review%' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    tuple(),
+                    row_limit,
+                )
+    finally:
+        try:
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
+
+    if requested_section in ("overview", "observed"):
+        raw_observations = list(dict(status.get("agent_visibility") or {}).get("observations") or [])
+        observed_rows: List[Dict[str, Any]] = []
+        for obs in raw_observations[:row_limit]:
+            if not isinstance(obs, dict):
+                continue
+            observed_rows.append({
+                "classification": _terminal_scoreboard_safe_text(obs.get("classification") or "", 96),
+                "surface": _terminal_scoreboard_safe_text(obs.get("surface") or "", 96),
+                "risk": _terminal_scoreboard_safe_text(obs.get("risk") or "", 32),
+                "who": _terminal_scoreboard_safe_text(obs.get("who") or obs.get("process") or "", 120),
+                "what": _terminal_scoreboard_safe_text(obs.get("what") or obs.get("connection_state") or "", 120),
+                "where": _terminal_scoreboard_safe_text(obs.get("where") or obs.get("relation_to_sarahmemory") or "", 160),
+                "pid": int(obs.get("pid") or 0),
+                "count": int(obs.get("count") or 0),
+                "relation_to_sarahmemory": _terminal_scoreboard_safe_text(obs.get("relation_to_sarahmemory") or "", 160),
+                "execution_authority": False,
+            })
+        details["observed"] = observed_rows
+
+    return {
+        "ok": True,
+        "schema": "SARAHMEMORY_AGENT_SCOREBOARD_V1",
+        "section": requested_section,
+        "limit": row_limit,
+        "summary": status.get("summary") or {},
+        "agent_visibility": status.get("agent_visibility") or {},
+        "tables_available": tables_available,
+        "details": details,
+        "execution_authority": False,
+        "ts": datetime.now().isoformat(),
+    }
+
+
+def terminal_agent_counter_status(include_firewall_snapshot: bool = True) -> Dict[str, Any]:
+    """Read-only Terminal agent counter snapshot for AgentRadar UI visibility."""
+    summary = {
+        "tasks_active": 0,
+        "tasks_blocked": 0,
+        "tasks_completed": 0,
+        "passports_active": 0,
+        "passports_issued": 0,
+        "passports_consumed": 0,
+        "artifacts_quarantined": 0,
+        "events_blocked": 0,
+        "events_review_required": 0,
+    }
+    tables_available: Dict[str, bool] = {}
+    con = _terminal_counter_connect_readonly()
+    try:
+        if con is not None:
+            cur = con.cursor()
+            for table in ("terminal_agent_tasks", "terminal_agent_events", "terminal_agent_passports", "terminal_agent_artifacts"):
+                tables_available[table] = _terminal_counter_table_exists(cur, table)
+            summary["tasks_active"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) NOT IN ('blocked','denied','failed','complete','completed','cancelled','canceled')")
+            summary["tasks_blocked"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) IN ('blocked','denied','hold','failed')")
+            summary["tasks_completed"] = _terminal_counter_count(cur, "terminal_agent_tasks", "LOWER(status) IN ('complete','completed')")
+            summary["passports_active"] = _terminal_counter_count(cur, "terminal_agent_passports", "LOWER(status) IN ('active','issued','departed')")
+            summary["passports_issued"] = _terminal_counter_count(cur, "terminal_agent_passports", "LOWER(status) IN ('issued','active','departed','consumed','closed','revoked')")
+            summary["passports_consumed"] = _terminal_counter_count(cur, "terminal_agent_passports", "LOWER(status) IN ('consumed','closed')")
+            summary["artifacts_quarantined"] = _terminal_counter_count(cur, "terminal_agent_artifacts", "LOWER(COALESCE(quarantine_status,'')) IN ('quarantined','quarantine','captured_review')")
+            summary["events_blocked"] = _terminal_counter_count(cur, "terminal_agent_events", "LOWER(COALESCE(verdict,'')) IN ('block','blocked','deny','denied') OR LOWER(COALESCE(event_type,'')) LIKE '%block%'")
+            summary["events_review_required"] = _terminal_counter_count(cur, "terminal_agent_events", "LOWER(COALESCE(verdict,'')) LIKE '%review%' OR LOWER(COALESCE(event_type,'')) LIKE '%review%'")
+    finally:
+        try:
+            if con is not None:
+                con.close()
+        except Exception:
+            pass
+
+    firewall_snapshot: Dict[str, Any] = {}
+    firewall_error = ""
+    if include_firewall_snapshot:
+        try:
+            import SarahMemoryAgentFirewall as firewall  # type: ignore
+            fn = getattr(firewall, "collect_agent_visibility_snapshot", None)
+            if callable(fn):
+                firewall_snapshot = fn(include_os_surface=True, max_process_rows=64)
+        except Exception as exc:
+            firewall_error = str(exc)[:240]
+
+    return {
+        "ok": True,
+        "schema": "SARAHMEMORY_TERMINAL_AGENT_COUNTER_V1",
+        "summary": {k: int(v or 0) for k, v in summary.items()},
+        "tables_available": tables_available,
+        "agent_visibility": firewall_snapshot,
+        "firewall_snapshot_available": bool(firewall_snapshot),
+        "firewall_error": firewall_error,
+        "execution_authority": False,
+        "ts": datetime.now().isoformat(),
+    }
+
+
 def terminal_api_execute(payload: Dict[str, Any], *, caller: str = "api") -> Dict[str, Any]:
     """
     Thin adapter for a Flask route:
@@ -3827,4 +4322,3 @@ def sml_terminal_packet(command_text, payload=None, context_packet=None):
     from SarahMemorySMLProtocol import sml_build_ingress_packet
     return sml_build_ingress_packet(str(command_text or ""), payload=payload or {}, context_packet=context_packet or {}, caller="SarahMemoryTerminal")
 # --- SML TERMINAL SPECIALIZATION END ---
-
