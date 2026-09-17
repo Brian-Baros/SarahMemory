@@ -4946,6 +4946,7 @@ def api_ui_contracts():
             "research": {"ready": has("/api/research/search"), "backend": "SarahMemoryResearch.py via app.py compatibility contract"},
             "files": {"ready": has("/api/files/analyze") or has("/api/files/capabilities"), "backend": "appsys.py + app.py compatibility contract"},
             "ranking": {"ready": has("/api/ranking") and has("/api/ranking/stats"), "backend": "local meta.db ranking bridge"},
+            "smugcc": {"ready": has("/api/smugcc/status") and has("/api/smugcc/schema") and has("/api/smugcc/validate"), "backend": "SarahMemorySMUGCC.py contract-only bridge"},
         }
         return jsonify({
             "ok": True,
@@ -4965,6 +4966,83 @@ def api_ui_contracts():
         }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.ui_contracts.v1"}), 500
+
+
+def _smugcc_core():
+    """Load the contract-only SMUGCC core module for read-only API surfaces."""
+    import importlib
+    return importlib.import_module("SarahMemorySMUGCC")
+
+
+@app.get("/api/smugcc/status")
+def api_smugcc_status():
+    """Read-only SMUGCC status. No execution, no passport issuance."""
+    try:
+        mod = _smugcc_core()
+        return jsonify(mod.smugcc_status()), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.status.v1"}), 500
+
+
+@app.get("/api/smugcc/schema")
+def api_smugcc_schema():
+    """Read-only canonical SMUGCC envelope schema."""
+    try:
+        mod = _smugcc_core()
+        return jsonify({
+            "ok": True,
+            "schema": "SarahMemory.SMUGCC.schema_view.v1",
+            "contract_schema": mod.SMUGCC_SCHEMA,
+            "contract_version": mod.SMUGCC_CONTRACT_VERSION,
+            "envelope": mod.smugcc_schema_view(),
+            "adapters": mod.smugcc_adapter_declarations(),
+            "ownership": mod.smugcc_ownership_map(),
+            "execution_authority": False,
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.schema_view.v1"}), 500
+
+
+@app.get("/api/smugcc/compatibility")
+def api_smugcc_compatibility():
+    """Read-only SMUGCC compatibility report for known adapter declarations."""
+    try:
+        mod = _smugcc_core()
+        return jsonify(mod.smugcc_compatibility_report()), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.compatibility_report.v1"}), 500
+
+
+@app.route("/api/smugcc/validate", methods=["GET", "POST"])
+def api_smugcc_validate():
+    """Validate a submitted SMUGCC envelope without executing it."""
+    try:
+        mod = _smugcc_core()
+        if str(getattr(request, "method", "GET")).upper() == "POST":
+            envelope = request.get_json(silent=True)
+            if not isinstance(envelope, dict):
+                return jsonify({"ok": False, "error": "expected_json_object", "schema": mod.SMUGCC_SCHEMA, "execution_authority": False}), 400
+            return jsonify(mod.validate_smugcc_envelope(envelope)), 200
+        sample = mod.build_smugcc_envelope(
+            identity={"subject_id": "example:external", "provider": "example", "origin": "external"},
+            protocol={"source_protocol": "example", "adapter_id": "generic_rest_tool"},
+            mission={
+                "mission_id": "example-mission",
+                "task_id": "example-task",
+                "objective": "Validate contract envelope only.",
+                "intent": "contract_validation",
+                "requested_by": "api_smugcc_validate",
+            },
+        )
+        return jsonify({
+            "ok": True,
+            "schema": "SarahMemory.SMUGCC.validation_endpoint.v1",
+            "sample": sample,
+            "sample_validation": mod.validate_smugcc_envelope(sample),
+            "execution_authority": False,
+        }), 200
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.validation_endpoint.v1"}), 500
 
 
 @app.get("/api/runtime/thrash/status")
