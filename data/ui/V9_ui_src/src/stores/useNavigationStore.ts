@@ -1,4 +1,4 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 /**
@@ -16,6 +16,7 @@ export type MobileScreen =
   | "dlengine"
   | "nailde"
   | "device-manager"
+  | "smugcc"
   | "terminal"
   | "addons"
   | "settings";
@@ -29,6 +30,7 @@ export type DesktopApp =
   | "dlengine"
   | "nailde"
   | "device-manager"
+  | "smugcc"
   | "terminal"
   | "history"
   | "addons"
@@ -44,6 +46,7 @@ export const SCREEN_ORDER: MobileScreen[] = [
   "research",
   "dlengine",
   "device-manager",
+  "smugcc",
   "nailde",
   "terminal",
   "avatar",
@@ -146,6 +149,7 @@ export const useNavigationStore = create<NavigationState>()(
             studios: "studio",
             dlengine: "dlengine",
             "device-manager": "device-manager",
+            smugcc: "smugcc",
             nailde: "nailde",
             terminal: "terminal",
             history: "history",
@@ -193,6 +197,7 @@ export const useNavigationStore = create<NavigationState>()(
             studio: "studio",
             dlengine: "dlengine",
             "device-manager": "device-manager",
+            smugcc: "smugcc",
             nailde: "nailde",
             terminal: "terminal",
             history: "history",

@@ -1,4 +1,4 @@
-import { create } from "zustand";
+﻿import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type WindowId =
@@ -13,6 +13,7 @@ export type WindowId =
   | "dlengine"
   | "nailde"
   | "device-manager"
+  | "smugcc"
   | "addons"
   | "settings"
   | "terminal";
@@ -67,6 +68,7 @@ const WINDOW_DEFAULTS: Record<
   dlengine: { id: "dlengine", title: "Model Forge", icon: "cpu", width: 520, height: 460 },
   nailde: { id: "nailde", title: "NAILDE", icon: "monitor-cog", width: 1180, height: 720 },
   "device-manager": { id: "device-manager", title: "Device Manager", icon: "monitor-cog", width: 940, height: 620 },
+  smugcc: { id: "smugcc", title: "SMUGCC Contract", icon: "shield-check", width: 720, height: 560 },
   terminal: { id: "terminal", title: "Operator Terminal", icon: "terminal", width: 620, height: 520 },
 
   addons: {
@@ -123,7 +125,7 @@ const WORKSPACE_PRESETS: Record<string, WindowId[]> = {
   chat: ["chat", "history", "avatar"],
   research: ["research", "files", "chat"],
   operator: ["avatar", "sarahnet", "media", "device-manager", "settings"],
-  engineer: ["nailde", "terminal", "dlengine", "device-manager", "addons", "settings"],
+  engineer: ["nailde", "terminal", "dlengine", "device-manager", "smugcc", "addons", "settings"],
   media: ["studio", "media", "files"],
 };
 
