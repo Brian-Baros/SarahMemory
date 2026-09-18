@@ -4631,9 +4631,10 @@ def _wallet_path_simple(node: str) -> str:
     safe = "".join(ch for ch in node if ch.isalnum() or ch in ("_", "-")) or "anon"
     return os.path.join(WALLETS_DIR, f"wallet-{safe}.srh")
 
-def ensure_wallet_simple(node: str):
-    """Ensure minimal wallet tables exist."""
+def ensure_wallet_simple(node: str = "local") -> str:
+    """Ensure minimal wallet tables exist and return the shared wallet DB path."""
     con = None
+    safe_node = str(node or "local").strip() or "local"
     try:
         con = _connect_sqlite(WALLET_DB)
         cur = con.cursor()
@@ -4641,9 +4642,21 @@ def ensure_wallet_simple(node: str):
             CREATE TABLE IF NOT EXISTS wallet (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id TEXT UNIQUE,
-                balance TEXT DEFAULT '0'
+                balance TEXT DEFAULT '0',
+                reputation TEXT DEFAULT '0',
+                last_rep_ts REAL DEFAULT 0,
+                rep_daily TEXT DEFAULT '0'
             )
         """)
+        cur.execute("PRAGMA table_info(wallet)")
+        wallet_cols = {str(row[1]) for row in cur.fetchall()}
+        for col, ddl in (
+            ("reputation", "ALTER TABLE wallet ADD COLUMN reputation TEXT DEFAULT '0'"),
+            ("last_rep_ts", "ALTER TABLE wallet ADD COLUMN last_rep_ts REAL DEFAULT 0"),
+            ("rep_daily", "ALTER TABLE wallet ADD COLUMN rep_daily TEXT DEFAULT '0'"),
+        ):
+            if col not in wallet_cols:
+                cur.execute(ddl)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS ledger (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4653,17 +4666,33 @@ def ensure_wallet_simple(node: str):
                 note TEXT
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS txs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT,
+                user_id TEXT,
+                delta TEXT,
+                memo TEXT
+            )
+        """)
+        cur.execute(
+            "INSERT OR IGNORE INTO wallet (id, user_id, balance, reputation, last_rep_ts, rep_daily) VALUES (1, ?, '0', '0', 0, '0')",
+            (safe_node,),
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO wallet (user_id, balance, reputation, last_rep_ts, rep_daily) VALUES (?, '0', '0', 0, '0')",
+            (safe_node,),
+        )
         con.commit()
-        return True
     except Exception as e:
         logger.exception("ensure_wallet_simple failed: %s", e)
-        return False
     finally:
         try:
             if con is not None:
                 con.close()
         except Exception:
             pass
+    return WALLET_DB
 
 
 def get_balance_simple(path: str) -> Decimal:
@@ -11017,8 +11046,22 @@ def _sm_sql_ident(name):
     return '"' + str(name).replace('"', '""') + '"'
 
 
-def _sm_conversation_schema(cur):
-    cur.execute("PRAGMA table_info(conversations)")
+def _sm_conversation_table(cur):
+    """Return the active chat-history table name for old and current DB layouts."""
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('conversations', 'context_history')")
+    found = {str(row[0]) for row in cur.fetchall()}
+    if "conversations" in found:
+        return "conversations"
+    if "context_history" in found:
+        return "context_history"
+    return None
+
+
+def _sm_conversation_schema(cur, table_name=None):
+    table_name = table_name or _sm_conversation_table(cur)
+    if not table_name:
+        return {"table": None, "columns": set(), "id": None, "timestamp": None, "role": None, "metadata": None, "text_columns": []}
+    cur.execute(f"PRAGMA table_info({_sm_sql_ident(table_name)})")
     columns = {str(row[1]) for row in cur.fetchall()}
 
     def pick(*names):
@@ -11033,7 +11076,9 @@ def _sm_conversation_schema(cur):
             "text",
             "message",
             "user_input",
+            "input",
             "assistant_response",
+            "final_response",
             "response",
             "reply",
         )
@@ -11041,6 +11086,7 @@ def _sm_conversation_schema(cur):
     ]
 
     return {
+        "table": table_name,
         "columns": columns,
         "id": pick("id", "conversation_id", "thread_id", "session_id"),
         "timestamp": pick("timestamp", "created_at", "updated_at", "ts", "datetime"),
@@ -11084,7 +11130,10 @@ def api_conversations_list():
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-        schema = _sm_conversation_schema(cur)
+        table = _sm_conversation_table(cur)
+        if not table:
+            return jsonify({'ok': True, 'conversations': []}), 200
+        schema = _sm_conversation_schema(cur, table)
         exprs = _sm_conversation_exprs(schema)
 
         where_sql = ""
@@ -11100,7 +11149,7 @@ def api_conversations_list():
               MAX({exprs['timestamp']}) AS timestamp,
               MAX({exprs['content']}) AS preview,
               COUNT(1) AS message_count
-            FROM conversations
+            FROM {_sm_sql_ident(table)}
             {where_sql}
             GROUP BY {exprs['id']}
             ORDER BY MAX({exprs['timestamp']}) DESC
@@ -11146,7 +11195,10 @@ def api_conversation_get(convo_id):
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-        schema = _sm_conversation_schema(cur)
+        table = _sm_conversation_table(cur)
+        if not table:
+            return jsonify({'ok': False, 'error': 'Not found'}), 404
+        schema = _sm_conversation_schema(cur, table)
         exprs = _sm_conversation_exprs(schema)
         cur.execute(
             f"""
@@ -11155,7 +11207,7 @@ def api_conversation_get(convo_id):
               {exprs['content']} AS content,
               {exprs['meta']} AS meta,
               {exprs['timestamp']} AS timestamp
-            FROM conversations
+            FROM {_sm_sql_ident(table)}
             WHERE CAST({exprs['id']} AS TEXT) = ?
             ORDER BY {exprs['order']} ASC
             """,
@@ -11198,7 +11250,10 @@ def get_chat_threads_by_date():
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-        schema = _sm_conversation_schema(cur)
+        table = _sm_conversation_table(cur)
+        if not table:
+            return jsonify({"threads": []})
+        schema = _sm_conversation_schema(cur, table)
         exprs = _sm_conversation_exprs(schema)
 
         q = f"""
@@ -11206,7 +11261,7 @@ def get_chat_threads_by_date():
               CAST({exprs['id']} AS TEXT) AS id,
               {exprs['timestamp']} AS timestamp,
               {exprs['content']} AS preview
-            FROM conversations
+            FROM {_sm_sql_ident(table)}
         """
         params = []
         if date_filter and schema.get("timestamp"):
@@ -11236,7 +11291,10 @@ def get_conversation_by_id():
         con = _connect_sqlite(CHAT_HISTORY_DB_PATH)
         con.row_factory = sqlite3.Row
         cur = con.cursor()
-        schema = _sm_conversation_schema(cur)
+        table = _sm_conversation_table(cur)
+        if not table:
+            return jsonify({"error": f"Conversation with ID {convo_id} not found."}), 404
+        schema = _sm_conversation_schema(cur, table)
         exprs = _sm_conversation_exprs(schema)
         cur.execute(
             f"""
@@ -11244,7 +11302,7 @@ def get_conversation_by_id():
               {exprs['role']} AS role,
               {exprs['content']} AS text,
               {exprs['meta']} AS meta
-            FROM conversations
+            FROM {_sm_sql_ident(table)}
             WHERE CAST({exprs['id']} AS TEXT) = ?
             ORDER BY {exprs['order']} ASC
             """,
