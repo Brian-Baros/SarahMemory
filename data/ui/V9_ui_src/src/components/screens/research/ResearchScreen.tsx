@@ -385,6 +385,7 @@ export function ResearchScreen() {
   const histRef = useRef<string[]>([]);
   const histIdxRef = useRef<number>(-1);
   const loadingRef = useRef(false);
+  const agentFetchGuardRef = useRef<Record<string, any> | null>(null);
   const readerAbortRef = useRef<AbortController | null>(null);
   const bridgeAbortRef = useRef<AbortController | null>(null);
   const cmdTicketAbortRef = useRef<AbortController | null>(null);
@@ -542,7 +543,9 @@ export function ResearchScreen() {
       setLoading(true);
 
       try {
-        const data = await postJson<FetchBundle>("/api/browser/fetch", { url: u }, { signal: controller.signal, timeoutMs: 30_000 });
+        const agentGuard = agentFetchGuardRef.current;
+        agentFetchGuardRef.current = null;
+        const data = await postJson<FetchBundle>("/api/browser/fetch", { url: u, ...(agentGuard || {}) }, { signal: controller.signal, timeoutMs: 30_000 });
         const nextUrl = data.url || u;
         setBundle(data);
         setAddress(nextUrl);
@@ -617,7 +620,21 @@ export function ResearchScreen() {
 
       if (t === "research_open" || t === "browser_open") {
         const url = p?.url || p?.href || p?.address || p?.value;
-        if (typeof url === "string" && url.trim()) void fetchReader(url.trim(), "push");
+        if (typeof url === "string" && url.trim()) {
+          if (p?.agent_request || p?.passport_id || p?.task_id) {
+            agentFetchGuardRef.current = {
+              agent_request: Boolean(p?.agent_request || p?.passport_id || p?.task_id),
+              passport_id: p?.passport_id || "",
+              task_id: p?.task_id || "",
+              backend: p?.backend || "browser_agent",
+              skill: p?.skill || p?.skill_id || "research.public_web",
+              task: p?.task || "",
+              source: "research_browser.agent_action",
+              surface: "research_browser",
+            };
+          }
+          void fetchReader(url.trim(), "push");
+        }
         return;
       }
 

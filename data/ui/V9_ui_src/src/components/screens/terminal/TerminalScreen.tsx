@@ -570,6 +570,8 @@ ${reason}` : "",
                 className="ml-auto h-8 w-8"
                 onClick={() => void checkBackend()}
                 disabled={isRunning}
+                aria-label="Refresh terminal bridge"
+                title="Refresh terminal bridge"
               >
                 <RefreshCw className={cn("h-4 w-4", isRunning && "animate-spin")} />
               </Button>
@@ -652,7 +654,12 @@ ${reason}` : "",
                   }
                 }}
               />
-              <Button onClick={() => void handleCommandSubmit()} disabled={isRunning || !command.trim()}>
+              <Button
+                onClick={() => void handleCommandSubmit()}
+                disabled={isRunning || !command.trim()}
+                aria-label="Run terminal command"
+                title="Run terminal command"
+              >
                 {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               </Button>
             </div>
