@@ -1,0 +1,97 @@
+{
+  "schema": "SarahMemory.SMUGCC.v1",
+  "contract_version": "1.0.0",
+
+  "identity": {
+    "subject_id": "",
+    "provider": "",
+    "implementation": "",
+    "version": "",
+    "origin": "",
+    "trust_level": "unknown"
+  },
+
+  "protocol": {
+    "source_protocol": "openai|mcp|a2a|agentiq|local|robot|custom",
+    "source_version": "",
+    "adapter_id": "",
+    "adapter_version": ""
+  },
+
+  "mission": {
+    "mission_id": "",
+    "task_id": "",
+    "objective": "",
+    "intent": "",
+    "requested_by": "user|system|agent",
+    "created_at": ""
+  },
+
+  "capabilities": {
+    "declared": [],
+    "requested": [],
+    "granted": [],
+    "denied": []
+  },
+
+  "authority": {
+    "requested": [],
+    "granted": [],
+    "denied": [],
+    "execution_authority": false,
+    "requires_user_approval": true
+  },
+
+  "resources": {
+    "allowed_sources": [],
+    "denied_sources": [],
+    "allowed_methods": ["GET"],
+    "filesystem_allowed": false,
+    "network_allowed": false,
+    "memory_allowed": false,
+    "device_allowed": false,
+    "shell_allowed": false
+  },
+
+  "passport": {
+    "required": true,
+    "passport_id": "",
+    "issued_by": "SarahMemoryTrustRegistry",
+    "expires_at": "",
+    "one_time_use": true,
+    "return_nonce_required": true
+  },
+
+  "governance": {
+    "risk_level": "low|medium|high|critical",
+    "safety_required": true,
+    "security_required": true,
+    "assurance_required": true,
+    "compare_required": true,
+    "compass_required": true,
+    "operatorcore_required": true,
+    "ledger_required": true
+  },
+
+  "payload": {
+    "input": {},
+    "normalized": {},
+    "vendor_payload_hash": "",
+    "smugcc_payload_hash": ""
+  },
+
+  "return_contract": {
+    "expected_output_type": "",
+    "evidence_required": true,
+    "signature_required": true,
+    "hash_required": true,
+    "receipt_required": true
+  },
+
+  "audit": {
+    "receipt_id": "",
+    "receipt_hash": "",
+    "retention_class": "",
+    "trace_id": ""
+  }
+}
