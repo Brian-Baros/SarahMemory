@@ -540,6 +540,29 @@ def get_governance_receipt_ids_for_task(task_id: str, *, domain: str = "terminal
     return out
 
 
+def record_smugcc_receipt(envelope: Dict[str, Any], event_type: str = "SMUGCC_EVENT", *, verdict: str = "OBSERVED", summary: str = "") -> Dict[str, Any]:
+    """Record compact SMUGCC metadata; never stores secrets or grants authority."""
+    try:
+        import importlib
+        smugcc = importlib.import_module("SarahMemorySMUGCC")
+        payload = smugcc.smugcc_receipt_payload(envelope, event_type)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "execution_authority": False}
+    return record_governance_receipt(
+        "smugcc",
+        str(event_type or "SMUGCC_EVENT")[:96],
+        subject_id=str(payload.get("subject_id") or "")[:180],
+        task_id=str(payload.get("task_id") or payload.get("mission_id") or "")[:180],
+        lane="smugcc",
+        verdict=str(verdict or "OBSERVED")[:64],
+        risk="medium",
+        retention_class="smugcc_contract",
+        payload_hash=str(payload.get("payload_hash") or ""),
+        summary=str(summary or event_type or "SMUGCC event")[:1000],
+        metadata=payload,
+    )
+
+
 def verify_governance_chain(domain: str = "", limit: int = 5000) -> Dict[str, Any]:
     _ensure_initialized()
     limit = max(1, min(25000, int(limit or 5000)))
@@ -1158,4 +1181,3 @@ def sml_record_packet(packet, note="Ledger observed SML packet"):
     pkt = packet if isinstance(packet, SMLPacket) else SMLPacket.from_dict(packet)
     return sml_touch_packet(pkt, organ="SarahMemoryLedger", action="ledger_observe", omega="Ω090", note=note)
 # --- SML LEDGER SPECIALIZATION END ---
-

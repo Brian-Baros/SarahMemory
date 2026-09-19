@@ -394,6 +394,18 @@ def build_smugcc_envelope(
     }
     if not _text(envelope["mission"].get("created_at")):
         envelope["mission"]["created_at"] = _utc_now()
+    if not _text(envelope["mission"].get("mission_id")) or not _text(envelope["mission"].get("task_id")):
+        draft_seed = {
+            "identity": envelope["identity"],
+            "protocol": envelope["protocol"],
+            "objective": envelope["mission"].get("objective"),
+            "intent": envelope["mission"].get("intent"),
+            "requested_by": envelope["mission"].get("requested_by"),
+            "payload_hash": envelope["payload"].get("vendor_payload_hash"),
+        }
+        draft_id = "smugcc-" + _sha256_obj(draft_seed)[:16]
+        envelope["mission"]["mission_id"] = _text(envelope["mission"].get("mission_id")) or draft_id
+        envelope["mission"]["task_id"] = _text(envelope["mission"].get("task_id")) or draft_id
     envelope["authority"]["execution_authority"] = False
     envelope["authority"].setdefault("requires_user_approval", True)
     envelope["resources"].setdefault("allowed_methods", ["GET"])
@@ -589,6 +601,106 @@ def smugcc_to_sml_packet_dict(envelope: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def smugcc_to_action_contract_dict(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    """Map SMUGCC to an OperatorCore ActionContract-shaped dict without execution."""
+    env = copy.deepcopy(dict(envelope or {}))
+    validation = validate_smugcc_envelope(env)
+    identity = env.get("identity") if isinstance(env.get("identity"), Mapping) else {}
+    mission = env.get("mission") if isinstance(env.get("mission"), Mapping) else {}
+    protocol = env.get("protocol") if isinstance(env.get("protocol"), Mapping) else {}
+    capabilities = env.get("capabilities") if isinstance(env.get("capabilities"), Mapping) else {}
+    governance = env.get("governance") if isinstance(env.get("governance"), Mapping) else {}
+    resources = env.get("resources") if isinstance(env.get("resources"), Mapping) else {}
+    authority = env.get("authority") if isinstance(env.get("authority"), Mapping) else {}
+    requested = _as_list(capabilities.get("requested") or authority.get("requested"))
+    methods = [str(x).upper() for x in _as_list(capabilities.get("allowed_methods"))]
+    risk = _text(governance.get("risk_level") or "medium").lower()
+    mode = _text(governance.get("execution_mode") or "draft").lower()
+    if mode not in {"draft", "simulate", "apply", "rollback"}:
+        mode = "draft"
+    return {
+        "schema": "SarahMemory.SMUGCC.action_contract_view.v1",
+        "contract_type": "SMUGCCActionContractView",
+        "contract_id": _text(mission.get("task_id") or mission.get("mission_id") or "smugcc-draft"),
+        "user_goal": _text(mission.get("objective")),
+        "normalized_text": _text(mission.get("objective")),
+        "primary_lane": "external_cognitive_contract" if _text(identity.get("origin")).lower() == "external" else "local_contract",
+        "action_type": "smugcc_contract_stage",
+        "target": _text(protocol.get("adapter_id") or identity.get("provider") or "smugcc"),
+        "target_ref": _text(identity.get("subject_id") or protocol.get("adapter_id")),
+        "capability_name": "smugcc.contract",
+        "executor_name": "none_contract_only",
+        "required_permissions": requested,
+        "risk_level": risk,
+        "execution_mode": mode,
+        "requires_confirmation": mode == "apply" or risk in {"high", "critical", "tier_3_privileged_system", "tier_4_network_remote_or_destructive"},
+        "preconditions": ["valid_smugcc_envelope", "trustregistry_identity_check", "agentfirewall_boundary_check"],
+        "verification_checks": ["smugcc_validation_ok", "owner_trace_complete", "ledger_receipt_prepared"],
+        "rollback_plan": ["discard_staged_contract", "retain_ledger_receipt"],
+        "metadata": {
+            "source": MODULE_NAME,
+            "smugcc_envelope": env,
+            "smugcc_validation": validation,
+            "source_protocol": protocol.get("source_protocol"),
+            "allowed_methods": methods,
+            "allowed_sources": _as_list(resources.get("allowed_sources")),
+            "execution_authority": False,
+        },
+        "execution_authority": False,
+    }
+
+
+def smugcc_lifecycle_trace(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    validation = validate_smugcc_envelope(envelope)
+    return {
+        "ok": True,
+        "schema": "SarahMemory.SMUGCC.lifecycle_trace.v1",
+        "lifecycle": [{"stage": stage, "status": "READY" if validation.get("ok") or stage == "validate" else "PENDING"} for stage in SMUGCC_LIFECYCLE],
+        "pipeline": list(SMUGCC_PIPELINE),
+        "validation": validation,
+        "execution_authority": False,
+    }
+
+
+def smugcc_owner_trace(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    validation = validate_smugcc_envelope(envelope)
+    grouped: Dict[str, list] = {}
+    for err in list(validation.get("errors") or []):
+        owner = _text(err.get("owner") or MODULE_NAME)
+        grouped.setdefault(owner, []).append(err)
+    return {
+        "ok": bool(validation.get("ok")),
+        "schema": "SarahMemory.SMUGCC.owner_trace.v1",
+        "owners": smugcc_ownership_map(),
+        "errors_by_owner": grouped,
+        "owner_sequence": list(SMUGCC_PIPELINE),
+        "execution_authority": False,
+    }
+
+
+def smugcc_receipt_payload(envelope: Mapping[str, Any], event_type: str) -> Dict[str, Any]:
+    env = copy.deepcopy(dict(envelope or {}))
+    identity = env.get("identity") if isinstance(env.get("identity"), Mapping) else {}
+    mission = env.get("mission") if isinstance(env.get("mission"), Mapping) else {}
+    protocol = env.get("protocol") if isinstance(env.get("protocol"), Mapping) else {}
+    compact = {
+        "schema": "SarahMemory.SMUGCC.receipt_payload.v1",
+        "event_type": _text(event_type or "SMUGCC_EVENT")[:96],
+        "subject_id": _text(identity.get("subject_id"))[:180],
+        "provider": _text(identity.get("provider"))[:96],
+        "origin": _text(identity.get("origin"))[:64],
+        "source_protocol": _text(protocol.get("source_protocol"))[:96],
+        "adapter_id": _text(protocol.get("adapter_id"))[:120],
+        "mission_id": _text(mission.get("mission_id"))[:180],
+        "task_id": _text(mission.get("task_id"))[:180],
+        "objective_hash": _sha256_obj({"objective": mission.get("objective")}),
+        "validation_ok": bool(validate_smugcc_envelope(env).get("ok")),
+        "execution_authority": False,
+    }
+    compact["payload_hash"] = _sha256_obj(compact)
+    return compact
+
+
 def smugcc_schema_view() -> Dict[str, Any]:
     return copy.deepcopy(CANONICAL_SMUGCC_SCHEMA)
 
@@ -640,6 +752,27 @@ def smugcc_status() -> Dict[str, Any]:
         "known_adapters": sorted(ADAPTER_DECLARATIONS.keys()),
         "owners": smugcc_ownership_map(),
     }
+
+
+def get_smugcc_status() -> Dict[str, Any]:
+    return smugcc_status()
+
+
+def get_smugcc_schema() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "schema": "SarahMemory.SMUGCC.schema_view.v1",
+        "contract_schema": SMUGCC_SCHEMA,
+        "contract_version": SMUGCC_CONTRACT_VERSION,
+        "envelope": smugcc_schema_view(),
+        "adapters": smugcc_adapter_declarations(),
+        "ownership": smugcc_ownership_map(),
+        "execution_authority": False,
+    }
+
+
+def get_smugcc_compatibility_report(envelope: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    return smugcc_compatibility_report(envelope)
 
 
 def sml_get_metadata() -> Dict[str, Any]:
@@ -694,6 +827,9 @@ __all__ = [
     "SMUGCC_PIPELINE",
     "SMUGCC_SCHEMA",
     "build_smugcc_envelope",
+    "get_smugcc_compatibility_report",
+    "get_smugcc_schema",
+    "get_smugcc_status",
     "sml_diagnostics",
     "sml_get_metadata",
     "sml_health",
@@ -703,6 +839,10 @@ __all__ = [
     "smugcc_ownership_map",
     "smugcc_schema_view",
     "smugcc_status",
+    "smugcc_lifecycle_trace",
+    "smugcc_owner_trace",
+    "smugcc_receipt_payload",
+    "smugcc_to_action_contract_dict",
     "smugcc_to_sml_packet_dict",
     "validate_adapter_declaration",
     "validate_smugcc_envelope",

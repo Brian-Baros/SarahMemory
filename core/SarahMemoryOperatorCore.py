@@ -2048,6 +2048,62 @@ operator_execute_contract = process_action_contract
 dispatch_action_contract = process_action_contract
 
 
+def _smugcc_contract_dict(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    import importlib
+    smugcc = importlib.import_module("SarahMemorySMUGCC")
+    return smugcc.smugcc_to_action_contract_dict(envelope)
+
+
+def build_action_contract_from_smugcc(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    contract_dict = _smugcc_contract_dict(envelope)
+    core = get_operator_core()
+    action = core.build_action_contract(
+        str(contract_dict.get("user_goal") or "SMUGCC contract stage"),
+        origin="SMUGCC",
+        meta=dict(contract_dict.get("metadata") or {}),
+        proposed_action=contract_dict,
+        execution_mode=str(contract_dict.get("execution_mode") or MODE_DRAFT),
+    )
+    out = action.to_dict()
+    out.setdefault("metadata", {}).setdefault("smugcc_contract", contract_dict)
+    out["execution_authority"] = False
+    return {"ok": True, "schema": "SarahMemory.OperatorCore.SMUGCC.action_contract.v1", "contract": out, "execution_authority": False}
+
+
+def review_smugcc_operator_gate(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    built = build_action_contract_from_smugcc(envelope)
+    contract = built.get("contract") if isinstance(built.get("contract"), dict) else {}
+    mode = str(contract.get("execution_mode") or MODE_DRAFT).lower()
+    mutating = mode == MODE_APPLY or bool(contract.get("requires_confirmation"))
+    return {
+        "ok": True,
+        "schema": "SarahMemory.OperatorCore.SMUGCC.gate.v1",
+        "decision": "PENDING_APPROVAL" if mutating else "STAGED_DRAFT",
+        "requires_approval": bool(mutating),
+        "contract": contract,
+        "rules": {
+            "draft_can_stage": True,
+            "simulate_can_stage": True,
+            "apply_requires_approval": True,
+            "mutating_requires_verification_and_rollback": True,
+        },
+        "execution_authority": False,
+    }
+
+
+def stage_smugcc_action(envelope: Dict[str, Any], mode: str = MODE_DRAFT) -> Dict[str, Any]:
+    env = dict(envelope or {}) if isinstance(envelope, dict) else {}
+    if isinstance(env.get("governance"), dict):
+        env["governance"] = dict(env["governance"])
+        env["governance"]["execution_mode"] = str(mode or MODE_DRAFT).lower()
+    gate = review_smugcc_operator_gate(env)
+    gate["staged"] = True
+    gate["mode"] = str(mode or MODE_DRAFT).lower()
+    gate["executed"] = False
+    gate["execution_authority"] = False
+    return gate
+
+
 # ---------------------------------------------------------------------------
 # Self-test / smoke check
 # ---------------------------------------------------------------------------

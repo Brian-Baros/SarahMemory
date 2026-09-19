@@ -1019,6 +1019,40 @@ def review_action_policy(action_contract: Dict[str, Any], governance: Optional[D
     return evaluate_action_policy(action_contract, governance)
 
 
+def _smugcc_action_contract(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    import importlib
+    smugcc = importlib.import_module("SarahMemorySMUGCC")
+    return smugcc.smugcc_to_action_contract_dict(envelope)
+
+
+def evaluate_smugcc_policy(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    contract = _smugcc_action_contract(envelope)
+    review = evaluate_action_policy(contract, {"source": "SMUGCC", "execution_authority": False})
+    review["smugcc_contract"] = contract
+    review["execution_authority"] = False
+    return review
+
+
+def get_smugcc_policy_defaults() -> Dict[str, Any]:
+    snapshot = build_runtime_policy_snapshot()
+    return {
+        "ok": True,
+        "schema": "SarahMemory.SafetyPolicies.SMUGCC.defaults.v1",
+        "defaults": {
+            "execution_authority": False,
+            "passport_required_for_external_origin": True,
+            "shell_allowed": False,
+            "filesystem_allowed": False,
+            "device_allowed": False,
+            "memory_allowed_without_governance": False,
+            "operatorcore_required": True,
+            "ledger_required": True,
+        },
+        "policy_snapshot": snapshot,
+        "execution_authority": False,
+    }
+
+
 def is_action_allowed_by_policy(action_contract: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> bool:
     try:
         result = evaluate_action_policy(action_contract, governance)
@@ -1350,4 +1384,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

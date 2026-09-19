@@ -6708,6 +6708,64 @@ def route_sml_packet(packet: SMLPacket) -> Dict[str, Any]:
     return get_protocol().route_packet(packet).to_dict()
 
 
+def _smugcc_module():
+    """Lazy import to keep SMLProtocol free of SMUGCC schema duplication."""
+    import importlib
+    return importlib.import_module("SarahMemorySMUGCC")
+
+
+def sml_build_smugcc_envelope(*args: Any, **kwargs: Any) -> Dict[str, Any]:
+    mod = _smugcc_module()
+    return mod.build_smugcc_envelope(*args, **kwargs)
+
+
+def sml_validate_smugcc_envelope(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    mod = _smugcc_module()
+    return mod.validate_smugcc_envelope(envelope)
+
+
+def sml_smugcc_to_packet(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    mod = _smugcc_module()
+    packet = mod.smugcc_to_sml_packet_dict(envelope)
+    packet.setdefault("metadata", {})["sml_owner"] = MODULE_NAME
+    packet.setdefault("execution_authority", False)
+    return packet
+
+
+def sml_smugcc_to_route_candidate(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    packet = sml_smugcc_to_packet(envelope)
+    validation = sml_validate_smugcc_envelope(envelope)
+    mission = packet.get("mission") if isinstance(packet.get("mission"), dict) else {}
+    return {
+        "ok": bool(validation.get("ok")),
+        "schema": "SarahMemory.SML.SMUGCC.route_candidate.v1",
+        "route_owner": MODULE_NAME,
+        "candidate": {
+            "target": "AgentFirewall" if not validation.get("ok") else "OperatorCore",
+            "task_id": mission.get("task_id", ""),
+            "objective": mission.get("objective", ""),
+            "requires_governance": True,
+            "execution_authority": False,
+        },
+        "packet": packet,
+        "validation": validation,
+        "execution_authority": False,
+    }
+
+
+def sml_build_smugcc_trace(envelope: Mapping[str, Any]) -> Dict[str, Any]:
+    mod = _smugcc_module()
+    return {
+        "ok": True,
+        "schema": "SarahMemory.SML.SMUGCC.trace.v1",
+        "validation": mod.validate_smugcc_envelope(envelope),
+        "packet": mod.smugcc_to_sml_packet_dict(envelope),
+        "route_candidate": sml_smugcc_to_route_candidate(envelope),
+        "lifecycle": mod.smugcc_lifecycle_trace(envelope),
+        "execution_authority": False,
+    }
+
+
 def validate_sml_packet(packet: Union[SMLPacket, Mapping[str, Any]]) -> Dict[str, Any]:
     return get_protocol().validate_packet(packet).to_dict()
 

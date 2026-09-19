@@ -2076,6 +2076,105 @@ def trust_subject_for_tri_layer_packet(packet: Optional[Dict[str, Any]] = None) 
         "execution_authority": False,
     }
 
+
+def resolve_smugcc_subject(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
+    subject_id = _safe_str(identity.get("subject_id") or identity.get("provider") or "")
+    record = lookup_subject(subject_id) if subject_id else None
+    return {
+        "ok": bool(subject_id),
+        "schema": "SarahMemory.TrustRegistry.SMUGCC.subject.v1",
+        "subject_id": subject_id,
+        "provider": _safe_str(identity.get("provider")),
+        "origin": _safe_str(identity.get("origin")),
+        "registered": bool(record),
+        "trusted": bool((record or {}).get("trusted", False)),
+        "approved": bool((record or {}).get("approved", False)),
+        "trust_tier": str((record or {}).get("trust_tier") or TRUST_TIER_UNVERIFIED),
+        "status": str((record or {}).get("status") or STATUS_PENDING),
+        "capability_grant": [],
+        "execution_authority": False,
+    }
+
+
+def evaluate_smugcc_capability_grant(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    subject = resolve_smugcc_subject(env)
+    caps = env.get("capabilities") if isinstance(env.get("capabilities"), dict) else {}
+    requested = _safe_list(caps.get("requested"))
+    granted = []
+    record = lookup_subject(str(subject.get("subject_id") or "")) if subject.get("subject_id") else None
+    if record and record.get("approved") and record.get("trusted"):
+        owned = set(_safe_list(record.get("capabilities")))
+        granted = [cap for cap in requested if cap in owned]
+    return {
+        "ok": True,
+        "schema": "SarahMemory.TrustRegistry.SMUGCC.capability_review.v1",
+        "subject": subject,
+        "declared_capabilities": requested,
+        "granted_capabilities": granted,
+        "declaration_is_not_grant": True,
+        "execution_authority": False,
+    }
+
+
+def verify_smugcc_passport(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    passport = env.get("passport") if isinstance(env.get("passport"), dict) else {}
+    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
+    passport_id = _safe_str(passport.get("passport_id"))
+    agent_id = _safe_str(identity.get("subject_id") or passport.get("agent_id"))
+    if not passport_id:
+        return {"ok": False, "verdict": "DENY", "reason": "missing_passport_id", "execution_authority": False}
+    if not _safe_str(passport.get("return_nonce")) or not _safe_str(passport.get("return_signature")):
+        return {"ok": False, "verdict": "DENY", "reason": "missing_return_nonce_or_signature", "execution_authority": False}
+    mission = env.get("mission") if isinstance(env.get("mission"), dict) else {}
+    caps = env.get("capabilities") if isinstance(env.get("capabilities"), dict) else {}
+    resources = env.get("resources") if isinstance(env.get("resources"), dict) else {}
+    return verify_agent_return(
+        passport_id=passport_id,
+        agent_id=agent_id,
+        return_nonce=_safe_str(passport.get("return_nonce")),
+        return_signature=_safe_str(passport.get("return_signature")),
+        requested_lane=_safe_str((env.get("protocol") or {}).get("adapter_id") if isinstance(env.get("protocol"), dict) else "smugcc"),
+        requested_capabilities=_safe_list(caps.get("requested")),
+        requested_resources=_safe_list(resources.get("allowed_sources")),
+        risk_tier=_safe_str((env.get("governance") or {}).get("risk_level") if isinstance(env.get("governance"), dict) else "medium"),
+        payload_hash=_safe_str((env.get("payload") or {}).get("smugcc_payload_hash") if isinstance(env.get("payload"), dict) else ""),
+        record_return=False,
+    )
+
+
+def register_smugcc_adapter_subject(declaration: Dict[str, Any], approved: bool = False) -> Dict[str, Any]:
+    decl = declaration if isinstance(declaration, dict) else {}
+    adapter_id = _safe_str(decl.get("adapter_id") or decl.get("id"))
+    return register_subject(
+        caller_id=adapter_id,
+        caller_kind="smugcc_adapter",
+        display_name=_safe_str(decl.get("display_name") or adapter_id),
+        trust_tier=TRUST_TIER_UNVERIFIED,
+        status=STATUS_ACTIVE if approved else STATUS_PENDING,
+        publisher=_safe_str(decl.get("provider") or decl.get("publisher")),
+        module_name=adapter_id,
+        surface=_safe_str(decl.get("source_protocol")),
+        capabilities=_safe_list(decl.get("declared_capabilities") or decl.get("capabilities")),
+        metadata={"smugcc_adapter_declaration": True, "execution_authority": False},
+        trusted=False,
+        approved=bool(approved),
+        exposed=False,
+    )
+
+
+def list_smugcc_subjects(limit: int = 100) -> Dict[str, Any]:
+    snapshot = get_registry_snapshot()
+    raw_subjects = snapshot.get("subjects") if isinstance(snapshot.get("subjects"), dict) else {}
+    subjects = [
+        x for x in list(raw_subjects.values())[: max(1, min(int(limit or 100), 500))]
+        if str(x.get("subject_kind") or "") == "smugcc_adapter" or bool((x.get("metadata") or {}).get("smugcc_adapter_declaration"))
+    ]
+    return {"ok": True, "schema": "SarahMemory.TrustRegistry.SMUGCC.subjects.v1", "subjects": subjects, "execution_authority": False}
+
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 START ---
 # Capability/skill manifest layer. Declaration is not grant. Signed/hashed
 # manifests are evaluated into quarantine/approved states but never executed here.
@@ -2272,4 +2371,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

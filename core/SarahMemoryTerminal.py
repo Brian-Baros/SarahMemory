@@ -4230,6 +4230,95 @@ def terminal_api_execute(payload: Dict[str, Any], *, caller: str = "api") -> Dic
     )
 
 
+def _smugcc_operation_reply(payload: Dict[str, Any], *, task: str, caller: str) -> Optional[Dict[str, Any]]:
+    raw = str(task or "").strip()
+    if not raw.lower().startswith("/smugcc"):
+        return None
+    body = raw[len("/smugcc"):].strip()
+    low = body.lower()
+    ts = datetime.now().isoformat()
+
+    def out(ok: bool, text: str, data: Optional[Dict[str, Any]] = None, *, blocked: bool = False, reason: str = "") -> Dict[str, Any]:
+        return {
+            "ok": bool(ok),
+            "blocked": bool(blocked),
+            "reason": reason or None,
+            "reply": text,
+            "stdout": text,
+            "stderr": reason if blocked else "",
+            "mode": "terminal_smugcc",
+            "smugcc": data or {},
+            "execution_authority": False,
+            "actions": [],
+            "ts": ts,
+        }
+
+    try:
+        import importlib
+        smugcc = importlib.import_module("SarahMemorySMUGCC")
+        if not body or low == "status":
+            return out(True, json.dumps(smugcc.get_smugcc_status(), indent=2, default=str), {"status": smugcc.get_smugcc_status()})
+        if low in {"adapters", "adapter"}:
+            data = smugcc.get_smugcc_compatibility_report()
+            return out(True, json.dumps(data.get("known_adapters", []), indent=2, default=str), data)
+        if low == "receipts":
+            try:
+                ledger = importlib.import_module("SarahMemoryLedger")
+                rows = ledger.get_governance_receipts(domain="smugcc", limit=25)
+            except Exception as exc:
+                rows = [{"error": str(exc)}]
+            return out(True, json.dumps(rows, indent=2, default=str), {"receipts": rows})
+        if low == "passports":
+            try:
+                trust = importlib.import_module("SarahMemoryTrustRegistry")
+                rows = trust.list_agent_passports(limit=25)
+            except Exception as exc:
+                rows = [{"error": str(exc)}]
+            return out(True, json.dumps(rows, indent=2, default=str), {"passports": rows})
+        if low == "quarantine":
+            try:
+                firewall = importlib.import_module("SarahMemoryAgentFirewall")
+                snapshot = firewall.agent_visibility_snapshot()
+            except Exception as exc:
+                snapshot = {"ok": False, "error": str(exc), "execution_authority": False}
+            return out(True, json.dumps(snapshot, indent=2, default=str), {"quarantine": snapshot})
+        if low.startswith("validate"):
+            text = body[len("validate"):].strip()
+            try:
+                envelope = json.loads(text) if text else {}
+            except Exception as exc:
+                return out(False, "SMUGCC validation expected an inline JSON envelope.", blocked=True, reason=str(exc))
+            data = smugcc.validate_smugcc_envelope(envelope)
+            return out(bool(data.get("ok")), json.dumps(data, indent=2, default=str), {"validation": data}, blocked=not bool(data.get("ok")), reason="invalid_smugcc_envelope" if not data.get("ok") else "")
+        if low.startswith("build mission"):
+            objective = body[len("build mission"):].strip()
+            envelope = smugcc.build_smugcc_envelope(
+                identity={"subject_id": "terminal:smugcc", "provider": "terminal", "origin": "local"},
+                protocol={"source_protocol": "terminal", "adapter_id": "terminal_smugcc"},
+                mission={"objective": objective, "intent": "terminal_smugcc_mission", "requested_by": caller},
+            )
+            return out(True, json.dumps(envelope, indent=2, default=str), {"envelope": envelope, "validation": smugcc.validate_smugcc_envelope(envelope)})
+        if low.startswith("trace"):
+            text = body[len("trace"):].strip()
+            try:
+                envelope = json.loads(text) if text.startswith("{") else smugcc.build_smugcc_envelope(
+                    identity={"subject_id": "terminal:smugcc", "provider": "terminal", "origin": "local"},
+                    protocol={"source_protocol": "terminal", "adapter_id": "terminal_smugcc"},
+                    mission={"task_id": text, "objective": text or "SMUGCC terminal trace", "intent": "trace", "requested_by": caller},
+                )
+            except Exception as exc:
+                return out(False, "SMUGCC trace expected JSON or a task id/objective.", blocked=True, reason=str(exc))
+            data = smugcc.smugcc_lifecycle_trace(envelope)
+            data["owner_trace"] = smugcc.smugcc_owner_trace(envelope)
+            return out(True, json.dumps(data, indent=2, default=str), data)
+        if low.startswith("send-to-nailde"):
+            mission = body[len("send-to-nailde"):].strip()
+            return out(True, "SMUGCC staged a NAILDE sandbox creation request. Use the NAILDE panel or Chat task card to review and approve sandbox generation.", {"target": "NAILDE", "mission": mission, "requires_approval": True, "sandbox_only": True})
+        return out(False, "Unknown SMUGCC command. Try /smugcc status, validate, build mission, trace, adapters, passports, receipts, quarantine, or send-to-nailde.", blocked=False, reason="unknown_smugcc_command")
+    except Exception as exc:
+        return out(False, "SMUGCC terminal command failed closed.", blocked=True, reason=str(exc))
+
+
 def terminal_api_agent(payload: Dict[str, Any], *, caller: str = "api") -> Dict[str, Any]:
     """Governed terminal AI-agent and passport administration adapter.
 
@@ -4240,6 +4329,9 @@ def terminal_api_agent(payload: Dict[str, Any], *, caller: str = "api") -> Dict[
     payload = payload or {}
     task = str(payload.get("task") or payload.get("text") or payload.get("message") or payload.get("query") or "")
     payload = _merge_terminal_agent_payload(task, payload)
+    smugcc_result = _smugcc_operation_reply(payload, task=task, caller=str(payload.get("caller") or caller))
+    if smugcc_result is not None:
+        return smugcc_result
     operation_result = _passport_operation_reply(payload, task=task, caller=str(payload.get("caller") or caller))
     if operation_result is not None:
         return operation_result

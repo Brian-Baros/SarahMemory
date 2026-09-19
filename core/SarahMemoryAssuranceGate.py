@@ -1013,6 +1013,28 @@ def review_action_assurance(action_contract: Dict[str, Any], governance: Optiona
     return evaluate_action_assurance(action_contract, governance, security)
 
 
+def review_smugcc_assurance(envelope: Dict[str, Any], governance: Optional[Dict[str, Any]] = None, security: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    import importlib
+    smugcc = importlib.import_module("SarahMemorySMUGCC")
+    contract = smugcc.smugcc_to_action_contract_dict(envelope)
+    review = evaluate_action_assurance(contract, governance or {"source": "SMUGCC", "execution_authority": False}, security or {})
+    mode = str(contract.get("execution_mode") or "").lower()
+    risk = str(contract.get("risk_level") or "").lower()
+    if mode == "apply" or risk in {"high", "critical", "tier_3_privileged_system", "tier_4_network_remote_or_destructive"}:
+        if not review.get("verification_ready"):
+            review["allow"] = False
+            review["decision"] = DECISION_DENY
+            review.setdefault("missing_requirements", []).append("smugcc_verification_ready")
+        if not review.get("rollback_ready"):
+            review["allow"] = False
+            review["decision"] = DECISION_DENY
+            review.setdefault("missing_requirements", []).append("smugcc_rollback_ready")
+        review.setdefault("reasons", []).append("SMUGCC apply/high-risk paths require evidence, verification, rollback, and downstream approval.")
+    review["smugcc_contract"] = contract
+    review["execution_authority"] = False
+    return review
+
+
 
 def assure_action(action_contract: Dict[str, Any], governance: Optional[Dict[str, Any]] = None, security: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return evaluate_action_assurance(action_contract, governance, security)

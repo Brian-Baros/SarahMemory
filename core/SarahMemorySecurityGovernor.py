@@ -911,6 +911,23 @@ def review_action_contract(action_contract: Dict[str, Any], governance: Optional
     return evaluate_action(action_contract, governance)
 
 
+def review_smugcc_envelope(envelope: Dict[str, Any], governance: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    import importlib
+    smugcc = importlib.import_module("SarahMemorySMUGCC")
+    contract = smugcc.smugcc_to_action_contract_dict(envelope)
+    review = evaluate_action(contract, governance or {"source": "SMUGCC", "execution_authority": False})
+    env = envelope if isinstance(envelope, dict) else {}
+    authority = env.get("authority") if isinstance(env.get("authority"), dict) else {}
+    if bool(authority.get("granted")) or bool(env.get("execution_authority")):
+        review["allow"] = False
+        review["decision"] = DECISION_DENY
+        review.setdefault("risk_factors", []).append("smugcc_self_granted_authority")
+        review.setdefault("reasons", []).append("SMUGCC envelopes may request review but cannot grant execution authority.")
+    review["smugcc_contract"] = contract
+    review["execution_authority"] = False
+    return review
+
+
 # ---------------------------------------------------------------------------
 # Optional focused helpers for later callers
 # ---------------------------------------------------------------------------
@@ -1158,4 +1175,3 @@ def sml_security_review_packet(packet, note="SecurityGovernor reviewed SML packe
     from SarahMemorySMLProtocol import sml_touch_packet
     return sml_touch_packet(packet, organ="SarahMemorySecurityGovernor", action="security_review", omega="Ω060", note=note)
 # --- SML SECURITY GOVERNOR SPECIALIZATION END ---
-

@@ -2099,6 +2099,82 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
     return result
 
 
+def _smugcc_core_module():
+    import importlib
+    return importlib.import_module("SarahMemorySMUGCC")
+
+
+def classify_smugcc_cognitive_surface(envelope: Dict[str, Any]) -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
+    protocol = env.get("protocol") if isinstance(env.get("protocol"), dict) else {}
+    provider = str(identity.get("provider") or "").strip().lower()
+    source_protocol = str(protocol.get("source_protocol") or "").strip().lower()
+    markers = {"mcp", "a2a", "openai", "anthropic", "google", "nvidia", "microsoft", "copilot", "agentic", "browser-agent", "unknown"}
+    surface = "external_cognitive_surface" if any(x in provider or x in source_protocol for x in markers) else "local_or_declared_adapter"
+    return {
+        "ok": True,
+        "schema": "SarahMemory.AgentFirewall.SMUGCC.surface.v1",
+        "surface": surface,
+        "provider": provider,
+        "source_protocol": source_protocol,
+        "is_cognitive_surface": surface == "external_cognitive_surface",
+        "execution_authority": False,
+    }
+
+
+def quarantine_smugcc_payload(envelope: Dict[str, Any], reason: str, source: str = "unknown") -> Dict[str, Any]:
+    verdict = inspect_payload({"schema": "SarahMemory.SMUGCC.quarantine.v1", "json": envelope}, source=source, remote_addr="smugcc")
+    verdict["verdict"] = "QUARANTINE"
+    verdict["reason"] = str(reason or verdict.get("reason") or "smugcc_quarantine")
+    verdict["containment_state"] = "QUARANTINED"
+    verdict["execution_authority"] = False
+    return verdict
+
+
+def inspect_smugcc_envelope(envelope: Dict[str, Any], source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    smugcc = _smugcc_core_module()
+    validation = smugcc.validate_smugcc_envelope(env)
+    surface = classify_smugcc_cognitive_surface(env)
+    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
+    authority = env.get("authority") if isinstance(env.get("authority"), dict) else {}
+    passport = env.get("passport") if isinstance(env.get("passport"), dict) else {}
+    requested = {str(x).strip().lower() for x in list(authority.get("requested") or []) if str(x).strip()}
+    governance = env.get("governance") if isinstance(env.get("governance"), dict) else {}
+    external = str(identity.get("origin") or "").strip().lower() == "external" or bool(surface.get("is_cognitive_surface"))
+    dangerous = requested.intersection({"shell", "filesystem", "device", "memory", "execute", "admin"})
+    bypass = any(not bool(governance.get(k, True)) for k in ("safety_policy_required", "security_governor_required", "assurance_required", "operatorcore_required", "ledger_required"))
+    if not validation.get("ok"):
+        q = quarantine_smugcc_payload(env, "invalid_smugcc_envelope", source=source)
+        return {**q, "ok": False, "validation": validation, "surface": surface, "verdict": "QUARANTINE"}
+    if dangerous or bypass:
+        return {"ok": False, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "DENY", "reason": "smugcc_requested_unsafe_authority_or_governance_bypass", "dangerous_authority": sorted(dangerous), "governance_bypass": bool(bypass), "surface": surface, "validation": validation, "execution_authority": False}
+    if external and not bool(passport.get("required", True)):
+        return {"ok": False, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "REQUIRE_TRUSTREGISTRY_PASSPORT", "reason": "external_smugcc_origin_requires_passport", "surface": surface, "validation": validation, "execution_authority": False}
+    return {"ok": True, "schema": "SarahMemory.AgentFirewall.SMUGCC.inspect.v1", "verdict": "ALLOW" if not external else "REQUIRE_TRUSTREGISTRY_PASSPORT", "reason": "smugcc_boundary_guarded", "surface": surface, "validation": validation, "execution_authority": False}
+
+
+def guard_smugcc_external_boundary(envelope: Dict[str, Any], source: str = "unknown", remote_addr: str = "") -> Dict[str, Any]:
+    return inspect_smugcc_envelope(envelope, source=source, remote_addr=remote_addr)
+
+
+def verify_smugcc_agent_return(envelope: Dict[str, Any], payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    env = envelope if isinstance(envelope, dict) else {}
+    passport = env.get("passport") if isinstance(env.get("passport"), dict) else {}
+    identity = env.get("identity") if isinstance(env.get("identity"), dict) else {}
+    packet = {
+        "headers": {
+            "X-SarahMemory-Agent-Id": str(identity.get("subject_id") or ""),
+            "X-SarahMemory-Passport-Id": str(passport.get("passport_id") or ""),
+            "X-SarahMemory-Agent-Signature": str(passport.get("return_signature") or ""),
+            "X-SarahMemory-Return-Nonce": str(passport.get("return_nonce") or ""),
+        },
+        "json": payload if isinstance(payload, dict) else env,
+    }
+    return inspect_payload(packet, source="SarahMemoryAgentFirewall.verify_smugcc_agent_return", remote_addr="smugcc-return")
+
+
 def _agent_firewall_host_is_public(hostname: str) -> Tuple[bool, str]:
     """Verify an external adapter host resolves to public Internet space only."""
     host = str(hostname or "").strip().lower().strip("[]")
