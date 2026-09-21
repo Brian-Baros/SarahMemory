@@ -621,7 +621,7 @@ if (hasFiles) {
 
       if (response?.error) {
         toast.error(response.error);
-        addMessage({ role: "assistant", content: "I'm sorry, I encountered an error. Please try again." });
+        addMessage({ role: "assistant", content: response.content || response.reply || response.error || "SarahMemory returned an error without a presentable diagnostic." });
         return;
       }
 

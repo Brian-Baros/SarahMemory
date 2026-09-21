@@ -834,6 +834,7 @@ export function DeviceManagerScreen() {
       if (isAbortError(error)) return;
       setMessage(String(error?.message || error || "Driver inventory failed."));
     } finally {
+      setBusy("");
       finishOperation(controller);
     }
   };

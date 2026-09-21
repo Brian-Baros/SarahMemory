@@ -101,9 +101,12 @@ function looksLikeShellCommand(cmd: string): boolean {
 function stripTerminalPrefix(raw: string): { route: "shell" | "ai"; command: string; original: string } {
   const original = String(raw || "").trim();
   const explicitShell = /^\/run\s+/i.test(original) || /^!\s*/.test(original);
-  const explicitAi = /^(\/ai|\/task|\/agent)\s+/i.test(original);
+  const explicitAi = /^(\/ai|\/task|\/agent|\/smugcc)(\s+|$)/i.test(original);
+  const explicitSmugcc = /^\/smugcc(\s+|$)/i.test(original);
   const command = explicitShell
     ? original.replace(/^\/run\s+/i, "").replace(/^!\s*/, "").trim()
+    : explicitSmugcc
+      ? original
     : explicitAi
       ? original.replace(/^(\/ai|\/task|\/agent)\s+/i, "").trim()
       : original;
@@ -279,7 +282,7 @@ export default function TerminalScreen() {
           level: "info",
           source: "terminal",
           text:
-            'Built-in commands: /screen <name>, /refresh <name>, /clear, /help. Any other input is sent to the AI/backend bridge.',
+            'Built-in commands: /screen <name>, /refresh <name>, /clear, /help. SMUGCC commands use /smugcc status, /smugcc validate <json>, /smugcc trace <task>. Any other input is sent to the AI/backend bridge.',
         });
         return true;
       }
@@ -329,7 +332,7 @@ export default function TerminalScreen() {
         }
 
         const terminalRequest = stripTerminalPrefix(text);
-        const explicitAgentRequest = /^(\/agent)\s+/i.test(text);
+        const explicitAgentRequest = /^(\/agent)\s+/i.test(text) || /^\/smugcc(\s+|$)/i.test(text);
 
         const response =
           terminalRequest.route === "shell"

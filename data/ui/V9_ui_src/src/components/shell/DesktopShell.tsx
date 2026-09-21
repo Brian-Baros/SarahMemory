@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+﻿import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Cpu,
   Clock,
@@ -15,6 +15,7 @@ import {
   Plus,
   Search,
   Settings,
+  ShieldCheck,
   Terminal,
   Trash2,
   User,
@@ -41,6 +42,7 @@ const WINDOW_IDS: WindowId[] = [
   "media",
   "dlengine",
   "device-manager",
+  "smugcc",
   "nailde",
   "terminal",
   "addons",
@@ -56,6 +58,7 @@ const DEFAULT_DESKTOP_SHORTCUTS: DesktopShortcut[] = [
   { id: "desktop_research", label: "Evidence Lens", kind: "app", windowId: "research", icon: "research" },
   { id: "desktop_dlengine", label: "Model Forge", kind: "app", windowId: "dlengine", icon: "dlengine" },
   { id: "desktop_devices", label: "Device Manager", kind: "app", windowId: "device-manager", icon: "devices" },
+  { id: "desktop_smugcc", label: "SMUGCC Contract", kind: "app", windowId: "smugcc", icon: "smugcc" },
   { id: "desktop_sarahnet", label: "SarahNet", kind: "app", windowId: "sarahnet", icon: "sarahnet" },
   { id: "desktop_studio", label: "Creation Bay", kind: "app", windowId: "studio", icon: "studio" },
   { id: "desktop_terminal", label: "Operator Terminal", kind: "app", windowId: "terminal", icon: "terminal" },
@@ -73,6 +76,7 @@ const DESKTOP_ICON_MAP: Record<string, LucideIcon> = {
   dlengine: Cpu,
   devices: MonitorCog,
   "device-manager": MonitorCog,
+  smugcc: ShieldCheck,
   sarahnet: Network,
   media: Play,
   studio: Palette,
