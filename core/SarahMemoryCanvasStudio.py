@@ -275,8 +275,8 @@ COLOR_DEPTH_16BIT = 16
 COLOR_DEPTH_32BIT = 32
 
 # Supported file formats
-SUPPORTED_EXPORT_FORMATS = ["PNG", "JPG", "JPEG", "WebP", "TIFF", "BMP", "TGA", "PDF"]
-SUPPORTED_IMPORT_FORMATS = ["PNG", "JPG", "JPEG", "WebP", "TIFF", "BMP", "TGA", "GIF"]
+SUPPORTED_EXPORT_FORMATS = ["PNG", "JPG", "JPEG", "WEBP", "TIFF", "BMP", "TGA", "SVG", "PDF"]
+SUPPORTED_IMPORT_FORMATS = ["PNG", "JPG", "JPEG", "WEBP", "TIFF", "BMP", "TGA", "GIF"]
 
 # Default settings
 DEFAULT_UNDO_HISTORY = 50
@@ -435,6 +435,139 @@ def hsv_to_rgb(h: float, s: float, v: float) -> Tuple[int, int, int]:
 
 
 # ============================================================================
+# INTERNAL PIXEL / CONTRACT HELPERS
+# ============================================================================
+
+def _depth_max_value(depth: int) -> float:
+    """Return the numeric full-scale value for a layer depth."""
+    if int(depth) == COLOR_DEPTH_16BIT:
+        return 65535.0
+    if int(depth) == COLOR_DEPTH_32BIT:
+        return 1.0
+    return 255.0
+
+
+def _depth_dtype(depth: int):
+    if int(depth) == COLOR_DEPTH_16BIT:
+        return np.uint16
+    if int(depth) == COLOR_DEPTH_32BIT:
+        return np.float32
+    return np.uint8
+
+
+def _coerce_rgba_color_for_depth(color: Tuple[int, int, int, int], depth: int) -> np.ndarray:
+    """Coerce an RGBA color tuple into the layer's native depth.
+
+    User-facing colors may be supplied as conventional 0-255 RGBA values. For
+    16-bit layers those values are scaled up; for 32-bit float layers they are
+    normalized into 0.0-1.0. Existing full-range 16-bit / normalized float values
+    are also accepted.
+    """
+    if color is None:
+        color = (255, 255, 255, 255)
+    if len(color) == 3:
+        color = (*color, 255)
+    arr = np.asarray(color[:4], dtype=np.float32)
+    depth = int(depth)
+    if depth == COLOR_DEPTH_32BIT:
+        if float(np.nanmax(arr)) > 1.0:
+            arr = arr / 255.0
+        return np.clip(arr, 0.0, 1.0).astype(np.float32)
+    if depth == COLOR_DEPTH_16BIT:
+        if float(np.nanmax(arr)) <= 255.0:
+            arr = arr * 257.0
+        return np.clip(arr, 0, 65535).astype(np.uint16)
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def _rgba_to_float01(data: np.ndarray, depth: int) -> np.ndarray:
+    """Convert native RGBA data into float32 0..1 RGBA."""
+    if data is None:
+        return np.zeros((1, 1, 4), dtype=np.float32)
+    arr = np.asarray(data)
+    if arr.ndim == 2:
+        arr = np.stack([arr, arr, arr, np.full_like(arr, _depth_max_value(depth))], axis=2)
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        alpha = np.full(arr.shape[:2] + (1,), _depth_max_value(depth), dtype=arr.dtype)
+        arr = np.concatenate([arr, alpha], axis=2)
+    elif arr.ndim != 3 or arr.shape[2] < 4:
+        raise ValueError("image_data_must_be_rgba_compatible")
+    arr = arr[:, :, :4].astype(np.float32, copy=False)
+    max_value = _depth_max_value(depth)
+    if max_value <= 0:
+        max_value = 255.0
+    return np.clip(arr / max_value, 0.0, 1.0).astype(np.float32)
+
+
+def _float01_to_rgba_depth(data: np.ndarray, depth: int) -> np.ndarray:
+    """Convert float32 0..1 RGBA data into the requested native depth."""
+    arr = np.clip(np.asarray(data, dtype=np.float32), 0.0, 1.0)
+    if int(depth) == COLOR_DEPTH_32BIT:
+        return arr.astype(np.float32)
+    if int(depth) == COLOR_DEPTH_16BIT:
+        return np.round(arr * 65535.0).astype(np.uint16)
+    return np.round(arr * 255.0).astype(np.uint8)
+
+
+def _rgba_to_uint8(data: np.ndarray, depth: int) -> np.ndarray:
+    return _float01_to_rgba_depth(_rgba_to_float01(data, depth), COLOR_DEPTH_8BIT)
+
+
+def _rgb_uint8_from_layer(layer: "CanvasLayer") -> Tuple[np.ndarray, np.ndarray]:
+    rgba = _rgba_to_uint8(layer.data, layer.depth)
+    return rgba[:, :, :3].copy(), rgba[:, :, 3].copy()
+
+
+def _write_rgb_uint8_to_layer(layer: "CanvasLayer", rgb: np.ndarray, alpha: Optional[np.ndarray] = None) -> None:
+    rgb = np.asarray(rgb)
+    if rgb.ndim == 2:
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_GRAY2RGB)
+    if alpha is None:
+        try:
+            alpha = _rgba_to_uint8(layer.data, layer.depth)[:, :, 3]
+        except Exception:
+            alpha = np.full(rgb.shape[:2], 255, dtype=np.uint8)
+    rgba = np.dstack([np.clip(rgb, 0, 255).astype(np.uint8), np.clip(alpha, 0, 255).astype(np.uint8)])
+    layer.data = _float01_to_rgba_depth(rgba.astype(np.float32) / 255.0, layer.depth)
+
+
+def _normalize_export_format(fmt: str) -> str:
+    fmt = (fmt or "PNG").strip().upper().lstrip('.')
+    if fmt == "JPG":
+        return "JPEG"
+    return fmt
+
+
+def _project_layer_dir(filepath: str) -> str:
+    root, ext = os.path.splitext(filepath)
+    if ext.lower() != ".scp":
+        root = filepath
+    return root + "_layers"
+
+
+def _parse_dt(value: Any, default: Optional[datetime] = None) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except Exception:
+            pass
+    return default or datetime.now()
+
+
+def _safe_imwrite(path: str, image: np.ndarray, params: Optional[List[int]] = None) -> bool:
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        ok = cv2.imwrite(path, image, params or [])
+        return bool(ok) and os.path.isfile(path) and os.path.getsize(path) > 0
+    except Exception as exc:
+        logging.error(f"[CanvasStudio] Image write failed for {path}: {exc}")
+        return False
+
+
+
+# ============================================================================
 # LAYER CLASS
 # ============================================================================
 
@@ -488,17 +621,11 @@ class CanvasLayer:
         logging.info(f"[CanvasStudio] Created layer '{name}' ({width}x{height}, {depth}-bit)")
     
     def fill_color(self, color: Tuple[int, int, int, int] = None):
-        """Fill the entire layer with a solid color"""
-        if color is None:
-            color = (255, 255, 255, 255)
-        
-        if len(color) == 3:
-            color = (*color, 255)
-        
-        self.data[:] = color
+        """Fill the entire layer with a solid RGBA color using depth-safe scaling."""
+        self.data[:] = _coerce_rgba_color_for_depth(color, self.depth)
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Filled layer '{self.name}' with color {color}")
-    
+
     def clear(self):
         """Clear the layer (make it fully transparent)"""
         self.data[:] = 0
@@ -518,50 +645,58 @@ class CanvasLayer:
         logging.debug(f"[CanvasStudio] Set blend mode of layer '{self.name}' to {mode.value}")
     
     def apply_gradient(self, gradient_type: str, colors: List[Tuple[int, int, int]], 
-                      angle: float = 0, center: Tuple[float, float] = None):
+                       angle: float = 0, center: Tuple[float, float] = None):
+        """Apply a depth-safe gradient fill to the layer.
+
+        Supported gradient types: linear, radial, angular, reflected, diamond.
+        Unknown gradient types raise ValueError instead of reporting false success.
         """
-        Apply a gradient fill to the layer
-        
-        Args:
-            gradient_type: Type of gradient (linear, radial, etc.)
-            colors: List of color stops
-            angle: Gradient angle in degrees (for linear gradients)
-            center: Center point for radial gradients (normalized 0-1)
-        """
+        if not colors:
+            raise ValueError("gradient_requires_at_least_one_color")
         if center is None:
             center = (0.5, 0.5)
-        
+
+        gradient_type = str(gradient_type or "linear").lower()
         height, width = self.data.shape[:2]
-        
+        y, x = np.mgrid[0:height, 0:width].astype(np.float32)
+        cx, cy = float(center[0]) * max(1, width - 1), float(center[1]) * max(1, height - 1)
+
         if gradient_type == "linear":
-            # Create linear gradient
-            angle_rad = np.radians(angle)
-            for y in range(height):
-                for x in range(width):
-                    # Calculate position along gradient
-                    t = (x * np.cos(angle_rad) + y * np.sin(angle_rad)) / (width + height)
-                    t = max(0, min(1, t))
-                    
-                    # Interpolate colors
-                    color = self._interpolate_colors(colors, t)
-                    self.data[y, x] = (*color, 255)
-        
+            angle_rad = np.radians(float(angle))
+            projection = x * np.cos(angle_rad) + y * np.sin(angle_rad)
+            t = (projection - projection.min()) / max(1e-6, float(projection.max() - projection.min()))
         elif gradient_type == "radial":
-            # Create radial gradient
-            cx, cy = int(center[0] * width), int(center[1] * height)
-            max_dist = np.sqrt(width**2 + height**2) / 2
-            
-            for y in range(height):
-                for x in range(width):
-                    dist = np.sqrt((x - cx)**2 + (y - cy)**2)
-                    t = min(1, dist / max_dist)
-                    
-                    color = self._interpolate_colors(colors, t)
-                    self.data[y, x] = (*color, 255)
-        
+            dist = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+            t = dist / max(1e-6, float(dist.max()))
+        elif gradient_type == "angular":
+            theta = (np.arctan2(y - cy, x - cx) + np.pi) / (2.0 * np.pi)
+            t = theta
+        elif gradient_type == "reflected":
+            angle_rad = np.radians(float(angle))
+            projection = x * np.cos(angle_rad) + y * np.sin(angle_rad)
+            projection = (projection - projection.min()) / max(1e-6, float(projection.max() - projection.min()))
+            t = np.abs((projection * 2.0) - 1.0)
+        elif gradient_type == "diamond":
+            dist = np.abs(x - cx) / max(1.0, width) + np.abs(y - cy) / max(1.0, height)
+            t = dist / max(1e-6, float(dist.max()))
+        else:
+            raise ValueError(f"unsupported_gradient_type:{gradient_type}")
+
+        t = np.clip(t, 0.0, 1.0)
+        stops = np.asarray([_coerce_rgba_color_for_depth((*c[:3], c[3] if len(c) > 3 else 255), COLOR_DEPTH_8BIT) for c in colors], dtype=np.float32) / 255.0
+        if len(stops) == 1:
+            rgba = np.broadcast_to(stops[0], (height, width, 4)).copy()
+        else:
+            scaled = t * (len(stops) - 1)
+            idx = np.floor(scaled).astype(np.int32)
+            idx = np.clip(idx, 0, len(stops) - 2)
+            local_t = (scaled - idx)[..., None]
+            rgba = stops[idx] * (1.0 - local_t) + stops[idx + 1] * local_t
+
+        self.data = _float01_to_rgba_depth(rgba, self.depth)
         self.modified_at = datetime.now()
         logging.debug(f"[CanvasStudio] Applied {gradient_type} gradient to layer '{self.name}'")
-    
+
     def _interpolate_colors(self, colors: List[Tuple[int, int, int]], t: float) -> Tuple[int, int, int]:
         """Interpolate between color stops"""
         if len(colors) < 2:
@@ -668,6 +803,7 @@ class Canvas:
         Returns:
             The newly created layer
         """
+        self.push_history("add_layer")
         layer = CanvasLayer(name, self.width, self.height, self.depth)
         
         if position is None:
@@ -683,160 +819,389 @@ class Canvas:
         return layer
     
     def remove_layer(self, layer_index: int) -> bool:
-        """Remove a layer from the canvas"""
+        """Remove a layer from the canvas."""
         if 0 <= layer_index < len(self.layers):
-            if len(self.layers) > 1:  # Don't remove last layer
+            if len(self.layers) > 1:
+                self.push_history("remove_layer")
                 removed_layer = self.layers.pop(layer_index)
                 self.active_layer_index = min(self.active_layer_index, len(self.layers) - 1)
                 self.modified_at = datetime.now()
                 logging.info(f"[CanvasStudio] Removed layer '{removed_layer.name}' from canvas '{self.name}'")
                 return True
-            else:
-                logging.warning(f"[CanvasStudio] Cannot remove last layer from canvas '{self.name}'")
-                return False
+            logging.warning(f"[CanvasStudio] Cannot remove last layer from canvas '{self.name}'")
+            return False
         return False
     
     def get_active_layer(self) -> Optional[CanvasLayer]:
-        """Get the currently active layer"""
+        """Get the currently active layer."""
         if 0 <= self.active_layer_index < len(self.layers):
             return self.layers[self.active_layer_index]
         return None
     
-    def set_active_layer(self, layer_index: int):
-        """Set the active layer by index"""
+    def set_active_layer(self, layer_index: int) -> bool:
+        """Set the active layer by index."""
         if 0 <= layer_index < len(self.layers):
             self.active_layer_index = layer_index
             logging.debug(f"[CanvasStudio] Set active layer to index {layer_index}")
-    
-    def merge_layers(self, layer1_index: int, layer2_index: int) -> bool:
-        """Merge two layers together"""
-        if (0 <= layer1_index < len(self.layers) and 
-            0 <= layer2_index < len(self.layers) and 
-            layer1_index != layer2_index):
-            
-            layer1 = self.layers[layer1_index]
-            layer2 = self.layers[layer2_index]
-            
-            # Composite layer2 onto layer1
-            # (Simplified - full implementation would respect blend modes)
-            alpha = layer2.opacity / 100.0
-            layer1.data = cv2.addWeighted(layer1.data, 1, layer2.data, alpha, 0)
-            
-            # Remove layer2
-            self.layers.pop(layer2_index)
-            if self.active_layer_index >= layer2_index:
-                self.active_layer_index = max(0, self.active_layer_index - 1)
-            
-            self.modified_at = datetime.now()
-            logging.info(f"[CanvasStudio] Merged layers in canvas '{self.name}'")
             return True
-        
         return False
-    
+
+    def _history_snapshot(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "width": self.width,
+            "height": self.height,
+            "depth": self.depth,
+            "active_layer_index": self.active_layer_index,
+            "author": self.author,
+            "created_at": self.created_at,
+            "modified_at": self.modified_at,
+            "layers": [
+                {
+                    "id": layer.id,
+                    "name": layer.name,
+                    "width": layer.width,
+                    "height": layer.height,
+                    "depth": layer.depth,
+                    "opacity": layer.opacity,
+                    "blend_mode": layer.blend_mode,
+                    "visible": layer.visible,
+                    "locked": layer.locked,
+                    "position": tuple(layer.position),
+                    "rotation": layer.rotation,
+                    "scale": tuple(layer.scale),
+                    "created_at": layer.created_at,
+                    "modified_at": layer.modified_at,
+                    "data": layer.data.copy(),
+                }
+                for layer in self.layers
+            ],
+        }
+
+    def _restore_history_snapshot(self, snapshot: Dict[str, Any]) -> None:
+        self.id = snapshot.get("id", self.id)
+        self.name = snapshot.get("name", self.name)
+        self.width = int(snapshot.get("width", self.width))
+        self.height = int(snapshot.get("height", self.height))
+        self.depth = int(snapshot.get("depth", self.depth))
+        self.active_layer_index = int(snapshot.get("active_layer_index", 0))
+        self.author = snapshot.get("author", self.author)
+        self.created_at = snapshot.get("created_at", self.created_at)
+        self.modified_at = datetime.now()
+        restored: List[CanvasLayer] = []
+        for item in snapshot.get("layers", []):
+            layer = CanvasLayer(item.get("name", "Layer"), int(item.get("width", self.width)), int(item.get("height", self.height)), int(item.get("depth", self.depth)))
+            layer.id = item.get("id", layer.id)
+            layer.opacity = int(item.get("opacity", 100))
+            try:
+                layer.blend_mode = item.get("blend_mode") if isinstance(item.get("blend_mode"), BlendMode) else BlendMode(item.get("blend_mode", BlendMode.NORMAL.value))
+            except Exception:
+                layer.blend_mode = BlendMode.NORMAL
+            layer.visible = bool(item.get("visible", True))
+            layer.locked = bool(item.get("locked", False))
+            layer.position = tuple(item.get("position", (0, 0)))
+            layer.rotation = float(item.get("rotation", 0))
+            layer.scale = tuple(item.get("scale", (1.0, 1.0)))
+            layer.created_at = item.get("created_at", datetime.now())
+            layer.modified_at = item.get("modified_at", datetime.now())
+            layer.data = np.asarray(item.get("data", layer.data)).copy()
+            restored.append(layer)
+        if restored:
+            self.layers = restored
+        self.active_layer_index = max(0, min(self.active_layer_index, len(self.layers) - 1))
+
+    def push_history(self, label: str = "edit") -> None:
+        """Capture a bounded undo snapshot."""
+        try:
+            if self.max_history <= 0:
+                return
+            # Drop redo branch.
+            if self.history_index < len(self.history) - 1:
+                self.history = self.history[:self.history_index + 1]
+            snap = self._history_snapshot()
+            snap["label"] = label
+            self.history.append(snap)
+            if len(self.history) > self.max_history:
+                self.history.pop(0)
+            self.history_index = len(self.history) - 1
+        except Exception as exc:
+            logging.warning(f"[CanvasStudio] Failed to push history snapshot: {exc}")
+
+    def undo(self) -> bool:
+        """Restore the previous canvas state when available."""
+        if self.history_index < 0 or not self.history:
+            return False
+        current = self._history_snapshot()
+        snapshot = self.history[self.history_index]
+        self._restore_history_snapshot(snapshot)
+        self.history_index -= 1
+        if self.history_index == len(self.history) - 2:
+            self.history.append(current)
+        return True
+
+    def redo(self) -> bool:
+        """Restore a redone state when available."""
+        next_index = self.history_index + 1
+        if not (0 <= next_index < len(self.history)):
+            return False
+        self._restore_history_snapshot(self.history[next_index])
+        self.history_index = next_index
+        return True
+
+    def resize(self, width: int, height: int) -> bool:
+        """Resize the canvas and every layer."""
+        width, height = validate_canvas_dimensions(int(width), int(height))
+        if width == self.width and height == self.height:
+            return True
+        self.push_history("resize")
+        for layer in self.layers:
+            interp = cv2.INTER_AREA if width < layer.width or height < layer.height else cv2.INTER_LINEAR
+            layer.data = cv2.resize(layer.data, (width, height), interpolation=interp)
+            layer.width = width
+            layer.height = height
+            layer.modified_at = datetime.now()
+        self.width = width
+        self.height = height
+        self.modified_at = datetime.now()
+        return True
+
+    @staticmethod
+    def _blend_rgb(base_rgb: np.ndarray, top_rgb: np.ndarray, mode: BlendMode) -> np.ndarray:
+        """Blend two float RGB arrays before alpha compositing."""
+        b = np.clip(base_rgb, 0.0, 1.0)
+        t = np.clip(top_rgb, 0.0, 1.0)
+        mode_value = mode.value if isinstance(mode, BlendMode) else str(mode)
+        if mode_value == BlendMode.MULTIPLY.value:
+            return b * t
+        if mode_value == BlendMode.SCREEN.value:
+            return 1.0 - (1.0 - b) * (1.0 - t)
+        if mode_value == BlendMode.OVERLAY.value:
+            return np.where(b <= 0.5, 2.0 * b * t, 1.0 - 2.0 * (1.0 - b) * (1.0 - t))
+        if mode_value == BlendMode.HARD_LIGHT.value:
+            return np.where(t <= 0.5, 2.0 * b * t, 1.0 - 2.0 * (1.0 - b) * (1.0 - t))
+        if mode_value == BlendMode.SOFT_LIGHT.value:
+            return (1.0 - 2.0 * t) * b * b + 2.0 * t * b
+        if mode_value == BlendMode.DARKEN.value:
+            return np.minimum(b, t)
+        if mode_value == BlendMode.LIGHTEN.value:
+            return np.maximum(b, t)
+        if mode_value == BlendMode.COLOR_DODGE.value:
+            return np.where(t >= 1.0, 1.0, np.minimum(1.0, b / np.maximum(1e-6, 1.0 - t)))
+        if mode_value == BlendMode.COLOR_BURN.value:
+            return np.where(t <= 0.0, 0.0, 1.0 - np.minimum(1.0, (1.0 - b) / np.maximum(1e-6, t)))
+        if mode_value == BlendMode.LINEAR_DODGE.value:
+            return np.minimum(1.0, b + t)
+        if mode_value == BlendMode.LINEAR_BURN.value:
+            return np.maximum(0.0, b + t - 1.0)
+        if mode_value == BlendMode.DIFFERENCE.value:
+            return np.abs(b - t)
+        if mode_value == BlendMode.EXCLUSION.value:
+            return b + t - 2.0 * b * t
+        # Hue/saturation/color/luminosity need perceptual color-space handling; keep them safe.
+        return t
+
+    def _transformed_layer_rgba(self, layer: CanvasLayer) -> np.ndarray:
+        """Return a layer as canvas-sized float RGBA, with transforms applied."""
+        rgba = _rgba_to_float01(layer.data, layer.depth)
+        if rgba.shape[:2] != (self.height, self.width):
+            rgba = cv2.resize(rgba, (self.width, self.height), interpolation=cv2.INTER_LINEAR)
+        sx, sy = layer.scale if isinstance(layer.scale, (tuple, list)) and len(layer.scale) == 2 else (1.0, 1.0)
+        px, py = layer.position if isinstance(layer.position, (tuple, list)) and len(layer.position) == 2 else (0, 0)
+        rot = float(layer.rotation or 0.0)
+        if abs(float(sx) - 1.0) < 1e-6 and abs(float(sy) - 1.0) < 1e-6 and abs(rot) < 1e-6 and int(px) == 0 and int(py) == 0:
+            return rgba
+        center = (self.width / 2.0, self.height / 2.0)
+        matrix = cv2.getRotationMatrix2D(center, rot, 1.0)
+        matrix[0, 0] *= float(sx)
+        matrix[0, 1] *= float(sx)
+        matrix[1, 0] *= float(sy)
+        matrix[1, 1] *= float(sy)
+        matrix[0, 2] += float(px)
+        matrix[1, 2] += float(py)
+        return cv2.warpAffine(rgba, matrix, (self.width, self.height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
+
     def flatten(self) -> np.ndarray:
-        """
-        Flatten all layers into a single composite image
-        
-        Returns:
-            Composite image as numpy array
-        """
+        """Flatten visible layers into one depth-safe RGBA composite."""
         if not self.layers:
-            return np.zeros((self.height, self.width, 4), dtype=np.uint8)
-        
-        # Start with the bottom layer
-        result = self.layers[0].data.copy()
-        
-        # Composite each layer on top
-        for i in range(1, len(self.layers)):
-            layer = self.layers[i]
+            return np.zeros((self.height, self.width, 4), dtype=_depth_dtype(self.depth))
+        result = np.zeros((self.height, self.width, 4), dtype=np.float32)
+        for layer in self.layers:
             if not layer.visible:
                 continue
-            
-            # Apply opacity
-            alpha = (layer.opacity / 100.0) * (layer.data[:, :, 3] / 255.0)
-            
-            # Simple alpha compositing (full implementation would use blend modes)
-            for c in range(3):
-                result[:, :, c] = (
-                    result[:, :, c] * (1 - alpha) +
-                    layer.data[:, :, c] * alpha
-                ).astype(result.dtype)
-        
+            src = self._transformed_layer_rgba(layer)
+            layer_alpha = np.clip(float(layer.opacity) / 100.0, 0.0, 1.0)
+            src_a = np.clip(src[:, :, 3:4] * layer_alpha, 0.0, 1.0)
+            if np.max(src_a) <= 0.0:
+                continue
+            dst_a = result[:, :, 3:4]
+            blend_rgb = self._blend_rgb(result[:, :, :3], src[:, :, :3], layer.blend_mode)
+            out_a = src_a + dst_a * (1.0 - src_a)
+            out_rgb_premul = blend_rgb * src_a + result[:, :, :3] * dst_a * (1.0 - src_a)
+            result[:, :, :3] = np.where(out_a > 1e-6, out_rgb_premul / np.maximum(out_a, 1e-6), 0.0)
+            result[:, :, 3:4] = out_a
         logging.debug(f"[CanvasStudio] Flattened {len(self.layers)} layers")
-        return result
+        return _float01_to_rgba_depth(result, self.depth)
     
-    def apply_effect(self, effect_type: str, **kwargs):
-        """Apply an effect to the active layer"""
+    def merge_layers(self, layer1_index: int, layer2_index: int) -> bool:
+        """Merge layer2 onto layer1 using the same compositor as flatten."""
+        if not (0 <= layer1_index < len(self.layers) and 0 <= layer2_index < len(self.layers) and layer1_index != layer2_index):
+            return False
+        self.push_history("merge_layers")
+        layer1 = self.layers[layer1_index]
+        layer2 = self.layers[layer2_index]
+        temp = Canvas("_merge", self.width, self.height, self.depth, (0, 0, 0, 0))
+        temp.layers = []
+        temp.layers.append(layer1)
+        temp.layers.append(layer2)
+        merged = temp.flatten()
+        layer1.data = merged
+        layer1.modified_at = datetime.now()
+        self.layers.pop(layer2_index)
+        if self.active_layer_index >= layer2_index:
+            self.active_layer_index = max(0, self.active_layer_index - 1)
+        self.modified_at = datetime.now()
+        logging.info(f"[CanvasStudio] Merged layers in canvas '{self.name}'")
+        return True
+    
+    def apply_effect(self, effect_type: str, **kwargs) -> bool:
+        """Apply an effect to the active layer. Returns False for unsupported effects."""
         layer = self.get_active_layer()
         if not layer:
             logging.warning("[CanvasStudio] No active layer to apply effect")
-            return
-        
+            return False
+        effect_type = str(effect_type or "").lower()
+        rgb, alpha = _rgb_uint8_from_layer(layer)
+        applied = True
         try:
             if effect_type == "gaussian_blur":
-                radius = kwargs.get("radius", 5)
-                layer.data = cv2.GaussianBlur(layer.data, (0, 0), radius)
-            
+                radius = max(0.1, float(kwargs.get("radius", 5)))
+                out = cv2.GaussianBlur(rgb, (0, 0), radius)
+            elif effect_type == "box_blur":
+                k = max(1, int(kwargs.get("kernel", kwargs.get("radius", 5))))
+                k = k if k % 2 == 1 else k + 1
+                out = cv2.blur(rgb, (k, k))
+            elif effect_type == "motion_blur":
+                k = max(3, int(kwargs.get("kernel", 9)))
+                k = k if k % 2 == 1 else k + 1
+                kernel = np.zeros((k, k), dtype=np.float32)
+                kernel[k // 2, :] = 1.0 / k
+                out = cv2.filter2D(rgb, -1, kernel)
             elif effect_type == "sharpen":
-                kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-                layer.data = cv2.filter2D(layer.data, -1, kernel)
-            
+                kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
+                out = cv2.filter2D(rgb, -1, kernel)
             elif effect_type == "edge_sobel":
-                gray = cv2.cvtColor(layer.data[:, :, :3], cv2.COLOR_BGR2GRAY)
-                sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-                sobely = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-                edges = np.sqrt(sobelx**2 + sobely**2)
-                edges = np.uint8(edges / edges.max() * 255)
-                layer.data[:, :, :3] = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-            
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                sx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+                sy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+                edges = np.sqrt(sx ** 2 + sy ** 2)
+                max_edge = float(edges.max())
+                edges = np.uint8(edges / max_edge * 255) if max_edge > 0 else np.zeros_like(gray, dtype=np.uint8)
+                out = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+            elif effect_type == "edge_canny":
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                edges = cv2.Canny(gray, int(kwargs.get("threshold1", 100)), int(kwargs.get("threshold2", 200)))
+                out = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+            elif effect_type == "edge_laplacian":
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                lap = cv2.Laplacian(gray, cv2.CV_64F)
+                out = cv2.cvtColor(np.uint8(np.clip(np.abs(lap), 0, 255)), cv2.COLOR_GRAY2RGB)
             elif effect_type == "emboss":
-                kernel = np.array([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]])
-                layer.data = cv2.filter2D(layer.data, -1, kernel)
-            
+                kernel = np.array([[-2, -1, 0], [-1, 1, 1], [0, 1, 2]], dtype=np.float32)
+                out = cv2.filter2D(rgb, -1, kernel) + 128
+            elif effect_type in ("contour", "find_edges"):
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                edges = cv2.Canny(gray, 80, 160)
+                out = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+            elif effect_type == "noise_gaussian":
+                sigma = float(kwargs.get("sigma", 12.0))
+                noise = np.random.normal(0.0, sigma, rgb.shape).astype(np.float32)
+                out = np.clip(rgb.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+            elif effect_type == "noise_salt_pepper":
+                amount = float(kwargs.get("amount", 0.01))
+                out = rgb.copy()
+                mask = np.random.random(rgb.shape[:2])
+                out[mask < amount / 2.0] = 0
+                out[mask > 1.0 - amount / 2.0] = 255
+            elif effect_type == "denoise":
+                out = cv2.fastNlMeansDenoisingColored(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), None, 7, 7, 7, 21)
+                out = cv2.cvtColor(out, cv2.COLOR_BGR2RGB)
+            elif effect_type == "oil_paint":
+                if hasattr(cv2, "xphoto") and hasattr(cv2.xphoto, "oilPainting"):
+                    out = cv2.xphoto.oilPainting(rgb, 7, 1)
+                else:
+                    out = cv2.bilateralFilter(rgb, 9, 80, 80)
+            elif effect_type == "watercolor":
+                smooth = cv2.bilateralFilter(rgb, 9, 75, 75)
+                out = cv2.addWeighted(smooth, 0.82, cv2.GaussianBlur(smooth, (0, 0), 1.2), 0.18, 0)
+            elif effect_type == "sketch":
+                gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+                inv = 255 - gray
+                blur = cv2.GaussianBlur(inv, (21, 21), 0)
+                sketch = cv2.divide(gray, 255 - blur, scale=256)
+                out = cv2.cvtColor(sketch, cv2.COLOR_GRAY2RGB)
+            elif effect_type == "cartoon":
+                smooth = cv2.bilateralFilter(rgb, 9, 90, 90)
+                edges = cv2.Canny(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), 80, 160)
+                edges = cv2.cvtColor(255 - edges, cv2.COLOR_GRAY2RGB)
+                out = cv2.bitwise_and(smooth, edges)
+            elif effect_type == "vignette":
+                rows, cols = rgb.shape[:2]
+                kernel_x = cv2.getGaussianKernel(cols, cols / 2.5)
+                kernel_y = cv2.getGaussianKernel(rows, rows / 2.5)
+                mask = kernel_y @ kernel_x.T
+                mask = mask / max(mask.max(), 1e-6)
+                out = np.clip(rgb.astype(np.float32) * mask[:, :, None], 0, 255).astype(np.uint8)
             elif effect_type == "sepia":
-                kernel = np.array([[0.272, 0.534, 0.131],
-                                 [0.349, 0.686, 0.168],
-                                 [0.393, 0.769, 0.189]])
-                layer.data[:, :, :3] = cv2.transform(layer.data[:, :, :3], kernel)
-            
+                matrix = np.array([[0.393, 0.769, 0.189], [0.349, 0.686, 0.168], [0.272, 0.534, 0.131]], dtype=np.float32)
+                out = np.clip(rgb.astype(np.float32) @ matrix.T, 0, 255).astype(np.uint8)
+            elif effect_type == "vintage":
+                matrix = np.array([[1.08, 0.05, 0.02], [0.03, 0.95, 0.04], [0.02, 0.06, 0.82]], dtype=np.float32)
+                out = np.clip(rgb.astype(np.float32) @ matrix.T + np.array([8, 4, -6]), 0, 255).astype(np.uint8)
+            else:
+                logging.warning(f"[CanvasStudio] Unsupported effect: {effect_type}")
+                return False
+            self.push_history(f"effect:{effect_type}")
+            _write_rgb_uint8_to_layer(layer, out, alpha)
             layer.modified_at = datetime.now()
             self.modified_at = datetime.now()
             logging.info(f"[CanvasStudio] Applied effect '{effect_type}' to layer '{layer.name}'")
-            
+            return applied
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to apply effect '{effect_type}': {e}")
+            return False
     
-    def color_correct(self, brightness: int = 0, contrast: int = 0, saturation: int = 0):
-        """Apply color correction to the active layer"""
+    def color_correct(self, brightness: int = 0, contrast: int = 0, saturation: int = 0) -> bool:
+        """Apply RGB-only color correction to the active layer while preserving alpha."""
         layer = self.get_active_layer()
         if not layer:
-            return
-        
+            return False
         try:
-            # Brightness adjustment
+            rgb, alpha = _rgb_uint8_from_layer(layer)
+            out = rgb.astype(np.float32)
             if brightness != 0:
-                layer.data = cv2.convertScaleAbs(layer.data, alpha=1, beta=brightness)
-            
-            # Contrast adjustment
+                out += float(brightness)
             if contrast != 0:
-                f = (259 * (contrast + 255)) / (255 * (259 - contrast))
-                layer.data = cv2.convertScaleAbs(layer.data, alpha=f, beta=128*(1-f))
-            
-            # Saturation adjustment
+                c = max(-255.0, min(255.0, float(contrast)))
+                factor = (259.0 * (c + 255.0)) / (255.0 * (259.0 - c))
+                out = factor * (out - 128.0) + 128.0
+            out = np.clip(out, 0, 255).astype(np.uint8)
             if saturation != 0:
-                hsv = cv2.cvtColor(layer.data[:, :, :3], cv2.COLOR_BGR2HSV).astype(np.float32)
-                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * (1 + saturation / 100.0), 0, 255)
-                layer.data[:, :, :3] = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
-            
+                hsv = cv2.cvtColor(out, cv2.COLOR_RGB2HSV).astype(np.float32)
+                hsv[:, :, 1] = np.clip(hsv[:, :, 1] * (1.0 + float(saturation) / 100.0), 0, 255)
+                out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
+            self.push_history("color_correct")
+            _write_rgb_uint8_to_layer(layer, out, alpha)
             layer.modified_at = datetime.now()
             self.modified_at = datetime.now()
             logging.info(f"[CanvasStudio] Applied color correction to layer '{layer.name}'")
-            
+            return True
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to apply color correction: {e}")
+            return False
     
     def to_dict(self) -> Dict:
-        """Serialize canvas to dictionary for saving"""
+        """Serialize canvas to dictionary for saving."""
         return {
             "id": self.id,
             "name": self.name,
@@ -848,7 +1213,7 @@ class Canvas:
             "created_at": self.created_at.isoformat(),
             "modified_at": self.modified_at.isoformat(),
             "author": self.author,
-            "version": CANVAS_STUDIO_VERSION
+            "version": CANVAS_STUDIO_VERSION,
         }
 
 
@@ -878,6 +1243,7 @@ class CanvasStudio:
         self._live_avatar_previous_parameters: Dict[str, Any] = {}
         self._live_avatar_frame_id = 0
         self._live_avatar_last_health: Dict[str, Any] = {}
+        self._live_avatar_streams: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
         # Bounded stat-aware RAM cache avoids decoding the same identity artwork
         # every render frame. Cached data is presentation-only and invalidates on
         # file metadata changes; it grants no execution or memory authority.
@@ -1055,9 +1421,88 @@ class CanvasStudio:
         for channel in range(destination.shape[2]):
             roi[:, :, channel] = cv2.bitwise_or(cv2.bitwise_and(roi[:, :, channel], inv), cv2.bitwise_and(warped[:, :, channel], mask))
 
-    def _apply_live_avatar_neon(self, frame: np.ndarray, landmarks_px: Dict[str, Tuple[float, float]], parameters: Dict[str, Any], quality_level: int) -> np.ndarray:
+    @staticmethod
+    def _resolve_live_avatar_logic():
+        """Return SarahMemoryLogicCalc or a bounded local math fallback for diagnostics."""
         try:
             import SarahMemoryLogicCalc as _LC  # type: ignore
+            return _LC, "SarahMemoryLogicCalc"
+        except Exception:
+            class _FallbackLogic:
+                @staticmethod
+                def sml_clamp(value, low, high):
+                    return max(low, min(high, float(value)))
+
+                @staticmethod
+                def sml_avatar_deformation_offsets(params):
+                    clamp = _FallbackLogic.sml_clamp
+                    jaw = clamp(params.get("jaw_open", 0.0), 0.0, 1.0)
+                    blink_l = clamp(params.get("blink_left", 0.0), 0.0, 1.0)
+                    blink_r = clamp(params.get("blink_right", 0.0), 0.0, 1.0)
+                    gaze_x = clamp(params.get("gaze_x", 0.0), -1.0, 1.0)
+                    gaze_y = clamp(params.get("gaze_y", 0.0), -1.0, 1.0)
+                    breath = clamp(params.get("breath", 0.0), -1.0, 1.0)
+                    smile = clamp(params.get("smile", 0.0), -1.0, 1.0)
+                    return {
+                        "lower_lip": (0.0, 0.035 * jaw),
+                        "chin": (0.0, 0.018 * jaw),
+                        "mouth_left": (-0.012 * smile, -0.012 * smile),
+                        "mouth_right": (0.012 * smile, -0.012 * smile),
+                        "left_eye": (0.010 * gaze_x, 0.006 * gaze_y + 0.012 * blink_l),
+                        "right_eye": (0.010 * gaze_x, 0.006 * gaze_y + 0.012 * blink_r),
+                        "left_brow": (0.0, -0.010 * (1.0 - blink_l)),
+                        "right_brow": (0.0, -0.010 * (1.0 - blink_r)),
+                        "chest_center": (0.0, -0.015 * breath),
+                        "chest_left": (-0.006 * breath, -0.010 * breath),
+                        "chest_right": (0.006 * breath, -0.010 * breath),
+                    }
+
+                @staticmethod
+                def sml_apply_normalized_offsets(points, offsets, stiffness):
+                    out = dict(points)
+                    for name, delta in offsets.items():
+                        if name in out:
+                            x, y = out[name]
+                            dx, dy = delta
+                            mobility = 1.0 - float(stiffness.get(name, 0.5))
+                            out[name] = (_FallbackLogic.sml_clamp(x + dx * mobility, 0.0, 1.0), _FallbackLogic.sml_clamp(y + dy * mobility, 0.0, 1.0))
+                    return out
+
+                @staticmethod
+                def sml_scale_normalized_points(points, width, height):
+                    return {k: (float(v[0]) * (int(width) - 1), float(v[1]) * (int(height) - 1)) for k, v in points.items()}
+
+                @staticmethod
+                def sml_motion_vector(previous, current):
+                    return (float(current[0]) - float(previous[0]), float(current[1]) - float(previous[1]))
+
+                @staticmethod
+                def sml_vector_magnitude(x, y):
+                    return float((float(x) ** 2 + float(y) ** 2) ** 0.5)
+
+                @staticmethod
+                def sml_temporal_history_weight(motion_magnitude, color_difference):
+                    motion_penalty = min(1.0, float(motion_magnitude) / 24.0)
+                    color_penalty = min(1.0, float(color_difference) * 2.0)
+                    return max(0.0, min(0.72, 0.55 * (1.0 - max(motion_penalty, color_penalty))))
+
+                @staticmethod
+                def sml_frame_budget_level(frame_ms, target_fps):
+                    budget = 1000.0 / max(1.0, float(target_fps))
+                    if frame_ms <= budget:
+                        return 0
+                    if frame_ms <= budget * 1.5:
+                        return 1
+                    if frame_ms <= budget * 2.0:
+                        return 2
+                    if frame_ms <= budget * 3.0:
+                        return 3
+                    return 4
+            return _FallbackLogic, "local_fallback"
+
+    def _apply_live_avatar_neon(self, frame: np.ndarray, landmarks_px: Dict[str, Tuple[float, float]], parameters: Dict[str, Any], quality_level: int) -> np.ndarray:
+        _LC, _logic_source = self._resolve_live_avatar_logic()
+        try:
             intensity = _LC.sml_clamp(parameters.get("neon_intensity", 0.35), 0.0, 1.0)
             wave = _LC.sml_clamp(parameters.get("neon_wave", 0.0), -1.0, 1.0)
         except Exception:
@@ -1073,7 +1518,6 @@ class CanvasStudio:
         emission = np.zeros(frame.shape[:2], dtype=np.uint8)
         thickness = 2 if quality_level >= 4 else 3
         cv2.polylines(emission, [np.int32(points)], False, int(128 + (127 * intensity)), thickness=thickness, lineType=cv2.LINE_AA)
-        # Phase is represented by a small traveling highlight along the polyline.
         highlight_index = 0 if wave < -0.33 else (len(points) // 2 if wave < 0.33 else len(points) - 1)
         cv2.circle(emission, points[highlight_index], 5 if quality_level < 3 else 3, 255, -1, lineType=cv2.LINE_AA)
         blur_radius = 11 if quality_level == 0 else (7 if quality_level <= 2 else 3)
@@ -1095,20 +1539,12 @@ class CanvasStudio:
         reference_rgba: Any = None,
         use_temporal_history: bool = True,
     ) -> Dict[str, Any]:
-        """Render one persistent live-avatar RGBA frame.
-
-        CanvasStudio owns geometry/raster/lighting mechanics only.  All avatar
-        deformation and temporal weighting mathematics is delegated to LogicCalc.
-        No network, memory, cognition, device, or execution authority exists here.
-        """
+        """Render one persistent live-avatar RGBA frame with isolated stream history."""
         started = time.perf_counter()
         width, height = validate_canvas_dimensions(width, height)
         packet = dict(parameter_packet or {})
         params = packet.get("parameters") if isinstance(packet.get("parameters"), dict) else packet
-        try:
-            import SarahMemoryLogicCalc as _LC  # type: ignore
-        except Exception as exc:
-            return {"ok": False, "error": f"LogicCalc unavailable: {exc}", "execution_authority": False, "pixel_authority": True}
+        _LC, logic_source = self._resolve_live_avatar_logic()
 
         if reference_rgba is not None:
             try:
@@ -1126,6 +1562,7 @@ class CanvasStudio:
                     "execution_authority": False,
                     "pixel_authority": True,
                     "fallback_required": True,
+                    "logic_source": logic_source,
                 }
 
         normalized = self._live_avatar_landmark_atlas()
@@ -1140,41 +1577,50 @@ class CanvasStudio:
                 continue
             self._warp_live_avatar_triangle(source, current, [source_px[n] for n in names], [target_px[n] for n in names])
 
-        # Determine frame pressure before cosmetic effects using the previous health level.
-        quality_level = int((self._live_avatar_last_health or {}).get("quality_level") or 0)
+        stream_key = (str(source_id), int(width), int(height))
+        with self._live_avatar_lock:
+            stream = self._live_avatar_streams.setdefault(stream_key, {"history": None, "landmarks": {}, "parameters": {}, "frame_id": 0, "last_health": {}})
+            quality_level = int((stream.get("last_health") or {}).get("quality_level") or 0)
+
         current = self._apply_live_avatar_neon(current, target_px, params, quality_level)
 
         with self._live_avatar_lock:
+            stream = self._live_avatar_streams.setdefault(stream_key, {"history": None, "landmarks": {}, "parameters": {}, "frame_id": 0, "last_health": {}})
             history_weight = 0.0
             motion_magnitude = 0.0
             color_difference = 0.0
-            if use_temporal_history and isinstance(self._live_avatar_history, np.ndarray) and self._live_avatar_history.shape == current.shape:
+            previous_history = stream.get("history")
+            previous_landmarks = stream.get("landmarks") or {}
+            previous_parameters = stream.get("parameters") or {}
+            if use_temporal_history and isinstance(previous_history, np.ndarray) and previous_history.shape == current.shape:
                 vectors = []
                 for name, point in target_px.items():
-                    prev = self._live_avatar_previous_landmarks.get(name)
+                    prev = previous_landmarks.get(name)
                     if prev is not None:
                         vectors.append(_LC.sml_motion_vector(prev, point))
                 if vectors:
                     magnitudes = [_LC.sml_vector_magnitude(v[0], v[1]) for v in vectors]
                     motion_magnitude = sum(magnitudes) / len(magnitudes)
-                diff = cv2.absdiff(current, self._live_avatar_history)
+                diff = cv2.absdiff(current, previous_history)
                 color_difference = _LC.sml_clamp(float(np.mean(diff)) / 255.0, 0.0, 1.0)
                 history_weight = _LC.sml_temporal_history_weight(motion_magnitude, color_difference)
                 if history_weight > 0.0:
-                    current = cv2.addWeighted(current, 1.0 - history_weight, self._live_avatar_history, history_weight, 0.0)
+                    current = cv2.addWeighted(current, 1.0 - history_weight, previous_history, history_weight, 0.0)
 
-            changed_parameters = [k for k, v in params.items() if self._live_avatar_previous_parameters.get(k) != v]
-            self._live_avatar_history = current.copy()
-            self._live_avatar_previous_landmarks = dict(target_px)
-            self._live_avatar_previous_parameters = dict(params)
+            changed_parameters = [k for k, v in params.items() if previous_parameters.get(k) != v]
+            stream["history"] = current.copy()
+            stream["landmarks"] = dict(target_px)
+            stream["parameters"] = dict(params)
+            stream["frame_id"] = int(stream.get("frame_id") or 0) + 1
+            frame_id = int(stream["frame_id"])
             self._live_avatar_frame_id += 1
-            frame_id = self._live_avatar_frame_id
 
         frame_ms = (time.perf_counter() - started) * 1000.0
         quality_level = _LC.sml_frame_budget_level(frame_ms, 30.0)
         health = {
             "schema": "SarahMemory.avatar.render_health.v1",
             "frame_id": frame_id,
+            "global_frame_id": self._live_avatar_frame_id,
             "frame_ms": frame_ms,
             "target_fps": 30.0,
             "quality_level": quality_level,
@@ -1182,12 +1628,16 @@ class CanvasStudio:
             "motion_magnitude": motion_magnitude,
             "color_difference": color_difference,
             "changed_parameters": changed_parameters[:64],
-            "dirty_region_tracking": True,
+            "dirty_region_tracking": False,
             "partial_raster_update": False,
             "reference": source_id,
+            "stream_key": stream_key,
+            "logic_source": logic_source,
             "execution_authority": False,
         }
-        self._live_avatar_last_health = dict(health)
+        with self._live_avatar_lock:
+            self._live_avatar_streams[stream_key]["last_health"] = dict(health)
+            self._live_avatar_last_health = dict(health)
         return {
             "ok": True,
             "schema": "SarahMemory.avatar.live_frame.v1",
@@ -1219,6 +1669,8 @@ class CanvasStudio:
             {"name": "no_execution_authority", "passed": out.get("execution_authority") is False},
         ]
         return {"ok": all(c["passed"] for c in checks), "checks": checks, "render_health": second.get("render_health"), "execution_authority": False}
+
+
 
     def create_canvas(self, width: int, height: int, name: str = None, 
                      depth: int = 8, background_color: Tuple[int, int, int, int] = None) -> Canvas:
@@ -1252,163 +1704,174 @@ class CanvasStudio:
         return self.canvases.get(canvas_id)
     
     def save_canvas(self, canvas: Canvas, filepath: str = None) -> bool:
-        """
-        Save canvas project file (.scp format)
-        
-        Args:
-            canvas: Canvas to save
-            filepath: Destination path (auto-generated if None)
-        
-        Returns:
-            True if successful, False otherwise
-        """
+        """Save canvas project file (.scp format) with lossless layer payloads."""
         try:
             if filepath is None:
                 filename = f"{canvas.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.scp"
                 filepath = os.path.join(CANVAS_PROJECTS_DIR, filename)
-            
-            # Create project data
+            if not filepath.lower().endswith(".scp"):
+                filepath = f"{filepath}.scp"
+            os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
             project_data = {
                 "canvas": canvas.to_dict(),
                 "studio_version": CANVAS_STUDIO_VERSION,
-                "saved_at": datetime.now().isoformat()
+                "saved_at": datetime.now().isoformat(),
+                "layer_storage": "npy_lossless_rgba",
             }
-            
-            # Save JSON metadata
-            with open(filepath, 'w') as f:
-                json.dump(project_data, f, indent=2)
-            
-            # Save layer data
-            layer_dir = filepath.replace('.scp', '_layers')
+            layer_dir = _project_layer_dir(filepath)
             os.makedirs(layer_dir, exist_ok=True)
-            
             for i, layer in enumerate(canvas.layers):
-                layer_file = os.path.join(layer_dir, f"layer_{i:03d}.png")
-                cv2.imwrite(layer_file, layer.data)
-            
+                np.save(os.path.join(layer_dir, f"layer_{i:03d}.npy"), layer.data)
+                preview = _rgba_to_uint8(layer.data, layer.depth)
+                preview_bgra = cv2.cvtColor(preview, cv2.COLOR_RGBA2BGRA)
+                if not _safe_imwrite(os.path.join(layer_dir, f"layer_{i:03d}.png"), preview_bgra):
+                    logging.warning(f"[CanvasStudio] Preview PNG write failed for layer {i}; lossless NPY was written")
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(project_data, f, indent=2)
+            ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
             logging.info(f"[CanvasStudio] Saved canvas '{canvas.name}' to {filepath}")
-            return True
-            
+            return bool(ok)
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to save canvas: {e}")
             traceback.print_exc()
             return False
     
     def load_canvas(self, filepath: str) -> Optional[Canvas]:
-        """
-        Load canvas project file (.scp format)
-        
-        Args:
-            filepath: Path to project file
-        
-        Returns:
-            Loaded Canvas object or None if failed
-        """
+        """Load canvas project file (.scp format), restoring IDs, transforms, and layer state."""
         try:
-            # Load JSON metadata
-            with open(filepath, 'r') as f:
+            with open(filepath, 'r', encoding='utf-8') as f:
                 project_data = json.load(f)
-            
             canvas_data = project_data['canvas']
-            
-            # Recreate canvas
             canvas = Canvas(
-                name=canvas_data['name'],
-                width=canvas_data['width'],
-                height=canvas_data['height'],
-                depth=canvas_data['depth']
+                name=canvas_data.get('name', 'Canvas'),
+                width=int(canvas_data.get('width', DEFAULT_CANVAS_WIDTH)),
+                height=int(canvas_data.get('height', DEFAULT_CANVAS_HEIGHT)),
+                depth=int(canvas_data.get('depth', COLOR_DEPTH_8BIT)),
+                background_color=(0, 0, 0, 0),
             )
-            
-            # Clear default background layer
+            canvas.id = canvas_data.get('id', canvas.id)
+            canvas.created_at = _parse_dt(canvas_data.get('created_at'), canvas.created_at)
+            canvas.modified_at = _parse_dt(canvas_data.get('modified_at'), canvas.modified_at)
+            canvas.author = canvas_data.get('author', canvas.author)
             canvas.layers.clear()
-            
-            # Load layer data
-            layer_dir = filepath.replace('.scp', '_layers')
-            
-            for layer_data in canvas_data['layers']:
+            layer_dir = _project_layer_dir(filepath)
+            legacy_layer_dir = filepath.replace('.scp', '_layers')
+            if not os.path.isdir(layer_dir) and os.path.isdir(legacy_layer_dir):
+                layer_dir = legacy_layer_dir
+            for index, layer_data in enumerate(canvas_data.get('layers', [])):
                 layer = CanvasLayer(
-                    layer_data['name'],
-                    layer_data['width'],
-                    layer_data['height'],
-                    layer_data['depth']
+                    layer_data.get('name', f'Layer {index}'),
+                    int(layer_data.get('width', canvas.width)),
+                    int(layer_data.get('height', canvas.height)),
+                    int(layer_data.get('depth', canvas.depth)),
                 )
-                
-                # Load layer image
-                layer_file = os.path.join(layer_dir, f"layer_{len(canvas.layers):03d}.png")
-                if os.path.exists(layer_file):
-                    layer.data = cv2.imread(layer_file, cv2.IMREAD_UNCHANGED)
-                
-                # Restore properties
-                layer.opacity = layer_data['opacity']
-                layer.blend_mode = BlendMode(layer_data['blend_mode'])
-                layer.visible = layer_data['visible']
-                layer.locked = layer_data['locked']
-                
+                layer.id = layer_data.get('id', layer.id)
+                layer.opacity = int(layer_data.get('opacity', 100))
+                try:
+                    layer.blend_mode = BlendMode(layer_data.get('blend_mode', BlendMode.NORMAL.value))
+                except Exception:
+                    layer.blend_mode = BlendMode.NORMAL
+                layer.visible = bool(layer_data.get('visible', True))
+                layer.locked = bool(layer_data.get('locked', False))
+                layer.position = tuple(layer_data.get('position', (0, 0)))
+                layer.rotation = float(layer_data.get('rotation', 0))
+                layer.scale = tuple(layer_data.get('scale', (1.0, 1.0)))
+                layer.created_at = _parse_dt(layer_data.get('created_at'), layer.created_at)
+                layer.modified_at = _parse_dt(layer_data.get('modified_at'), layer.modified_at)
+                npy_file = os.path.join(layer_dir, f"layer_{index:03d}.npy")
+                png_file = os.path.join(layer_dir, f"layer_{index:03d}.png")
+                if os.path.exists(npy_file):
+                    layer.data = np.load(npy_file, allow_pickle=False)
+                elif os.path.exists(png_file):
+                    raw = cv2.imread(png_file, cv2.IMREAD_UNCHANGED)
+                    if raw is not None:
+                        if raw.ndim == 2:
+                            raw = cv2.cvtColor(raw, cv2.COLOR_GRAY2RGBA)
+                        elif raw.shape[2] == 3:
+                            raw = cv2.cvtColor(raw, cv2.COLOR_BGR2RGBA)
+                        else:
+                            raw = cv2.cvtColor(raw, cv2.COLOR_BGRA2RGBA)
+                        layer.data = _float01_to_rgba_depth(raw.astype(np.float32) / 255.0, layer.depth)
                 canvas.layers.append(layer)
-            
-            canvas.active_layer_index = canvas_data['active_layer_index']
-            
-            # Register canvas
+            if not canvas.layers:
+                canvas.layers.append(CanvasLayer("Background", canvas.width, canvas.height, canvas.depth))
+            canvas.active_layer_index = max(0, min(int(canvas_data.get('active_layer_index', 0)), len(canvas.layers) - 1))
             self.canvases[canvas.id] = canvas
             self.active_canvas_id = canvas.id
-            
             logging.info(f"[CanvasStudio] Loaded canvas '{canvas.name}' from {filepath}")
             return canvas
-            
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to load canvas: {e}")
             traceback.print_exc()
             return None
     
+    def _export_uint8_rgba(self, canvas: Canvas, flatten: bool = True) -> np.ndarray:
+        if flatten:
+            image_data = canvas.flatten()
+            depth = canvas.depth
+        else:
+            if not (0 <= canvas.active_layer_index < len(canvas.layers)):
+                raise ValueError("active_layer_index_out_of_range")
+            layer = canvas.layers[canvas.active_layer_index]
+            image_data = layer.data
+            depth = layer.depth
+        return _rgba_to_uint8(image_data, depth)
+
     def export_canvas(self, canvas: Canvas, filepath: str, 
                      format: str = "PNG", quality: int = 90, flatten: bool = True) -> bool:
-        """
-        Export canvas to image file
-        
-        Args:
-            canvas: Canvas to export
-            filepath: Destination file path
-            format: Output format (PNG, JPG, WebP, etc.)
-            quality: Output quality (0-100, format-dependent)
-            flatten: Whether to flatten all layers
-        
-        Returns:
-            True if successful, False otherwise
-        """
+        """Export canvas to an image/PDF/SVG file and report actual write success."""
         try:
-            format = format.upper()
-            if format not in SUPPORTED_EXPORT_FORMATS:
-                logging.error(f"[CanvasStudio] Unsupported format: {format}")
+            fmt = _normalize_export_format(format)
+            if fmt not in [_normalize_export_format(x) for x in SUPPORTED_EXPORT_FORMATS]:
+                logging.error(f"[CanvasStudio] Unsupported format: {fmt}")
                 return False
-            
-            # Get image data
-            if flatten:
-                image_data = canvas.flatten()
+            extension = "jpg" if fmt == "JPEG" else fmt.lower()
+            if not filepath.lower().endswith(f".{extension}"):
+                filepath = f"{filepath}.{extension}"
+            rgba8 = self._export_uint8_rgba(canvas, flatten=flatten)
+            quality = int(max(0, min(100, quality)))
+            if fmt in ("PNG", "BMP", "TGA", "TIFF", "WEBP"):
+                if fmt in ("PNG", "WEBP", "TIFF"):
+                    out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA)
+                else:
+                    out = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGR)
+                params: List[int] = []
+                if fmt == "WEBP":
+                    params = [cv2.IMWRITE_WEBP_QUALITY, quality]
+                elif fmt == "PNG":
+                    params = [cv2.IMWRITE_PNG_COMPRESSION, DEFAULT_PNG_COMPRESSION]
+                elif fmt == "TIFF":
+                    params = [cv2.IMWRITE_TIFF_COMPRESSION, 1]
+                ok = _safe_imwrite(filepath, out, params)
+            elif fmt == "JPEG":
+                bgr = cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGR)
+                ok = _safe_imwrite(filepath, bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            elif fmt == "PDF":
+                if not PIL_AVAILABLE or Image is None:
+                    logging.error("[CanvasStudio] PDF export requires Pillow")
+                    return False
+                rgb = Image.fromarray(rgba8[:, :, :3], mode="RGB")
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+                rgb.save(filepath, "PDF", resolution=100.0)
+                ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
+            elif fmt == "SVG":
+                import base64 as _b64
+                ok_png, encoded = cv2.imencode('.png', cv2.cvtColor(rgba8, cv2.COLOR_RGBA2BGRA))
+                if not ok_png:
+                    return False
+                payload = _b64.b64encode(encoded.tobytes()).decode('ascii')
+                svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{canvas.width}" height="{canvas.height}" viewBox="0 0 {canvas.width} {canvas.height}"><image width="{canvas.width}" height="{canvas.height}" href="data:image/png;base64,{payload}"/></svg>'
+                os.makedirs(os.path.dirname(os.path.abspath(filepath)) or ".", exist_ok=True)
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(svg)
+                ok = os.path.isfile(filepath) and os.path.getsize(filepath) > 0
             else:
-                image_data = canvas.layers[canvas.active_layer_index].data
-            
-            # Ensure correct filepath extension
-            if not any(filepath.lower().endswith(f".{fmt.lower()}") for fmt in SUPPORTED_EXPORT_FORMATS):
-                filepath = f"{filepath}.{format.lower()}"
-            
-            # Export based on format
-            if format in ["PNG", "BMP", "TGA"]:
-                cv2.imwrite(filepath, image_data)
-            
-            elif format in ["JPG", "JPEG"]:
-                # Convert to BGR for JPEG (no alpha)
-                bgr = cv2.cvtColor(image_data, cv2.COLOR_BGRA2BGR)
-                cv2.imwrite(filepath, bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
-            
-            elif format == "WEBP":
-                cv2.imwrite(filepath, image_data, [cv2.IMWRITE_WEBP_QUALITY, quality])
-            
-            elif format == "TIFF":
-                cv2.imwrite(filepath, image_data, [cv2.IMWRITE_TIFF_COMPRESSION, 1])
-            
-            logging.info(f"[CanvasStudio] Exported canvas '{canvas.name}' to {filepath}")
-            return True
-            
+                ok = False
+            if ok:
+                logging.info(f"[CanvasStudio] Exported canvas '{canvas.name}' to {filepath}")
+            else:
+                logging.error(f"[CanvasStudio] Export failed for canvas '{canvas.name}' to {filepath}")
+            return bool(ok)
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to export canvas: {e}")
             traceback.print_exc()
@@ -1416,96 +1879,30 @@ class CanvasStudio:
 
     def generate_from_prompt(self, prompt: str, width: int = None, height: int = None,
                              style: str = "default", quality: str = "standard") -> Optional[Canvas]:
-        """Generate artwork from a prompt using SarahMemory's multi-channel pipeline.
-    
-        Rules:
-          - Provider-agnostic: does NOT require OpenAI.
-          - Online path: prefer SarahMemoryAPI as orchestrator (it can route to OpenAI/Grok/local SD/etc.).
-          - Offline path: guaranteed fallback that still produces a real image for export/WebUI.
-        """
+        """Generate artwork from a prompt through governed SarahMemory routing, then offline fallback."""
         try:
-            if width is None:
-                width = 1024
-            if height is None:
-                height = 1024
-    
+            width = int(width or 1024)
+            height = int(height or 1024)
             canvas_name = f"AI_Generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             canvas = self.create_canvas(width, height, canvas_name)
-    
             prompt_text = (prompt or "").strip()
             if not prompt_text:
                 return canvas
-    
-            # 0) Governance gate: POOR-tier disables auto 3rd-party model usage.
-            #    User can still manually enable image_generation models in SarahMemoryGlobals.MODEL_CONFIG.
-            third_party_allowed = True
-            try:
-                import SarahMemoryGlobals as _G  # type: ignore
-                hs = _G.hardware_score() if hasattr(_G, 'hardware_score') else {}
-                tier_rating = str(hs.get('tier_rating') or '')
-                third_party_allowed = bool(hs.get('third_party_autoload_allowed', tier_rating != 'Poor'))
-                # If POOR and user didn't enable any image_generation candidates, go offline immediately.
-                if tier_rating == 'Poor' and hasattr(_G, 'resolve_model'):
-                    r = _G.resolve_model('image_generation', text=prompt_text, meta={'task':'image_generation'})
-                    if not r or not r.get('selected'):
-                        third_party_allowed = False
-            except Exception:
-                pass
-    
-            # LOCAL_ONLY_MODE also blocks external generation backends (web/API).
-            try:
-                import SarahMemoryGlobals as _G2  # type: ignore
-                if bool(getattr(_G2, 'LOCAL_ONLY_MODE', False)):
-                    # local-only: only allow local engines (if any). We treat external backends as disabled.
-                    # CanvasStudio offline fallback remains available and reliable.
-                    third_party_allowed = False
-            except Exception:
-                pass
-    
-            if not third_party_allowed:
-                # Guaranteed offline fallback (core-only) for POOR tier or local-only mode.
-                img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=style)
-                try:
-                    self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
-                except Exception as e:
-                    logging.warning(f"[CanvasStudio] Failed to apply offline fallback image bytes: {e}")
-                logging.info(f"[CanvasStudio] Generated offline artwork from prompt: '{prompt_text[:80]}...'")
-                return canvas
-    
-            # 1) Prefer SarahMemoryAPI routing (multi-provider kernel)
             img_bytes = None
             mime = None
             try:
                 img_bytes, mime = self._try_generate_via_sarahmemory_api(prompt_text, width, height, style=style, quality=quality)
             except Exception as e:
                 logging.info(f"[CanvasStudio] SarahMemoryAPI image route unavailable: {e}")
-    
-            # 2) Optional OpenAI fallback (only if configured). Not required.
-            if img_bytes is None:
-                try:
-                    img_bytes, mime = self._try_generate_via_openai(prompt_text, width, height, style=style, quality=quality)
-                except Exception as e:
-                    logging.info(f"[CanvasStudio] OpenAI optional backend unavailable: {e}")
-    
-            # 3) Guaranteed offline fallback
             if img_bytes is None:
                 img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=style)
-    
-            # Apply bytes to canvas layer
-            try:
-                self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
-            except Exception as e:
-                logging.warning(f"[CanvasStudio] Failed to apply generated image bytes: {e}")
-    
+            self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
             logging.info(f"[CanvasStudio] Generated artwork from prompt: '{prompt_text[:80]}...'")
             return canvas
-    
         except Exception as e:
             logging.error(f"[CanvasStudio] Failed to generate from prompt: {e}")
             traceback.print_exc()
             return None
-    
-    
     
     def _try_generate_via_sarahmemory_api(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
         """Ask SarahMemoryAPI to generate an image. This is the preferred provider-agnostic hook."""
@@ -1513,13 +1910,9 @@ class CanvasStudio:
             import SarahMemoryAPI as _API  # type: ignore
         except Exception:
             return (None, None)
-    
-        # permissive: support future naming without refactors
         fn = getattr(_API, "generate_image", None) or getattr(_API, "image_generate", None) or getattr(_API, "generate_media_image", None)
         if not callable(fn):
             return (None, None)
-    
-        # Attempt common call signatures
         try:
             res = fn(prompt=prompt, width=width, height=height, style=style, quality=quality)
         except TypeError:
@@ -1527,7 +1920,6 @@ class CanvasStudio:
                 res = fn(prompt, width, height)
             except Exception:
                 res = fn(prompt)
-    
         if isinstance(res, (bytes, bytearray)):
             return (bytes(res), "image/png")
         if isinstance(res, dict):
@@ -1537,201 +1929,120 @@ class CanvasStudio:
                 return (bytes(b), mime)
             b64 = res.get("b64") or res.get("image_base64")
             if b64:
-                import base64
                 return (base64.b64decode(b64), mime)
         return (None, None)
     
-    
-    
     def _try_generate_via_openai(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
-        """Optional OpenAI image generation (only if OPENAI_API_KEY is configured)."""
-        api_key = os.getenv("OPENAI_API_KEY", "").strip()
-        if not api_key:
-            return (None, None)
-    
-        # Model selection via SarahMemoryGlobals (v8 selector if present)
-        model = None  # pulled from SarahMemoryGlobals; no hardcoded model IDs here
-        try:
-            import SarahMemoryGlobals as _G  # type: ignore
-            model = getattr(_G, "API_IMAGE_MODEL", model) or model
-            if hasattr(_G, "select_task_model"):
-                try:
-                    model = _G.select_task_model("image", need_image=True) or model
-                except Exception:
-                    pass
-        except Exception:
-            pass
-    
-        if not model:
-            # No configured OpenAI image model; keep OpenAI optional.
-            return (None, None)
-    
-        size = f"{int(width)}x{int(height)}"
-    
-        # Prefer official client if installed
-        try:
-            from openai import OpenAI
-            import base64
-            client = OpenAI(api_key=api_key)
-            r = client.images.generate(model=model, prompt=prompt, size=size)
-            b64 = None
-            try:
-                b64 = r.data[0].b64_json
-            except Exception:
-                b64 = None
-            if not b64:
-                return (None, None)
-            return (base64.b64decode(b64), "image/png")
-        except Exception:
-            pass
-    
-        # Raw HTTPS fallback (keeps OpenAI optional)
-        try:
-            import json, urllib.request, base64
-            payload = {"model": model, "prompt": prompt, "size": size, "response_format": "b64_json"}
-            data = json.dumps(payload).encode("utf-8")
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/images/generations",
-                data=data,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                out = json.loads(resp.read().decode("utf-8", errors="replace"))
-            b64 = out["data"][0].get("b64_json")
-            if not b64:
-                return (None, None)
-            return (base64.b64decode(b64), "image/png")
-        except Exception:
-            return (None, None)
-    
-    
+        """Disabled direct-vendor path. Use SarahMemoryAPI/provider adapters instead."""
+        logging.info("[CanvasStudio] Direct OpenAI image generation is disabled; use SarahMemoryAPI/provider routing")
+        return (None, None)
     
     def _generate_offline_fallback(self, prompt: str, width: int, height: int, *, style: str = "default"):
         """Guaranteed offline generator: procedural background + prompt overlay."""
-        if not PIL_AVAILABLE or Image is None or ImageDraw is None:
-            # Minimal fallback: return None and let caller keep placeholder gradient
-            return (None, None)
-    
         import io, hashlib, random
         w, h = int(width), int(height)
         seed = int(hashlib.sha256((prompt + "|" + str(style)).encode("utf-8")).hexdigest()[:8], 16)
         rnd = random.Random(seed)
-    
-        img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
-        d = ImageDraw.Draw(img)
-    
-        # Gradient background
+        if PIL_AVAILABLE and Image is not None and ImageDraw is not None:
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
+            d = ImageDraw.Draw(img)
+            for y in range(h):
+                v = int(25 + 80 * (y / max(1, h - 1)))
+                d.line([(0, y), (w, y)], fill=(v, v, min(255, v + 25), 255))
+            for _ in range(140):
+                x = rnd.randint(0, max(0, w - 1))
+                y = rnd.randint(0, max(0, h - 1))
+                r = rnd.randint(8, max(10, min(w, h)//9))
+                col = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(70, 150))
+                d.ellipse((x - r, y - r, x + r, y + r), outline=col, width=2)
+            try:
+                font = ImageFont.truetype("arial.ttf", 28) if ImageFont else None
+            except Exception:
+                font = ImageFont.load_default() if ImageFont else None
+            pad = 24
+            text = prompt if len(prompt) <= 180 else (prompt[:177] + "...")
+            d.rectangle((pad-12, max(0, h-170), w-pad+12, h-pad+12), fill=(0, 0, 0, 160))
+            if font:
+                d.text((pad, max(0, h-155)), "OFFLINE GENERATION", fill=(255, 255, 255, 230), font=font)
+                d.text((pad, max(0, h-118)), text, fill=(230, 230, 230, 230), font=font)
+            bio = io.BytesIO()
+            img.save(bio, format="PNG")
+            return (bio.getvalue(), "image/png")
+        # Pillow-free fallback: numpy/cv2 procedural image.
+        arr = np.zeros((h, w, 4), dtype=np.uint8)
         for y in range(h):
             v = int(25 + 80 * (y / max(1, h - 1)))
-            d.line([(0, y), (w, y)], fill=(v, v, v + 25, 255))
-    
-        # Shapes
-        for _ in range(140):
-            x = rnd.randint(0, w)
-            y = rnd.randint(0, h)
-            r = rnd.randint(8, max(10, min(w, h)//9))
-            col = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(70, 150))
-            d.ellipse((x - r, y - r, x + r, y + r), outline=col, width=2)
-    
-        # Text overlay
-        try:
-            font = ImageFont.truetype("arial.ttf", 28) if ImageFont else None
-        except Exception:
-            font = ImageFont.load_default() if ImageFont else None
-    
-        pad = 24
-        text = prompt if len(prompt) <= 180 else (prompt[:177] + "...")
-        d.rectangle((pad-12, h-170, w-pad+12, h-pad+12), fill=(0, 0, 0, 160))
-        if font:
-            d.text((pad, h-155), "OFFLINE GENERATION", fill=(255, 255, 255, 230), font=font)
-            d.text((pad, h-118), text, fill=(230, 230, 230, 230), font=font)
-    
-        bio = io.BytesIO()
-        img.save(bio, format="PNG")
-        return (bio.getvalue(), "image/png")
-    
-    
+            arr[y, :, :] = (v, v, min(255, v + 25), 255)
+        for _ in range(80):
+            center = (rnd.randint(0, max(0, w - 1)), rnd.randint(0, max(0, h - 1)))
+            radius = rnd.randint(6, max(8, min(w, h)//10))
+            color = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(90, 180))
+            cv2.circle(arr, center, radius, color, 1, lineType=cv2.LINE_AA)
+        ok, encoded = cv2.imencode('.png', cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA))
+        return (encoded.tobytes() if ok else b'', "image/png")
     
     def _apply_image_bytes_to_canvas(self, canvas: 'Canvas', img_bytes: bytes, *, mime: str | None = None):
-        """Decode image bytes and push them into the active layer data."""
+        """Decode image bytes and push them into the active layer data as internal RGBA."""
         if not img_bytes:
-            # Nothing to apply; keep whatever is on canvas (e.g., gradient placeholder)
             return
-    
-        if not PIL_AVAILABLE or Image is None:
-            return
-    
-        import io
-        im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-        try:
+        if PIL_AVAILABLE and Image is not None:
+            import io
+            im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
             if im.size != (int(canvas.width), int(canvas.height)):
                 im = im.resize((int(canvas.width), int(canvas.height)))
-        except Exception:
-            pass
-    
-        # Convert to BGRA numpy for layer storage
-        arr = np.array(im)  # RGBA
-        try:
-            bgra = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA)
-        except Exception:
-            # fallback: manual channel swap
-            bgra = arr[:, :, [2, 1, 0, 3]]
-    
+            rgba = np.array(im)
+        else:
+            data = np.frombuffer(img_bytes, dtype=np.uint8)
+            decoded = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+            if decoded is None:
+                return
+            if decoded.ndim == 2:
+                rgba = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGBA)
+            elif decoded.shape[2] == 3:
+                rgba = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGBA)
+            else:
+                rgba = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
+            if rgba.shape[:2] != (canvas.height, canvas.width):
+                rgba = cv2.resize(rgba, (canvas.width, canvas.height), interpolation=cv2.INTER_LINEAR)
         layer = canvas.get_active_layer()
-        layer.data = bgra
-    
+        if layer is not None:
+            layer.data = _float01_to_rgba_depth(rgba.astype(np.float32) / 255.0, layer.depth)
+            layer.modified_at = datetime.now()
+            canvas.modified_at = datetime.now()
+
     def batch_process(self, canvas_ids: List[str], operation: str, **kwargs) -> List[bool]:
-        """
-        Apply an operation to multiple canvases in batch
-        
-        Args:
-            canvas_ids: List of canvas IDs to process
-            operation: Operation to perform
-            **kwargs: Operation-specific arguments
-        
-        Returns:
-            List of success/failure booleans
-        """
-        results = []
-        
+        """Apply an operation to multiple canvases without false-success reporting."""
+        results: List[bool] = []
+        operation = str(operation or "").lower()
         for canvas_id in canvas_ids:
             canvas = self.get_canvas(canvas_id)
             if not canvas:
                 results.append(False)
                 continue
-            
             try:
                 if operation == "resize":
-                    # Resize canvas (implementation needed)
-                    results.append(True)
-                
+                    width = kwargs.get("width", kwargs.get("new_width", canvas.width))
+                    height = kwargs.get("height", kwargs.get("new_height", canvas.height))
+                    results.append(bool(canvas.resize(int(width), int(height))))
                 elif operation == "color_correct":
-                    canvas.color_correct(**kwargs)
-                    results.append(True)
-                
+                    results.append(bool(canvas.color_correct(**kwargs)))
                 elif operation == "apply_effect":
-                    canvas.apply_effect(**kwargs)
-                    results.append(True)
-                
+                    effect = kwargs.pop("effect_type", kwargs.pop("effect", None))
+                    results.append(bool(canvas.apply_effect(effect, **kwargs)))
                 elif operation == "export":
-                    success = self.export_canvas(canvas, **kwargs)
-                    results.append(success)
-                
+                    results.append(bool(self.export_canvas(canvas, **kwargs)))
                 else:
                     logging.warning(f"[CanvasStudio] Unknown batch operation: {operation}")
                     results.append(False)
-                    
             except Exception as e:
                 logging.error(f"[CanvasStudio] Batch operation failed for canvas {canvas_id}: {e}")
                 results.append(False)
-        
-        successful = sum(results)
+        successful = sum(1 for item in results if item)
         logging.info(f"[CanvasStudio] Batch operation '{operation}': {successful}/{len(canvas_ids)} successful")
         return results
-    
+
     def get_studio_info(self) -> Dict:
-        """Get Canvas Studio system information"""
+        """Get Canvas Studio system information."""
         return {
             "version": CANVAS_STUDIO_VERSION,
             "build": CANVAS_STUDIO_BUILD,
@@ -1742,7 +2053,10 @@ class CanvasStudio:
             "active_canvases": len(self.canvases),
             "pil_available": PIL_AVAILABLE,
             "scipy_available": SCIPY_AVAILABLE,
-            "supported_formats": SUPPORTED_EXPORT_FORMATS,
+            "supported_formats": list(SUPPORTED_EXPORT_FORMATS),
+            "implemented_blend_modes": [mode.value for mode in BlendMode],
+            "implemented_filters": [item.value for item in FilterType],
+            "implemented_gradients": [item.value for item in GradientType],
             "max_canvas_size": (MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT),
             "directories": {
                 "projects": CANVAS_PROJECTS_DIR,
@@ -1778,12 +2092,22 @@ class CanvasStudio:
         try:
             dims = validate_canvas_dimensions(320, 180)
             checks.append({"name": "dimension_validation", "passed": dims == (320, 180), "observed": dims})
-            canvas = Canvas("EnterpriseSelfTest", 64, 64, 8, (0, 0, 0, 255))
-            checks.append({"name": "canvas_creation", "passed": canvas.width == 64 and canvas.height == 64, "observed": [canvas.width, canvas.height]})
+            canvas = Canvas("EnterpriseSelfTest", 64, 64, 8, (0, 0, 0, 0))
+            top = canvas.add_layer("Top")
+            top.fill_color((255, 0, 0, 255))
             flattened = canvas.flatten()
-            checks.append({"name": "flatten_shape", "passed": tuple(flattened.shape[:2]) == (64, 64), "observed": list(flattened.shape)})
+            checks.append({"name": "alpha_composite", "passed": int(flattened[0, 0, 3]) == 255 and int(flattened[0, 0, 0]) == 255, "observed": flattened[0, 0].tolist()})
+            top.apply_opacity(50)
+            before_alpha = int(top.data[0, 0, 3])
+            ok_cc = canvas.color_correct(brightness=15)
+            after_alpha = int(canvas.get_active_layer().data[0, 0, 3])
+            checks.append({"name": "color_preserves_alpha", "passed": ok_cc and before_alpha == after_alpha, "observed": [before_alpha, after_alpha]})
+            checks.append({"name": "resize_operation", "passed": canvas.resize(32, 48) and canvas.width == 32 and canvas.height == 48, "observed": [canvas.width, canvas.height]})
+            checks.append({"name": "unsupported_effect_rejected", "passed": canvas.apply_effect("not_a_filter") is False})
             manifest = self.build_output_manifest(canvas)
             checks.append({"name": "manifest_contract", "passed": manifest.get("schema") == "SARAHMEMORY_CANVAS_OUTPUT_V1", "observed": manifest})
+            avatar = self.live_avatar_renderer_self_test()
+            checks.append({"name": "live_avatar_self_test", "passed": bool(avatar.get("ok")), "observed": avatar.get("render_health")})
         except Exception as exc:
             checks.append({"name": "unexpected_exception", "passed": False, "observed": str(exc)})
         passed = sum(1 for check in checks if check.get("passed"))
@@ -1798,6 +2122,7 @@ class CanvasStudio:
         }
 
 
+
 def get_canvas_studio_capabilities() -> Dict[str, Any]:
     """Read-only module capability report; does not initialize a project or write files."""
     return {
@@ -1810,9 +2135,13 @@ def get_canvas_studio_capabilities() -> Dict[str, Any]:
         "scipy_available": bool(SCIPY_AVAILABLE),
         "supported_import_formats": list(SUPPORTED_IMPORT_FORMATS),
         "supported_export_formats": list(SUPPORTED_EXPORT_FORMATS),
+        "implemented_filters": [item.value for item in FilterType],
+        "implemented_blend_modes": [item.value for item in BlendMode],
+        "implemented_gradients": [item.value for item in GradientType],
         "max_canvas_size": [MAX_CANVAS_WIDTH, MAX_CANVAS_HEIGHT],
         "local_first": True,
-        "network_optional": True,
+        "network_optional": False,
+        "direct_vendor_network_disabled": True,
         "execution_authority": False,
         "persistent_live_avatar_renderer": True,
         "live_avatar_schema": "SarahMemory.avatar.live_frame.v1",
@@ -1913,19 +2242,20 @@ if __name__ == "__main__":
 # Added by SarahMemory SML glue patch v0.2-alpha. Non-executing protocol adapter.
 SML_ORGAN_METADATA = {
     "name": 'SarahMemoryCanvasStudio',
-    "version": "v9.0.0-alpha-sml-0.2",
-    "category": 'Execution',
+    "version": "v9.0.0-alpha-sml-0.3",
+    "category": 'CreativeRendering',
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['execution'],
-    "supported_missions": ['Conversation', 'Execution'],
+    "capabilities": ['graphics_rendering', 'image_editing', 'avatar_frame_rendering'],
+    "supported_missions": ['Conversation', 'CreativeRendering', 'AvatarPresentation'],
     "supported_omega": ['Ω001', 'Ω070', 'Ω100'],
-    "required_authority": ['Execute', 'Read'],
+    "required_authority": ['Read', 'WriteCanvas'],
+    "execution_authority": False,
     "priority": 50,
     "trust_level": "source_integrated",
-    "internal_only": True,
-    "metadata": {"sml_adapter": "generic_non_executing", "source_file": 'SarahMemoryCanvasStudio.py'},
+    "internal_only": False,
+    "metadata": {"sml_adapter": "creative_rendering_non_executing", "source_file": 'SarahMemoryCanvasStudio.py'},
 }
 
 
@@ -1936,17 +2266,28 @@ def sml_get_metadata():
 
 def sml_health():
     """Return a local SML health vector without side effects."""
+    capabilities = get_canvas_studio_capabilities()
+    dependency_score = 1.0
+    notes = ["SML adapter present", "execution_authority=False"]
+    if not capabilities.get("pil_available"):
+        dependency_score -= 0.15
+        notes.append("Pillow unavailable: PDF/text overlay paths limited")
+    if not capabilities.get("opencv_available"):
+        dependency_score -= 0.45
+        notes.append("OpenCV unavailable: raster engine unavailable")
+    dependency_score = max(0.0, dependency_score)
     return {
-        "status": "Healthy",
-        "availability": 1.0,
+        "status": "Healthy" if dependency_score >= 0.75 else "Degraded",
+        "availability": dependency_score,
         "integrity": 1.0,
-        "performance": 1.0,
-        "reliability": 1.0,
-        "confidence": 0.75,
+        "performance": 0.85,
+        "reliability": 0.85,
+        "confidence": 0.86,
         "latency_ms": 0.0,
-        "stability": 1.0,
-        "compatibility": 1.0,
-        "notes": ["SML adapter present"],
+        "stability": 0.90,
+        "compatibility": 0.90,
+        "execution_authority": False,
+        "notes": notes,
     }
 
 
@@ -1958,6 +2299,7 @@ def sml_diagnostics():
         "sml_adapter": True,
         "metadata": dict(SML_ORGAN_METADATA),
         "health": sml_health(),
+        "capabilities": get_canvas_studio_capabilities(),
     }
 
 
@@ -1966,7 +2308,7 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     try:
         from SarahMemorySMLProtocol import register_sml_organ, sml_touch_packet
         register_sml_organ(SML_ORGAN_METADATA)
-        return sml_touch_packet(packet, organ='SarahMemoryCanvasStudio', action=action, note=note or "organ observed packet", updates=updates)
+        return sml_touch_packet(packet, organ='SarahMemoryCanvasStudio', action=action, note=note or "creative rendering organ observed packet", updates=updates)
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
