@@ -199,7 +199,7 @@ def _looks_like_software_creation_request(text: str) -> bool:
     if not t:
         return False
     creation = bool(re.search(r"\b(make|create|build|generate|code|write)\b", t))
-    software = bool(re.search(r"\b(app|application|program|software|game|addon|add-on|addons|plugin|tool|dashboard|tracker|website|web app|panel|widget|playable|launcher|simulator)\b", t))
+    software = bool(re.search(r"\b(app|application|program|software|game|addon|add-on|addons|plugin|tool|adapter|harness|skeleton|package|project|dashboard|tracker|website|web app|panel|widget|playable|launcher|simulator)\b", t))
     return bool(creation and software)
 
 

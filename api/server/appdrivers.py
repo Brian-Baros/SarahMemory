@@ -128,8 +128,33 @@ def _data_dir() -> Path:
     return (_cwd() / "data").resolve()
 
 
+def _project_drivers_root() -> Path:
+    """Canonical packaged driver root.
+
+    Runtime drivers are shipped with the SarahMemory code body under
+    drivers/runtime, while mutable registry/config state stays under data.
+    """
+    return (_cwd() / "drivers").resolve()
+
+
+def _first_existing_dir(candidates: list[Path], fallback: Path) -> Path:
+    for path in candidates:
+        try:
+            if path.exists() and path.is_dir():
+                return path.resolve()
+        except Exception:
+            pass
+    return fallback.resolve()
+
+
 def _drivers_root() -> Path:
-    return (_data_dir() / "drivers").resolve()
+    return _first_existing_dir(
+        [
+            (_project_drivers_root() / "runtime").resolve(),
+            (_data_dir() / "drivers").resolve(),
+        ],
+        (_data_dir() / "drivers").resolve(),
+    )
 
 
 def _settings_root() -> Path:
@@ -170,11 +195,23 @@ def _boot_root() -> Path:
 
 
 def _boot_drivers_root() -> Path:
-    return (_boot_root() / "drivers").resolve()
+    return _first_existing_dir(
+        [
+            (_project_drivers_root() / "boot").resolve(),
+            (_boot_root() / "drivers").resolve(),
+        ],
+        (_boot_root() / "drivers").resolve(),
+    )
 
 
 def _boot_registry_path() -> Path:
-    return (_boot_root() / "boot_drivers.json").resolve()
+    return _first_existing_dir(
+        [
+            (_project_drivers_root() / "boot").resolve(),
+            _boot_root().resolve(),
+        ],
+        _boot_root().resolve(),
+    ) / "boot_drivers.json"
 
 
 def _is_boot_driver_id(driver_id: str) -> bool:

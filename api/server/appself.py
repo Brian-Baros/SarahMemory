@@ -3888,6 +3888,28 @@ def run_selfaware_fact_check(
 # -----------------------------------------------------------------------------
 # Self/governance snapshots
 # -----------------------------------------------------------------------------
+def _self_bounded_call(callable_obj, *args, timeout_seconds: float = 2.5, call_name: str = "component", **kwargs) -> Dict[str, Any]:
+    """Run optional telemetry with a small UI-safe budget."""
+    if not callable(callable_obj):
+        return {"ok": False, "timed_out": False, "value": None, "error": f"{call_name}_unavailable"}
+    box: Dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            box["value"] = callable_obj(*args, **kwargs)
+            box["ok"] = True
+        except Exception as exc:
+            box["ok"] = False
+            box["error"] = str(exc)
+
+    thread = threading.Thread(target=worker, name=f"appself-{call_name}", daemon=True)
+    thread.start()
+    thread.join(max(0.05, float(timeout_seconds)))
+    if thread.is_alive():
+        return {"ok": False, "timed_out": True, "value": None, "error": f"{call_name}_timeout"}
+    return {"ok": bool(box.get("ok")), "timed_out": False, "value": box.get("value"), "error": box.get("error")}
+
+
 def _cognitive_self_status() -> Dict[str, Any]:
     if _CogSelf is None:
         return {"available": False, "error": "SarahMemoryCognitiveSelf unavailable"}
@@ -3904,25 +3926,38 @@ def _cognitive_self_status() -> Dict[str, Any]:
 
 
 def _body_snapshot() -> Dict[str, Any]:
-    out: Dict[str, Any] = {"available": False, "sources": {}}
+    out: Dict[str, Any] = {"available": False, "sources": {}, "bounded": True}
     try:
         if _Hi is not None:
             fn = getattr(_Hi, "get_boot_environment_snapshot", None)
             if callable(fn):
-                out["sources"]["SarahMemoryHi.get_boot_environment_snapshot"] = fn(force_refresh=False, refresh_reason="appself_body", persist=True)
+                rec = _self_bounded_call(fn, force_refresh=False, refresh_reason="appself_body", persist=False, timeout_seconds=2.5, call_name="Hi.boot_environment")
+                if rec.get("ok"):
+                    out["sources"]["SarahMemoryHi.get_boot_environment_snapshot"] = rec.get("value")
+                    out["available"] = True
+                else:
+                    out.setdefault("warnings", []).append({"source": "SarahMemoryHi.get_boot_environment_snapshot", "timed_out": rec.get("timed_out"), "error": rec.get("error")})
             fn2 = getattr(_Hi, "get_extended_system_info", None)
             if callable(fn2):
-                out["sources"]["SarahMemoryHi.get_extended_system_info"] = fn2()
-            out["available"] = True
+                rec = _self_bounded_call(fn2, timeout_seconds=2.5, call_name="Hi.extended_system_info")
+                if rec.get("ok"):
+                    out["sources"]["SarahMemoryHi.get_extended_system_info"] = rec.get("value")
+                    out["available"] = True
+                else:
+                    out.setdefault("warnings", []).append({"source": "SarahMemoryHi.get_extended_system_info", "timed_out": rec.get("timed_out"), "error": rec.get("error")})
     except Exception as exc:
         out.setdefault("errors", []).append(f"SarahMemoryHi:{exc}")
     try:
         if _CogSelf is not None:
             fn = getattr(_CogSelf, "get_latest_cognitive_self_model", None)
             if callable(fn):
-                model = fn(refresh_if_stale=True, context={"source": "appself_body"}, max_age_sec=60)
-                out["sources"]["SarahMemoryCognitiveSelf.body_map"] = (model or {}).get("body_map") or model
-                out["available"] = True
+                rec = _self_bounded_call(fn, refresh_if_stale=False, context={"source": "appself_body"}, max_age_sec=300, timeout_seconds=2.5, call_name="CognitiveSelf.latest_model")
+                if rec.get("ok"):
+                    model = rec.get("value")
+                    out["sources"]["SarahMemoryCognitiveSelf.body_map"] = (model or {}).get("body_map") if isinstance(model, dict) else model
+                    out["available"] = True
+                else:
+                    out.setdefault("warnings", []).append({"source": "SarahMemoryCognitiveSelf.get_latest_cognitive_self_model", "timed_out": rec.get("timed_out"), "error": rec.get("error")})
     except Exception as exc:
         out.setdefault("errors", []).append(f"CognitiveSelf:{exc}")
     return out

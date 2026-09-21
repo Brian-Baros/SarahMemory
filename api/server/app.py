@@ -3269,6 +3269,13 @@ try:
 except Exception as _appsdk_init_exc:
     app_logger.warning("NAILDE SDK API mount skipped: %s", _appsdk_init_exc)
 
+try:
+    import appsmugcc as appsmugcc_mod  # type: ignore
+    if hasattr(appsmugcc_mod, "init_app"):
+        appsmugcc_mod.init_app(app, logger=app_logger)
+except Exception as _appsmugcc_init_exc:
+    app_logger.warning("SMUGCC API mount skipped: %s", _appsmugcc_init_exc)
+
 # ARILE API boundary guard. The API server is a boundary sensor, not the ARILE engine.
 try:
     from SarahMemoryARILE import arile_endpoint_guard, arile_emit, get_arile_runtime_status
@@ -4341,9 +4348,36 @@ def _sm_normalize_conversation_history(payload: dict, *, max_messages: int = 16,
     return out
 
 
+def _sm_chat_requested_answer_mode(payload: dict | None, text: str = "") -> str:
+    """Normalize UI/chat answer lane without making the UI the authority."""
+    data = payload if isinstance(payload, dict) else {}
+    mode = str(data.get("lane") or data.get("api_mode") or data.get("mode") or "").strip().lower()
+    low = re.sub(r"\s+", " ", str(text or "").strip().lower())
+    if not mode:
+        if re.match(r"^(use\s+)?local\s+mode\s*:", low):
+            mode = "local"
+        elif re.match(r"^(use\s+)?api\s+mode\s*:", low):
+            mode = "api"
+        elif re.match(r"^(use\s+)?web\s+(sources?|mode)\s*:", low) or low.startswith(("use web sources", "use web mode")):
+            mode = "web"
+    if mode in {"auto", ""}:
+        mode = "any"
+    if mode not in {"any", "local", "web", "api"}:
+        mode = "any"
+    return mode
+
+
+def _sm_strip_chat_answer_mode_prefix(text: str) -> str:
+    out = str(text or "").strip()
+    out = re.sub(r"^\s*(use\s+)?(local|api)\s+mode\s*:\s*", "", out, flags=re.I)
+    out = re.sub(r"^\s*(use\s+)?web\s+(sources?|mode)\s*:\s*", "", out, flags=re.I)
+    return out.strip() or str(text or "").strip()
+
+
 def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, complexity: str, avatar_request: bool, *, local_only: bool, safe_mode: bool, neoskymatrix: bool, developersmode: bool) -> dict:
     meta_in = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     session_id = _get_or_create_session_id(payload)
+    answer_mode = _sm_chat_requested_answer_mode(payload, text)
 
     images = payload.get("images") if isinstance(payload.get("images"), list) else []
     if not images and isinstance(meta_in.get("images"), list):
@@ -4364,7 +4398,7 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
         "session_id": session_id,
         "user_id": payload.get("user_id") or payload.get("uid"),
         "source": str(payload.get("source") or "api").strip() or "api",
-        "mode": str(payload.get("mode") or ("LOCAL" if local_only else "ANY")).strip().upper() or "ANY",
+        "mode": str(payload.get("mode") or payload.get("lane") or payload.get("api_mode") or ("LOCAL" if local_only else "ANY")).strip().upper() or "ANY",
         "intent": intent,
         "tone": tone,
         "complexity": complexity,
@@ -4393,6 +4427,7 @@ def _sm_build_context_packet(payload: dict, text: str, intent: str, tone: str, c
             "user_consented": bool(payload.get("user_consented") or payload.get("consented") or False),
             "proposed_action": payload.get("proposed_action") if isinstance(payload.get("proposed_action"), dict) else None,
             "mode_flags": {
+                "ANSWER_MODE": answer_mode,
                 "LOCAL_ONLY_MODE": bool(local_only),
                 "SAFE_MODE": bool(safe_mode),
                 "NEOSKYMATRIX": bool(neoskymatrix),
@@ -4997,83 +5032,6 @@ def api_ui_contracts():
         return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.ui_contracts.v1"}), 500
 
 
-def _smugcc_core():
-    """Load the contract-only SMUGCC core module for read-only API surfaces."""
-    import importlib
-    return importlib.import_module("SarahMemorySMUGCC")
-
-
-@app.get("/api/smugcc/status")
-def api_smugcc_status():
-    """Read-only SMUGCC status. No execution, no passport issuance."""
-    try:
-        mod = _smugcc_core()
-        return jsonify(mod.smugcc_status()), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.status.v1"}), 500
-
-
-@app.get("/api/smugcc/schema")
-def api_smugcc_schema():
-    """Read-only canonical SMUGCC envelope schema."""
-    try:
-        mod = _smugcc_core()
-        return jsonify({
-            "ok": True,
-            "schema": "SarahMemory.SMUGCC.schema_view.v1",
-            "contract_schema": mod.SMUGCC_SCHEMA,
-            "contract_version": mod.SMUGCC_CONTRACT_VERSION,
-            "envelope": mod.smugcc_schema_view(),
-            "adapters": mod.smugcc_adapter_declarations(),
-            "ownership": mod.smugcc_ownership_map(),
-            "execution_authority": False,
-        }), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.schema_view.v1"}), 500
-
-
-@app.get("/api/smugcc/compatibility")
-def api_smugcc_compatibility():
-    """Read-only SMUGCC compatibility report for known adapter declarations."""
-    try:
-        mod = _smugcc_core()
-        return jsonify(mod.smugcc_compatibility_report()), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.compatibility_report.v1"}), 500
-
-
-@app.route("/api/smugcc/validate", methods=["GET", "POST"])
-def api_smugcc_validate():
-    """Validate a submitted SMUGCC envelope without executing it."""
-    try:
-        mod = _smugcc_core()
-        if str(getattr(request, "method", "GET")).upper() == "POST":
-            envelope = request.get_json(silent=True)
-            if not isinstance(envelope, dict):
-                return jsonify({"ok": False, "error": "expected_json_object", "schema": mod.SMUGCC_SCHEMA, "execution_authority": False}), 400
-            return jsonify(mod.validate_smugcc_envelope(envelope)), 200
-        sample = mod.build_smugcc_envelope(
-            identity={"subject_id": "example:external", "provider": "example", "origin": "external"},
-            protocol={"source_protocol": "example", "adapter_id": "generic_rest_tool"},
-            mission={
-                "mission_id": "example-mission",
-                "task_id": "example-task",
-                "objective": "Validate contract envelope only.",
-                "intent": "contract_validation",
-                "requested_by": "api_smugcc_validate",
-            },
-        )
-        return jsonify({
-            "ok": True,
-            "schema": "SarahMemory.SMUGCC.validation_endpoint.v1",
-            "sample": sample,
-            "sample_validation": mod.validate_smugcc_envelope(sample),
-            "execution_authority": False,
-        }), 200
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "schema": "SarahMemory.SMUGCC.validation_endpoint.v1"}), 500
-
-
 @app.get("/api/runtime/thrash/status")
 def api_runtime_thrash_status():
     """Read-only runtime anti-thrash status for the AiOS System Center."""
@@ -5439,10 +5397,15 @@ def _sm_reality_payload() -> dict:
 
 
 def _sm_build_reality_flow_metadata(text: str, context_packet: dict | None = None, *, local_only: bool = False) -> dict:
+    meta = (context_packet or {}).get("meta") if isinstance(context_packet, dict) else {}
+    mode_flags = meta.get("mode_flags") if isinstance(meta, dict) and isinstance(meta.get("mode_flags"), dict) else {}
+    requested_mode = str(mode_flags.get("ANSWER_MODE") or ("local" if local_only else "any")).strip().lower() or "any"
     out = {
         "ok": True,
         "schema": "SarahMemory.reality_flow.v0.1",
         "local_only": bool(local_only),
+        "requested_mode": requested_mode,
+        "effective_mode": "local" if local_only else requested_mode,
         "fast_to_answer_slow_to_act": True,
         "execution_authority": False,
     }
@@ -5468,6 +5431,49 @@ def _sm_attach_reality_meta(bundle: dict, reality: dict | None) -> dict:
         if isinstance(bundle, dict) and isinstance(reality, dict):
             meta = bundle.setdefault("meta", {})
             if isinstance(meta, dict):
+                requested_mode = str(reality.get("requested_mode") or meta.get("answer_mode") or ("local" if reality.get("local_only") else "any")).strip().lower() or "any"
+                source = str(meta.get("source") or bundle.get("source") or "").strip().lower()
+                engine = str(meta.get("engine") or "").strip().lower()
+                source_lane = str(meta.get("source_lane") or "").strip().lower()
+                if not source_lane:
+                    if "api" in source or "provider" in source or "api" in engine:
+                        source_lane = "api"
+                    elif "web" in source or "research" in source or "web" in engine:
+                        source_lane = "web"
+                    elif "cache" in source or "cache" in engine:
+                        source_lane = "cache"
+                    elif source:
+                        source_lane = "local" if source.startswith(("local", "sml_", "advcu")) else source
+                    else:
+                        source_lane = "none"
+                attempted = []
+                for key in ("source_attempts", "sources_attempted", "attempted_lanes"):
+                    value = meta.get(key)
+                    if isinstance(value, list):
+                        attempted.extend(str(item) for item in value)
+                if not attempted and source_lane != "none":
+                    attempted = [source_lane]
+                cached_used = bool(meta.get("cached") or meta.get("cache_written") or "cache" in source_lane or "cache" in source or "cache" in engine)
+                current_required = bool(meta.get("current_source_required") or meta.get("requires_current_source"))
+                verified_artifact = bool(meta.get("verified_current_source") or meta.get("verified") or meta.get("evidence_court") == "accepted")
+                fallback_used = bool(meta.get("fallback_reason") or meta.get("fallback_used") or "fallback" in engine)
+                trace = {
+                    "requested_mode": requested_mode,
+                    "effective_mode": str(meta.get("effective_mode") or ("local" if reality.get("local_only") else requested_mode)),
+                    "classification": str(meta.get("intent") or meta.get("domain") or ""),
+                    "current_source_required": current_required,
+                    "attempted_lanes": attempted,
+                    "blocked_lanes": meta.get("blocked_lanes") if isinstance(meta.get("blocked_lanes"), list) else [],
+                    "winning_lane": source_lane,
+                    "fallback_used": fallback_used,
+                    "cached_result_used": cached_used,
+                    "provider_used": meta.get("provider"),
+                    "verified_artifact": verified_artifact,
+                    "response_label": source_lane,
+                }
+                meta["chat_route_trace"] = trace
+                meta.setdefault("answer_mode", requested_mode)
+                meta.setdefault("source_lane", source_lane)
                 meta["reality_flow"] = {
                     "schema": reality.get("schema"),
                     "governance_lane": reality.get("governance_lane"),
@@ -8875,7 +8881,7 @@ def api_chat():
 
         try:
             import SarahMemoryGlobals as G  # type: ignore
-            payload_lane = str(payload.get("lane") or payload.get("api_mode") or payload.get("mode") or "").strip().lower()
+            payload_lane = _sm_chat_requested_answer_mode(payload, text)
             explicit_local_lane = payload_lane in {"local", "local_only", "offline"}
             explicit_external_lane = payload_lane in {"any", "auto", "web", "api", "cloud"} and bool(payload.get("external_api_allowed_by_ui_lane"))
             payload_local_only = bool(payload.get("local_only") or payload.get("offline") or payload.get("LOCAL_ONLY_MODE") or payload.get("force_local_only"))
@@ -9635,10 +9641,10 @@ def api_chat():
                 if not raw_reply.strip() or raw_reply.strip().lower() in {"i’m having trouble generating a response right now.", "i'm having trouble generating a response right now."}:
                     local_bundle = _api_chat_local_research_fallback("neuron_empty_reply")
                     if isinstance(local_bundle, dict):
-                        return jsonify(local_bundle), 200
+                        return jsonify(_sm_attach_reality_meta(local_bundle, locals().get("reality_flow"))), 200
                     agent_bundle = _api_chat_governed_agent_assist_fallback("neuron_empty_reply")
                     if isinstance(agent_bundle, dict):
-                        return jsonify(agent_bundle), 200
+                        return jsonify(_sm_attach_reality_meta(agent_bundle, locals().get("reality_flow"))), 200
                     raise RuntimeError("neuron_empty_presentable_reply")
                 meta_out = {
                     "source": source_label,
@@ -9690,10 +9696,10 @@ def api_chat():
 
         local_bundle = _api_chat_local_research_fallback("neuron_exception_or_unavailable")
         if isinstance(local_bundle, dict):
-            return jsonify(local_bundle), 200
+            return jsonify(_sm_attach_reality_meta(local_bundle, locals().get("reality_flow"))), 200
         agent_bundle = _api_chat_governed_agent_assist_fallback("neuron_exception_or_unavailable")
         if isinstance(agent_bundle, dict):
-            return jsonify(agent_bundle), 200
+            return jsonify(_sm_attach_reality_meta(agent_bundle, locals().get("reality_flow"))), 200
 
         try:
             import SarahMemoryReply as _SMReply  # type: ignore
@@ -9722,10 +9728,10 @@ def api_chat():
         if not raw_reply:
             local_bundle = _api_chat_local_research_fallback("reply_empty")
             if isinstance(local_bundle, dict):
-                return jsonify(local_bundle), 200
+                return jsonify(_sm_attach_reality_meta(local_bundle, locals().get("reality_flow"))), 200
             agent_bundle = _api_chat_governed_agent_assist_fallback("reply_empty")
             if isinstance(agent_bundle, dict):
-                return jsonify(agent_bundle), 200
+                return jsonify(_sm_attach_reality_meta(agent_bundle, locals().get("reality_flow"))), 200
             raw_reply = "I’m having trouble generating a response right now."
 
         meta_out = {
