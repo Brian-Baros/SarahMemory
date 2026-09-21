@@ -448,6 +448,9 @@ def get_runtime_meta():
         "project_version": PROJECT_VERSION,
         "author": AUTHOR,
         "revision_start_date": REVISION_START_DATE,
+        "species": "SarahMemory GCAIOS",
+        "instance_id": globals().get("SARAHNET_NODE_ID", node_name),
+        "instance_name": node_name,
         "run_mode": RUN_MODE,
         "device_mode": DEVICE_MODE,
         "device_profile": DEVICE_PROFILE,
@@ -2132,8 +2135,39 @@ DEFAULT_HOST = "127.0.0.1"  # Loopback address for local testing only
 # === SarahNet (Mesh Comms) â€” managed in Globals (no external JSON) ==========
 SARAHNET_ENABLED: bool = True
 
+def _default_sarahnet_node_id() -> str:
+    """Return a deterministic per-body SarahNet identity fallback.
+
+    Environment/configured identity remains authoritative.  This fallback only
+    prevents unrelated SarahMemory bodies from collapsing into the same hardcoded
+    node id when SARAHNET_NODE_ID is not configured.
+    """
+    candidates = (
+        os.getenv("SARAH_INSTANCE_ID", ""),
+        os.getenv("SARAH_ENTITY_ID", ""),
+        os.getenv("SARAH_NODE_NAME", ""),
+        os.getenv("PYTHONANYWHERE_DOMAIN", ""),
+        os.getenv("HOSTNAME", ""),
+    )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    try:
+        host = str(platform.node() or "").strip()
+        if host:
+            return host
+    except Exception:
+        pass
+    try:
+        mode = str(globals().get("RUN_MODE", "local") or "local").strip() or "local"
+        device = str(globals().get("DEVICE_MODE", "unknown") or "unknown").strip() or "unknown"
+        return f"sarahmemory-{mode}-{device}"
+    except Exception:
+        return "sarahmemory-unidentified-body"
+
 # Core identity & bind
-SARAHNET_NODE_ID: str   = os.getenv("SARAHNET_NODE_ID", "node-A")
+SARAHNET_NODE_ID: str   = os.getenv("SARAHNET_NODE_ID", _default_sarahnet_node_id()).strip() or _default_sarahnet_node_id()
 SARAHNET_BIND_HOST: str = os.getenv("SARAHNET_BIND_HOST", "0.0.0.0")
 SARAHNET_BIND_PORT: int = int(os.getenv("SARAHNET_BIND_PORT", "9876"))
 # Peers (editable here; values are (host, port) tuples)
@@ -2178,7 +2212,9 @@ AUDIT_EVERY_PROCESS = _env_flag("SARAH_AUDIT_EVERY_PROCESS", "true")
 REMOTE_HTTP_TIMEOUT = 6.0
 REMOTE_HEARTBEAT_SEC = 30
 REMOTE_API_KEY = None
-SARAHNET_NODE_ID = "local-node"
+# SARAHNET_NODE_ID is intentionally preserved from environment/config/fallback.
+# Do not overwrite it with a shared literal such as "local-node"; each
+# SarahMemory installation is an individual SarahNet entity.
 
 
 # Canvas Studio settings
@@ -2243,7 +2279,16 @@ def sarahnet_shared_secret() -> bytes:
 
 def get_sarahnet_config() -> dict:
     """Canonical SarahNet configuration (never touches disk)."""
+    try:
+        body = get_runtime_body_contract() if "get_runtime_body_contract" in globals() else {}
+    except Exception:
+        body = {}
     return {
+        "species":     "SarahMemory GCAIOS",
+        "instance_id": str(SARAHNET_NODE_ID),
+        "instance_name": str(globals().get("NODE_NAME", SARAHNET_NODE_ID)),
+        "body_type":   str((body or {}).get("body_type") or ""),
+        "runtime_profile": str((body or {}).get("runtime_profile") or globals().get("RUN_MODE", "local")),
         "node_id":     SARAHNET_NODE_ID,
         "bind_host":   SARAHNET_BIND_HOST,
         "bind_port":   int(SARAHNET_BIND_PORT),
@@ -3533,7 +3578,13 @@ except Exception:
     CLOUD_DB_PORT = 3306
 
 # Logical node name used for telemetry / sync attribution in the DataCenter
-NODE_NAME = os.getenv("SARAH_NODE_NAME", platform.node() or "SarahMemoryNode")
+NODE_NAME = os.getenv(
+    "SARAH_NODE_NAME",
+    os.getenv(
+        "SARAH_INSTANCE_NAME",
+        str(globals().get("SARAHNET_NODE_ID") or platform.node() or "SarahMemoryNode"),
+    ),
+)
 # On Windows: LOCAL_ONLY_MODE can be False (we allow cloud)
 # On PythonAnywhere: you can leave LOCAL_ONLY_MODE False but rely on these settings
 
@@ -6846,8 +6897,15 @@ SARAH_MODEL_ASSISTED_CLASSIFICATION = _env_flag("SARAH_MODEL_ASSISTED_CLASSIFICA
 
 def get_identity_contract() -> dict:
     """Return governed identity defaults without forcing a permanent DB profile."""
+    instance_id = str(globals().get("SARAHNET_NODE_ID", "") or "").strip()
+    instance_name = str(globals().get("NODE_NAME", instance_id or "SarahMemoryNode") or "SarahMemoryNode").strip()
     return {
         "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
+        "species": "SarahMemory GCAIOS",
+        "species_identity": "SarahMemory GCAIOS",
+        "instance_id": instance_id,
+        "instance_name": instance_name,
+        "sarahnet_node_id": instance_id,
         "default_name": SARAH_AI_DEFAULT_NAME,
         "active_name": SARAH_AI_ACTIVE_NAME,
         "name_source": SARAH_AI_NAME_SOURCE,
@@ -6907,8 +6965,11 @@ def get_runtime_body_contract() -> dict:
         rm = {}
     run_mode = str(globals().get("RUN_MODE", rm.get("run_mode", "local")) or "local").lower()
     device_mode = str(globals().get("DEVICE_MODE", rm.get("device_mode", "local_agent")) or "local_agent")
+    legacy_aliases = []
     if run_mode == "cloud":
-        body_type = "cloud_demo_server" if device_mode == "public_web" else "cloud_server"
+        body_type = os.getenv("SARAH_BODY_TYPE", "cloud_server").strip() or "cloud_server"
+        if device_mode == "public_web":
+            legacy_aliases.append("cloud_demo_server")
     elif device_mode == "headless":
         body_type = "edge_or_headless_node"
     elif "robot" in os.getenv("SARAH_BODY_TYPE", "").lower():
@@ -6918,6 +6979,12 @@ def get_runtime_body_contract() -> dict:
     return {
         "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
         "body_type": body_type,
+        "legacy_body_type_aliases": legacy_aliases,
+        "runtime_profile": run_mode,
+        "species": "SarahMemory GCAIOS",
+        "instance_id": str(globals().get("SARAHNET_NODE_ID", "")),
+        "instance_name": str(globals().get("NODE_NAME", globals().get("SARAHNET_NODE_ID", "SarahMemoryNode"))),
+        "sarahnet_node_id": str(globals().get("SARAHNET_NODE_ID", "")),
         "run_mode": run_mode,
         "device_mode": device_mode,
         "device_profile": str(globals().get("DEVICE_PROFILE", rm.get("device_profile", "Standard")) or "Standard"),
@@ -6961,6 +7028,7 @@ def get_chat_runtime_contract() -> dict:
         "contract": "V10_V9C_UNIVERSAL_RUNTIME_BODY_MEMORY_AUTHORITY",
         "identity": get_identity_contract(),
         "runtime_body": get_runtime_body_contract(),
+        "sarahnet": get_sarahnet_config(),
         "memory_policy": get_memory_authority_contract(),
         "model_state": get_model_availability_contract("reasoning"),
     }
@@ -7031,4 +7099,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

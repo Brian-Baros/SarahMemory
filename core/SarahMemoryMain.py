@@ -369,6 +369,15 @@ def _sm_pid_is_sarah_api(pid: int, api_script: str = "") -> bool:
     return (expected in command_line) or ("api/server/app.py" in command_line)
 
 
+def _sm_pid_is_sarah_main(pid: int) -> bool:
+    if not _sm_pid_alive(pid):
+        return False
+    command_line = _sm_process_command_line(pid).lower().replace("\\", "/")
+    if not command_line:
+        return False
+    return "sarahmemorymain.py" in command_line
+
+
 def _sm_probe_api_health(host: str, port: int, timeout: float = 1.25) -> tuple[bool, dict]:
     if requests is None:
         return False, {"error": "requests_unavailable"}
@@ -825,6 +834,13 @@ def start_local_api_server() -> bool:
             logger.error("[BOOT] Port %s is occupied but does not identify as SarahMemory API. Startup denied.", port)
             return False
         if stale_pid and _sm_pid_alive(stale_pid):
+            if _sm_pid_is_sarah_main(stale_pid):
+                logger.warning("[BOOT] local_api.pid points to SarahMemoryMain pid=%s; ignoring stale API marker and launching API child.", stale_pid)
+                stale_pid = 0
+            elif not _sm_pid_is_sarah_api(stale_pid, api_server_script):
+                logger.error("[BOOT] local_api.pid points to a live non-SarahMemory process (%s). Startup denied.", stale_pid)
+                return False
+        if stale_pid and _sm_pid_alive(stale_pid):
             if not _sm_pid_is_sarah_api(stale_pid, api_server_script):
                 logger.error("[BOOT] local_api.pid points to a live non-SarahMemory process (%s). Startup denied.", stale_pid)
                 return False
@@ -1274,4 +1290,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

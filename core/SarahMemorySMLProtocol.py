@@ -5176,6 +5176,16 @@ def sml_build_dynamic_claim_vector(text: str, *, context: Optional[Mapping[str, 
     ctx = dict(context or {})
     op = _sml_question_operator(raw)
 
+    def _has_bounded_term(terms: Sequence[str]) -> bool:
+        """Match semantic trigger words as words/phrases, not name substrings."""
+        for term in terms:
+            needle = re.sub(r"\s+", " ", str(term or "").strip().lower())
+            if not needle:
+                continue
+            if re.search(r"(?<![a-z0-9])" + re.escape(needle) + r"(?![a-z0-9])", low):
+                return True
+        return False
+
     historical_terms = ("founder", "founded", "invented", "created originally", "first ", "former", "was ", "served", "in 19", "in 20")
     explicit_current_terms = ("current", "currently", "today", "now", "latest", "this year", "right now", "as of")
     active_role_terms = ("ceo", "president", "prime minister", "leader", "head of", "chair", "chairman", "chairwoman", "director", "owner", "governor", "mayor")
@@ -5189,7 +5199,7 @@ def sml_build_dynamic_claim_vector(text: str, *, context: Optional[Mapping[str, 
     temporal_scope = "TIMELESS_OR_UNKNOWN"
     if any(x in low for x in explicit_current_terms):
         temporal_scope = "CURRENT_EXPLICIT"
-    elif any(x in low for x in active_role_terms + live_state_terms) or any(x in low for x in clock_terms):
+    elif _has_bounded_term(active_role_terms + live_state_terms) or _has_bounded_term(clock_terms):
         temporal_scope = "CURRENT_IMPLICIT"
     if any(x in low for x in historical_terms) and not any(x in low for x in explicit_current_terms):
         temporal_scope = "HISTORICAL"
@@ -5209,9 +5219,9 @@ def sml_build_dynamic_claim_vector(text: str, *, context: Optional[Mapping[str, 
         domain = "weather"
     elif any(x in low for x in ("schedule", "calendar", "appointment", "meeting")):
         domain = "personal_schedule"
-    elif any(x in low for x in ("news", "headline", "war", "election", "current events")):
+    elif _has_bounded_term(("news", "headline", "headlines", "war", "election", "current events")):
         domain = "public_events"
-    elif any(x in low for x in active_role_terms):
+    elif _has_bounded_term(active_role_terms):
         domain = "active_role_holder"
     elif any(x in low for x in ("capslock", "caps lock", "num lock", "keyboard", "rgb", "light")):
         domain = "local_device_control"
