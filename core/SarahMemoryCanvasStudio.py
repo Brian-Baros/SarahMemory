@@ -568,6 +568,471 @@ def _safe_imwrite(path: str, image: np.ndarray, params: Optional[List[int]] = No
 
 
 # ============================================================================
+# LOCAL-FIRST IMAGE GENERATION / OUTPUT VERIFICATION CONTRACTS
+# ============================================================================
+
+LANE_LOCAL = "LOCAL"
+LANE_AUTO = "AUTO"
+LANE_API = "API"
+LANE_OFFLINE = "OFFLINE"
+LANE_VALUES = {LANE_LOCAL, LANE_AUTO, LANE_API, LANE_OFFLINE}
+
+ARTIFACT_VERIFIED = "verified_generated_image"
+ARTIFACT_UNVERIFIED = "generated_unverified"
+ARTIFACT_PLACEHOLDER = "placeholder_preview"
+ARTIFACT_FAILED = "generation_failed"
+
+_CANVAS_STOPWORDS = {
+    "a", "an", "and", "are", "art", "create", "draw", "for", "from", "generate", "give", "image", "in",
+    "make", "me", "of", "on", "picture", "please", "render", "show", "the", "to", "with", "write",
+}
+_KNOWN_VISUAL_SUBJECTS = {
+    "cat", "cats", "dog", "dogs", "person", "people", "woman", "man", "girl", "boy", "avatar", "robot", "car",
+    "truck", "city", "street", "building", "logo", "shirt", "backpack", "sunglasses", "glasses", "hat", "apple",
+    "phone", "computer", "keyboard", "mouse", "screen", "mountain", "lake", "tree", "house", "bird", "horse",
+}
+
+
+def _normalize_lane_mode(lane: Optional[str] = None) -> str:
+    """Normalize the active creative lane without owning the global lane system."""
+    candidates = [lane]
+    try:
+        if SMG is not None:
+            for attr in ("LANE", "ACTIVE_LANE", "CURRENT_LANE", "SARAH_LANE", "CREATIVE_LANE", "IMAGE_LANE"):
+                value = getattr(SMG, attr, None)
+                if value:
+                    candidates.append(str(value))
+    except Exception:
+        pass
+    candidates.extend([os.getenv("SARAH_CANVAS_LANE"), os.getenv("SARAH_LANE")])
+    for value in candidates:
+        if value is None:
+            continue
+        lane_value = str(value).strip().upper()
+        if lane_value in ("LOCAL_ONLY", "LOCAL-FIRST", "LOCAL_FIRST"):
+            lane_value = LANE_LOCAL
+        if lane_value in ("ONLINE", "CLOUD", "REMOTE"):
+            lane_value = LANE_API
+        if lane_value in LANE_VALUES:
+            return lane_value
+    return LANE_AUTO
+
+
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value or b"").hexdigest()
+
+
+def _stable_json_hash(value: Any) -> str:
+    try:
+        payload = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str).encode("utf-8", errors="replace")
+    except Exception:
+        payload = repr(value).encode("utf-8", errors="replace")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _normalize_word(value: str) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum() or ch in ("+", "#", ".")).strip()
+
+
+def _extract_quoted_text(prompt: str) -> List[str]:
+    import re as _re
+    found: List[str] = []
+    for pattern in (r'"([^"]{1,160})"', r"'([^']{1,160})'"):
+        for item in _re.findall(pattern, prompt or ""):
+            value = str(item).strip()
+            if value and value not in found:
+                found.append(value)
+    return found
+
+
+def _extract_expected_subjects(prompt: str) -> List[str]:
+    import re as _re
+    text = (prompt or "").lower()
+    tokens = [_normalize_word(t) for t in _re.findall(r"[A-Za-z0-9+#.]{2,}", text)]
+    subjects: List[str] = []
+    for token in tokens:
+        if not token or token in _CANVAS_STOPWORDS:
+            continue
+        singular = token[:-1] if token.endswith("s") and len(token) > 3 else token
+        if token in _KNOWN_VISUAL_SUBJECTS or singular in _KNOWN_VISUAL_SUBJECTS:
+            item = singular if singular in _KNOWN_VISUAL_SUBJECTS else token
+            if item not in subjects:
+                subjects.append(item)
+    return subjects[:32]
+
+
+def _decode_image_bytes_rgba(img_bytes: bytes, width: int, height: int) -> Optional[np.ndarray]:
+    if not img_bytes:
+        return None
+    try:
+        if PIL_AVAILABLE and Image is not None:
+            import io
+            im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
+            if im.size != (int(width), int(height)):
+                im = im.resize((int(width), int(height)))
+            return np.array(im)
+    except Exception:
+        pass
+    try:
+        data = np.frombuffer(img_bytes, dtype=np.uint8)
+        decoded = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
+        if decoded is None:
+            return None
+        if decoded.ndim == 2:
+            rgba = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGBA)
+        elif decoded.shape[2] == 3:
+            rgba = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGBA)
+        else:
+            rgba = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
+        if rgba.shape[:2] != (int(height), int(width)):
+            rgba = cv2.resize(rgba, (int(width), int(height)), interpolation=cv2.INTER_LINEAR)
+        return rgba
+    except Exception as exc:
+        logging.error(f"[CanvasStudio] Failed to decode image bytes: {exc}")
+        return None
+
+
+def _ocr_preprocess_bgr(bgr: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    try:
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+    except Exception:
+        pass
+    gray = cv2.bilateralFilter(gray, 5, 55, 55)
+    return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9)
+
+
+class CanvasGenerationManifest:
+    """Serializable creative intent contract for image generation and verification."""
+
+    SCHEMA = "SarahMemory.canvas.generation_intent.v1"
+
+    @staticmethod
+    def build(
+        *,
+        prompt: str,
+        width: int,
+        height: int,
+        style: str = "default",
+        quality: str = "standard",
+        lane: Optional[str] = None,
+        expected_subjects: Optional[List[str]] = None,
+        expected_text: Optional[List[str]] = None,
+        verification_required: bool = True,
+        minimum_confidence: float = 0.75,
+    ) -> Dict[str, Any]:
+        prompt_text = str(prompt or "").strip()
+        manifest = {
+            "schema": CanvasGenerationManifest.SCHEMA,
+            "task": "image.generate",
+            "prompt": prompt_text,
+            "prompt_hash": _stable_json_hash({"prompt": prompt_text}),
+            "width": int(width),
+            "height": int(height),
+            "style": str(style or "default"),
+            "quality": str(quality or "standard"),
+            "lane": _normalize_lane_mode(lane),
+            "expected_subjects": list(expected_subjects) if expected_subjects is not None else _extract_expected_subjects(prompt_text),
+            "expected_text": list(expected_text) if expected_text is not None else _extract_quoted_text(prompt_text),
+            "verification_required": bool(verification_required),
+            "minimum_confidence": float(max(0.0, min(1.0, minimum_confidence))),
+            "created_at": datetime.now().isoformat(),
+            "local_first": True,
+            "execution_authority": False,
+            "direct_provider_calls": False,
+        }
+        manifest["manifest_hash"] = _stable_json_hash(manifest)
+        return manifest
+
+
+class LocalImageGenerationBackend:
+    """Bounded adapter for explicit local image backends.
+
+    It never scans the filesystem and never calls network endpoints. It only calls
+    known in-process SarahMemory/local hooks if they are installed and callable.
+    """
+
+    MODULE_FUNCTIONS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+        ("SarahMemoryLocalImageGenerator", ("generate_image", "image_generate", "generate")),
+        ("SarahMemoryImageGenerator", ("generate_image", "image_generate", "generate")),
+        ("SarahMemoryDiffusionLocal", ("generate_image", "image_generate", "txt2img", "generate")),
+        ("SarahMemoryStableDiffusion", ("generate_image", "image_generate", "txt2img", "generate")),
+        ("SarahMemoryAPI", ("generate_image_local", "local_image_generate", "generate_local_image", "image_generate_local")),
+    )
+
+    def __init__(self):
+        self.name = "local_image_backend"
+        self.execution_authority = False
+        self.network_authority = False
+
+    def capabilities(self) -> Dict[str, Any]:
+        available = []
+        for module_name, function_names in self.MODULE_FUNCTIONS:
+            try:
+                module = __import__(module_name)
+            except Exception:
+                continue
+            for fn_name in function_names:
+                if callable(getattr(module, fn_name, None)):
+                    available.append({"module": module_name, "function": fn_name})
+        return {
+            "ok": True,
+            "backend": self.name,
+            "available_hooks": available,
+            "available": bool(available),
+            "local_first": True,
+            "network_authority": False,
+            "execution_authority": False,
+        }
+
+    @staticmethod
+    def _extract_bytes(result: Any) -> Tuple[Optional[bytes], Optional[str], Dict[str, Any]]:
+        metadata: Dict[str, Any] = {}
+        if isinstance(result, (bytes, bytearray)):
+            return bytes(result), "image/png", metadata
+        if isinstance(result, dict):
+            metadata = {k: v for k, v in result.items() if k not in {"bytes", "image_bytes", "b64", "image_base64", "data"}}
+            b = result.get("bytes") or result.get("image_bytes") or result.get("data")
+            mime = result.get("mime") or result.get("content_type") or "image/png"
+            if isinstance(b, (bytes, bytearray)):
+                return bytes(b), str(mime), metadata
+            b64 = result.get("b64") or result.get("image_base64")
+            if isinstance(b64, str) and b64.strip():
+                try:
+                    return base64.b64decode(b64), str(mime), metadata
+                except Exception as exc:
+                    metadata["decode_error"] = str(exc)
+            path = result.get("path") or result.get("filepath") or result.get("file")
+            if isinstance(path, str) and os.path.isfile(path):
+                try:
+                    return Path(path).read_bytes(), str(mime), metadata
+                except Exception as exc:
+                    metadata["read_error"] = str(exc)
+        return None, None, metadata
+
+    def generate(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        prompt = str(manifest.get("prompt") or "")
+        width = int(manifest.get("width") or DEFAULT_CANVAS_WIDTH)
+        height = int(manifest.get("height") or DEFAULT_CANVAS_HEIGHT)
+        style = str(manifest.get("style") or "default")
+        quality = str(manifest.get("quality") or "standard")
+        attempted: List[str] = []
+        for module_name, function_names in self.MODULE_FUNCTIONS:
+            try:
+                module = __import__(module_name)
+            except Exception as exc:
+                attempted.append(f"{module_name}:import_unavailable:{exc}")
+                continue
+            for fn_name in function_names:
+                fn = getattr(module, fn_name, None)
+                if not callable(fn):
+                    continue
+                attempted.append(f"{module_name}.{fn_name}")
+                try:
+                    try:
+                        result = fn(prompt=prompt, width=width, height=height, style=style, quality=quality, lane=LANE_LOCAL, manifest=manifest)
+                    except TypeError:
+                        try:
+                            result = fn(prompt=prompt, width=width, height=height, style=style, quality=quality)
+                        except TypeError:
+                            result = fn(prompt, width, height)
+                    img_bytes, mime, meta = self._extract_bytes(result)
+                    if img_bytes:
+                        return {
+                            "ok": True,
+                            "status": ARTIFACT_UNVERIFIED,
+                            "artifact_type": ARTIFACT_UNVERIFIED,
+                            "provider": f"{module_name}.{fn_name}",
+                            "image_bytes": img_bytes,
+                            "mime": mime or "image/png",
+                            "metadata": meta,
+                            "attempted": attempted,
+                            "network_used": False,
+                            "execution_authority": False,
+                        }
+                except Exception as exc:
+                    attempted.append(f"{module_name}.{fn_name}:failed:{exc}")
+        return {
+            "ok": False,
+            "status": "local_image_backend_unavailable",
+            "artifact_type": ARTIFACT_FAILED,
+            "provider": "none",
+            "image_bytes": None,
+            "mime": None,
+            "attempted": attempted,
+            "network_used": False,
+            "execution_authority": False,
+        }
+
+
+class CanvasOutputVerifier:
+    """Local-first image readback and verification helper."""
+
+    SCHEMA = "SarahMemory.canvas.output_verification.v1"
+
+    def __init__(self):
+        self.execution_authority = False
+
+    def _ocr_text(self, rgba: np.ndarray) -> Dict[str, Any]:
+        bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+        try:
+            import pytesseract  # type: ignore
+            processed = _ocr_preprocess_bgr(bgr)
+            texts: List[str] = []
+            boxes: List[Dict[str, Any]] = []
+            for psm in (6, 11, 7):
+                cfg = f"--oem 3 --psm {psm}"
+                try:
+                    raw = pytesseract.image_to_string(processed, config=cfg) or ""
+                    for line in [x.strip() for x in raw.splitlines() if x.strip()]:
+                        if line not in texts:
+                            texts.append(line)
+                except Exception:
+                    continue
+            try:
+                data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT, config="--oem 3 --psm 11")
+                count = len(data.get("text", []))
+                for i in range(count):
+                    txt = str(data.get("text", [""])[i] or "").strip()
+                    if not txt:
+                        continue
+                    try:
+                        conf = float(data.get("conf", [0])[i])
+                    except Exception:
+                        conf = 0.0
+                    if conf < 0:
+                        conf = 0.0
+                    boxes.append({
+                        "text": txt,
+                        "confidence": conf / 100.0 if conf > 1 else conf,
+                        "bbox": [int(data["left"][i]), int(data["top"][i]), int(data["left"][i]) + int(data["width"][i]), int(data["top"][i]) + int(data["height"][i])],
+                    })
+            except Exception:
+                boxes = []
+            return {"available": True, "engine": "pytesseract", "text": texts, "boxes": boxes}
+        except Exception as exc:
+            # Fallback: detect likely text regions only; do not pretend to read text.
+            try:
+                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, 80, 180)
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 3))
+                dilated = cv2.dilate(edges, kernel, iterations=1)
+                contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                regions = []
+                for c in contours[:80]:
+                    x, y, w, h = cv2.boundingRect(c)
+                    if w >= 24 and h >= 8:
+                        regions.append({"bbox": [int(x), int(y), int(x + w), int(y + h)], "confidence": 0.25})
+                return {"available": False, "engine": "text_region_fallback", "error": str(exc), "text": [], "boxes": regions}
+            except Exception:
+                return {"available": False, "engine": "unavailable", "error": str(exc), "text": [], "boxes": []}
+
+    def _object_tags(self, rgba: np.ndarray) -> Dict[str, Any]:
+        bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+        try:
+            import SarahMemorySOBJE as _SOBJE  # type: ignore
+            fn = getattr(_SOBJE, "ultra_detect_objects", None)
+            if callable(fn):
+                tags = fn(bgr)
+                if isinstance(tags, (list, tuple)):
+                    return {"available": True, "engine": "SarahMemorySOBJE.ultra_detect_objects", "tags": [str(x) for x in tags]}
+        except Exception as exc:
+            return {"available": False, "engine": "SarahMemorySOBJE", "error": str(exc), "tags": []}
+        return {"available": False, "engine": "none", "tags": []}
+
+    @staticmethod
+    def _match_terms(expected: List[str], observed_values: List[str]) -> Tuple[List[str], List[str]]:
+        observed_blob = " ".join(str(x) for x in observed_values).lower()
+        observed_norm = _normalize_word(observed_blob)
+        matched: List[str] = []
+        missing: List[str] = []
+        for item in expected or []:
+            token = _normalize_word(str(item))
+            if not token:
+                continue
+            if token in observed_norm or str(item).lower() in observed_blob:
+                matched.append(str(item))
+            else:
+                missing.append(str(item))
+        return matched, missing
+
+    def verify_rgba(self, rgba: np.ndarray, manifest: Dict[str, Any], *, artifact_type: str, provider: str = "") -> Dict[str, Any]:
+        expected_subjects = [str(x) for x in manifest.get("expected_subjects") or []]
+        expected_text = [str(x) for x in manifest.get("expected_text") or []]
+        ocr = self._ocr_text(rgba)
+        objects = self._object_tags(rgba)
+        detected_text = list(ocr.get("text") or [])
+        detected_tags = list(objects.get("tags") or [])
+        matched_text, missing_text = self._match_terms(expected_text, detected_text)
+        matched_subjects, missing_subjects = self._match_terms(expected_subjects, detected_tags + detected_text)
+
+        checks: List[Dict[str, Any]] = []
+        if expected_text:
+            checks.append({"name": "expected_text", "passed": len(missing_text) == 0, "matched": matched_text, "missing": missing_text})
+        if expected_subjects:
+            checks.append({"name": "expected_subjects", "passed": len(missing_subjects) == 0, "matched": matched_subjects, "missing": missing_subjects})
+        if artifact_type == ARTIFACT_PLACEHOLDER:
+            checks.append({"name": "not_placeholder", "passed": False, "missing": ["real_image_backend"]})
+        if not expected_text and not expected_subjects:
+            checks.append({"name": "verification_criteria", "passed": bool(ocr.get("available") or objects.get("available")), "note": "no explicit expected text/subjects supplied"})
+
+        total = max(1, len(checks))
+        passed = sum(1 for c in checks if c.get("passed"))
+        confidence = passed / total
+        available_engines = [name for name, available in ((ocr.get("engine"), ocr.get("available")), (objects.get("engine"), objects.get("available"))) if available and name]
+        ok = confidence >= float(manifest.get("minimum_confidence", 0.75)) and artifact_type != ARTIFACT_PLACEHOLDER
+        if artifact_type == ARTIFACT_PLACEHOLDER:
+            status = "placeholder_rejected"
+        elif ok:
+            status = "verified"
+        elif available_engines:
+            status = "verification_failed"
+        else:
+            status = "verification_unavailable"
+        return {
+            "schema": self.SCHEMA,
+            "ok": bool(ok),
+            "status": status,
+            "confidence": float(confidence),
+            "checks": checks,
+            "expected_text": expected_text,
+            "detected_text": detected_text,
+            "matched_text": matched_text,
+            "missing_text": missing_text,
+            "expected_subjects": expected_subjects,
+            "detected_objects": detected_tags,
+            "matched_subjects": matched_subjects,
+            "missing_subjects": missing_subjects,
+            "ocr": ocr,
+            "objects": objects,
+            "provider": provider,
+            "artifact_type": artifact_type,
+            "execution_authority": False,
+        }
+
+    def render_overlay(self, rgba: np.ndarray, verification: Dict[str, Any]) -> np.ndarray:
+        overlay = rgba.copy()
+        try:
+            boxes = list(((verification.get("ocr") or {}).get("boxes")) or [])
+            for item in boxes:
+                bbox = item.get("bbox") or []
+                if len(bbox) == 4:
+                    x1, y1, x2, y2 = [int(v) for v in bbox]
+                    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255, 255), 2)
+                    label = str(item.get("text") or "text")[:64]
+                    cv2.putText(overlay, label, (x1, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255, 255), 1, cv2.LINE_AA)
+            status = str(verification.get("status") or "unknown")
+            ok = bool(verification.get("ok"))
+            color = (64, 255, 96, 255) if ok else (255, 192, 0, 255)
+            cv2.rectangle(overlay, (8, 8), (min(overlay.shape[1] - 1, 520), 46), (0, 0, 0, 180), -1)
+            cv2.putText(overlay, f"VERIFY: {status}  conf={float(verification.get('confidence') or 0):.2f}", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+        except Exception:
+            return rgba.copy()
+        return overlay
+
+
+# ============================================================================
 # LAYER CLASS
 # ============================================================================
 
@@ -1217,6 +1682,231 @@ class Canvas:
         }
 
 
+
+
+class NeRFRenderer:
+    """
+    Bounded optional NeRF renderer contract for CanvasStudio.
+
+    This class is intentionally non-authoritative. It may render only from
+    explicitly supplied scene/camera packets. It does not self-train, scan the
+    filesystem, or call network providers directly.
+    """
+
+    def __init__(self):
+        self.name = "nerf"
+        self.enabled = False
+        self.loaded_scene: Optional[Dict[str, Any]] = None
+        self.loaded_scene_fingerprint: str = ""
+        self.execution_authority = False
+        self.network_authority = False
+        self.training_authority = False
+        self.schema = "SarahMemory.canvas.neural_view.v1"
+
+    @staticmethod
+    def _packet_fingerprint(packet: Optional[Dict[str, Any]]) -> str:
+        try:
+            encoded = json.dumps(packet or {}, sort_keys=True, default=str).encode("utf-8")
+        except Exception:
+            encoded = repr(packet).encode("utf-8", errors="ignore")
+        return hashlib.sha256(encoded).hexdigest()[:16]
+
+    @staticmethod
+    def _coerce_rgba(color: Any, fallback: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+        try:
+            if isinstance(color, (list, tuple)) and len(color) >= 3:
+                values = list(color[:4])
+                while len(values) < 4:
+                    values.append(255)
+                return tuple(max(0, min(255, int(v))) for v in values[:4])
+        except Exception:
+            pass
+        return fallback
+
+    def get_capabilities(self) -> Dict[str, Any]:
+        return {
+            "renderer": self.name,
+            "display_name": "Neural Radiance Fields",
+            "enabled": bool(self.enabled),
+            "execution_authority": False,
+            "network_authority": False,
+            "training_authority": False,
+            "scene_loaded": bool(self.loaded_scene),
+            "scene_fingerprint": self.loaded_scene_fingerprint,
+            "supported_modes": ["bounded_preview_contract", "novel_view_render_contract"],
+            "requires_explicit_scene_packet": True,
+            "requires_explicit_camera_packet": True,
+            "local_first": True,
+        }
+
+    def set_enabled(self, enabled: bool) -> Dict[str, Any]:
+        self.enabled = bool(enabled)
+        return {
+            "ok": True,
+            "renderer": self.name,
+            "enabled": bool(self.enabled),
+            "execution_authority": False,
+            "network_authority": False,
+            "training_authority": False,
+        }
+
+    def load_scene(self, scene_packet: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not isinstance(scene_packet, dict) or not scene_packet:
+            return {
+                "ok": False,
+                "renderer": self.name,
+                "error": "explicit_scene_packet_required",
+                "execution_authority": False,
+            }
+        self.loaded_scene = dict(scene_packet)
+        self.loaded_scene_fingerprint = self._packet_fingerprint(scene_packet)
+        return {
+            "ok": True,
+            "renderer": self.name,
+            "scene_fingerprint": self.loaded_scene_fingerprint,
+            "execution_authority": False,
+            "network_authority": False,
+            "training_authority": False,
+        }
+
+    def _governed_metadata(
+        self,
+        *,
+        ok: bool,
+        status: str,
+        width: int,
+        height: int,
+        scene_packet: Optional[Dict[str, Any]],
+        camera_packet: Optional[Dict[str, Any]],
+        error: str = "",
+        warning: str = "",
+        mode: str = "contract_shell",
+    ) -> Dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "renderer": self.name,
+            "ok": bool(ok),
+            "status": status,
+            "mode": mode,
+            "width": int(width),
+            "height": int(height),
+            "enabled": bool(self.enabled),
+            "scene_packet_supplied": isinstance(scene_packet, dict) and bool(scene_packet),
+            "camera_packet_supplied": isinstance(camera_packet, dict) and bool(camera_packet),
+            "scene_fingerprint": self._packet_fingerprint(scene_packet) if isinstance(scene_packet, dict) and scene_packet else "",
+            "camera_fingerprint": self._packet_fingerprint(camera_packet) if isinstance(camera_packet, dict) and camera_packet else "",
+            "execution_authority": False,
+            "network_authority": False,
+            "training_authority": False,
+            "governance": {
+                "local_first": True,
+                "explicit_scene_required": True,
+                "explicit_camera_required": True,
+                "direct_provider_calls": False,
+                "filesystem_scan_authority": False,
+                "autonomous_training": False,
+            },
+            "error": error or "",
+            "warning": warning or "",
+        }
+
+    def render_view(
+        self,
+        *,
+        scene_packet: Optional[Dict[str, Any]],
+        camera_packet: Optional[Dict[str, Any]],
+        width: int,
+        height: int,
+    ) -> Dict[str, Any]:
+        width, height = validate_canvas_dimensions(int(width), int(height))
+
+        if not isinstance(scene_packet, dict) or not scene_packet:
+            return self._governed_metadata(
+                ok=False,
+                status="invalid_request",
+                width=width,
+                height=height,
+                scene_packet=scene_packet,
+                camera_packet=camera_packet,
+                error="explicit_scene_packet_required",
+            )
+        if not isinstance(camera_packet, dict) or not camera_packet:
+            return self._governed_metadata(
+                ok=False,
+                status="invalid_request",
+                width=width,
+                height=height,
+                scene_packet=scene_packet,
+                camera_packet=camera_packet,
+                error="explicit_camera_packet_required",
+            )
+
+        self.load_scene(scene_packet)
+
+        if not self.enabled:
+            return self._governed_metadata(
+                ok=False,
+                status="disabled",
+                width=width,
+                height=height,
+                scene_packet=scene_packet,
+                camera_packet=camera_packet,
+                error="renderer_disabled",
+                warning="NeRFRenderer is present but disabled by default",
+            )
+
+        bg = self._coerce_rgba(scene_packet.get("background_rgba"), (10, 14, 22, 255))
+        accent = self._coerce_rgba(scene_packet.get("accent_rgba"), (72, 180, 255, 255))
+        frame = np.zeros((height, width, 4), dtype=np.uint8)
+        frame[:, :] = bg
+
+        # Deterministic bounded preview shell. This is not full NeRF training or inference.
+        yaw = float(camera_packet.get("yaw", 0.0) or 0.0)
+        pitch = float(camera_packet.get("pitch", 0.0) or 0.0)
+        roll = float(camera_packet.get("roll", 0.0) or 0.0)
+        depth_hint = float(camera_packet.get("depth_hint", 0.5) or 0.5)
+        depth_hint = max(0.0, min(1.0, depth_hint))
+        center_x = int((0.5 + max(-1.0, min(1.0, yaw / 90.0)) * 0.2) * width)
+        center_y = int((0.5 + max(-1.0, min(1.0, pitch / 90.0)) * 0.2) * height)
+        radius = max(18, int(min(width, height) * (0.16 + (0.18 * depth_hint))))
+
+        overlay = np.zeros_like(frame)
+        horizon_y = int(height * (0.58 - max(-1.0, min(1.0, pitch / 90.0)) * 0.18))
+        cv2.line(overlay, (0, horizon_y), (width - 1, horizon_y), accent, 1, lineType=cv2.LINE_AA)
+        cv2.circle(overlay, (center_x, center_y), radius, accent, 2, lineType=cv2.LINE_AA)
+        cv2.line(overlay, (center_x - radius, center_y), (center_x + radius, center_y), accent, 1, lineType=cv2.LINE_AA)
+        cv2.line(overlay, (center_x, center_y - radius), (center_x, center_y + radius), accent, 1, lineType=cv2.LINE_AA)
+        arrow_len = max(10, radius // 2)
+        roll_rad = np.radians(roll)
+        arrow_x = int(center_x + np.cos(roll_rad) * arrow_len)
+        arrow_y = int(center_y + np.sin(roll_rad) * arrow_len)
+        cv2.arrowedLine(overlay, (center_x, center_y), (arrow_x, arrow_y), accent, 1, line_type=cv2.LINE_AA, tipLength=0.25)
+        grid_color = (max(0, accent[0] // 3), max(0, accent[1] // 3), max(0, accent[2] // 3), 110)
+        step = max(24, min(width, height) // 10)
+        for x in range(0, width, step):
+            cv2.line(overlay, (x, 0), (x, height - 1), grid_color, 1, lineType=cv2.LINE_AA)
+        for y in range(0, height, step):
+            cv2.line(overlay, (0, y), (width - 1, y), grid_color, 1, lineType=cv2.LINE_AA)
+        frame = cv2.addWeighted(frame, 1.0, overlay, 0.72, 0.0)
+
+        meta = self._governed_metadata(
+            ok=True,
+            status="preview_contract",
+            width=width,
+            height=height,
+            scene_packet=scene_packet,
+            camera_packet=camera_packet,
+            warning="Bounded NeRF contract shell active; full radiance-field inference not yet wired",
+            mode="bounded_preview_contract",
+        )
+        meta.update({
+            "frame_rgba": frame,
+            "scene_loaded": bool(self.loaded_scene),
+            "backend_ready": False,
+            "owner": "NeRFRenderer",
+        })
+        return meta
+
 # ============================================================================
 # CANVAS STUDIO - Main Class
 # ============================================================================
@@ -1249,6 +1939,17 @@ class CanvasStudio:
         # file metadata changes; it grants no execution or memory authority.
         self._live_avatar_reference_cache: Dict[Tuple[str, int, int, int, int], np.ndarray] = {}
         self._live_avatar_reference_cache_max = 4
+
+        # Optional bounded neural rendering backends. These are rendering-only
+        # helpers and hold no execution, network, or training authority.
+        self._neural_renderers: Dict[str, Any] = {"nerf": NeRFRenderer()}
+
+        # Local-first creative production helpers. CanvasStudio orchestrates
+        # generation and verification, but does not own provider credentials,
+        # network authority, device control, or autonomous training.
+        self._local_image_backend = LocalImageGenerationBackend()
+        self._output_verifier = CanvasOutputVerifier()
+        self.last_generation_result: Optional[Dict[str, Any]] = None
         
         logging.info(f"[CanvasStudio] Initialized v{CANVAS_STUDIO_VERSION} (Build {CANVAS_STUDIO_BUILD})")
     
@@ -1877,138 +2578,479 @@ class CanvasStudio:
             traceback.print_exc()
             return False
 
-    def generate_from_prompt(self, prompt: str, width: int = None, height: int = None,
-                             style: str = "default", quality: str = "standard") -> Optional[Canvas]:
-        """Generate artwork from a prompt through governed SarahMemory routing, then offline fallback."""
-        try:
-            width = int(width or 1024)
-            height = int(height or 1024)
-            canvas_name = f"AI_Generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            canvas = self.create_canvas(width, height, canvas_name)
-            prompt_text = (prompt or "").strip()
-            if not prompt_text:
-                return canvas
-            img_bytes = None
-            mime = None
-            try:
-                img_bytes, mime = self._try_generate_via_sarahmemory_api(prompt_text, width, height, style=style, quality=quality)
-            except Exception as e:
-                logging.info(f"[CanvasStudio] SarahMemoryAPI image route unavailable: {e}")
-            if img_bytes is None:
-                img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=style)
-            self._apply_image_bytes_to_canvas(canvas, img_bytes, mime=mime)
-            logging.info(f"[CanvasStudio] Generated artwork from prompt: '{prompt_text[:80]}...'")
-            return canvas
-        except Exception as e:
-            logging.error(f"[CanvasStudio] Failed to generate from prompt: {e}")
-            traceback.print_exc()
-            return None
-    
-    def _try_generate_via_sarahmemory_api(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
-        """Ask SarahMemoryAPI to generate an image. This is the preferred provider-agnostic hook."""
+    def build_generation_manifest(
+        self,
+        prompt: str,
+        width: int = None,
+        height: int = None,
+        *,
+        style: str = "default",
+        quality: str = "standard",
+        lane: Optional[str] = None,
+        expected_subjects: Optional[List[str]] = None,
+        expected_text: Optional[List[str]] = None,
+        verification_required: bool = True,
+        minimum_confidence: float = 0.75,
+    ) -> Dict[str, Any]:
+        """Build a governed creative intent manifest for image generation."""
+        width, height = validate_canvas_dimensions(int(width or 1024), int(height or 1024))
+        return CanvasGenerationManifest.build(
+            prompt=prompt,
+            width=width,
+            height=height,
+            style=style,
+            quality=quality,
+            lane=lane,
+            expected_subjects=expected_subjects,
+            expected_text=expected_text,
+            verification_required=verification_required,
+            minimum_confidence=minimum_confidence,
+        )
+
+    def get_image_generation_backends(self) -> Dict[str, Any]:
+        """Return available image generation hooks without invoking generation."""
+        local = self._local_image_backend.capabilities()
+        api_available = False
+        api_hooks: List[str] = []
         try:
             import SarahMemoryAPI as _API  # type: ignore
+            for name in ("generate_image", "image_generate", "generate_media_image", "generate_creative_image"):
+                if callable(getattr(_API, name, None)):
+                    api_available = True
+                    api_hooks.append(name)
         except Exception:
-            return (None, None)
-        fn = getattr(_API, "generate_image", None) or getattr(_API, "image_generate", None) or getattr(_API, "generate_media_image", None)
-        if not callable(fn):
-            return (None, None)
-        try:
-            res = fn(prompt=prompt, width=width, height=height, style=style, quality=quality)
-        except TypeError:
+            api_available = False
+        return {
+            "schema": "SarahMemory.canvas.generation_backends.v1",
+            "local": local,
+            "api": {"available": api_available, "hooks": api_hooks, "authority_owner": "SarahMemoryAPI"},
+            "placeholder_preview_available": True,
+            "placeholder_is_verified_generation": False,
+            "local_first": True,
+            "execution_authority": False,
+        }
+
+    def generate_from_prompt(
+        self,
+        prompt: str,
+        width: int = None,
+        height: int = None,
+        style: str = "default",
+        quality: str = "standard",
+        *,
+        lane: Optional[str] = None,
+        verification_required: bool = True,
+        allow_placeholder_preview: bool = False,
+        minimum_confidence: float = 0.75,
+    ) -> Optional[Canvas]:
+        """Generate artwork and return a Canvas only for non-placeholder results by default.
+
+        Backward-compatible callers still receive a Canvas for real generated
+        output. Procedural fallback previews are no longer reported as completed
+        image generation unless allow_placeholder_preview=True is explicit.
+        Detailed state is always stored in self.last_generation_result.
+        """
+        result = self.generate_from_prompt_result(
+            prompt,
+            width=width,
+            height=height,
+            style=style,
+            quality=quality,
+            lane=lane,
+            verification_required=verification_required,
+            allow_placeholder_preview=allow_placeholder_preview,
+            minimum_confidence=minimum_confidence,
+        )
+        canvas = result.get("canvas") if isinstance(result, dict) else None
+        if isinstance(canvas, Canvas):
+            return canvas
+        return None
+
+    def generate_from_prompt_result(
+        self,
+        prompt: str,
+        width: int = None,
+        height: int = None,
+        style: str = "default",
+        quality: str = "standard",
+        *,
+        lane: Optional[str] = None,
+        expected_subjects: Optional[List[str]] = None,
+        expected_text: Optional[List[str]] = None,
+        verification_required: bool = True,
+        allow_placeholder_preview: bool = False,
+        minimum_confidence: float = 0.75,
+        export_overlay_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create, inspect, verify, and classify an image generation attempt."""
+        manifest = self.build_generation_manifest(
+            prompt,
+            width=width,
+            height=height,
+            style=style,
+            quality=quality,
+            lane=lane,
+            expected_subjects=expected_subjects,
+            expected_text=expected_text,
+            verification_required=verification_required,
+            minimum_confidence=minimum_confidence,
+        )
+        prompt_text = str(manifest.get("prompt") or "").strip()
+        if not prompt_text:
+            result = {
+                "ok": False,
+                "status": "empty_prompt",
+                "artifact_type": ARTIFACT_FAILED,
+                "manifest": manifest,
+                "canvas": None,
+                "verification": None,
+                "execution_authority": False,
+            }
+            self.last_generation_result = result
+            return result
+
+        width = int(manifest["width"])
+        height = int(manifest["height"])
+        lane_mode = str(manifest.get("lane") or LANE_AUTO).upper()
+        generation: Dict[str, Any] = {}
+        attempts: List[Dict[str, Any]] = []
+
+        # LOCAL and AUTO always try explicit local hooks first.
+        if lane_mode in (LANE_LOCAL, LANE_AUTO, LANE_OFFLINE):
+            local_result = self._local_image_backend.generate(manifest)
+            attempts.append({k: v for k, v in local_result.items() if k not in {"image_bytes"}})
+            if local_result.get("ok") and local_result.get("image_bytes"):
+                generation = local_result
+
+        # API lane asks SarahMemoryAPI. AUTO only escalates when local failed.
+        if not generation and lane_mode in (LANE_API, LANE_AUTO):
+            api_result = self._try_generate_via_sarahmemory_api(
+                prompt_text,
+                width,
+                height,
+                style=str(manifest.get("style") or "default"),
+                quality=str(manifest.get("quality") or "standard"),
+                lane=lane_mode,
+                manifest=manifest,
+            )
+            attempts.append({k: v for k, v in api_result.items() if k not in {"image_bytes"}})
+            if api_result.get("ok") and api_result.get("image_bytes"):
+                generation = api_result
+
+        # Final fallback is explicitly a placeholder preview, never verified generation.
+        if not generation:
+            img_bytes, mime = self._generate_offline_fallback(prompt_text, width, height, style=str(manifest.get("style") or "default"))
+            generation = {
+                "ok": bool(img_bytes),
+                "status": ARTIFACT_PLACEHOLDER if img_bytes else ARTIFACT_FAILED,
+                "artifact_type": ARTIFACT_PLACEHOLDER if img_bytes else ARTIFACT_FAILED,
+                "provider": "CanvasStudio.procedural_placeholder",
+                "image_bytes": img_bytes,
+                "mime": mime,
+                "network_used": False,
+                "execution_authority": False,
+                "reason": "no_real_local_or_api_image_backend_returned_bytes",
+            }
+            attempts.append({k: v for k, v in generation.items() if k not in {"image_bytes"}})
+
+        result = self._finalize_generation_result(
+            manifest=manifest,
+            generation=generation,
+            attempts=attempts,
+            verification_required=verification_required,
+            allow_placeholder_preview=allow_placeholder_preview,
+            export_overlay_path=export_overlay_path,
+        )
+        self.last_generation_result = result
+        return result
+
+    def _finalize_generation_result(
+        self,
+        *,
+        manifest: Dict[str, Any],
+        generation: Dict[str, Any],
+        attempts: List[Dict[str, Any]],
+        verification_required: bool,
+        allow_placeholder_preview: bool,
+        export_overlay_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        width = int(manifest.get("width") or DEFAULT_CANVAS_WIDTH)
+        height = int(manifest.get("height") or DEFAULT_CANVAS_HEIGHT)
+        artifact_type = str(generation.get("artifact_type") or ARTIFACT_FAILED)
+        img_bytes = generation.get("image_bytes")
+        rgba = _decode_image_bytes_rgba(img_bytes if isinstance(img_bytes, (bytes, bytearray)) else b"", width, height)
+        if rgba is None:
+            return {
+                "ok": False,
+                "status": "image_decode_failed",
+                "artifact_type": ARTIFACT_FAILED,
+                "manifest": manifest,
+                "attempts": attempts,
+                "provider": generation.get("provider", "unknown"),
+                "canvas": None,
+                "verification": None,
+                "execution_authority": False,
+            }
+
+        provider = str(generation.get("provider") or "unknown")
+        verification = self._output_verifier.verify_rgba(rgba, manifest, artifact_type=artifact_type, provider=provider) if verification_required else {
+            "schema": CanvasOutputVerifier.SCHEMA,
+            "ok": artifact_type != ARTIFACT_PLACEHOLDER,
+            "status": "verification_skipped",
+            "confidence": 0.0,
+            "artifact_type": artifact_type,
+            "provider": provider,
+            "execution_authority": False,
+        }
+
+        overlay_path = ""
+        if export_overlay_path:
             try:
-                res = fn(prompt, width, height)
+                overlay = self._output_verifier.render_overlay(rgba, verification)
+                overlay_bgra = cv2.cvtColor(overlay, cv2.COLOR_RGBA2BGRA)
+                if _safe_imwrite(export_overlay_path, overlay_bgra):
+                    overlay_path = os.path.abspath(export_overlay_path)
+            except Exception as exc:
+                logging.warning(f"[CanvasStudio] Verification overlay export failed: {exc}")
+
+        if artifact_type == ARTIFACT_PLACEHOLDER:
+            status = "placeholder_preview_only"
+            ok = bool(allow_placeholder_preview)
+            accepted = bool(allow_placeholder_preview)
+        elif verification_required and verification.get("ok"):
+            status = ARTIFACT_VERIFIED
+            ok = True
+            accepted = True
+            artifact_type = ARTIFACT_VERIFIED
+        elif generation.get("ok") and artifact_type != ARTIFACT_FAILED:
+            status = ARTIFACT_UNVERIFIED if not verification.get("ok") else ARTIFACT_VERIFIED
+            ok = True
+            accepted = True
+            if artifact_type not in (ARTIFACT_VERIFIED, ARTIFACT_UNVERIFIED):
+                artifact_type = ARTIFACT_UNVERIFIED
+        else:
+            status = ARTIFACT_FAILED
+            ok = False
+            accepted = False
+
+        canvas: Optional[Canvas] = None
+        if accepted:
+            canvas_name = f"AI_Generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            canvas = self.create_canvas(width, height, canvas_name)
+            self._apply_rgba_to_canvas(canvas, rgba)
+            try:
+                canvas.generation_manifest = dict(manifest)  # type: ignore[attr-defined]
+                canvas.generation_status = status  # type: ignore[attr-defined]
+                canvas.generation_verification = dict(verification)  # type: ignore[attr-defined]
+                canvas.generation_provider = provider  # type: ignore[attr-defined]
             except Exception:
-                res = fn(prompt)
-        if isinstance(res, (bytes, bytearray)):
-            return (bytes(res), "image/png")
-        if isinstance(res, dict):
-            b = res.get("bytes") or res.get("image_bytes")
-            mime = res.get("mime") or res.get("content_type") or "image/png"
-            if isinstance(b, (bytes, bytearray)):
-                return (bytes(b), mime)
-            b64 = res.get("b64") or res.get("image_base64")
-            if b64:
-                return (base64.b64decode(b64), mime)
-        return (None, None)
-    
+                pass
+
+        result = {
+            "ok": bool(ok),
+            "accepted": bool(accepted),
+            "status": status,
+            "artifact_type": artifact_type,
+            "provider": provider,
+            "lane": manifest.get("lane"),
+            "manifest": manifest,
+            "attempts": attempts,
+            "canvas": canvas,
+            "canvas_id": getattr(canvas, "id", "") if canvas is not None else "",
+            "verification": verification,
+            "overlay_path": overlay_path,
+            "image_sha256": _sha256_bytes(bytes(img_bytes) if isinstance(img_bytes, (bytes, bytearray)) else b""),
+            "network_used": bool(generation.get("network_used", False)),
+            "placeholder_preview": artifact_type == ARTIFACT_PLACEHOLDER,
+            "failure_reason": "" if ok else (generation.get("reason") or verification.get("status") or status),
+            "execution_authority": False,
+        }
+        if not ok:
+            logging.warning(f"[CanvasStudio] Image generation not accepted: {result['failure_reason']}")
+        else:
+            logging.info(f"[CanvasStudio] Image generation accepted: {status} via {provider}")
+        return result
+
+    def _try_generate_via_sarahmemory_api(
+        self,
+        prompt: str,
+        width: int,
+        height: int,
+        *,
+        style: str = "default",
+        quality: str = "standard",
+        lane: str = LANE_API,
+        manifest: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Ask SarahMemoryAPI to generate an image through provider-agnostic routing."""
+        try:
+            import SarahMemoryAPI as _API  # type: ignore
+        except Exception as exc:
+            return {"ok": False, "status": "sarahmemory_api_unavailable", "error": str(exc), "artifact_type": ARTIFACT_FAILED, "execution_authority": False}
+        hook_names = ("generate_image", "image_generate", "generate_media_image", "generate_creative_image")
+        for hook_name in hook_names:
+            fn = getattr(_API, hook_name, None)
+            if not callable(fn):
+                continue
+            try:
+                try:
+                    res = fn(prompt=prompt, width=width, height=height, style=style, quality=quality, lane=lane, manifest=manifest)
+                except TypeError:
+                    try:
+                        res = fn(prompt=prompt, width=width, height=height, style=style, quality=quality)
+                    except TypeError:
+                        res = fn(prompt, width, height)
+                img_bytes, mime, meta = LocalImageGenerationBackend._extract_bytes(res)
+                if img_bytes:
+                    return {
+                        "ok": True,
+                        "status": ARTIFACT_UNVERIFIED,
+                        "artifact_type": ARTIFACT_UNVERIFIED,
+                        "provider": f"SarahMemoryAPI.{hook_name}",
+                        "image_bytes": img_bytes,
+                        "mime": mime or "image/png",
+                        "metadata": meta,
+                        "network_used": lane == LANE_API or bool(meta.get("network_used", False)) if isinstance(meta, dict) else lane == LANE_API,
+                        "execution_authority": False,
+                    }
+            except Exception as exc:
+                logging.info(f"[CanvasStudio] SarahMemoryAPI hook {hook_name} failed: {exc}")
+                continue
+        return {
+            "ok": False,
+            "status": "sarahmemory_api_no_image_result",
+            "artifact_type": ARTIFACT_FAILED,
+            "provider": "SarahMemoryAPI",
+            "image_bytes": None,
+            "mime": None,
+            "network_used": lane == LANE_API,
+            "execution_authority": False,
+        }
+
     def _try_generate_via_openai(self, prompt: str, width: int, height: int, *, style: str = "default", quality: str = "standard"):
         """Disabled direct-vendor path. Use SarahMemoryAPI/provider adapters instead."""
         logging.info("[CanvasStudio] Direct OpenAI image generation is disabled; use SarahMemoryAPI/provider routing")
         return (None, None)
-    
+
     def _generate_offline_fallback(self, prompt: str, width: int, height: int, *, style: str = "default"):
-        """Guaranteed offline generator: procedural background + prompt overlay."""
+        """Offline placeholder preview: deterministic graphic, not real image generation."""
         import io, hashlib, random
         w, h = int(width), int(height)
         seed = int(hashlib.sha256((prompt + "|" + str(style)).encode("utf-8")).hexdigest()[:8], 16)
         rnd = random.Random(seed)
+        banner = "PLACEHOLDER PREVIEW - LOCAL IMAGE MODEL UNAVAILABLE"
         if PIL_AVAILABLE and Image is not None and ImageDraw is not None:
             img = Image.new("RGBA", (w, h), (0, 0, 0, 255))
             d = ImageDraw.Draw(img)
             for y in range(h):
-                v = int(25 + 80 * (y / max(1, h - 1)))
-                d.line([(0, y), (w, y)], fill=(v, v, min(255, v + 25), 255))
-            for _ in range(140):
+                v = int(20 + 70 * (y / max(1, h - 1)))
+                d.line([(0, y), (w, y)], fill=(v, v, min(255, v + 28), 255))
+            for _ in range(120):
                 x = rnd.randint(0, max(0, w - 1))
                 y = rnd.randint(0, max(0, h - 1))
-                r = rnd.randint(8, max(10, min(w, h)//9))
-                col = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(70, 150))
+                r = rnd.randint(8, max(10, min(w, h)//10))
+                col = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(55, 125))
                 d.ellipse((x - r, y - r, x + r, y + r), outline=col, width=2)
             try:
-                font = ImageFont.truetype("arial.ttf", 28) if ImageFont else None
+                font = ImageFont.truetype("arial.ttf", max(16, min(w, h) // 34)) if ImageFont else None
+                small = ImageFont.truetype("arial.ttf", max(12, min(w, h) // 48)) if ImageFont else None
             except Exception:
                 font = ImageFont.load_default() if ImageFont else None
-            pad = 24
-            text = prompt if len(prompt) <= 180 else (prompt[:177] + "...")
-            d.rectangle((pad-12, max(0, h-170), w-pad+12, h-pad+12), fill=(0, 0, 0, 160))
+                small = font
+            pad = max(18, min(w, h) // 32)
+            text = prompt if len(prompt) <= 220 else (prompt[:217] + "...")
+            d.rectangle((pad - 8, pad - 8, w - pad + 8, pad + 70), fill=(110, 52, 0, 210))
             if font:
-                d.text((pad, max(0, h-155)), "OFFLINE GENERATION", fill=(255, 255, 255, 230), font=font)
-                d.text((pad, max(0, h-118)), text, fill=(230, 230, 230, 230), font=font)
+                d.text((pad, pad), banner, fill=(255, 255, 255, 240), font=font)
+                d.text((pad, pad + 36), "This is not a verified generated image.", fill=(255, 235, 190, 240), font=small or font)
+            d.rectangle((pad - 8, max(0, h - 170), w - pad + 8, h - pad + 8), fill=(0, 0, 0, 160))
+            if font:
+                d.text((pad, max(0, h - 155)), "Requested prompt:", fill=(255, 255, 255, 230), font=small or font)
+                d.text((pad, max(0, h - 120)), text, fill=(230, 230, 230, 230), font=small or font)
             bio = io.BytesIO()
             img.save(bio, format="PNG")
             return (bio.getvalue(), "image/png")
-        # Pillow-free fallback: numpy/cv2 procedural image.
         arr = np.zeros((h, w, 4), dtype=np.uint8)
         for y in range(h):
-            v = int(25 + 80 * (y / max(1, h - 1)))
-            arr[y, :, :] = (v, v, min(255, v + 25), 255)
+            v = int(20 + 70 * (y / max(1, h - 1)))
+            arr[y, :, :] = (v, v, min(255, v + 28), 255)
         for _ in range(80):
             center = (rnd.randint(0, max(0, w - 1)), rnd.randint(0, max(0, h - 1)))
             radius = rnd.randint(6, max(8, min(w, h)//10))
-            color = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(90, 180))
+            color = (rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(60, 220), rnd.randint(80, 170))
             cv2.circle(arr, center, radius, color, 1, lineType=cv2.LINE_AA)
+        cv2.rectangle(arr, (10, 10), (min(w - 1, 760), 58), (110, 52, 0, 255), -1)
+        cv2.putText(arr, "PLACEHOLDER PREVIEW - LOCAL IMAGE MODEL UNAVAILABLE", (18, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255, 255), 2, cv2.LINE_AA)
         ok, encoded = cv2.imencode('.png', cv2.cvtColor(arr, cv2.COLOR_RGBA2BGRA))
         return (encoded.tobytes() if ok else b'', "image/png")
-    
+
+    def _apply_rgba_to_canvas(self, canvas: 'Canvas', rgba: np.ndarray) -> bool:
+        """Push RGBA pixels into the active layer data as internal RGBA."""
+        layer = canvas.get_active_layer()
+        if layer is None:
+            return False
+        if rgba.shape[:2] != (int(canvas.height), int(canvas.width)):
+            rgba = cv2.resize(rgba, (int(canvas.width), int(canvas.height)), interpolation=cv2.INTER_LINEAR)
+        layer.data = _float01_to_rgba_depth(rgba.astype(np.float32) / 255.0, layer.depth)
+        layer.modified_at = datetime.now()
+        canvas.modified_at = datetime.now()
+        return True
+
     def _apply_image_bytes_to_canvas(self, canvas: 'Canvas', img_bytes: bytes, *, mime: str | None = None):
         """Decode image bytes and push them into the active layer data as internal RGBA."""
-        if not img_bytes:
-            return
-        if PIL_AVAILABLE and Image is not None:
-            import io
-            im = Image.open(io.BytesIO(img_bytes)).convert("RGBA")
-            if im.size != (int(canvas.width), int(canvas.height)):
-                im = im.resize((int(canvas.width), int(canvas.height)))
-            rgba = np.array(im)
-        else:
-            data = np.frombuffer(img_bytes, dtype=np.uint8)
-            decoded = cv2.imdecode(data, cv2.IMREAD_UNCHANGED)
-            if decoded is None:
-                return
-            if decoded.ndim == 2:
-                rgba = cv2.cvtColor(decoded, cv2.COLOR_GRAY2RGBA)
-            elif decoded.shape[2] == 3:
-                rgba = cv2.cvtColor(decoded, cv2.COLOR_BGR2RGBA)
-            else:
-                rgba = cv2.cvtColor(decoded, cv2.COLOR_BGRA2RGBA)
-            if rgba.shape[:2] != (canvas.height, canvas.width):
-                rgba = cv2.resize(rgba, (canvas.width, canvas.height), interpolation=cv2.INTER_LINEAR)
-        layer = canvas.get_active_layer()
-        if layer is not None:
-            layer.data = _float01_to_rgba_depth(rgba.astype(np.float32) / 255.0, layer.depth)
-            layer.modified_at = datetime.now()
-            canvas.modified_at = datetime.now()
+        rgba = _decode_image_bytes_rgba(img_bytes, int(canvas.width), int(canvas.height))
+        if rgba is None:
+            return False
+        return self._apply_rgba_to_canvas(canvas, rgba)
+
+    def get_neural_renderers(self) -> Dict[str, Dict[str, Any]]:
+        """Return metadata for bounded neural renderers available to CanvasStudio."""
+        result: Dict[str, Dict[str, Any]] = {}
+        for name, renderer in getattr(self, "_neural_renderers", {}).items():
+            try:
+                result[str(name)] = renderer.get_capabilities()
+            except Exception as exc:
+                result[str(name)] = {
+                    "renderer": str(name),
+                    "ok": False,
+                    "error": f"renderer_capability_error:{exc}",
+                    "execution_authority": False,
+                }
+        return result
+
+    def render_neural_view(
+        self,
+        scene_packet: Optional[Dict[str, Any]],
+        camera_packet: Optional[Dict[str, Any]],
+        *,
+        renderer_name: str = "nerf",
+        width: int = 512,
+        height: int = 512,
+    ) -> Dict[str, Any]:
+        """Render a bounded neural view from explicit scene and camera packets."""
+        name = str(renderer_name or "nerf").strip().lower()
+        renderer = getattr(self, "_neural_renderers", {}).get(name)
+        if renderer is None:
+            return {
+                "schema": "SarahMemory.canvas.neural_view.v1",
+                "renderer": name,
+                "ok": False,
+                "status": "unknown_renderer",
+                "error": "renderer_not_registered",
+                "execution_authority": False,
+                "network_authority": False,
+                "training_authority": False,
+                "governance": {
+                    "local_first": True,
+                    "direct_provider_calls": False,
+                },
+            }
+        return renderer.render_view(
+            scene_packet=scene_packet,
+            camera_packet=camera_packet,
+            width=int(width),
+            height=int(height),
+        )
 
     def batch_process(self, canvas_ids: List[str], operation: str, **kwargs) -> List[bool]:
         """Apply an operation to multiple canvases without false-success reporting."""
@@ -2053,6 +3095,15 @@ class CanvasStudio:
             "active_canvases": len(self.canvases),
             "pil_available": PIL_AVAILABLE,
             "scipy_available": SCIPY_AVAILABLE,
+            "neural_renderers": self.get_neural_renderers(),
+            "image_generation_backends": self.get_image_generation_backends(),
+            "output_verification": {
+                "schema": CanvasOutputVerifier.SCHEMA,
+                "ocr_local_first": True,
+                "object_detection_local_first": True,
+                "placeholder_rejection": True,
+                "execution_authority": False,
+            },
             "supported_formats": list(SUPPORTED_EXPORT_FORMATS),
             "implemented_blend_modes": [mode.value for mode in BlendMode],
             "implemented_filters": [item.value for item in FilterType],
@@ -2142,6 +3193,12 @@ def get_canvas_studio_capabilities() -> Dict[str, Any]:
         "local_first": True,
         "network_optional": False,
         "direct_vendor_network_disabled": True,
+        "local_image_backend_contract": True,
+        "generation_manifest_schema": CanvasGenerationManifest.SCHEMA,
+        "output_verification_schema": CanvasOutputVerifier.SCHEMA,
+        "placeholder_preview_is_not_success": True,
+        "lane_modes": sorted(LANE_VALUES),
+        "artifact_statuses": [ARTIFACT_VERIFIED, ARTIFACT_UNVERIFIED, ARTIFACT_PLACEHOLDER, ARTIFACT_FAILED],
         "execution_authority": False,
         "persistent_live_avatar_renderer": True,
         "live_avatar_schema": "SarahMemory.avatar.live_frame.v1",
@@ -2247,7 +3304,7 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['graphics_rendering', 'image_editing', 'avatar_frame_rendering'],
+    "capabilities": ['graphics_rendering', 'image_editing', 'avatar_frame_rendering', 'image_generation_routing', 'output_verification', 'ocr_readback'],
     "supported_missions": ['Conversation', 'CreativeRendering', 'AvatarPresentation'],
     "supported_omega": ['Ω001', 'Ω070', 'Ω100'],
     "required_authority": ['Read', 'WriteCanvas'],
