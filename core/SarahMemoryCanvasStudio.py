@@ -2,7 +2,7 @@
 File: SarahMemoryCanvasStudio.py
 Part of the SarahMemory AiOS Governed Cognitive Runtime
 Version: v9.0.0
-Date: 2026-07-11
+Date: 2026-09-21
 Time: 10:11:54
 Author: © 2025, 2026 Brian Lee Baros. All Rights Reserved.
 www.linkedin.com/in/brian-baros-29962a176
@@ -693,6 +693,7 @@ def _decode_image_bytes_rgba(img_bytes: bytes, width: int, height: int) -> Optio
 
 
 def _ocr_preprocess_bgr(bgr: np.ndarray) -> np.ndarray:
+    """Return the legacy high-contrast OCR preprocessing surface."""
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     try:
         clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
@@ -701,6 +702,51 @@ def _ocr_preprocess_bgr(bgr: np.ndarray) -> np.ndarray:
         pass
     gray = cv2.bilateralFilter(gray, 5, 55, 55)
     return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9)
+
+
+def _ocr_preprocess_variants_bgr(bgr: np.ndarray) -> List[Dict[str, Any]]:
+    """Build a bounded deterministic set of OCR preprocessing variants.
+
+    The variants are local image transforms only. They do not call an LLM, a
+    network provider, or a filesystem scanner. Coordinates are mapped back to
+    the original image using the returned scale values.
+    """
+    if bgr is None or not isinstance(bgr, np.ndarray) or bgr.size == 0:
+        return []
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    try:
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+    except Exception:
+        enhanced = gray
+    enhanced = cv2.bilateralFilter(enhanced, 5, 55, 55)
+    adaptive = cv2.adaptiveThreshold(
+        enhanced, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 9
+    )
+    _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    variants: List[Dict[str, Any]] = [
+        {"name": "clahe_bilateral_adaptive", "image": adaptive, "scale_x": 1.0, "scale_y": 1.0},
+        {"name": "otsu", "image": otsu, "scale_x": 1.0, "scale_y": 1.0},
+        {"name": "inverted", "image": cv2.bitwise_not(adaptive), "scale_x": 1.0, "scale_y": 1.0},
+    ]
+
+    # Upscaling can materially help small rendered text, but is deliberately
+    # bounded so a large canvas does not trigger a memory/CPU spike.
+    height, width = gray.shape[:2]
+    if max(width, height) <= 1800:
+        upscaled = cv2.resize(adaptive, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        variants.append({"name": "upscaled_2x", "image": upscaled, "scale_x": 2.0, "scale_y": 2.0})
+    return variants
+
+
+def _sha256_ndarray(value: np.ndarray) -> str:
+    """Hash ndarray bytes without creating a second full-size byte string."""
+    arr = np.ascontiguousarray(value)
+    try:
+        return hashlib.sha256(memoryview(arr).cast("B")).hexdigest()
+    except Exception:
+        return hashlib.sha256(arr.tobytes(order="C")).hexdigest()
 
 
 class CanvasGenerationManifest:
@@ -867,79 +913,289 @@ class LocalImageGenerationBackend:
 
 
 class CanvasOutputVerifier:
-    """Local-first image readback and verification helper."""
+    """Local-first image readback, visual analysis, and verification helper."""
 
     SCHEMA = "SarahMemory.canvas.output_verification.v1"
+    ANALYSIS_SCHEMA = "SarahMemory.canvas.visual_analysis.v1"
 
     def __init__(self):
         self.execution_authority = False
 
+    @staticmethod
+    def _bbox_iou(a: List[int], b: List[int]) -> float:
+        if len(a) != 4 or len(b) != 4:
+            return 0.0
+        ax1, ay1, ax2, ay2 = [float(v) for v in a]
+        bx1, by1, bx2, by2 = [float(v) for v in b]
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = iw * ih
+        if inter <= 0.0:
+            return 0.0
+        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
+        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
+        union = area_a + area_b - inter
+        return inter / union if union > 0.0 else 0.0
+
+    @staticmethod
+    def _normalize_ocr_text(value: Any) -> str:
+        return "".join(ch.lower() for ch in str(value or "") if ch.isalnum())
+
+    def _fuse_ocr_boxes(self, boxes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Fuse repeated OCR observations only when text and geometry agree."""
+        fused: List[Dict[str, Any]] = []
+        for item in sorted(boxes, key=lambda row: float(row.get("confidence") or 0.0), reverse=True):
+            text_key = self._normalize_ocr_text(item.get("text"))
+            bbox = [int(v) for v in (item.get("bbox") or [])[:4]]
+            if not text_key or len(bbox) != 4:
+                continue
+            match = None
+            for existing in fused:
+                if self._normalize_ocr_text(existing.get("text")) != text_key:
+                    continue
+                if self._bbox_iou(existing.get("bbox") or [], bbox) >= 0.25:
+                    match = existing
+                    break
+            if match is None:
+                clean = dict(item)
+                clean["bbox"] = bbox
+                clean["votes"] = 1
+                clean["variants"] = [str(item.get("preprocess_variant") or "unknown")]
+                clean["psm_modes"] = [int(item.get("psm") or 0)]
+                fused.append(clean)
+                continue
+            votes = int(match.get("votes") or 1) + 1
+            previous_conf = float(match.get("confidence") or 0.0)
+            new_conf = float(item.get("confidence") or 0.0)
+            match["confidence"] = min(0.99, ((previous_conf * (votes - 1)) + new_conf) / votes + min(0.08, 0.015 * (votes - 1)))
+            match["votes"] = votes
+            variant = str(item.get("preprocess_variant") or "unknown")
+            if variant not in match["variants"]:
+                match["variants"].append(variant)
+            psm = int(item.get("psm") or 0)
+            if psm not in match["psm_modes"]:
+                match["psm_modes"].append(psm)
+        return sorted(fused, key=lambda row: ((row.get("bbox") or [0, 0])[1], (row.get("bbox") or [0, 0])[0]))
+
+    @staticmethod
+    def _text_region_fallback(bgr: np.ndarray, error: str = "") -> Dict[str, Any]:
+        """Detect likely text regions without claiming to have read their contents."""
+        try:
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+            edges = cv2.Canny(gray, 80, 180)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 3))
+            dilated = cv2.dilate(edges, kernel, iterations=1)
+            contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            regions = []
+            for c in sorted(contours, key=cv2.contourArea, reverse=True)[:80]:
+                x, y, w, h = cv2.boundingRect(c)
+                if w >= 24 and h >= 8:
+                    regions.append({
+                        "bbox": [int(x), int(y), int(x + w), int(y + h)],
+                        "confidence": 0.25,
+                        "geometry_only": True,
+                    })
+            return {
+                "available": False,
+                "engine": "text_region_fallback",
+                "error": error,
+                "text": [],
+                "boxes": regions,
+                "evidence": {
+                    "ocr_text_available": False,
+                    "geometry_only": True,
+                    "execution_authority": False,
+                },
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "engine": "unavailable",
+                "error": error or str(exc),
+                "text": [],
+                "boxes": [],
+                "evidence": {"ocr_text_available": False, "geometry_only": False, "execution_authority": False},
+            }
+
     def _ocr_text(self, rgba: np.ndarray) -> Dict[str, Any]:
+        """Run bounded multi-pass local OCR and return inspectable evidence."""
         bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
         try:
             import pytesseract  # type: ignore
-            processed = _ocr_preprocess_bgr(bgr)
-            texts: List[str] = []
-            boxes: List[Dict[str, Any]] = []
-            for psm in (6, 11, 7):
-                cfg = f"--oem 3 --psm {psm}"
-                try:
-                    raw = pytesseract.image_to_string(processed, config=cfg) or ""
-                    for line in [x.strip() for x in raw.splitlines() if x.strip()]:
-                        if line not in texts:
-                            texts.append(line)
-                except Exception:
-                    continue
-            try:
-                data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT, config="--oem 3 --psm 11")
-                count = len(data.get("text", []))
-                for i in range(count):
-                    txt = str(data.get("text", [""])[i] or "").strip()
-                    if not txt:
-                        continue
-                    try:
-                        conf = float(data.get("conf", [0])[i])
-                    except Exception:
-                        conf = 0.0
-                    if conf < 0:
-                        conf = 0.0
-                    boxes.append({
-                        "text": txt,
-                        "confidence": conf / 100.0 if conf > 1 else conf,
-                        "bbox": [int(data["left"][i]), int(data["top"][i]), int(data["left"][i]) + int(data["width"][i]), int(data["top"][i]) + int(data["height"][i])],
-                    })
-            except Exception:
-                boxes = []
-            return {"available": True, "engine": "pytesseract", "text": texts, "boxes": boxes}
         except Exception as exc:
-            # Fallback: detect likely text regions only; do not pretend to read text.
-            try:
-                gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-                edges = cv2.Canny(gray, 80, 180)
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (12, 3))
-                dilated = cv2.dilate(edges, kernel, iterations=1)
-                contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                regions = []
-                for c in contours[:80]:
-                    x, y, w, h = cv2.boundingRect(c)
-                    if w >= 24 and h >= 8:
-                        regions.append({"bbox": [int(x), int(y), int(x + w), int(y + h)], "confidence": 0.25})
-                return {"available": False, "engine": "text_region_fallback", "error": str(exc), "text": [], "boxes": regions}
-            except Exception:
-                return {"available": False, "engine": "unavailable", "error": str(exc), "text": [], "boxes": []}
+            return self._text_region_fallback(bgr, f"pytesseract_unavailable:{exc}")
+
+        variants = _ocr_preprocess_variants_bgr(bgr)
+        observations: List[Dict[str, Any]] = []
+        pass_records: List[Dict[str, Any]] = []
+        successful_passes = 0
+        last_error = ""
+        original_h, original_w = bgr.shape[:2]
+
+        for variant in variants:
+            name = str(variant.get("name") or "unknown")
+            image = variant.get("image")
+            if not isinstance(image, np.ndarray) or image.size == 0:
+                continue
+            scale_x = max(1e-6, float(variant.get("scale_x") or 1.0))
+            scale_y = max(1e-6, float(variant.get("scale_y") or 1.0))
+            if name == "clahe_bilateral_adaptive":
+                psm_modes = (6, 11, 7)
+            elif name == "upscaled_2x":
+                psm_modes = (11, 7)
+            else:
+                psm_modes = (11,)
+
+            for psm in psm_modes:
+                cfg = f"--oem 3 --psm {psm} -c preserve_interword_spaces=1"
+                record = {"variant": name, "psm": int(psm), "ok": False, "word_count": 0}
+                try:
+                    data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT, config=cfg)
+                    successful_passes += 1
+                    count = len(data.get("text", []))
+                    word_count = 0
+                    for i in range(count):
+                        txt = str(data.get("text", [""])[i] or "").strip()
+                        if not txt:
+                            continue
+                        try:
+                            raw_conf = float(data.get("conf", [0])[i])
+                        except Exception:
+                            raw_conf = 0.0
+                        conf = raw_conf / 100.0 if raw_conf > 1.0 else raw_conf
+                        if conf < 0.20:
+                            continue
+                        try:
+                            x = float(data["left"][i]) / scale_x
+                            y = float(data["top"][i]) / scale_y
+                            w = float(data["width"][i]) / scale_x
+                            h = float(data["height"][i]) / scale_y
+                        except Exception:
+                            continue
+                        if w < 2.0 or h < 2.0:
+                            continue
+                        x1 = max(0, min(original_w - 1, int(round(x))))
+                        y1 = max(0, min(original_h - 1, int(round(y))))
+                        x2 = max(x1 + 1, min(original_w, int(round(x + w))))
+                        y2 = max(y1 + 1, min(original_h, int(round(y + h))))
+                        observations.append({
+                            "text": txt,
+                            "confidence": max(0.0, min(1.0, float(conf))),
+                            "bbox": [x1, y1, x2, y2],
+                            "engine": "pytesseract",
+                            "preprocess_variant": name,
+                            "psm": int(psm),
+                            "geometry_verified": True,
+                        })
+                        word_count += 1
+                    record["ok"] = True
+                    record["word_count"] = word_count
+                except Exception as exc:
+                    last_error = str(exc)
+                    record["error"] = str(exc)
+                pass_records.append(record)
+
+        if successful_passes <= 0:
+            return self._text_region_fallback(bgr, f"tesseract_execution_failed:{last_error}" if last_error else "tesseract_execution_failed")
+
+        boxes = self._fuse_ocr_boxes(observations)
+        ordered_text = [str(item.get("text") or "").strip() for item in boxes if str(item.get("text") or "").strip()]
+        full_text = " ".join(ordered_text).strip()
+        texts: List[str] = []
+        if full_text:
+            texts.append(full_text)
+        for word in ordered_text:
+            if word not in texts:
+                texts.append(word)
+
+        confidence = sum(float(item.get("confidence") or 0.0) for item in boxes) / max(1, len(boxes))
+        evidence = {
+            "source_sha256": _sha256_ndarray(rgba),
+            "engine": "pytesseract",
+            "variants_used": [str(item.get("name")) for item in variants],
+            "successful_passes": int(successful_passes),
+            "pass_records": pass_records,
+            "raw_observation_count": len(observations),
+            "fused_box_count": len(boxes),
+            "full_text_hash": _stable_json_hash(full_text),
+            "confidence": float(confidence),
+            "local_first": True,
+            "network_used": False,
+            "execution_authority": False,
+        }
+        return {
+            "available": True,
+            "engine": "pytesseract",
+            "text": texts,
+            "full_text": full_text,
+            "boxes": boxes,
+            "confidence": float(confidence),
+            "evidence": evidence,
+        }
 
     def _object_tags(self, rgba: np.ndarray) -> Dict[str, Any]:
+        """Use the existing SarahMemorySOBJE frame contract when available."""
         bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
         try:
             import SarahMemorySOBJE as _SOBJE  # type: ignore
+            answer_fn = getattr(_SOBJE, "answer_visual_question", None)
+            if callable(answer_fn):
+                request = {
+                    "query_type": "detect_objects",
+                    "requested_attributes": ["objects"],
+                    "action_expectation": "answer_only",
+                    "module_hints": ["SarahMemoryCanvasStudio"],
+                }
+                result = answer_fn(request, bgr)
+                details = result.get("details") if isinstance(result, dict) else {}
+                details = details if isinstance(details, dict) else {}
+                tags = [str(x) for x in (details.get("observed_subjects") or []) if str(x).strip()]
+                detections = details.get("detections") if isinstance(details.get("detections"), list) else []
+                faces = details.get("faces") if isinstance(details.get("faces"), dict) else {}
+                return {
+                    "available": bool(tags or detections),
+                    "engine": "SarahMemorySOBJE.answer_visual_question",
+                    "tags": tags,
+                    "detections": detections,
+                    "faces": faces,
+                    "confidence": float(details.get("confidence") or 0.0),
+                    "errors": list(details.get("errors") or []),
+                    "execution_authority": False,
+                }
             fn = getattr(_SOBJE, "ultra_detect_objects", None)
             if callable(fn):
                 tags = fn(bgr)
                 if isinstance(tags, (list, tuple)):
-                    return {"available": True, "engine": "SarahMemorySOBJE.ultra_detect_objects", "tags": [str(x) for x in tags]}
+                    return {
+                        "available": bool(tags),
+                        "engine": "SarahMemorySOBJE.ultra_detect_objects",
+                        "tags": [str(x) for x in tags],
+                        "detections": [],
+                        "faces": {},
+                        "confidence": 0.0,
+                        "execution_authority": False,
+                    }
         except Exception as exc:
-            return {"available": False, "engine": "SarahMemorySOBJE", "error": str(exc), "tags": []}
-        return {"available": False, "engine": "none", "tags": []}
+            return {
+                "available": False,
+                "engine": "SarahMemorySOBJE",
+                "error": str(exc),
+                "tags": [],
+                "detections": [],
+                "faces": {},
+                "confidence": 0.0,
+                "execution_authority": False,
+            }
+        return {
+            "available": False,
+            "engine": "none",
+            "tags": [],
+            "detections": [],
+            "faces": {},
+            "confidence": 0.0,
+            "execution_authority": False,
+        }
 
     @staticmethod
     def _match_terms(expected: List[str], observed_values: List[str]) -> Tuple[List[str], List[str]]:
@@ -956,6 +1212,199 @@ class CanvasOutputVerifier:
             else:
                 missing.append(str(item))
         return matched, missing
+
+    @staticmethod
+    def _analyze_color(rgba: np.ndarray) -> Dict[str, Any]:
+        """Deterministic local color statistics; no semantic branding assumptions."""
+        try:
+            rgb = np.asarray(rgba[:, :, :3], dtype=np.uint8)
+            h, w = rgb.shape[:2]
+            sample = cv2.resize(rgb, (min(64, max(1, w)), min(64, max(1, h))), interpolation=cv2.INTER_AREA)
+            flat = sample.reshape(-1, 3)
+            quantized = (flat // 32) * 32 + 16
+            quantized = np.clip(quantized, 0, 255).astype(np.uint8)
+            unique, counts = np.unique(quantized, axis=0, return_counts=True)
+            order = np.argsort(counts)[::-1][:5]
+            total = max(1, int(counts.sum()))
+            palette = [
+                {
+                    "rgb": [int(v) for v in unique[idx].tolist()],
+                    "fraction": float(counts[idx] / total),
+                }
+                for idx in order
+            ]
+            hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            return {
+                "dominant_palette": palette,
+                "mean_saturation": float(np.mean(hsv[:, :, 1]) / 255.0),
+                "mean_brightness": float(np.mean(hsv[:, :, 2]) / 255.0),
+                "contrast": float(min(1.0, np.std(gray) / 127.5)),
+                "transparent_fraction": float(np.mean(rgba[:, :, 3] < 255)) if rgba.shape[2] >= 4 else 0.0,
+                "execution_authority": False,
+            }
+        except Exception as exc:
+            return {"error": str(exc), "dominant_palette": [], "execution_authority": False}
+
+    @staticmethod
+    def _analyze_composition(rgba: np.ndarray) -> Dict[str, Any]:
+        """Compute bounded edge-based composition measurements from pixels."""
+        try:
+            rgb = np.asarray(rgba[:, :, :3], dtype=np.uint8)
+            gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+            h, w = gray.shape[:2]
+            if max(h, w) > 1024:
+                scale = 1024.0 / max(h, w)
+                gray_work = cv2.resize(gray, (max(1, int(round(w * scale))), max(1, int(round(h * scale)))), interpolation=cv2.INTER_AREA)
+            else:
+                gray_work = gray
+            edges = cv2.Canny(gray_work, 80, 180)
+            weights = edges.astype(np.float32) / 255.0
+            total = float(weights.sum())
+            if total > 0.0:
+                yy, xx = np.mgrid[0:weights.shape[0], 0:weights.shape[1]].astype(np.float32)
+                cx = float((xx * weights).sum() / total) / max(1.0, float(weights.shape[1] - 1))
+                cy = float((yy * weights).sum() / total) / max(1.0, float(weights.shape[0] - 1))
+            else:
+                cx, cy = 0.5, 0.5
+            intersections = ((1/3, 1/3), (2/3, 1/3), (1/3, 2/3), (2/3, 2/3))
+            nearest = min(((cx - tx) ** 2 + (cy - ty) ** 2) ** 0.5 for tx, ty in intersections)
+            max_nearest = (2.0 ** 0.5) / 3.0
+            thirds_score = max(0.0, min(1.0, 1.0 - nearest / max_nearest))
+            midpoint = weights.shape[1] // 2
+            left_energy = float(weights[:, :midpoint].sum())
+            right_energy = float(weights[:, midpoint:].sum())
+            balance = 1.0 - abs(left_energy - right_energy) / max(1e-6, left_energy + right_energy)
+            return {
+                "resolution": [int(w), int(h)],
+                "aspect_ratio": float(w / max(1, h)),
+                "detail_density": float(np.mean(edges > 0)),
+                "center_of_detail_normalized": [float(cx), float(cy)],
+                "rule_of_thirds_proximity": float(thirds_score),
+                "left_right_balance": float(max(0.0, min(1.0, balance))),
+                "measurement_basis": "edge_distribution",
+                "execution_authority": False,
+            }
+        except Exception as exc:
+            return {"error": str(exc), "execution_authority": False}
+
+    @staticmethod
+    def _analyze_typography(ocr: Dict[str, Any], rgba: np.ndarray) -> Dict[str, Any]:
+        """Estimate text hierarchy from verified OCR geometry only."""
+        boxes = [dict(item) for item in (ocr.get("boxes") or []) if isinstance(item, dict) and item.get("text")]
+        h, w = rgba.shape[:2]
+        if not boxes:
+            return {
+                "available": False,
+                "text_block_count": 0,
+                "hierarchy": [],
+                "title_candidates": [],
+                "text_coverage_ratio": 0.0,
+                "execution_authority": False,
+            }
+        heights = [max(1, int((item.get("bbox") or [0, 0, 0, 0])[3]) - int((item.get("bbox") or [0, 0, 0, 0])[1])) for item in boxes]
+        median_height = float(np.median(heights)) if heights else 1.0
+        hierarchy: List[Dict[str, Any]] = []
+        total_area = 0.0
+        for item, box_h in zip(boxes, heights):
+            bbox = [int(v) for v in (item.get("bbox") or [0, 0, 0, 0])[:4]]
+            if len(bbox) != 4:
+                continue
+            x1, y1, x2, y2 = bbox
+            area = max(0, x2 - x1) * max(0, y2 - y1)
+            total_area += area
+            center_x = ((x1 + x2) / 2.0) / max(1.0, float(w))
+            center_y = ((y1 + y2) / 2.0) / max(1.0, float(h))
+            relative_height = float(box_h / max(1.0, median_height))
+            role_hint = "body"
+            if relative_height >= 1.5 and center_y <= 0.45:
+                role_hint = "title_candidate"
+            elif center_y >= 0.85:
+                role_hint = "footer_candidate"
+            alignment_hint = "center" if abs(center_x - 0.5) <= 0.10 else "left_region" if center_x < 0.5 else "right_region"
+            hierarchy.append({
+                "text": str(item.get("text") or ""),
+                "confidence": float(item.get("confidence") or 0.0),
+                "bbox": bbox,
+                "relative_height": relative_height,
+                "role_hint": role_hint,
+                "alignment_hint": alignment_hint,
+                "heuristic": True,
+            })
+        hierarchy.sort(key=lambda row: (row["bbox"][1], row["bbox"][0]))
+        title_candidates = [row["text"] for row in hierarchy if row.get("role_hint") == "title_candidate"][:8]
+        confidence = sum(float(row.get("confidence") or 0.0) for row in hierarchy) / max(1, len(hierarchy))
+        return {
+            "available": True,
+            "text_block_count": len(hierarchy),
+            "hierarchy": hierarchy[:80],
+            "title_candidates": title_candidates,
+            "median_text_height_px": float(median_height),
+            "text_coverage_ratio": float(min(1.0, total_area / max(1.0, float(w * h)))),
+            "mean_ocr_confidence": float(confidence),
+            "heuristic_classification": True,
+            "execution_authority": False,
+        }
+
+    def analyze_rgba(
+        self,
+        rgba: np.ndarray,
+        manifest: Optional[Dict[str, Any]] = None,
+        *,
+        verification: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build a provider-neutral visual analysis packet from actual pixel evidence."""
+        if rgba is None or not isinstance(rgba, np.ndarray) or rgba.ndim != 3 or rgba.shape[2] < 3:
+            return {"schema": self.ANALYSIS_SCHEMA, "ok": False, "error": "rgba_image_required", "execution_authority": False}
+        if rgba.shape[2] == 3:
+            rgba = cv2.cvtColor(rgba, cv2.COLOR_RGB2RGBA)
+        elif rgba.shape[2] > 4:
+            rgba = rgba[:, :, :4]
+
+        manifest = manifest if isinstance(manifest, dict) else {}
+        verification = verification if isinstance(verification, dict) else {}
+        ocr = verification.get("ocr") if isinstance(verification.get("ocr"), dict) else self._ocr_text(rgba)
+        objects = verification.get("objects") if isinstance(verification.get("objects"), dict) else self._object_tags(rgba)
+        color = self._analyze_color(rgba)
+        composition = self._analyze_composition(rgba)
+        typography = self._analyze_typography(ocr, rgba)
+        face_count = 0
+        try:
+            face_count = int(((objects.get("faces") or {}).get("count")) or 0)
+        except Exception:
+            face_count = 0
+        summary = {
+            "text_block_count": int(len(ocr.get("boxes") or [])),
+            "ocr_available": bool(ocr.get("available")),
+            "object_detection_available": bool(objects.get("available")),
+            "observed_subjects": list(objects.get("tags") or [])[:32],
+            "face_count": face_count,
+            "title_candidates": list(typography.get("title_candidates") or [])[:8],
+        }
+        evidence = {
+            "source_sha256": _sha256_ndarray(rgba),
+            "ocr_hash": _stable_json_hash({"text": ocr.get("full_text") or ocr.get("text"), "boxes": ocr.get("boxes")}),
+            "objects_hash": _stable_json_hash({"tags": objects.get("tags"), "detections": objects.get("detections")}),
+            "color_hash": _stable_json_hash(color),
+            "composition_hash": _stable_json_hash(composition),
+            "typography_hash": _stable_json_hash(typography),
+            "local_first": True,
+            "network_used": False,
+            "execution_authority": False,
+        }
+        return {
+            "schema": self.ANALYSIS_SCHEMA,
+            "ok": True,
+            "ocr": ocr,
+            "objects": objects,
+            "color": color,
+            "composition": composition,
+            "typography": typography,
+            "summary": summary,
+            "evidence": evidence,
+            "manifest_hash": manifest.get("manifest_hash", ""),
+            "execution_authority": False,
+        }
 
     def verify_rgba(self, rgba: np.ndarray, manifest: Dict[str, Any], *, artifact_type: str, provider: str = "") -> Dict[str, Any]:
         expected_subjects = [str(x) for x in manifest.get("expected_subjects") or []]
@@ -1019,14 +1468,16 @@ class CanvasOutputVerifier:
                 bbox = item.get("bbox") or []
                 if len(bbox) == 4:
                     x1, y1, x2, y2 = [int(v) for v in bbox]
-                    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255, 255), 2)
-                    label = str(item.get("text") or "text")[:64]
-                    cv2.putText(overlay, label, (x1, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255, 255), 1, cv2.LINE_AA)
+                    geometry_only = bool(item.get("geometry_only"))
+                    color = (255, 192, 0, 255) if geometry_only else (0, 255, 255, 255)
+                    cv2.rectangle(overlay, (x1, y1), (x2, y2), color, 2)
+                    label = str(item.get("text") or ("text-region" if geometry_only else "text"))[:64]
+                    cv2.putText(overlay, label, (x1, max(12, y1 - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1, cv2.LINE_AA)
             status = str(verification.get("status") or "unknown")
             ok = bool(verification.get("ok"))
-            color = (64, 255, 96, 255) if ok else (255, 192, 0, 255)
+            status_color = (64, 255, 96, 255) if ok else (255, 192, 0, 255)
             cv2.rectangle(overlay, (8, 8), (min(overlay.shape[1] - 1, 520), 46), (0, 0, 0, 180), -1)
-            cv2.putText(overlay, f"VERIFY: {status}  conf={float(verification.get('confidence') or 0):.2f}", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+            cv2.putText(overlay, f"VERIFY: {status}  conf={float(verification.get('confidence') or 0):.2f}", (18, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2, cv2.LINE_AA)
         except Exception:
             return rgba.copy()
         return overlay
@@ -2803,6 +3254,8 @@ class CanvasStudio:
             "execution_authority": False,
         }
 
+        analysis = self._output_verifier.analyze_rgba(rgba, manifest, verification=verification)
+
         overlay_path = ""
         if export_overlay_path:
             try:
@@ -2858,6 +3311,7 @@ class CanvasStudio:
             "canvas": canvas,
             "canvas_id": getattr(canvas, "id", "") if canvas is not None else "",
             "verification": verification,
+            "analysis": analysis,
             "overlay_path": overlay_path,
             "image_sha256": _sha256_bytes(bytes(img_bytes) if isinstance(img_bytes, (bytes, bytearray)) else b""),
             "network_used": bool(generation.get("network_used", False)),
@@ -3003,6 +3457,86 @@ class CanvasStudio:
             return False
         return self._apply_rgba_to_canvas(canvas, rgba)
 
+    def analyze_canvas_output(
+        self,
+        canvas: Optional[Canvas] = None,
+        *,
+        expected_text: Optional[List[str]] = None,
+        expected_subjects: Optional[List[str]] = None,
+        minimum_confidence: float = 0.75,
+    ) -> Dict[str, Any]:
+        """Inspect a current canvas through the same evidence path used after generation."""
+        canvas = canvas or self.get_canvas()
+        if canvas is None:
+            return {"ok": False, "error": "canvas_not_found", "execution_authority": False}
+        rgba = _rgba_to_uint8(canvas.flatten(), canvas.depth)
+        manifest = {
+            "expected_text": list(expected_text or []),
+            "expected_subjects": list(expected_subjects or []),
+            "minimum_confidence": float(max(0.0, min(1.0, minimum_confidence))),
+        }
+        verification = self._output_verifier.verify_rgba(
+            rgba,
+            manifest,
+            artifact_type="canvas_output",
+            provider="SarahMemoryCanvasStudio",
+        )
+        analysis = self._output_verifier.analyze_rgba(rgba, manifest, verification=verification)
+        return {
+            "ok": bool(analysis.get("ok")),
+            "canvas_id": canvas.id,
+            "verification": verification,
+            "analysis": analysis,
+            "execution_authority": False,
+        }
+
+    def read_and_understand_existing(
+        self,
+        image_path: str,
+        *,
+        expected_text: Optional[List[str]] = None,
+        expected_subjects: Optional[List[str]] = None,
+        minimum_confidence: float = 0.75,
+    ) -> Dict[str, Any]:
+        """Read an explicitly supplied image file without scanning for other files."""
+        path = os.path.abspath(os.fspath(image_path))
+        if not os.path.isfile(path):
+            return {"ok": False, "error": "image_file_not_found", "source": path, "execution_authority": False}
+        try:
+            raw = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if raw is None:
+                raise ValueError("image_decode_failed")
+            if raw.ndim == 2:
+                rgba = cv2.cvtColor(raw, cv2.COLOR_GRAY2RGBA)
+            elif raw.ndim == 3 and raw.shape[2] == 3:
+                rgba = cv2.cvtColor(raw, cv2.COLOR_BGR2RGBA)
+            elif raw.ndim == 3 and raw.shape[2] >= 4:
+                rgba = cv2.cvtColor(raw[:, :, :4], cv2.COLOR_BGRA2RGBA)
+            else:
+                raise ValueError("unsupported_image_shape")
+        except Exception as exc:
+            return {"ok": False, "error": f"image_decode_failed:{exc}", "source": path, "execution_authority": False}
+
+        manifest = {
+            "expected_text": list(expected_text or []),
+            "expected_subjects": list(expected_subjects or []),
+            "minimum_confidence": float(max(0.0, min(1.0, minimum_confidence))),
+        }
+        verification = self._output_verifier.verify_rgba(
+            rgba,
+            manifest,
+            artifact_type="existing_image",
+            provider="SarahMemoryCanvasStudio.file_readback",
+        )
+        analysis = self._output_verifier.analyze_rgba(rgba, manifest, verification=verification)
+        return {
+            "ok": bool(analysis.get("ok")),
+            "source": path,
+            "verification": verification,
+            "analysis": analysis,
+            "execution_authority": False,
+        }
+
     def get_neural_renderers(self) -> Dict[str, Dict[str, Any]]:
         """Return metadata for bounded neural renderers available to CanvasStudio."""
         result: Dict[str, Dict[str, Any]] = {}
@@ -3099,8 +3633,15 @@ class CanvasStudio:
             "image_generation_backends": self.get_image_generation_backends(),
             "output_verification": {
                 "schema": CanvasOutputVerifier.SCHEMA,
+                "analysis_schema": CanvasOutputVerifier.ANALYSIS_SCHEMA,
                 "ocr_local_first": True,
+                "multi_pass_ocr": True,
                 "object_detection_local_first": True,
+                "structured_sobje_readback": True,
+                "color_analysis": True,
+                "composition_analysis": True,
+                "typography_analysis": True,
+                "existing_image_readback": True,
                 "placeholder_rejection": True,
                 "execution_authority": False,
             },
@@ -3157,6 +3698,13 @@ class CanvasStudio:
             checks.append({"name": "unsupported_effect_rejected", "passed": canvas.apply_effect("not_a_filter") is False})
             manifest = self.build_output_manifest(canvas)
             checks.append({"name": "manifest_contract", "passed": manifest.get("schema") == "SARAHMEMORY_CANVAS_OUTPUT_V1", "observed": manifest})
+            analyzer_rgba = np.zeros((48, 64, 4), dtype=np.uint8)
+            analyzer_rgba[:, :, :3] = (32, 96, 160)
+            analyzer_rgba[:, :, 3] = 255
+            color_metrics = self._output_verifier._analyze_color(analyzer_rgba)
+            composition_metrics = self._output_verifier._analyze_composition(analyzer_rgba)
+            checks.append({"name": "color_analysis", "passed": bool(color_metrics.get("dominant_palette")), "observed": color_metrics})
+            checks.append({"name": "composition_analysis", "passed": composition_metrics.get("resolution") == [64, 48], "observed": composition_metrics})
             avatar = self.live_avatar_renderer_self_test()
             checks.append({"name": "live_avatar_self_test", "passed": bool(avatar.get("ok")), "observed": avatar.get("render_health")})
         except Exception as exc:
@@ -3196,6 +3744,13 @@ def get_canvas_studio_capabilities() -> Dict[str, Any]:
         "local_image_backend_contract": True,
         "generation_manifest_schema": CanvasGenerationManifest.SCHEMA,
         "output_verification_schema": CanvasOutputVerifier.SCHEMA,
+        "visual_analysis_schema": CanvasOutputVerifier.ANALYSIS_SCHEMA,
+        "multi_pass_ocr": True,
+        "structured_sobje_readback": True,
+        "color_analysis": True,
+        "composition_analysis": True,
+        "typography_analysis": True,
+        "existing_image_readback": True,
         "placeholder_preview_is_not_success": True,
         "lane_modes": sorted(LANE_VALUES),
         "artifact_statuses": [ARTIFACT_VERIFIED, ARTIFACT_UNVERIFIED, ARTIFACT_PLACEHOLDER, ARTIFACT_FAILED],
@@ -3304,8 +3859,8 @@ SML_ORGAN_METADATA = {
     "protocol_version": "SML/1.0",
     "packet_version": 1,
     "omega_registry_version": "Ω/1.0",
-    "capabilities": ['graphics_rendering', 'image_editing', 'avatar_frame_rendering', 'image_generation_routing', 'output_verification', 'ocr_readback'],
-    "supported_missions": ['Conversation', 'CreativeRendering', 'AvatarPresentation'],
+    "capabilities": ['graphics_rendering', 'image_editing', 'avatar_frame_rendering', 'image_generation_routing', 'output_verification', 'ocr_readback', 'multi_pass_ocr', 'visual_analysis', 'composition_analysis', 'typography_analysis', 'existing_image_readback'],
+    "supported_missions": ['Conversation', 'CreativeRendering', 'AvatarPresentation', 'VisualUnderstanding'],
     "supported_omega": ['Ω001', 'Ω070', 'Ω100'],
     "required_authority": ['Read', 'WriteCanvas'],
     "execution_authority": False,

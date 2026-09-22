@@ -2571,6 +2571,12 @@ SM_CORE_CAPABILITY_ALIASES = {
     "software_research": "reasoning",
     "research": "reasoning",
     "associative_memory": "utility",
+    "continuity": "survival",
+    "cognitive_continuity": "survival",
+    "cognitive_essence": "survival",
+    "identity_continuity": "survival",
+    "survivability": "survival",
+    "survival_protocol": "survival",
     "system": "diagnostics",
 }
 
@@ -2593,6 +2599,7 @@ _SM_CORE_FILE_HINTS = {
     "SarahMemoryCognitiveServices": "diagnostics",
     "SarahMemoryCognitiveSelf": "diagnostics",
     "SarahMemoryCognitiveThinker": "reasoning",
+    "SarahMemoryCognitiveEssence": "survival",
     "SarahMemoryPreTokenAnalyzer": "helper",
     "SarahMemoryOperatorCore": "action",
     "SarahMemoryAssuranceGate": "diagnostics",
