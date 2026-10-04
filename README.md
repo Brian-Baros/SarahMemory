@@ -90,7 +90,7 @@ Organic AI gives AI the systems architecture required for governed continuity.
 
 ---
 
-## Why the Public Repository Is Being Reduced
+## Why the Public Repository Is Being Reorganized
 
 The v8.0.0 public repository served its purpose:
 
@@ -112,18 +112,6 @@ The public repository now serves as:
 - project identity page
 - licensing and collaboration entry point
 - selected visual evidence package
-
-### Protected Layer
-
-The private development environment now carries:
-
-- active core source files
-- workflow internals
-- protected organ implementation
-- v9.0.0 restructuring
-- v10 beta roadmap work
-- system hardening
-- academic/collaboration-ready review packages
 
 ---
 
@@ -286,27 +274,6 @@ The following areas were publicly demonstrated or documented before the v9 trans
 
 ---
 
-## What Is Intentionally Not Published Here
-
-To protect the project during active v9 and v10 development, this README does not disclose:
-
-- full internal workflow chains
-- complete backend route maps
-- full protected source layout
-- complete organ implementation logic
-- private model-control internals
-- protected governance implementation details
-- full driver execution pathways
-- complete robotics/body-control logic
-- protected Cognitive TriForce internals
-- protected SMGET internals
-- protected ARILE sentinel implementation
-- private v10 roadmap internals
-
-The public repository is now an evidence and collaboration-entry layer, not the full implementation vault.
-
----
-
 ## High-Level AIOS Architecture
 
 SarahMemory AIOS is organized around the principle that an AI operating system should be built from specialized governed organs.
@@ -332,7 +299,7 @@ At a public level, major system categories include:
 - future robotics/body interfaces
 - audit and evidence handling
 
-The active protected implementation is being reorganized for v9.0.0 and future v10 beta work.
+The active implementation is being reorganized for v9.0.0 and future v10 beta work.
 
 ---
 
@@ -541,7 +508,7 @@ The v1.0-v7 to v8 finalization into v8 along with extreme detailed documentation
 
 The v8.0.0 public record now stands as proof of work.
 
-The v9.0.0 transition begins the protected architecture phase.
+The v9.0.0 transition begins a new paradigm shift into AI Species (ASI), not Artificial Super Intelligence architecture phase.
 
 The v10 roadmap continues the push toward a more mature AIOS platform.
 
