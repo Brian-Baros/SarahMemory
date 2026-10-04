@@ -695,6 +695,33 @@ def _device_manager_contract(driver_id: str, manifest: Optional[Dict[str, Any]] 
     }
 
 
+def _driver_passive_packet(driver_id: str, *, reason: str = "passive_manifest_only") -> Dict[str, Any]:
+    """Read-only driver metadata packet that never imports driver.py or probes hardware."""
+    reg = _load_registry()
+    manifest = _load_manifest(driver_id)
+    config_data = _load_config(driver_id)
+    registry_entry = _get_reg_entry(reg, driver_id)
+    session = _session_get(driver_id)
+    return {
+        "ok": True,
+        "driver_id": driver_id,
+        "manifest": manifest,
+        "enabled": bool(registry_entry.get("enabled", manifest.get("enabled", True))),
+        "trusted": bool(registry_entry.get("trusted", False)),
+        "autoload": bool(registry_entry.get("autoload", manifest.get("autoload", False))),
+        "connected": bool(session),
+        "config": config_data,
+        "device_manager_contract": _device_manager_contract(driver_id, manifest, config_data),
+        "witness": _msdc_device_witness(driver_id, manifest=manifest, registry_entry=registry_entry, session=session),
+        "module_imported": False,
+        "hardware_probed": False,
+        "status_sampled": False,
+        "active_discovery_required": True,
+        "active_discovery_method": "POST",
+        "reason": reason,
+    }
+
+
 def _reset_config(driver_id: str) -> Dict[str, Any]:
     defaults = _load_defaults(driver_id)
     _save_config(driver_id, defaults)
@@ -1628,11 +1655,14 @@ def apply(app):
 
     @app.route("/api/drivers/<driver_id>/discover", methods=["GET", "POST"])
     def drivers_discover(driver_id: str):
+        if driver_id not in _discover_driver_ids():
+            return _err("Unknown driver_id", 404)
+        if request.method == "GET":
+            return jsonify(_driver_passive_packet(driver_id, reason="GET_discovery_is_passive_no_driver_import"))
         payload = {}
-        if request.method == "POST":
-            if not _verify_auth():
-                return _err("Unauthorized", 401)
-            payload = request.get_json(force=True, silent=True) or {}
+        if not _verify_auth():
+            return _err("Unauthorized", 401)
+        payload = request.get_json(force=True, silent=True) or {}
         return _driver_discover(driver_id, payload=payload)
 
     @app.route("/api/drivers/<driver_id>/connect", methods=["POST"])
@@ -1699,6 +1729,18 @@ def apply(app):
             return _err("Unknown driver_id", 404)
 
         sess = _session_get(driver_id)
+        if not sess:
+            passive = _driver_passive_packet(driver_id, reason="inactive_status_is_passive_no_driver_import")
+            status_packet = {
+                "ok": True,
+                "connected": False,
+                "status_sampled": False,
+                "module_imported": False,
+                "hardware_probed": False,
+                "reason": "No active driver session; use governed connect/action flow before live status sampling.",
+            }
+            return jsonify({"ok": True, "session": sess, "status": status_packet, "witness": passive.get("witness")})
+
         mod, err = _load_driver_module(driver_id)
         if err:
             return jsonify({"ok": False, "error": err, "session": sess}), 500

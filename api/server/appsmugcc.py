@@ -110,6 +110,61 @@ def api_smugcc_compatibility():
     return jsonify(_safe_call("SarahMemorySMUGCC", "get_smugcc_compatibility_report")), 200
 
 
+@appsmugcc_bp.get("/api/smugcc/beacon")
+def api_smugcc_beacon():
+    return jsonify(_safe_call("SarahMemorySMUGCC", "get_beacon_declaration")), 200
+
+
+@appsmugcc_bp.get("/api/smugcc/cloud-node/status")
+def api_smugcc_cloud_node_status():
+    return jsonify(_safe_call("SarahMemoryResearch", "cloud_node_status", False)), 200
+
+
+@appsmugcc_bp.get("/api/smugcc/ambassador/status")
+def api_smugcc_ambassador_status():
+    return jsonify(_safe_call("SarahMemorySMUGCC", "get_ambassador_status")), 200
+
+
+@appsmugcc_bp.post("/api/smugcc/ambassador/prepare")
+def api_smugcc_ambassador_prepare():
+    payload = _json_payload()
+    result = _safe_call("SarahMemorySMUGCC", "prepare_ambassador_mission", payload)
+    envelope = result.get("envelope") if isinstance(result.get("envelope"), dict) else {}
+    if envelope:
+        result["receipt"] = _record_receipt("AMBASSADOR_MISSION_PREPARED", envelope, "STAGED" if result.get("ok") else "BLOCK", "Ambassador mission prepared for governed review; no execution performed.")
+    return jsonify(result), 200
+
+
+@appsmugcc_bp.post("/api/smugcc/ambassador/approve")
+def api_smugcc_ambassador_approve():
+    payload = _json_payload()
+    result = _safe_call("SarahMemorySMUGCC", "approve_ambassador_mission", payload)
+    prepared = result.get("prepared") if isinstance(result.get("prepared"), dict) else {}
+    envelope = prepared.get("envelope") if isinstance(prepared.get("envelope"), dict) else {}
+    if envelope:
+        result["receipt"] = _record_receipt("AMBASSADOR_MISSION_APPROVAL_REVIEWED", envelope, "ALLOW" if result.get("ok") else "BLOCK", "Ambassador approval reviewed; only consent negotiation may proceed.")
+    return jsonify(result), 200
+
+
+@appsmugcc_bp.post("/api/smugcc/ambassador/recall")
+@appsmugcc_bp.post("/api/smugcc/ambassador/revoke")
+def api_smugcc_ambassador_recall():
+    payload = _json_payload()
+    result = _safe_call("SarahMemorySMUGCC", "recall_ambassador_mission", payload)
+    return jsonify(result), 200
+
+
+@appsmugcc_bp.get("/api/smugcc/ambassador/audit")
+def api_smugcc_ambassador_audit():
+    try:
+        ledger = _core("SarahMemoryLedger")
+        rows = ledger.get_governance_receipts(domain="smugcc", limit=int(request.args.get("limit") or 50))
+        filtered = [row for row in rows if "AMBASSADOR" in str(row.get("event_type") or row.get("event") or "").upper()]
+        return jsonify({"ok": True, "schema": SCHEMA, "receipts": filtered, "execution_authority": False}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "schema": SCHEMA, "receipts": [], "execution_authority": False}), 200
+
+
 @appsmugcc_bp.route("/api/smugcc/validate", methods=["GET", "POST"])
 def api_smugcc_validate():
     if request.method == "GET":

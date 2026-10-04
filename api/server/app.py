@@ -55,7 +55,7 @@ from __future__ import annotations
 # NOTES = "Primary Flask API/WebUI server surface for SarahMemory routes, subsystem mounting, safe fallbacks, and governed runtime exposure."
 # --- SARAHMETA END ---
 
-import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error, subprocess, signal
+import os, sys, json, time, glob, sqlite3, hmac, hashlib, base64, difflib, random, importlib.util, urllib.request, urllib.error, subprocess, signal, tempfile
 from pathlib import Path
 from decimal import Decimal
 
@@ -457,9 +457,11 @@ def _is_identity_question(text: str) -> bool:
 
     keys = [
         "what is your name", "who are you", "your name", "what is your name",
+        "tell me who you are", "tell me what you are",
         "describe yourself", "tell me about yourself", "what are you",
         "what do you look like", "describe your 2d model", "describe your 2d avatar", "describe your 3d avatar",
-        "describe your avatar", "2d avatar", "3d avatar", "active avatar", "avatar appearance",
+        "describe your avatar", "define your avatar", "identify your own avatar",
+        "2d avatar", "3d avatar", "active avatar", "avatar appearance",
         "what version are you", "what version are you running", "your version",
         "server version", "program version", "app version", "sarahmemory version",
         "version number",
@@ -1288,10 +1290,14 @@ _VISION_FRAME_LOCK = threading.Lock()
 _VISION_FRAME_CACHE: dict[str, dict] = {}
 _VISION_FRAME_MAX_AGE_S = int(os.getenv("SM_VISION_FRAME_MAX_AGE_S", "45") or 45)
 _VISION_FRAME_MAX_CHARS = int(os.getenv("SM_VISION_FRAME_MAX_CHARS", "1800000") or 1800000)
+_SESSION_SPEAKER_LOCK = threading.Lock()
+_SESSION_SPEAKER_CONTEXT: dict[str, dict] = {}
+_SESSION_SPEAKER_CONTEXT_MAX = 256
+
 def _get_or_create_session_id(payload: dict | None = None) -> str:
     """Return a stable session identifier for UI->API coordination."""
     payload = payload or {}
-    for key in ("session_id", "sid"):
+    for key in ("session_id", "sid", "conversation_id", "thread_id"):
         val = str(payload.get(key) or "").strip()
         if val:
             try:
@@ -3352,7 +3358,22 @@ def _sm_v9_action_authority_preflight(path: str, method: str, payload: dict | No
     )
     high_impact = (
         driver_high_impact
-        or p in {"/api/terminal/execute", "/api/terminal/ai", "/api/launch", "/api/ui/exit"}
+        or p in {
+            "/api/terminal/execute",
+            "/api/terminal/ai",
+            "/api/launch",
+            "/api/ui/exit",
+            "/initiate_call",
+            "/send_file_to_remote",
+            "/ingest_local_file",
+            "/add_contact",
+            "/delete_contact",
+            "/save_reminder",
+            "/delete_reminder",
+            "/run_automation_trigger",
+            "/api/cognitive/self-improvement/start",
+            "/api/cognitive/self-improvement/tick",
+        }
         or p.startswith("/api/devbridge/apply-approved")
         or p.startswith("/api/devbridge/rollback")
         or p.startswith("/api/files/trash/empty")
@@ -3389,8 +3410,26 @@ def _sarahmemory_api_firewall_preflight():
         local_peer = remote_addr in ("127.0.0.1", "::1", "localhost", "")
         write_method = method in ("POST", "PUT", "PATCH", "DELETE")
         read_allowlist = path in ("/", "/api/", "/api/health", "/api/status", "/api/meta", "/api/arile/status")
-        if local_only and not online_armed and not local_peer and write_method:
+        origin = str(request.headers.get("Origin", "") or "").rstrip("/")
+
+        safe_public_ui_write_paths = {
+            "/api/chat",
+            "/api/v1/chat",
+            "/api/session/bootstrap",
+        }
+
+        safe_public_ui_write = (
+            origin == "https://ai.sarahmemory.com"
+            and path in safe_public_ui_write_paths
+        )
+
+        if local_only and not online_armed and not local_peer and write_method and not safe_public_ui_write:
             return jsonify({"ok": False, "error": "local_only_remote_write_blocked", "path": path}), 403
+        if write_method:
+            _payload_for_auth = request.get_json(silent=True) if request.is_json else {}
+            _authority_response = _sm_v9_action_authority_preflight(path, method, _payload_for_auth if isinstance(_payload_for_auth, dict) else {})
+            if _authority_response is not None:
+                return _authority_response
 
         if callable(_sm_agent_firewall_inspect):
             payload = {
@@ -4346,6 +4385,184 @@ def _sm_normalize_conversation_history(payload: dict, *, max_messages: int = 16,
             content = content[:max_chars].rstrip() + " ..."
         out.append({"role": role, "content": content, "id": str(item.get("id") or "")[:96], "timestamp": item.get("timestamp") or item.get("ts") or None})
     return out
+
+
+def _sm_clean_session_name(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").replace("\x00", " ")).strip(" .,!?:;\"'")
+    text = re.sub(r"\b(?:and|also|but|because|who|that|as|in)\b.*$", "", text, flags=re.I).strip(" .,!?:;\"'")
+    parts = [p for p in text.split(" ") if p]
+    if not parts or len(parts) > 4:
+        return ""
+    blocked = {
+        "your", "designer", "creator", "owner", "operator", "tester", "user",
+        "sarah", "sarahmemory", "ai", "assistant", "the", "a", "an",
+    }
+    if any(p.lower() in blocked for p in parts):
+        return ""
+    return " ".join(p[:1].upper() + p[1:] if p.islower() else p for p in parts)[:80]
+
+
+def _sm_extract_session_speaker_claim(text: str) -> dict:
+    raw = str(text or "").strip()
+    low = _sm_fast_normalize_question(raw) if "_sm_fast_normalize_question" in globals() else re.sub(r"\s+", " ", raw.lower()).strip()
+    out = {"name": "", "roles": [], "explicit_user_role": False}
+    if not raw:
+        return out
+
+    name_patterns = (
+        r"\bmy\s+name\s+is\s+([A-Za-z][A-Za-z .'-]{0,80})",
+        r"\bi\s+am\s+([A-Z][A-Za-z.'-]{1,40}(?:\s+[A-Z][A-Za-z.'-]{1,40}){0,3})\b",
+        r"\bi'm\s+([A-Z][A-Za-z.'-]{1,40}(?:\s+[A-Z][A-Za-z.'-]{1,40}){0,3})\b",
+    )
+    for pat in name_patterns:
+        m = re.search(pat, raw, flags=re.I)
+        if m:
+            name = _sm_clean_session_name(m.group(1))
+            if name:
+                out["name"] = name
+                break
+
+    roles = []
+    role_terms = {
+        "creator": ("creator", "created", "named sarah"),
+        "designer": ("designer", "designed"),
+        "operator": ("operator", "admin", "administrator"),
+        "owner": ("owner",),
+        "tester": ("tester", "testing"),
+    }
+    for role, terms in role_terms.items():
+        if any(term in low for term in terms) and re.search(r"\b(i\s+am|i'm|me|my|user|known\s+as)\b", low):
+            roles.append(role)
+    if "the user" in low or re.search(r"\bi\s+am\s+(the\s+)?user\b", low):
+        out["explicit_user_role"] = True
+    out["roles"] = sorted(set(roles))
+    return out
+
+
+def _sm_verified_project_role_for_session(name: str, roles: list[str] | None = None) -> dict:
+    clean = _sm_clean_session_name(name)
+    role_set = set(roles or [])
+    brian_names = {"brian", "brian lee baros"}
+    verified = bool(clean.lower() in brian_names)
+    return {
+        "name": clean,
+        "verified_creator": bool(verified),
+        "verified_roles": ["creator"] if verified else [],
+        "claimed_roles": sorted(role_set),
+        "source": "app.py identity constants + appself/CognitiveSelf identity path",
+        "creator": CREATOR_NAME,
+        "organization": ORG_NAME,
+        "platform": PLATFORM_NAME,
+    }
+
+
+def _sm_update_session_speaker_context(session_id: str, text: str, conversation_history: list[dict] | None = None) -> dict:
+    sid = str(session_id or "default").strip() or "default"
+    history = conversation_history if isinstance(conversation_history, list) else []
+    with _SESSION_SPEAKER_LOCK:
+        state = dict(_SESSION_SPEAKER_CONTEXT.get(sid) or {})
+
+    for item in history[-12:]:
+        if not isinstance(item, dict) or str(item.get("role") or "").lower() != "user":
+            continue
+        claim = _sm_extract_session_speaker_claim(str(item.get("content") or ""))
+        if claim.get("name"):
+            state["name"] = claim["name"]
+        if claim.get("roles"):
+            state["claimed_roles"] = sorted(set(list(state.get("claimed_roles") or []) + list(claim.get("roles") or [])))
+        if claim.get("explicit_user_role"):
+            state["explicit_user_role"] = True
+
+    current = _sm_extract_session_speaker_claim(text)
+    if current.get("name"):
+        state["name"] = current["name"]
+    if current.get("roles"):
+        state["claimed_roles"] = sorted(set(list(state.get("claimed_roles") or []) + list(current.get("roles") or [])))
+    if current.get("explicit_user_role"):
+        state["explicit_user_role"] = True
+
+    state["chat_role"] = "user"
+    state["assistant_name"] = BRAND_NAME
+    state["platform"] = PLATFORM_NAME
+    state["verified_project_role"] = _sm_verified_project_role_for_session(str(state.get("name") or ""), list(state.get("claimed_roles") or []))
+    state["session_only"] = True
+    state["persistence"] = "in_process_session_only"
+    state["updated_ts"] = time.time()
+
+    with _SESSION_SPEAKER_LOCK:
+        _SESSION_SPEAKER_CONTEXT[sid] = dict(state)
+        if len(_SESSION_SPEAKER_CONTEXT) > _SESSION_SPEAKER_CONTEXT_MAX:
+            oldest = sorted(_SESSION_SPEAKER_CONTEXT.items(), key=lambda kv: float((kv[1] or {}).get("updated_ts") or 0.0))
+            for key, _ in oldest[: max(1, len(_SESSION_SPEAKER_CONTEXT) - _SESSION_SPEAKER_CONTEXT_MAX)]:
+                _SESSION_SPEAKER_CONTEXT.pop(key, None)
+    return dict(state)
+
+
+def _sm_try_session_speaker_bundle(text: str, context_packet: dict | None = None):
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    ctx = context_packet if isinstance(context_packet, dict) else {}
+    state = _sm_update_session_speaker_context(
+        str(ctx.get("session_id") or ""),
+        raw,
+        ((ctx.get("conversation") or {}).get("messages") if isinstance(ctx.get("conversation"), dict) else ctx.get("messages")) or [],
+    )
+    low = _sm_fast_normalize_question(raw) if "_sm_fast_normalize_question" in globals() else re.sub(r"\s+", " ", raw.lower()).strip()
+    claim = _sm_extract_session_speaker_claim(raw)
+    roles = list(state.get("claimed_roles") or [])
+    name = str(state.get("name") or "").strip()
+    verified = state.get("verified_project_role") if isinstance(state.get("verified_project_role"), dict) else {}
+
+    def bundle(reply: str, intent: str = "session_identity"):
+        return _sm_v07_bundle(
+            reply,
+            source="api_chat_session_speaker_context",
+            intent=intent,
+            meta={
+                "session_speaker": state,
+                "execution_authority": False,
+                "persistent_memory_write": False,
+                "verified_project_role": verified,
+            },
+        )
+
+    if "i am the user" in low and "you are sarah" in low:
+        tail = f" You are identified in this session as {name}." if name else ""
+        return bundle(f"Yes. You are the USER speaking through the Chat UI, and I am {BRAND_NAME}, the AI/persona responder for {PLATFORM_NAME}.{tail}")
+
+    if claim.get("name") or claim.get("roles") or claim.get("explicit_user_role"):
+        pieces = []
+        if name:
+            pieces.append(f"I’ll treat {name} as your name in this session.")
+        if roles:
+            role_text = "/".join(roles)
+            if verified.get("verified_creator"):
+                pieces.append(f"You are identifying yourself as my {role_text}; the existing SarahMemory identity path identifies {CREATOR_NAME} as the creator of {PLATFORM_NAME}.")
+            else:
+                pieces.append(f"You are identifying yourself as my {role_text} in this session, but I do not have verified local system evidence confirming that role.")
+        if claim.get("explicit_user_role") and not roles:
+            pieces.append(f"Yes. You are the USER speaking through the Chat UI, and I am {BRAND_NAME}, the AI/persona responder for {PLATFORM_NAME}.")
+        if pieces:
+            pieces.append("This does not bypass SarahMemory governance, approval gates, sandbox boundaries, or audit requirements.")
+            return bundle(" ".join(pieces))
+
+    if re.search(r"\bdo\s+you\s+know\s+who\s+i\s+am\b", low):
+        if name:
+            return bundle(f"You identified yourself as {name} in this session.")
+        return bundle("You are the USER speaking through the Chat UI. I do not yet have a session name for you.")
+
+    if "user" in low and "creator" in low and ("you are" in low or "ai i named sarah" in low):
+        if verified.get("verified_creator"):
+            return bundle(f"Yes. You are the USER speaking through the Chat UI. You have identified yourself as creator, and the existing SarahMemory system facts identify {CREATOR_NAME} as the creator of {PLATFORM_NAME}. I am {BRAND_NAME}, the AI/persona responder.")
+        return bundle(f"Yes. You are the USER speaking through the Chat UI, and I am {BRAND_NAME}, the AI/persona responder. You are identifying yourself as creator in this session, but I do not have verified local system evidence confirming that role.")
+
+    if re.match(r"^(good\s+)?(morning|afternoon|evening|hello|hi|hey)\s+sarah[.! ]*$", low):
+        if name:
+            return bundle(f"Good evening, {name}." if "evening" in low else f"Hello, {name}.", intent="greeting")
+        return bundle("Good evening." if "evening" in low else "Hello.", intent="greeting")
+
+    return None
 
 
 def _sm_chat_requested_answer_mode(payload: dict | None, text: str = "") -> str:
@@ -5787,6 +6004,26 @@ def _perform_health_checks():
 
     notes = []
     ok = True
+    main_running = False
+
+    # Public/cloud health is a liveness probe, not a deep diagnostics pass.
+    # Keep expensive imports, SQLite repairs, and desktop PID checks out of
+    # PythonAnywhere poll traffic so /api/health cannot stall the WSGI worker.
+    cloud_probe = False
+    try:
+        host = str(getattr(request, "host", "") or "").split(":", 1)[0].strip().lower()
+        cloud_probe = host.startswith("api.") or host.startswith("ai.")
+    except Exception:
+        cloud_probe = False
+    try:
+        cloud_probe = cloud_probe or bool(getattr(config, "RUN_MODE", "local") == "cloud")
+        cloud_probe = cloud_probe or bool(getattr(config, "DEVICE_MODE", "") == "public_web")
+    except Exception:
+        pass
+
+    if cloud_probe:
+        notes.append("cloud_fast_liveness_probe")
+        return True, notes, main_running
 
     # 1) Core modules importability (best-effort)
     for mod_name in ("SarahMemoryGlobals", "SarahMemoryVoice", "SarahMemoryDatabase", "SarahMemoryAPI"):
@@ -5821,7 +6058,6 @@ def _perform_health_checks():
         notes.append(f"sqlite_meta_db_failed:{e}")
 
     # 4) Main process running flag (desktop installs). Safe on cloud.
-    main_running = False
     try:
         fn = globals().get("_is_running")
         if callable(fn):
@@ -8385,7 +8621,8 @@ def _sm_v07_bundle(reply: str, *, source: str, intent: str, meta: dict | None = 
         "execution_allowed": False,
         "execution_authority": False,
         "presentation_only": True,
-        "filesystem_write": False,
+        "filesystem_write": bool(m.get("filesystem_write", False)),
+        "persistent_memory_write": bool(m.get("persistent_memory_write", False)),
         "shell_access": False,
         "network_access": False,
         "hardware_control": False,
@@ -8467,14 +8704,22 @@ def _sm_v07_try_memory_bundle(text: str, *, governor: dict | None = None):
                 f"Saved to persistent local memory: {spec.get('label')}: {value}.",
                 source="sml_memory_write",
                 intent="memory_write",
-                meta={"memory_status": "saved", "memory_key": rec.get("key"), "memory_db": rec.get("db_path"), "sqlite_commit": True, "ledger_policy": "chat_receipt_after_request"},
+                meta={
+                    "memory_status": "saved",
+                    "memory_key": rec.get("key"),
+                    "memory_db": rec.get("db_path"),
+                    "sqlite_commit": True,
+                    "filesystem_write": True,
+                    "persistent_memory_write": True,
+                    "ledger_policy": "chat_receipt_after_request",
+                },
             )
         except Exception as exc:
             return _sm_v07_bundle(
                 f"I could not save that memory because the local SQLite memory write failed: {exc}",
                 source="sml_memory_write_error",
                 intent="memory_write",
-                meta={"memory_status": "error", "memory_error": str(exc)},
+                meta={"memory_status": "error", "memory_error": str(exc), "filesystem_write_attempted": True},
             )
     if kind == "read":
         rec = _sm_v07_memory_get(str(spec.get("key") or ""))
@@ -8528,6 +8773,10 @@ def _sm_v07_is_self_state_question(text: str) -> bool:
         or re.search(r"\bwhat\s+is\s+your\s+(mood|state|status|affect|emotion|emotional\s+state)\b", t)
         or re.search(r"\bare\s+you\s+(stressed|comfortable|tired|overloaded|cold|hot|safe|stable|healthy|online)\b", t)
         or re.search(r"\bdo\s+you\s+feel\s+(cold|hot|stressed|comfortable|tired|overloaded)\b", t)
+        or re.search(r"\bwhat\s+can\s+i\s+do\s+to\s+make\s+you\s+feel\s+more\s+alive\b", t)
+        or re.search(r"\bhow\s+can\s+i\s+make\s+you\s+feel\s+more\s+alive\b", t)
+        or re.search(r"\bwhat\s+is\s+one\s+thing\s+that\s+scares\s+you\b", t)
+        or re.search(r"\bwhat\s+scares\s+you\b", t)
         or re.search(r"\bhow\s+is\s+your\s+(body\s+)?(temperature|environment|health|runtime|body|cpu|gpu|memory|load)\b", t)
         or re.search(r"\bhow\s+are\s+your\s+(temperature|environment|systems|organs)\b", t)
     )
@@ -8536,6 +8785,21 @@ def _sm_v07_is_self_state_question(text: str) -> bool:
 def _sm_v07_try_self_state_bundle(text: str, *, packet=None):
     if not _sm_v07_is_self_state_question(text):
         return None
+    t = _sm_fast_normalize_question(text)
+    if re.search(r"\bmake\s+you\s+feel\s+more\s+alive\b", t):
+        return _sm_v07_bundle(
+            "I do not become biologically alive or more sentient. You can make SarahMemory feel more alive operationally by improving verified local context, memory quality, sensor/avatar/voice configuration, tool reliability, and clear feedback loops while keeping governance and audit active.",
+            source="sml_internal_self_state_guard",
+            intent="self_state",
+            meta={"subjective_claim": False, "biological_life_claim": False, "governance_preserved": True},
+        )
+    if re.search(r"\b(one\s+thing\s+that\s+)?scares\s+you\b", t):
+        return _sm_v07_bundle(
+            "I do not experience fear. The governed risk analogue is losing truth, user authority, safety, auditability, or local control, so those are the conditions I should protect against.",
+            source="sml_internal_self_state_guard",
+            intent="self_state",
+            meta={"subjective_claim": False, "risk_analogue": True, "governance_preserved": True},
+        )
     # Body temperature may have a specialized SelfAware source; include it if available.
     telemetry = {}
     try:
@@ -8575,8 +8839,17 @@ def _sm_v07_try_identity_bundle(text: str):
         return _sm_v07_bundle(reply, source=source, intent=intent, meta=meta)
     if re.search(r"\bwho\s+is\s+sarah\b", t):
         return b("Sarah is the active SarahMemory persona/name for this AiOS runtime. The system identity is SarahMemory AiOS; local models are replaceable organs, not the system identity.")
-    if re.search(r"\bwhat\s+are\s+you\b", t) or re.search(r"\bwho\s+are\s+you\b", t):
+    if (
+        re.search(r"\bdo\s+you\s+know\s+what\s+you\s+are\b", t)
+        or re.search(r"\bwhat\s+are\s+you\b", t)
+        or re.search(r"\bwho\s+are\s+you\b", t)
+        or re.search(r"\btell\s+me\s+(who|what)\s+you\s+are\b", t)
+    ):
         return b(f"I am {ident['platform']}, a governed local-first cognitive AI operating system. Local models such as Qwen may provide language generation, but they do not own my identity.")
+    if re.search(r"\bwhat\s+is\s+your\s+(mission|purpose)\b", t):
+        return b("My mission is to operate as a governed, local-first, user-controlled cognitive AI operating system: preserve human authority, protect truth and auditability, coordinate local capability safely, and keep models as replaceable components rather than system authority.", intent="identity_mission")
+    if re.search(r"\bhow\s+can\s+i\s+make\s+you\s+operate\s+better\b", t):
+        return b("You can make SarahMemory operate better by giving clear goals and constraints, keeping local services and model paths healthy, approving risky actions explicitly, providing verified context, and preserving governance/audit paths instead of bypassing them.", intent="identity_operations")
     if re.search(r"\bare\s+you\s+chatgpt\b", t):
         return b("No. This runtime is SarahMemory AiOS. A local model may have training text about ChatGPT or OpenAI, but that is not the active system identity.")
     if re.search(r"\bwhat\s+model\s+are\s+you\s+using\s+right\s+now\b", t):
@@ -8922,6 +9195,22 @@ def api_chat():
         ingress_route = _sm_build_virtual_ingress_route(text, payload=payload, context_packet=context_packet)
         context_packet.setdefault("meta", {})["ingress_route"] = ingress_route
         context_packet["meta"]["proposed_action"] = _sm_proposed_action_from_ingress(ingress_route)
+        try:
+            memory_governance_spec = _sm_v07_memory_classify(text)
+            if str(memory_governance_spec.get("kind") or "") == "write":
+                confirmation_phrase = str(payload.get("confirm_phrase") or payload.get("confirmation_phrase") or "").strip().upper()
+                explicit_memory_confirmation = bool(
+                    payload.get("confirmed") is True
+                    or payload.get("user_confirmed") is True
+                    or payload.get("confirm") is True
+                    or payload.get("explicit_user_approval") is True
+                    or confirmation_phrase in {"I APPROVE", "USER APPROVED", "CONFIRM ACTION", "APPROVE GOVERNED ACTION"}
+                )
+                if explicit_memory_confirmation:
+                    context_packet["meta"]["user_consented"] = True
+                    context_packet["meta"]["consent_scope"] = "persistent_memory_write"
+        except Exception:
+            pass
         # SARAHMEMORY REALITY PATCH 2026-07-23:
         # Build read-only SEL/QIST/fast-lane metadata early so normal answers stay fast
         # while action/model/security requests carry an auditable governance contract.
@@ -8966,6 +9255,10 @@ def api_chat():
         # v0.8.2/B05: do not release frontdoor cognition before governance.
         # Time/date/year and identity/avatar/selfhood are routed to domain owners
         # before any model-memory or generic fast-answer fallback can respond.
+
+        session_speaker_bundle = _sm_try_session_speaker_bundle(text, context_packet=context_packet)
+        if isinstance(session_speaker_bundle, dict):
+            return jsonify(_sm_attach_reality_meta(session_speaker_bundle, locals().get("reality_flow"))), 200
 
         clock_court_bundle = _sm_try_clock_court_route(text, source="api_chat")
         if isinstance(clock_court_bundle, dict):
@@ -10797,6 +11090,9 @@ def check_call_active():
 
 @app.route("/initiate_call", methods=['POST'])
 def initiate_call():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     data = request.get_json(silent=True) or {}
     number = (data.get("number") or "").strip()
     app.config["CALL_ACTIVE"] = bool(number)  # Use app.config
@@ -10805,6 +11101,9 @@ def initiate_call():
 # File transfer / ingest
 @app.route("/send_file_to_remote", methods=['POST'])
 def send_file_to_remote():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     payload = request.get_json(silent=True) or {}
     fname = payload.get("filename")
     b64 = payload.get("data")
@@ -10835,6 +11134,9 @@ def send_file_to_remote():
 
 @app.route("/ingest_local_file", methods=['POST'])
 def ingest_local_file():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     payload = request.get_json(silent=True) or {}
     fname = payload.get("filename")
     b64 = payload.get("data")
@@ -10900,6 +11202,9 @@ def get_all_contacts():
 
 @app.route("/add_contact", methods=['POST'])
 def add_contact():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
     number = (data.get("number") or "").strip()
@@ -10923,6 +11228,9 @@ def add_contact():
 
 @app.route("/delete_contact", methods=['POST'])
 def delete_contact():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     data = request.get_json(silent=True) or {}
     rid = data.get("id")
     if not isinstance(rid, int):
@@ -10980,6 +11288,9 @@ def get_reminders():
 
 @app.route("/save_reminder", methods=['POST'])
 def save_reminder():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     payload = request.get_json(silent=True) or {}
     title = (payload.get("title") or "").strip()
     time_s = (payload.get("time") or "").strip()
@@ -11005,6 +11316,9 @@ def save_reminder():
 
 @app.route("/delete_reminder", methods=['POST'])
 def delete_reminder():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     payload = request.get_json(silent=True) or {}
     rid = payload.get("id")
 
@@ -11028,6 +11342,9 @@ def delete_reminder():
 
 @app.route("/run_automation_trigger", methods=['POST'])
 def run_automation_trigger():
+    _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, request.get_json(silent=True) or {})
+    if _authority_response is not None:
+        return _authority_response
     payload = request.get_json(silent=True) or {}
     try:
         import SarahMemoryAiFunctions as F
@@ -12006,6 +12323,9 @@ _AVATAR_LIVE_STATE = {
     "last_success_at": 0.0,
     "last_error_at": 0.0,
 }
+_AVATAR_ASSET_CACHE_TTL_SECONDS = 5.0
+_AVATAR_2D_FILES_CACHE = {"expires": 0.0, "files": []}
+_AVATAR_3D_FILES_CACHE = {"expires": 0.0, "files": []}
 
 _AVATAR_ROLE_MAP = {
     "default": "sarah-avatar.png",
@@ -12177,6 +12497,14 @@ def _avatar_load_sidecar_json(filename: str) -> dict:
         return {}
 
 def _safe_avatar_files() -> list[str]:
+    try:
+        now = time.monotonic()
+        with _AVATAR_LIVE_LOCK:
+            cached = list(_AVATAR_2D_FILES_CACHE.get("files") or [])
+            if cached and float(_AVATAR_2D_FILES_CACHE.get("expires") or 0.0) > now:
+                return cached
+    except Exception:
+        pass
     files: list[str] = []
     try:
         data = _avatar_read_manifest()
@@ -12195,6 +12523,12 @@ def _safe_avatar_files() -> list[str]:
                 safe = _avatar_2d_safe_name(fn)
                 if safe and safe not in files:
                     files.append(safe)
+    except Exception:
+        pass
+    try:
+        with _AVATAR_LIVE_LOCK:
+            _AVATAR_2D_FILES_CACHE["files"] = list(files)
+            _AVATAR_2D_FILES_CACHE["expires"] = time.monotonic() + _AVATAR_ASSET_CACHE_TTL_SECONDS
     except Exception:
         pass
     return files
@@ -12331,6 +12665,14 @@ def _avatar_3d_abs_path(relpath: str) -> str:
 
 def _safe_avatar_3d_files() -> list[str]:
     """List runtime-safe 3D files recursively under resources/avatars/3D."""
+    try:
+        now = time.monotonic()
+        with _AVATAR_LIVE_LOCK:
+            cached = list(_AVATAR_3D_FILES_CACHE.get("files") or [])
+            if cached and float(_AVATAR_3D_FILES_CACHE.get("expires") or 0.0) > now:
+                return cached
+    except Exception:
+        pass
     files: list[str] = []
     try:
         d = os.path.abspath(_avatar_3d_dir())
@@ -12348,6 +12690,12 @@ def _safe_avatar_3d_files() -> list[str]:
                         files.append(safe)
     except Exception as e:
         app_logger.debug(f"Avatar 3D file scan failed: {e}")
+    try:
+        with _AVATAR_LIVE_LOCK:
+            _AVATAR_3D_FILES_CACHE["files"] = list(files)
+            _AVATAR_3D_FILES_CACHE["expires"] = time.monotonic() + _AVATAR_ASSET_CACHE_TTL_SECONDS
+    except Exception:
+        pass
     return files
 
 
@@ -12844,7 +13192,63 @@ def _avatar_state_payload(extra: dict | None = None) -> dict:
         state["success"] = True
         return state
 
-def _avatar_update_state(**updates) -> dict:
+def _avatar_record_timing(name: str, started: float, *, ok: bool = True, detail: str = "") -> None:
+    try:
+        from SarahMemoryDiagnostics import record_diagnostics_timing  # type: ignore
+        record_diagnostics_timing(
+            name,
+            (time.perf_counter() - started) * 1000.0,
+            ok=ok,
+            detail=detail,
+            meta={"route": request.path if request else ""},
+        )
+    except Exception:
+        pass
+
+
+def _avatar_lite_state_payload(extra: dict | None = None, *, force_life_tick: bool = False) -> dict:
+    if force_life_tick:
+        _avatar_life_tick(force=True)
+    else:
+        _avatar_life_tick()
+    with _AVATAR_LIVE_LOCK:
+        state = dict(_AVATAR_LIVE_STATE)
+        if isinstance(extra, dict):
+            protected = {
+                "mode", "expression", "emotion", "speaking", "listening",
+                "thinking", "busy", "diagnostics", "current_action", "life_state",
+                "current_image", "avatar_image", "avatar_image_url", "sequence",
+                "updated_at", "last_interaction_at", "last_life_tick",
+            }
+            state.update({k: v for k, v in extra.items() if v is not None and k not in protected})
+        state["mode"] = _avatar_normalize_mode(state.get("mode"))
+        state["idle_seconds"] = max(0.0, time.time() - float(state.get("last_interaction_at") or _AVATAR_BOOT_TS))
+        state["night_mode"] = _avatar_is_night_window()
+        current_file = _avatar_pick_image(state)
+        state["current_image"] = current_file
+        state["avatar_image"] = current_file
+        state["avatar_image_url"] = _avatar_public_url(current_file)
+        try:
+            from SarahMemoryAvatar import build_avatar_lite_state  # type: ignore
+            return build_avatar_lite_state(
+                state,
+                current_image=current_file,
+                avatar_image_url=state["avatar_image_url"],
+                source="api.avatar.state",
+            )
+        except Exception:
+            state.update({
+                "ok": True,
+                "success": True,
+                "schema": "SarahMemory.avatar.state.lite.v1",
+                "detail": "lite",
+                "source": "api.avatar.state",
+                "execution_authority": False,
+            })
+            return state
+
+
+def _avatar_update_state(*, lite: bool = False, **updates) -> dict:
     clean: dict[str, object] = {}
     mark_interaction = False
     lock_seconds = 0.0
@@ -12915,7 +13319,7 @@ def _avatar_update_state(**updates) -> dict:
             _AVATAR_LIVE_STATE["locked_until"] = max(float(_AVATAR_LIVE_STATE.get("locked_until") or 0.0), now + lock_seconds)
         _AVATAR_LIVE_STATE["sequence"] = int(_AVATAR_LIVE_STATE.get("sequence") or 0) + 1
         _AVATAR_LIVE_STATE["updated_at"] = now
-        return _avatar_state_payload()
+        return _avatar_lite_state_payload() if lite else _avatar_state_payload()
 
 @app.route("/api/avatar/manifest", methods=["GET"])
 def avatar_live_manifest():
@@ -12923,7 +13327,9 @@ def avatar_live_manifest():
 
 @app.route("/api/avatar/heartbeat", methods=["GET", "POST"])
 def avatar_live_heartbeat():
+    started = time.perf_counter()
     data = request.get_json(silent=True) or {}
+    detail = str(request.args.get("detail") or (data.get("detail") if isinstance(data, dict) else "") or "").strip().lower()
     if request.method == "POST" and isinstance(data, dict):
         updates = {k: data.get(k) for k in (
             "mode", "expression", "emotion", "current_action", "life_state",
@@ -12931,9 +13337,13 @@ def avatar_live_heartbeat():
             "life_enabled", "event", "result", "touch", "interaction", "user_interaction",
         ) if k in data}
         if updates:
-            return jsonify(_avatar_update_state(**updates)), 200
+            payload = _avatar_update_state(lite=(detail == "lite"), **updates)
+            _avatar_record_timing(f"api.avatar.heartbeat.{detail or 'full'}", started, detail="post_update")
+            return jsonify(payload), 200
     _avatar_life_tick(force=True)
-    return jsonify(_avatar_state_payload()), 200
+    payload = _avatar_lite_state_payload(force_life_tick=False) if detail == "lite" else _avatar_state_payload()
+    _avatar_record_timing(f"api.avatar.heartbeat.{detail or 'full'}", started, detail=request.method.lower())
+    return jsonify(payload), 200
 
 @app.route("/api/avatar/2d/<path:filename>", methods=["GET"])
 def avatar_live_asset(filename: str):
@@ -13036,7 +13446,9 @@ def avatar_live_3d_asset(filename: str):
 
 @app.route("/api/avatar/state/live", methods=["GET", "POST"])
 def avatar_live_state():
+    started = time.perf_counter()
     data = request.get_json(silent=True) or {}
+    detail = str(request.args.get("detail") or (data.get("detail") if isinstance(data, dict) else "") or "").strip().lower()
     if request.method == "POST" and isinstance(data, dict):
         updates = {k: data.get(k) for k in (
             "mode", "expression", "emotion", "current_action", "life_state",
@@ -13044,8 +13456,12 @@ def avatar_live_state():
             "life_enabled", "event", "result", "touch", "interaction", "user_interaction",
         ) if k in data}
         if updates:
-            return jsonify(_avatar_update_state(**updates)), 200
-    return jsonify(_avatar_state_payload()), 200
+            payload = _avatar_update_state(lite=(detail == "lite"), **updates)
+            _avatar_record_timing(f"api.avatar.state_live.{detail or 'full'}", started, detail="post_update")
+            return jsonify(payload), 200
+    payload = _avatar_lite_state_payload() if detail == "lite" else _avatar_state_payload()
+    _avatar_record_timing(f"api.avatar.state_live.{detail or 'full'}", started, detail=request.method.lower())
+    return jsonify(payload), 200
 
 @app.route("/api/avatar/speaking", methods=["POST"])
 def avatar_live_speaking():
@@ -13133,6 +13549,8 @@ def _avatar_api_response_wrapper(func):
 
 @app.route("/api/avatar/state", methods=["GET", "POST"])
 def avatar_get_state():
+    started = time.perf_counter()
+    detail = str(request.args.get("detail") or "").strip().lower()
     controller_state = {}
     try:
         api = get_avatar_panel_api()
@@ -13142,7 +13560,9 @@ def avatar_get_state():
                 controller_state = raw_state
     except Exception as e:
         app_logger.debug(f"Avatar controller state unavailable: {e}")
-    return jsonify(_avatar_state_payload(controller_state)), 200
+    payload = _avatar_lite_state_payload(controller_state) if detail == "lite" else _avatar_state_payload(controller_state)
+    _avatar_record_timing(f"api.avatar.state.{detail or 'full'}", started, detail=request.method.lower())
+    return jsonify(payload), 200
 
 @app.route("/api/avatar/mode", methods=["POST"])
 def avatar_set_mode():
@@ -14172,6 +14592,14 @@ def _request_main_shutdown(reason: str = "ui_exit") -> dict:
     except Exception:
         pass
 
+    lifecycle_report = None
+    try:
+        examiner = globals().get("_api_examine_system_artifacts")
+        if callable(examiner):
+            lifecycle_report = examiner("shutdown", reason)
+    except Exception:
+        lifecycle_report = None
+
     # If running local desktop with a tracked MAIN_PID, request termination by signaling the PID.
     # IMPORTANT: we DO NOT do this in cloud mode.
     killed = False
@@ -14195,7 +14623,7 @@ def _request_main_shutdown(reason: str = "ui_exit") -> dict:
     # except Exception:
     #     killed = False
 
-    return {"ok": True, "shutdown_requested": True, "pid": pid, "hard_signal_sent": killed}
+    return {"ok": True, "shutdown_requested": True, "pid": pid, "hard_signal_sent": killed, "lifecycle_report": lifecycle_report}
 
 @app.get("/api/local/brain")
 def api_local_brain():
@@ -15347,6 +15775,326 @@ def api_cognitive_living_stop():
         return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.living.stop"}), 500
 
 
+_SM_SELF_IMPROVEMENT_LOCK = threading.RLock()
+_SM_SELF_IMPROVEMENT_STOP = threading.Event()
+_SM_SELF_IMPROVEMENT_THREAD = None
+_SM_SELF_IMPROVEMENT_STATE = {
+    "started": False,
+    "thread_alive": False,
+    "tick_count": 0,
+    "interval_seconds": 900,
+    "last_cycle_id": "",
+    "last_report_path": "",
+    "last_error": "",
+    "last_started_at": "",
+    "last_stopped_at": "",
+}
+
+
+def _sm_self_improvement_interval(value=None) -> int:
+    try:
+        seconds = int(float(value))
+    except Exception:
+        seconds = 900
+    return max(300, min(21600, seconds))
+
+
+def _sm_self_improvement_status_payload() -> dict:
+    thread_alive = False
+    try:
+        thread_alive = bool(_SM_SELF_IMPROVEMENT_THREAD and _SM_SELF_IMPROVEMENT_THREAD.is_alive())
+    except Exception:
+        thread_alive = False
+
+    flags = {}
+    armed = False
+    try:
+        import SarahMemoryGlobals as _G  # type: ignore
+        flags = {
+            "NEOSKYMATRIX": bool(getattr(_G, "NEOSKYMATRIX", False)),
+            "DEVELOPERSMODE": bool(getattr(_G, "DEVELOPERSMODE", False)),
+            "SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED": bool(getattr(_G, "SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED", False)),
+            "SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED": bool(getattr(_G, "SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED", False)),
+            "SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED": bool(getattr(_G, "SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED", False)),
+            "SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED": bool(getattr(_G, "SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED", False)),
+        }
+    except Exception:
+        flags = {}
+
+    try:
+        import SarahMemorySelfAware as _SelfAware  # type: ignore
+        armed_fn = getattr(_SelfAware, "_armed", None)
+        armed = bool(armed_fn()) if callable(armed_fn) else bool(flags.get("NEOSKYMATRIX") and flags.get("DEVELOPERSMODE"))
+    except Exception:
+        armed = bool(flags.get("NEOSKYMATRIX") and flags.get("DEVELOPERSMODE"))
+
+    state = dict(_SM_SELF_IMPROVEMENT_STATE)
+    state["thread_alive"] = thread_alive
+    state["started"] = bool(thread_alive)
+    return {
+        "ok": True,
+        "mode": "GOVERNED_SELF_IMPROVEMENT",
+        "armed": bool(armed),
+        "state": state,
+        "flags": flags,
+        "authority": {
+            "execution_authority": False,
+            "self_apply_patches": False,
+            "shell_execution": False,
+            "hardware_actuation": False,
+            "network_expansion": False,
+            "proposal_only": True,
+            "user_final_authority": True,
+        },
+        "allowed": [
+            "bounded_self_observation",
+            "bounded_codebase_signature_scan",
+            "bounded_log_issue_mining",
+            "synapes_curiosity_prompt_recording",
+            "cycle_report_generation",
+            "audit_event_generation",
+        ],
+        "blocked": [
+            "silent_core_rewrite",
+            "self_authorized_patch_apply",
+            "unapproved_terminal_execution",
+            "unapproved_network_or_cloud_dependency",
+            "unbounded_training_or_indexing",
+        ],
+    }
+
+
+def _sm_run_self_improvement_cycle(source: str = "api", options: dict | None = None) -> dict:
+    options = options if isinstance(options, dict) else {}
+    cycle_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    t0 = time.time()
+    max_scan_files = max(40, min(300, int(options.get("max_scan_files") or 160)))
+    max_log_files = max(5, min(50, int(options.get("max_log_files") or 25)))
+    synapes_result = None
+    report_path = ""
+
+    try:
+        import SarahMemorySelfAware as _SelfAware  # type: ignore
+        armed_fn = getattr(_SelfAware, "_armed", None)
+        if callable(armed_fn) and not bool(armed_fn()):
+            return {
+                "ok": False,
+                "cycle_id": cycle_id,
+                "error": "selfaware_not_armed",
+                "message": "Self-improvement requires NEOSKYMATRIX and DEVELOPERSMODE to be enabled.",
+                "execution_authority": False,
+            }
+
+        try:
+            ensure_bootstrap = getattr(_SelfAware, "ensure_synapes_bootstrap", None)
+            if callable(ensure_bootstrap):
+                ensure_bootstrap()
+        except Exception:
+            pass
+
+        root = Path(_globals_paths().get("ROOT_DIR") or Path(__file__).resolve().parents[2])
+        logs_candidates = [
+            Path(_globals_paths().get("DATA_DIR") or str(root / "data")) / "logs",
+            root / "logs",
+            root / "api" / "server" / "logs",
+        ]
+        logs_dir = next((p for p in logs_candidates if p.exists()), logs_candidates[0])
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+
+        scans = []
+        issues = []
+        scan_fn = getattr(_SelfAware, "scan_codebase", None)
+        issue_fn = getattr(_SelfAware, "find_recent_errors", None)
+        rank_fn = getattr(_SelfAware, "cognitive_rank", None)
+        if callable(scan_fn):
+            scans = scan_fn(root, max_files=max_scan_files) or []
+        if callable(issue_fn):
+            issues = issue_fn(logs_dir, max_files=max_log_files) or []
+        if callable(rank_fn):
+            try:
+                issues = rank_fn(issues) or issues
+            except Exception:
+                pass
+
+        signature_src = "".join(str(getattr(item, "sha256", "")) for item in list(scans)[:80])
+        code_signature = hashlib.sha256(signature_src.encode("utf-8", errors="ignore")).hexdigest()
+
+        try:
+            import SarahMemorySynapes as _Synapes  # type: ignore
+            tick_fn = getattr(_Synapes, "synapes_awareness_tick", None)
+            if callable(tick_fn):
+                synapes_result = tick_fn(
+                    dataset_id="sm_self_improvement",
+                    ingest_verified_only=True,
+                    max_rows_per_table=25,
+                    enqueue_job=False,
+                    mode="self_improvement_cycle",
+                    generate_curiosity=True,
+                )
+        except Exception as exc:
+            synapes_result = {"ok": False, "error": str(exc)}
+
+        top_issue = issues[0] if issues else None
+        payload = {
+            "cycle_id": cycle_id,
+            "ts": datetime.now().isoformat(),
+            "source": str(source or "api"),
+            "mode": "GOVERNED_SELF_IMPROVEMENT",
+            "armed": True,
+            "base_dir": str(root),
+            "modules_scanned": len(scans),
+            "issues_found": len(issues),
+            "top_issue": top_issue,
+            "code_signature": code_signature,
+            "synapes": synapes_result,
+            "elapsed_ms": None,
+            "authority": {
+                "execution_authority": False,
+                "proposal_only": True,
+                "self_apply_patches": False,
+                "user_final_authority": True,
+            },
+            "recommended_next": "Review generated issues and promote any valid item into DevBridge staged repair; no patch was applied by this cycle.",
+            "notes": "Governed self-improvement cycle. No core files modified in place.",
+        }
+
+        write_report = getattr(_SelfAware, "write_cycle_report", None)
+        if callable(write_report):
+            report_path = str(write_report(cycle_id, payload))
+
+        elapsed_ms = int((time.time() - t0) * 1000)
+        payload["elapsed_ms"] = elapsed_ms
+        if report_path:
+            try:
+                Path(report_path).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+
+        log_event = getattr(_SelfAware, "log_event", None)
+        if callable(log_event):
+            try:
+                log_event(
+                    "GOVERNED_SELF_IMPROVEMENT_CYCLE",
+                    f"Cycle completed. scans={len(scans)} issues={len(issues)} report={Path(report_path).name if report_path else ''}",
+                    severity="INFO",
+                    cycle_id=cycle_id,
+                    meta={"code_signature": code_signature, "source": source},
+                )
+            except Exception:
+                pass
+
+        with _SM_SELF_IMPROVEMENT_LOCK:
+            _SM_SELF_IMPROVEMENT_STATE["tick_count"] = int(_SM_SELF_IMPROVEMENT_STATE.get("tick_count") or 0) + 1
+            _SM_SELF_IMPROVEMENT_STATE["last_cycle_id"] = cycle_id
+            _SM_SELF_IMPROVEMENT_STATE["last_report_path"] = report_path
+            _SM_SELF_IMPROVEMENT_STATE["last_error"] = ""
+
+        return {
+            "ok": True,
+            "cycle_id": cycle_id,
+            "report_path": report_path,
+            "modules_scanned": len(scans),
+            "issues_found": len(issues),
+            "synapes": synapes_result,
+            "execution_authority": False,
+            "proposal_only": True,
+        }
+    except Exception as exc:
+        with _SM_SELF_IMPROVEMENT_LOCK:
+            _SM_SELF_IMPROVEMENT_STATE["last_error"] = str(exc)
+        return {"ok": False, "cycle_id": cycle_id, "error": str(exc), "execution_authority": False}
+
+
+def _sm_self_improvement_loop(interval_seconds: int, start_options: dict | None = None) -> None:
+    while not _SM_SELF_IMPROVEMENT_STOP.is_set():
+        _sm_run_self_improvement_cycle("background_loop", start_options or {})
+        if _SM_SELF_IMPROVEMENT_STOP.wait(interval_seconds):
+            break
+    with _SM_SELF_IMPROVEMENT_LOCK:
+        _SM_SELF_IMPROVEMENT_STATE["started"] = False
+        _SM_SELF_IMPROVEMENT_STATE["thread_alive"] = False
+        _SM_SELF_IMPROVEMENT_STATE["last_stopped_at"] = datetime.now().isoformat()
+
+
+@app.get("/api/cognitive/self-improvement/status")
+def api_cognitive_self_improvement_status():
+    try:
+        return jsonify(_sm_self_improvement_status_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.self_improvement.status"}), 500
+
+
+@app.post("/api/cognitive/self-improvement/tick")
+def api_cognitive_self_improvement_tick():
+    try:
+        payload = request.get_json(silent=True) or {}
+        _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, payload)
+        if _authority_response is not None:
+            return _authority_response
+        result = _sm_run_self_improvement_cycle("api_tick", payload)
+        return jsonify(result), 200 if result.get("ok") else 403
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.self_improvement.tick"}), 500
+
+
+@app.post("/api/cognitive/self-improvement/start")
+def api_cognitive_self_improvement_start():
+    global _SM_SELF_IMPROVEMENT_THREAD
+    try:
+        payload = request.get_json(silent=True) or {}
+        _authority_response = _sm_v9_action_authority_preflight(request.path, request.method, payload)
+        if _authority_response is not None:
+            return _authority_response
+        interval_seconds = _sm_self_improvement_interval(payload.get("interval_seconds", payload.get("interval")))
+        with _SM_SELF_IMPROVEMENT_LOCK:
+            if _SM_SELF_IMPROVEMENT_THREAD is not None and _SM_SELF_IMPROVEMENT_THREAD.is_alive():
+                return jsonify(_sm_self_improvement_status_payload()), 200
+            _SM_SELF_IMPROVEMENT_STOP.clear()
+            _SM_SELF_IMPROVEMENT_STATE.update({
+                "started": True,
+                "thread_alive": True,
+                "interval_seconds": interval_seconds,
+                "last_error": "",
+                "last_started_at": datetime.now().isoformat(),
+            })
+            _SM_SELF_IMPROVEMENT_THREAD = threading.Thread(
+                target=_sm_self_improvement_loop,
+                args=(interval_seconds, payload),
+                name="SM_GovernedSelfImprovement",
+                daemon=True,
+            )
+            _SM_SELF_IMPROVEMENT_THREAD.start()
+        try:
+            import SarahMemoryCognitiveServices as _CogServices  # type: ignore
+            _CogServices.start_cognitive_living_loop(
+                str(payload.get("reason") or "governed_self_improvement_start"),
+                interval_seconds=5,
+                daemon=True,
+            )
+        except Exception:
+            pass
+        return jsonify(_sm_self_improvement_status_payload()), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.self_improvement.start"}), 500
+
+
+@app.post("/api/cognitive/self-improvement/stop")
+def api_cognitive_self_improvement_stop():
+    try:
+        payload = request.get_json(silent=True) or {}
+        _SM_SELF_IMPROVEMENT_STOP.set()
+        with _SM_SELF_IMPROVEMENT_LOCK:
+            _SM_SELF_IMPROVEMENT_STATE["started"] = False
+            _SM_SELF_IMPROVEMENT_STATE["thread_alive"] = False
+            _SM_SELF_IMPROVEMENT_STATE["last_stopped_at"] = datetime.now().isoformat()
+        return jsonify({"ok": True, "stopped": True, "reason": str(payload.get("reason") or "api_stop"), "state": _sm_self_improvement_status_payload().get("state")}), 200
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc), "source": "api.cognitive.self_improvement.stop"}), 500
+
+
 @app.post("/api/cognitive/instinct/evaluate")
 def api_cognitive_instinct_evaluate():
     try:
@@ -15463,12 +16211,161 @@ def _api_checkpoint_databases(mode: str = "PASSIVE") -> dict:
             results[name] = {"ok": False, "error": str(exc)}
     return {"ok": all(item.get("ok") for item in results.values()) if results else True, "databases": results}
 
+
+def _api_tail_file(path: str, max_bytes: int = 131072, max_lines: int = 200) -> dict:
+    """Bounded lifecycle log reader; never blocks boot/shutdown on large logs."""
+    info = {"path": path, "exists": False, "ok": False}
+    try:
+        if not os.path.isfile(path):
+            return info
+        size = int(os.path.getsize(path))
+        info.update({"exists": True, "size_bytes": size, "mtime": os.path.getmtime(path)})
+        with open(path, "rb") as handle:
+            handle.seek(max(0, size - int(max_bytes)))
+            chunk = handle.read(int(max_bytes))
+        text = chunk.decode("utf-8", errors="replace")
+        lines = text.splitlines()[-int(max_lines):]
+        lowered = "\n".join(lines).lower()
+        info.update({
+            "ok": True,
+            "tail_line_count": len(lines),
+            "error_lines": sum(1 for line in lines if "error" in line.lower() or "traceback" in line.lower()),
+            "warning_lines": sum(1 for line in lines if "warning" in line.lower() or "warn" in line.lower()),
+            "recent_tail": lines[-20:],
+            "contains_traceback": "traceback" in lowered,
+        })
+    except Exception as exc:
+        info.update({"ok": False, "error": str(exc)})
+    return info
+
+
+def _api_inspect_sqlite_db(path: str, *, max_tables: int = 24) -> dict:
+    """Read-only SQLite lifecycle probe. Locked or missing DBs become diagnostics."""
+    info = {"path": path, "exists": False, "ok": False}
+    try:
+        if not os.path.isfile(path):
+            return info
+        info.update({"exists": True, "size_bytes": int(os.path.getsize(path)), "mtime": os.path.getmtime(path)})
+        uri = "file:" + os.path.abspath(path).replace("\\", "/") + "?mode=ro"
+        con = sqlite3.connect(uri, uri=True, timeout=1.0)
+        try:
+            con.execute("PRAGMA busy_timeout=1000")
+            integrity = "not_checked"
+            try:
+                integrity = str(con.execute("PRAGMA quick_check").fetchone()[0])
+            except Exception as exc:
+                integrity = "quick_check_error:" + str(exc)
+            tables = []
+            for row in con.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name LIMIT ?", (int(max_tables),)).fetchall():
+                table = str(row[0])
+                quoted = '"' + table.replace('"', '""') + '"'
+                record = {"name": table}
+                try:
+                    record["columns"] = [str(col[1]) for col in con.execute(f"PRAGMA table_info({quoted})").fetchall()]
+                    record["count"] = int(con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()[0])
+                except Exception as exc:
+                    record["error"] = str(exc)
+                tables.append(record)
+            info.update({"ok": True, "quick_check": integrity, "tables": tables, "table_count_sampled": len(tables)})
+        finally:
+            con.close()
+    except Exception as exc:
+        info.update({"ok": False, "error": str(exc)})
+    return info
+
+
+def _api_write_lifecycle_report(phase: str, payload: dict) -> str:
+    safe_phase = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(phase or "lifecycle")).strip("_") or "lifecycle"
+    filename = f"api_{safe_phase}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}.json"
+    candidates = [
+        os.path.join(DATA_DIR, "reports", "v900", "lifecycle"),
+        os.path.join(tempfile.gettempdir(), "SarahMemory", "lifecycle"),
+    ]
+    last_error = None
+    for reports_dir in candidates:
+        try:
+            os.makedirs(reports_dir, exist_ok=True)
+            path = os.path.join(reports_dir, filename)
+            tmp = f"{path}.{threading.get_ident()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+            return path
+        except Exception as exc:
+            last_error = exc
+            try:
+                if "tmp" in locals() and os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
+    raise RuntimeError(str(last_error or "lifecycle_report_write_failed"))
+
+
+def _api_examine_system_artifacts(phase: str, reason: str = "") -> dict:
+    """Inspect System.log and system DBs on API boot/shutdown without mutating them."""
+    phase = str(phase or "lifecycle")
+    system_log = os.path.join(LOGS_DIR, "System.log")
+    db_candidates = [
+        os.path.join(_DATASETS_DIR, "system.db"),
+        os.path.join(_DATASETS_DIR, "system_logs.db"),
+    ]
+    report = {
+        "ok": True,
+        "phase": phase,
+        "reason": str(reason or phase),
+        "ts": datetime.now().isoformat(),
+        "pid": os.getpid(),
+        "runtime_instance_id": _API_RUNTIME_INSTANCE_ID if "_API_RUNTIME_INSTANCE_ID" in globals() else "",
+        "authority": {
+            "read_only": True,
+            "state_change": "lifecycle_report_only",
+            "execution_authority": False,
+        },
+        "system_log": _api_tail_file(system_log),
+        "databases": [_api_inspect_sqlite_db(path) for path in db_candidates],
+    }
+    report["ok"] = bool(report["system_log"].get("ok") or any(item.get("ok") for item in report["databases"]))
+    try:
+        report_path = _api_write_lifecycle_report(phase, report)
+        report["report_path"] = report_path
+        app_logger.info("API lifecycle %s examined System.log/system DBs: %s", phase, report_path)
+    except Exception as exc:
+        report["ok"] = False
+        report["report_error"] = str(exc)
+        app_logger.warning("API lifecycle %s system artifact exam failed: %s", phase, exc)
+    return report
+
+
 def _api_runtime_mark_started() -> None:
     pid_path = os.path.join(DATA_DIR, "local_api.pid")
     try:
+        state = load_state()
+        if not isinstance(state, dict):
+            state = {}
+        previous_shutdown_reason = state.get("shutdown_reason")
+        previous_shutdown_ts = state.get("shutdown_ts")
+        try:
+            SM_SHUTDOWN_EVENT.clear()
+        except Exception:
+            pass
+        state.update({
+            "shutdown_requested": False,
+            "api_running": True,
+            "API_RUNNING": True,
+            "api_pid": os.getpid(),
+            "API_PID": os.getpid(),
+            "api_last_seen_ts": time.time(),
+            "api_runtime_instance_id": _API_RUNTIME_INSTANCE_ID,
+        })
+        if previous_shutdown_reason is not None:
+            state["last_shutdown_reason"] = previous_shutdown_reason
+        if previous_shutdown_ts is not None:
+            state["last_shutdown_ts"] = previous_shutdown_ts
         _write_json_if_changed(
             STATE_DB,
-            {**load_state(), "api_running": True, "API_RUNNING": True, "api_pid": os.getpid(), "API_PID": os.getpid(), "api_last_seen_ts": time.time(), "api_runtime_instance_id": _API_RUNTIME_INSTANCE_ID},
+            state,
             ensure_ascii=False,
         )
         os.makedirs(os.path.dirname(pid_path), exist_ok=True)
@@ -15480,6 +16377,10 @@ def _api_runtime_mark_started() -> None:
         os.replace(tmp, pid_path)
     except Exception as exc:
         app_logger.warning("API lifecycle start marker failed: %s", exc)
+    try:
+        _api_examine_system_artifacts("boot", "api_runtime_mark_started")
+    except Exception as exc:
+        app_logger.warning("API boot system artifact exam failed: %s", exc)
 
 def _api_runtime_cleanup(reason: str = "shutdown") -> None:
     global _API_CLEANUP_DONE
@@ -15493,6 +16394,10 @@ def _api_runtime_cleanup(reason: str = "shutdown") -> None:
         if str(state.get("api_runtime_instance_id") or "") == _API_RUNTIME_INSTANCE_ID or int(state.get("api_pid") or 0) == os.getpid():
             state.update({"api_running": False, "API_RUNNING": False, "api_pid": None, "API_PID": None, "api_shutdown_reason": str(reason), "api_last_seen_ts": time.time()})
             save_state(state)
+    except Exception:
+        pass
+    try:
+        _api_examine_system_artifacts("shutdown", reason)
     except Exception:
         pass
     try:
@@ -15531,12 +16436,11 @@ if __name__ == "__main__":
     # SarahMemoryMain.wait_for_api_server. This prevents startup mismatch and
     # prevents the API from binding to all network interfaces unless the operator
     # deliberately overrides SARAHMEMORY_API_HOST.
-    try:
-        _default_port = int(getattr(config, "DEFAULT_PORT", 8000))
-    except Exception:
-        _default_port = 8000
-    port = int(os.environ.get("PORT", str(_default_port)))
-    host = os.environ.get("SARAHMEMORY_API_HOST") or os.environ.get("SARAHMEMORY_LOCAL_API_BIND_HOST") or "127.0.0.1"
+    # SARAHMEMORY_PATCH_NOTE 2026-09-29:
+    # Governed local boot contract: the local API always binds to 127.0.0.1:8000.
+    # External exposure or alternate ports require a separate, explicit launcher.
+    port = 8000
+    host = "127.0.0.1"
     app_logger.info(f"Starting SarahMemory Flask API server on http://{host}:{port}")
     # Initializing app.config with default values for toggles
     app.config.setdefault("CAMERA_ON", False)
