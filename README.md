@@ -12,7 +12,7 @@
 **Project:** SarahMemory Project / SarahMemory AIOS  
 **R&D Start Date:** February 21, 2025  
 **First Public Release:** December 05, 2025  
-**Current Public README Rewrite:** September 15, 2026  
+**Current Public README Rewrite:** October 04, 2026  
 **License:** SarahMemory Community License (SMCL) v2.0 for v9.0.0 and later  
 **Website:** https://www.sarahmemory.com  
 **Repository:** https://github.com/brian-baros/sarahmemory  
