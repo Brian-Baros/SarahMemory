@@ -1,11 +1,9 @@
-import { useEffect, useState } from 'react';
-import { ChevronDown, ChevronUp, Palette, Image, Music, Video, Loader2, Sparkles, Download } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronDown, ChevronUp, Palette, Image, Music, Video, Sparkles, Download, Square } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { api } from '@/lib/api';
-import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
 import { Progress } from '@/components/ui/progress';
 
@@ -26,6 +24,8 @@ export function CreativeToolsPanel() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<GeneratedResult[]>([]);
+  const generationAbortRef = useRef<AbortController | null>(null);
+  const currentJobRef = useRef<{ jobId: string; kind: CreativeMode } | null>(null);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
@@ -35,6 +35,10 @@ export function CreativeToolsPanel() {
 
     setIsGenerating(true);
     setProgress(0);
+    const controller = new AbortController();
+    const jobId = api.media.createJobId(activeTab);
+    generationAbortRef.current = controller;
+    currentJobRef.current = { jobId, kind: activeTab };
 
     // Simulate progress
     const progressInterval = setInterval(() => {
@@ -45,7 +49,9 @@ export function CreativeToolsPanel() {
       // Call the appropriate backend endpoint via edge function
       const response = await api.proxy.call('/api/media/job/render', {
         method: 'POST',
+        signal: controller.signal,
         body: {
+          job_id: jobId,
           kind: activeTab === 'image' ? 'image' : activeTab === 'music' ? 'music' : 'video',
           prompt: prompt.trim(),
           mode: activeTab,
@@ -78,6 +84,10 @@ export function CreativeToolsPanel() {
       toast.success(`${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} generated!`);
     } catch (error) {
       clearInterval(progressInterval);
+      if (controller.signal.aborted) {
+        toast.info(`${activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} generation stopped.`);
+        return;
+      }
       console.error('Generation error:', error);
       const unavailableResult: GeneratedResult = {
         type: activeTab,
@@ -87,9 +97,20 @@ export function CreativeToolsPanel() {
       setResults(prev => [unavailableResult, ...prev]);
       toast.error('Creative backend unavailable or failed. No demo placeholder was created.');
     } finally {
+      if (generationAbortRef.current === controller) generationAbortRef.current = null;
+      if (currentJobRef.current?.jobId === jobId) currentJobRef.current = null;
       setIsGenerating(false);
       setProgress(0);
     }
+  };
+
+  const handleStop = () => {
+    const job = currentJobRef.current;
+    if (job?.jobId) {
+      const kind = job.kind === 'image' ? 'image' : job.kind === 'music' ? 'music' : 'video';
+      void api.media.cancelJob(job.jobId, kind, 'ui_stop_requested').catch(() => undefined);
+    }
+    generationAbortRef.current?.abort(new Error('Creative generation stopped by user'));
   };
 
   const getTabIcon = (mode: CreativeMode) => {
@@ -199,14 +220,14 @@ export function CreativeToolsPanel() {
 
               {/* Generate Button */}
               <Button 
-                onClick={handleGenerate}
-                disabled={isGenerating || !prompt.trim()}
+                onClick={isGenerating ? handleStop : handleGenerate}
+                disabled={!isGenerating && !prompt.trim()}
                 className="w-full h-9"
               >
                 {isGenerating ? (
                   <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Generating...
+                    <Square className="h-4 w-4 mr-2" />
+                    Stop {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)}
                   </>
                 ) : (
                   <>

@@ -136,6 +136,7 @@ export function ChatPanel() {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const speakingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const activeChatAbortRef = useRef<AbortController | null>(null);
 
   // Track whether user is near bottom, so we don't fight manual scrolling
@@ -188,6 +189,18 @@ export function ChatPanel() {
   useEffect(() => {
     return () => {
       if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+      if (activeAudioRef.current) {
+        try {
+          activeAudioRef.current.pause();
+          activeAudioRef.current.src = "";
+        } catch {}
+        activeAudioRef.current = null;
+      }
+      if ("speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {}
+      }
     };
   }, []);
 
@@ -214,15 +227,30 @@ export function ChatPanel() {
     }
   };
 
-  const stopAvatarSpeaking = () => {
+  const stopAvatarSpeaking = (requestBackendStop = false) => {
     if (speakingTimeoutRef.current) {
       clearTimeout(speakingTimeoutRef.current);
       speakingTimeoutRef.current = null;
+    }
+    if (activeAudioRef.current) {
+      try {
+        activeAudioRef.current.pause();
+        activeAudioRef.current.src = "";
+      } catch {}
+      activeAudioRef.current = null;
+    }
+    if ("speechSynthesis" in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
     }
     setAvatarSpeaking(false);
     setSpeechStartTime(null);
     setSpeechCues([]);
     api.avatar.setSpeaking(false).catch(() => {});
+    if (requestBackendStop) {
+      api.media.stopVoice(true).catch(() => {});
+    }
     postAvatarEvent("success").catch(() => {});
   };
 
@@ -278,6 +306,7 @@ export function ChatPanel() {
 
         if (audioSrc) {
           const audio = new Audio(audioSrc);
+          activeAudioRef.current = audio;
           if (speakingTimeoutRef.current) {
             clearTimeout(speakingTimeoutRef.current);
             speakingTimeoutRef.current = null;
@@ -285,8 +314,12 @@ export function ChatPanel() {
           setAvatarSpeaking(true);
           setSpeechStartTime(Date.now());
           api.avatar.setSpeaking(true).catch(() => {});
-          audio.onended = () => stopAvatarSpeaking();
+          audio.onended = () => {
+            if (activeAudioRef.current === audio) activeAudioRef.current = null;
+            stopAvatarSpeaking();
+          };
           audio.onerror = () => {
+            if (activeAudioRef.current === audio) activeAudioRef.current = null;
             if (resp?.browser_fallback_allowed !== false) void playBrowserTTS(text);
             else stopAvatarSpeaking();
           };
@@ -467,12 +500,14 @@ export function ChatPanel() {
     const controller = activeChatAbortRef.current;
     if (!controller || controller.signal.aborted) {
       setTyping(false);
+      stopAvatarSpeaking(true);
       return;
     }
 
     controller.abort(new Error("SarahMemory chat request stopped by user"));
     activeChatAbortRef.current = null;
     setTyping(false);
+    stopAvatarSpeaking(true);
     addMessage({ role: "assistant", content: "Stopped." });
 
     try {

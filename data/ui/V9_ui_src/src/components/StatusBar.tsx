@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ExternalLink,
   Heart,
@@ -24,6 +24,7 @@ import {
   MonitorCog,
   Volume2,
   Wifi,
+  ShieldCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -66,6 +67,7 @@ const DEFAULT_TASKBAR_IDS = [
   "media",
   "dlengine",
   "device-manager",
+  "smugcc",
   "nailde",
   "terminal",
   "addons",
@@ -336,6 +338,11 @@ export function StatusBar() {
       label: "Device Manager",
       Icon: MonitorCog,
       onClick: () => clickWindow("device-manager"),
+    },
+    smugcc: {
+      label: "SMUGCC Contract",
+      Icon: ShieldCheck,
+      onClick: () => clickWindow("smugcc"),
     },
     nailde: {
       label: "NAILDE",

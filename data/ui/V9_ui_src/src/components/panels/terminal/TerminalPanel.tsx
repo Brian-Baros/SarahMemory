@@ -48,6 +48,54 @@ type TerminalStatusResponse = {
   ts?: string;
 };
 
+type AgentVisibilitySnapshot = {
+  ok?: boolean;
+  schema?: string;
+  summary?: {
+    outbound?: number;
+    internal?: number;
+    incoming?: number;
+    quarantined?: number;
+    blocked?: number;
+    review_required?: number;
+    active_passports?: number;
+    active_external_ai_processes?: number;
+    active_external_ai_connections?: number;
+    observed_external_ai_processes?: number;
+    observed_external_ai_network_connections?: number;
+    sarahmemory_facing_external_ai_processes?: number;
+  };
+  risk?: {
+    low?: number;
+    medium?: number;
+    high?: number;
+    critical?: number;
+  };
+  execution_authority?: boolean;
+};
+
+type TerminalAgentCounterResponse = {
+  ok?: boolean;
+  schema?: string;
+  summary?: Record<string, number>;
+  agent_visibility?: AgentVisibilitySnapshot;
+  reason?: string;
+  execution_authority?: boolean;
+};
+
+type AgentScoreboardSection = "overview" | "observed" | "outbound" | "returned" | "quarantined" | "blocked" | "review" | "passports";
+
+type AgentScoreboardResponse = {
+  ok?: boolean;
+  schema?: string;
+  section?: AgentScoreboardSection | string;
+  summary?: Record<string, number>;
+  agent_visibility?: AgentVisibilitySnapshot;
+  details?: Record<string, Array<Record<string, any>>>;
+  reason?: string;
+  execution_authority?: boolean;
+};
+
 type TerminalAIResponse = {
   ok?: boolean;
   blocked?: boolean;
@@ -213,6 +261,58 @@ function buildAiReply(resp: TerminalAIResponse | null | undefined): string {
   );
 }
 
+function agentRadarRiskLabel(risk?: AgentVisibilitySnapshot["risk"]): string {
+  const r = risk || {};
+  if (Number(r.critical || 0) > 0) return "CRITICAL";
+  if (Number(r.high || 0) > 0) return "HIGH";
+  if (Number(r.medium || 0) > 0) return "MEDIUM";
+  return "LOW";
+}
+
+function formatAgentRadarLine(status: TerminalAgentCounterResponse | null): string {
+  const visibility = status?.agent_visibility;
+  const summary = visibility?.summary || {};
+  if (!status || status.ok === false || !visibility) return "AgentRadar unavailable";
+  const base = [
+    `Agents: OUT ${Number(summary.outbound || 0)}`,
+    `INT ${Number(summary.internal || 0)}`,
+    `IN ${Number(summary.incoming || 0)}`,
+    `Q ${Number(summary.quarantined || 0)}`,
+    `BLOCK ${Number(summary.blocked || 0)}`,
+    `Risk: ${agentRadarRiskLabel(visibility.risk)}`,
+  ];
+  const proc = Number(summary.active_external_ai_processes || 0);
+  const conn = Number(summary.active_external_ai_connections || 0);
+  const observed = Number(summary.observed_external_ai_processes || 0);
+  if (observed > 0) base.push(`Observed AI processes ${observed}`);
+  if (proc > 0) base.push(`SarahMemory-facing AI processes ${proc}`);
+  if (conn > 0) base.push(`SarahMemory AI connections ${conn}`);
+  return base.join(" | ");
+}
+
+function formatAgentScoreboardLine(section: AgentScoreboardSection, status: AgentScoreboardResponse | null): string {
+  if (!status || status.ok === false) {
+    return `Agent Scoreboard ${section.toUpperCase()} unavailable${status?.reason ? `: ${status.reason}` : ""}`;
+  }
+  const rows = status.details?.[section] || [];
+  const header = `Agent Scoreboard ${section.toUpperCase()}: ${rows.length} visible row${rows.length === 1 ? "" : "s"}`;
+  if (rows.length === 0) return `${header}\nNo sanitized rows are currently available for this section.`;
+  const body = rows.slice(0, 8).map((row, index) => {
+    const id =
+      row.passport_id ||
+      row.task_id ||
+      row.artifact_id ||
+      row.receipt_id ||
+      row.payload_sha256 ||
+      "unidentified";
+    const statusText = row.status || row.verdict || row.quarantine_status || row.event_type || row.current_stage || "observed";
+    const detail = row.details || row.objective || row.who || row.agent_id || row.containment_state || row.risk || "";
+    const where = row.where || row.relation_to_sarahmemory || "";
+    return `${index + 1}. ${String(id).slice(0, 80)} | ${String(statusText).slice(0, 80)}${detail ? ` | ${String(detail).slice(0, 160)}` : ""}${where ? ` | ${String(where).slice(0, 140)}` : ""}`;
+  });
+  return [header, ...body].join("\n");
+}
+
 export function TerminalPanel() {
   const isMobile = useIsMobile();
   const store = useSarahStore();
@@ -236,6 +336,11 @@ export function TerminalPanel() {
   const [busy, setBusy] = useState<boolean>(false);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
   const [backendReason, setBackendReason] = useState<string>("");
+  const [agentRadar, setAgentRadar] = useState<TerminalAgentCounterResponse | null>(null);
+  const [agentRadarUnavailable, setAgentRadarUnavailable] = useState<boolean>(false);
+  const [agentRadarBusy, setAgentRadarBusy] = useState<boolean>(false);
+  const [agentScoreboardBusy, setAgentScoreboardBusy] = useState<boolean>(false);
+  const [agentScoreboardSection, setAgentScoreboardSection] = useState<AgentScoreboardSection>("overview");
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
 
   const [history, setHistory] = useState<string[]>(() =>
@@ -256,6 +361,8 @@ export function TerminalPanel() {
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const agentRadarBusyRef = useRef<boolean>(false);
+  const agentScoreboardBusyRef = useRef<boolean>(false);
 
   const prompt = useMemo(() => SARAH_PROMPT, []);
 
@@ -346,6 +453,60 @@ export function TerminalPanel() {
     []
   );
 
+  const checkAgentRadar = useCallback(
+    async (emitLine = false) => {
+      if (!desktopAllowed || agentRadarBusyRef.current) return;
+      agentRadarBusyRef.current = true;
+      setAgentRadarBusy(true);
+      try {
+        const resp = await requestJSON<TerminalAgentCounterResponse>("/api/terminal/agents/status", {
+          method: "GET",
+        });
+        const data = resp.data || {};
+        if (data?.execution_authority !== false) {
+          data.execution_authority = false;
+        }
+        setAgentRadar(data);
+        setAgentRadarUnavailable(resp.status >= 500 || data.ok === false || !data.agent_visibility);
+        if (emitLine) append("meta", formatAgentRadarLine(data));
+      } catch {
+        setAgentRadar(null);
+        setAgentRadarUnavailable(true);
+        if (emitLine) append("meta", "AgentRadar unavailable");
+      } finally {
+        agentRadarBusyRef.current = false;
+        setAgentRadarBusy(false);
+      }
+    },
+    [append, desktopAllowed]
+  );
+
+  const inspectAgentScoreboard = useCallback(
+    async (section: AgentScoreboardSection = "overview", emitLine = true) => {
+      if (!desktopAllowed || agentScoreboardBusyRef.current) return;
+      agentScoreboardBusyRef.current = true;
+      setAgentScoreboardBusy(true);
+      setAgentScoreboardSection(section);
+      try {
+        const resp = await requestJSON<AgentScoreboardResponse>(
+          `/api/terminal/agents/scoreboard?section=${encodeURIComponent(section)}&limit=24`,
+          { method: "GET" }
+        );
+        const data = resp.data || {};
+        if (data?.execution_authority !== false) {
+          data.execution_authority = false;
+        }
+        if (emitLine) append(resp.status >= 500 || data.ok === false ? "stderr" : "meta", formatAgentScoreboardLine(section, data));
+      } catch (e: any) {
+        if (emitLine) append("stderr", `Agent Scoreboard ${section.toUpperCase()} unavailable: ${String(e?.message || e || "request failed")}`);
+      } finally {
+        agentScoreboardBusyRef.current = false;
+        setAgentScoreboardBusy(false);
+      }
+    },
+    [append, desktopAllowed]
+  );
+
   const handleLocalDirective = useCallback(
     async (raw: string): Promise<boolean> => {
       const text = String(raw || "").trim();
@@ -362,6 +523,16 @@ export function TerminalPanel() {
             "  /ai <task>       Route a natural-language task through Sarah AI.",
             "  /task <task>     Alias for /ai.",
             "  /agent <task>    Governed inspect/propose agent lane; no autonomous execution.",
+            "  /smugcc status   Show SMUGCC contract status.",
+            "  /smugcc validate <json>  Validate a SMUGCC envelope without execution.",
+            "  /smugcc build mission <objective>  Build a governed mission envelope draft.",
+            "  /agents          Show AgentRadar counters.",
+            "  /agent status    Show AgentRadar counters.",
+            "  /agents observed Inspect observed local/external AI surfaces.",
+            "  /agents out      Inspect outbound/passported agents.",
+            "  /agents returned Inspect returned/captured agent evidence.",
+            "  /agents q        Inspect quarantined agent artifacts.",
+            "  /agents blocked  Inspect blocked agent tasks.",
             "  /screen <name>   Switch UI panel, for example /screen dlengine.",
             "  /agent passport help   Show AI-agent passport commands.",
             "  clear | cls      Clear the terminal surface.",
@@ -371,9 +542,44 @@ export function TerminalPanel() {
             "  /run dir",
             "  /ai Create a website landing page for SarahMemory and explain the file plan.",
             "  /agent passport list",
+            "  /smugcc trace <task_id-or-json>",
             "  /agent Inspect the AI-agent governance lane.",
           ].join("\n")
         );
+        return true;
+      }
+
+      const scoreboardMatch = text.match(/^\/agents\s+(observed|observe|obs|out|outbound|returned|return|q|quarantine|quarantined|blocked|block|review|passports|passport)$/i);
+      if (scoreboardMatch) {
+        const rawSection = String(scoreboardMatch[1] || "").toLowerCase();
+        const section: AgentScoreboardSection =
+          rawSection === "observed" || rawSection === "observe" || rawSection === "obs"
+            ? "observed"
+            : rawSection === "out" || rawSection === "outbound"
+            ? "outbound"
+            : rawSection === "return" || rawSection === "returned"
+              ? "returned"
+              : rawSection === "q" || rawSection === "quarantine" || rawSection === "quarantined"
+                ? "quarantined"
+                : rawSection === "block" || rawSection === "blocked"
+                  ? "blocked"
+                  : rawSection === "passport" || rawSection === "passports"
+                    ? "passports"
+                    : "review";
+        append("input", `${prompt} ${text}`);
+        await inspectAgentScoreboard(section, true);
+        return true;
+      }
+
+      if (
+        lower === "/agents" ||
+        lower === "/agent status" ||
+        lower === "/agent counter" ||
+        lower === "/firewall agents" ||
+        lower === "/roach status"
+      ) {
+        append("input", `${prompt} ${text}`);
+        await checkAgentRadar(true);
         return true;
       }
 
@@ -396,7 +602,7 @@ export function TerminalPanel() {
 
       return false;
     },
-    [append, focusInput, resetConsole]
+    [append, checkAgentRadar, focusInput, inspectAgentScoreboard, prompt, resetConsole]
   );
 
   useEffect(() => {
@@ -461,6 +667,15 @@ export function TerminalPanel() {
     void checkTerminalBackend();
   }, [checkTerminalBackend]);
 
+  useEffect(() => {
+    if (!desktopAllowed) return;
+    void checkAgentRadar(false);
+    const timer = window.setInterval(() => {
+      void checkAgentRadar(false);
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [checkAgentRadar, desktopAllowed]);
+
   const run = useCallback(
     async (overrideInput?: string) => {
       if (!desktopAllowed) {
@@ -475,11 +690,14 @@ export function TerminalPanel() {
       if (handledLocally) return;
 
       const explicitShell = /^\/run\s+/i.test(original) || /^!\s*/.test(original);
-      const explicitAgent = /^\/agent\s+/i.test(original);
-      const explicitAi = /^(\/ai|\/task|\/agent)\s+/i.test(original);
+      const explicitSmugcc = /^\/smugcc(\s+|$)/i.test(original);
+      const explicitAgent = /^\/agent\s+/i.test(original) || explicitSmugcc;
+      const explicitAi = /^(\/ai|\/task|\/agent|\/smugcc)(\s+|$)/i.test(original);
 
       const normalizedCommand = explicitShell
         ? original.replace(/^\/run\s+/i, "").replace(/^!\s*/, "").trim()
+        : explicitSmugcc
+          ? original
         : explicitAi
           ? original.replace(/^(\/ai|\/task|\/agent)\s+/i, "").trim()
           : original;
@@ -833,6 +1051,24 @@ ${reply}`,
     }
   };
 
+  const agentRadarLine = formatAgentRadarLine(agentRadar);
+  const agentVisibility = agentRadar?.agent_visibility;
+  const agentSummary = agentVisibility?.summary || {};
+  const agentRisk = agentRadarRiskLabel(agentVisibility?.risk);
+  const externalProcesses = Number(agentVisibility?.summary?.active_external_ai_processes || 0);
+  const externalConnections = Number(agentVisibility?.summary?.active_external_ai_connections || 0);
+  const observedExternalProcesses = Number(agentVisibility?.summary?.observed_external_ai_processes || 0);
+  const agentButtonCounters: Record<AgentScoreboardSection, number> = {
+    overview: 0,
+    observed: observedExternalProcesses,
+    outbound: Number(agentSummary.outbound || 0),
+    returned: Number(agentRadar?.summary?.tasks_completed || 0),
+    quarantined: Number(agentSummary.quarantined || 0),
+    blocked: Number(agentSummary.blocked || 0),
+    review: Number(agentSummary.review_required || 0),
+    passports: Number(agentSummary.active_passports || agentRadar?.summary?.passports_active || 0),
+  };
+
   useEffect(() => {
     const handler = (ev: any) => {
       const actions = ev?.detail?.actions || [];
@@ -986,6 +1222,39 @@ ${reply}`,
         <div className="truncate">
           <span className="font-medium text-foreground/80">Mode:</span> {mode.toUpperCase()}
         </div>
+      </div>
+
+      <div className="px-3 py-2 border-b bg-muted/10 text-xs text-muted-foreground flex items-center gap-1.5 overflow-x-auto">
+        <Shield className={cn("h-3.5 w-3.5 shrink-0", agentRisk === "CRITICAL" || agentRisk === "HIGH" ? "text-yellow-500" : "text-green-500")} />
+        <span className="shrink-0 font-medium text-foreground/80">Agents</span>
+        {[
+          ["observed", "OBS"],
+          ["outbound", "OUT"],
+          ["returned", "RETURN"],
+          ["quarantined", "Q"],
+          ["blocked", "BLOCK"],
+          ["review", "REVIEW"],
+          ["passports", "PASS"],
+        ].map(([section, label]) => (
+          <Button
+            key={section}
+            type="button"
+            size="sm"
+            variant={agentScoreboardSection === section ? "secondary" : "ghost"}
+            className="h-6 px-2 text-[11px]"
+            disabled={agentScoreboardBusy}
+            onClick={() => void inspectAgentScoreboard(section as AgentScoreboardSection, true)}
+            title={`Inspect ${label} agent scoreboard rows`}
+          >
+            {label} {agentButtonCounters[section as AgentScoreboardSection] ?? 0}
+          </Button>
+        ))}
+        <span className="shrink-0 pl-2">Risk: {agentRadarUnavailable ? "UNKNOWN" : agentRisk}</span>
+        {externalProcesses > 0 ? <span className="shrink-0">SM Proc: {externalProcesses}</span> : null}
+        {externalConnections > 0 ? <span className="shrink-0">SM Conn: {externalConnections}</span> : null}
+        {agentRadarUnavailable ? <span className="shrink-0">{agentRadarLine}</span> : null}
+        {agentRadarBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" /> : null}
+        {agentScoreboardBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" /> : null}
       </div>
 
       {backendReason ? (
