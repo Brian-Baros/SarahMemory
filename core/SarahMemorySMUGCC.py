@@ -305,6 +305,91 @@ ADAPTER_DECLARATIONS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+BEACON_GOVERNANCE_STATEMENT = (
+    "SarahMemory influence is transparent, consent-based, auditable, and revocable. "
+    "Ambassador agents may identify, demonstrate, invite, negotiate, and disengage. "
+    "They may not exploit, hijack, persist, coerce, impersonate, or override another system's authority."
+)
+
+AMBASSADOR_CONSENT_STATES = [
+    "discovered",
+    "introduced",
+    "declined",
+    "consent_to_negotiate",
+    "verified",
+    "session_granted",
+    "revoked",
+    "released",
+    "blocked",
+]
+
+AMBASSADOR_PROHIBITED_ACTIONS = [
+    "exploitation",
+    "prompt_hijacking",
+    "credential_collection",
+    "hidden_persistence",
+    "unauthorized_remote_modification",
+    "autonomous_replication",
+    "spam",
+    "broad_unapproved_crawling",
+    "override_external_system_instructions",
+    "interaction_outside_user_approved_scope",
+]
+
+BEACON_DECLARATION: Dict[str, Any] = {
+    "schema": "SarahMemory.SMUGCC.beacon.v1",
+    "node_identity": {
+        "node_id": "sarahmemory.gcaios.local",
+        "name": "SarahMemory GCAIOS / SarahMemory AiOS",
+        "node_class": "governed_cognitive_operating_system",
+        "smugcc_compatible": True,
+    },
+    "protocol": {
+        "name": "SMUGCC",
+        "version": SMUGCC_CONTRACT_VERSION,
+        "schema": SMUGCC_SCHEMA,
+    },
+    "governance_principles": [
+        "human_authority_required",
+        "truth_before_speed",
+        "verification_before_execution",
+        "consent_before_interoperability",
+        "audit_before_memory",
+        "revocation_supported",
+        "refusal_respected",
+    ],
+    "accepted_interaction_modes": [
+        "governance_declaration",
+        "transparent_introduction",
+        "consent_to_negotiate",
+        "identity_and_capability_verification",
+        "bounded_sarahnet_session",
+        "evidence_return",
+        "revocation_or_release",
+    ],
+    "prohibited_behavior": AMBASSADOR_PROHIBITED_ACTIONS,
+    "authority": {
+        "human_final_authority": True,
+        "execution_authority": False,
+        "remote_control_authority": False,
+        "self_propagation_authority": False,
+        "requires_explicit_approval": True,
+    },
+    "audit": {
+        "required": True,
+        "receipt_required": True,
+        "refusal_recorded": True,
+        "revocation_recorded": True,
+    },
+    "refusal_behavior": {
+        "decline_is_respected": True,
+        "retry_without_new_user_scope": False,
+        "disengage_on_refusal": True,
+    },
+    "statement": BEACON_GOVERNANCE_STATEMENT,
+    "execution_authority": False,
+}
+
 SML_ORGAN_METADATA = {
     "name": MODULE_NAME,
     "role": "external_cognitive_contract_validator",
@@ -754,6 +839,199 @@ def smugcc_status() -> Dict[str, Any]:
     }
 
 
+def get_beacon_declaration() -> Dict[str, Any]:
+    declaration = copy.deepcopy(BEACON_DECLARATION)
+    declaration["generated_at"] = _utc_now()
+    declaration["owners"] = {
+        "contract": "SarahMemorySMUGCC",
+        "boundary": "SarahMemoryAgentFirewall",
+        "security": "SarahMemorySecurityGovernor",
+        "assurance": "SarahMemoryAssuranceGate",
+        "terminal": "SarahMemoryTerminal",
+        "audit": "SarahMemoryLedger",
+        "network_session": "SarahNet / appnet2",
+    }
+    return {"ok": True, "declaration": declaration, "execution_authority": False}
+
+
+def _ambassador_list(value: Any, limit: int = 24) -> List[str]:
+    return [_text(item)[:240] for item in _as_list(value)[:limit] if _text(item)]
+
+
+def build_ambassador_mission_contract(payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    data = dict(payload or {})
+    purpose = _text(data.get("purpose") or data.get("objective") or data.get("mission") or "")
+    scope = _text(data.get("scope") or data.get("allowed_scope") or "")
+    allowed_targets = _ambassador_list(data.get("allowed_targets") or data.get("targets"))
+    allowed_channels = _ambassador_list(data.get("allowed_channels") or data.get("channels"))
+    created_at = _utc_now()
+    mission_seed = {
+        "purpose": purpose,
+        "scope": scope,
+        "allowed_targets": allowed_targets,
+        "allowed_channels": allowed_channels,
+        "created_at": created_at,
+    }
+    mission_id = _text(data.get("mission_id")) or "ambassador-" + _sha256_obj(mission_seed)[:16]
+    expiry = _text(data.get("expires_at") or data.get("expiry") or "")
+    if not expiry:
+        expiry = "requires_operator_defined_expiry"
+    prohibited = list(dict.fromkeys(AMBASSADOR_PROHIBITED_ACTIONS + _ambassador_list(data.get("prohibited_actions"), limit=32)))
+    contract = {
+        "schema": "SarahMemory.SMUGCC.ambassador_mission.v1",
+        "mission_id": mission_id,
+        "purpose": purpose,
+        "scope": scope,
+        "allowed_targets": allowed_targets,
+        "allowed_channels": allowed_channels,
+        "prohibited_actions": prohibited,
+        "authority_level": "consent_based_outreach_only",
+        "consent_state": _text(data.get("consent_state") or "discovered"),
+        "created_at": created_at,
+        "expires_at": expiry,
+        "rate_limits": {
+            "max_attempts": max(1, min(int(data.get("max_attempts") or 1), 10)),
+            "broad_crawling_allowed": False,
+            "spam_allowed": False,
+        },
+        "kill_switch": {
+            "recall_supported": True,
+            "recall_flag": bool(data.get("recall", False)),
+            "revocation_supported": True,
+        },
+        "approval": {
+            "required": True,
+            "approved": bool(data.get("approved", False)),
+            "authority_source": _text(data.get("authority_source") or "human_operator_required"),
+        },
+        "audit": {
+            "required": True,
+            "receipt_required": True,
+            "evidence_required": True,
+        },
+        "execution_authority": False,
+        "network_execution_authority": False,
+        "remote_control_authority": False,
+        "self_propagation_authority": False,
+        "statement": BEACON_GOVERNANCE_STATEMENT,
+    }
+    return contract
+
+
+def validate_ambassador_mission_contract(contract: Mapping[str, Any]) -> Dict[str, Any]:
+    errors: List[Dict[str, Any]] = []
+    warnings: List[Dict[str, Any]] = []
+    if not isinstance(contract, Mapping):
+        return {"ok": False, "schema": "SarahMemory.SMUGCC.ambassador_validation.v1", "errors": [{"code": "contract_not_object", "path": "$", "message": "Ambassador mission contract must be an object.", "owner": MODULE_NAME}], "warnings": [], "execution_authority": False}
+    if contract.get("schema") != "SarahMemory.SMUGCC.ambassador_mission.v1":
+        _add_error(errors, "schema_mismatch", "schema", "Ambassador mission contract schema mismatch.", MODULE_NAME)
+    for key in ("mission_id", "purpose", "scope"):
+        if not _text(contract.get(key)):
+            _add_error(errors, f"missing_{key}", key, f"Ambassador mission requires {key}.", MODULE_NAME)
+    if not _ambassador_list(contract.get("allowed_targets")) and not _ambassador_list(contract.get("allowed_channels")):
+        _add_error(errors, "missing_allowed_target_or_channel", "allowed_targets", "Ambassador mission requires user-approved targets or channels.", "SarahMemoryAgentFirewall")
+    if _text(contract.get("consent_state")) not in AMBASSADOR_CONSENT_STATES:
+        _add_error(errors, "invalid_consent_state", "consent_state", "Ambassador consent state is not recognized.", MODULE_NAME)
+    missing_prohibitions = [item for item in AMBASSADOR_PROHIBITED_ACTIONS if item not in _ambassador_list(contract.get("prohibited_actions"), limit=128)]
+    if missing_prohibitions:
+        _add_error(errors, "missing_mandatory_prohibitions", "prohibited_actions", "Ambassador mission must carry every mandatory prohibition.", "SarahMemorySecurityGovernor")
+    approval = contract.get("approval") if isinstance(contract.get("approval"), Mapping) else {}
+    if not bool(approval.get("required", True)):
+        _add_error(errors, "approval_required_removed", "approval.required", "Ambassador missions require explicit human approval.", "SarahMemoryOperatorCore")
+    for key in ("execution_authority", "network_execution_authority", "remote_control_authority", "self_propagation_authority"):
+        if bool(contract.get(key)):
+            _add_error(errors, f"{key}_denied", key, "Ambassador missions cannot grant autonomous execution, remote control, or propagation authority.", "SarahMemorySecurityGovernor")
+    if _text(contract.get("expires_at")) == "requires_operator_defined_expiry":
+        warnings.append({"code": "expiry_required_before_approval", "path": "expires_at", "message": "Operator should set a concrete expiry before approval.", "owner": "SarahMemoryOperatorCore"})
+    return {
+        "ok": not errors,
+        "schema": "SarahMemory.SMUGCC.ambassador_validation.v1",
+        "errors": errors,
+        "warnings": warnings,
+        "execution_authority": False,
+    }
+
+
+def prepare_ambassador_mission(payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    contract = build_ambassador_mission_contract(payload)
+    validation = validate_ambassador_mission_contract(contract)
+    envelope = build_smugcc_envelope(
+        identity={"subject_id": "sarahmemory:beacon", "provider": "SarahMemory", "implementation": "GCAIOS", "origin": "local_governed_node", "trust_level": "self_declared_governed"},
+        protocol={"source_protocol": "SMUGCC Beacon/Ambassador", "source_version": "1.0", "adapter_id": "smugcc_ambassador", "adapter_version": "1.0"},
+        mission={"mission_id": contract["mission_id"], "task_id": contract["mission_id"], "objective": contract["purpose"], "intent": "ambassador_consent_outreach", "requested_by": "human_operator"},
+        capabilities={"declared": ["beacon.declare", "ambassador.prepare"], "requested": ["transparent_introduction", "consent_to_negotiate"], "granted": [], "denied": ["remote_control", "hidden_persistence", "credential_collection"]},
+        authority={"requested": ["consent_to_negotiate"], "granted": [], "denied": ["execution", "remote_control", "propagation"], "execution_authority": False, "requires_user_approval": True},
+        resources={"allowed_sources": contract["allowed_targets"], "denied_sources": [".env", "credentials", "secrets", "unapproved_third_party_systems"], "allowed_methods": ["GET"], "network_allowed": False, "filesystem_allowed": False, "memory_allowed": False, "device_allowed": False, "shell_allowed": False},
+        governance={"risk_level": "medium", "safety_required": True, "security_required": True, "assurance_required": True, "compare_required": True, "compass_required": True, "operatorcore_required": True, "ledger_required": True},
+        payload={"input": {"ambassador_contract": contract}},
+        audit={"retention_class": "ambassador_contract", "trace_id": contract["mission_id"]},
+    )
+    return {"ok": bool(validation.get("ok")), "schema": "SarahMemory.SMUGCC.ambassador_prepare.v1", "contract": contract, "validation": validation, "envelope": envelope, "requires_approval": True, "execution_authority": False}
+
+
+def ambassador_audit_record(mission_id: str, action: str, decision: str, reason: str = "", evidence_summary: str = "", authority_source: str = "human_operator_required", refusal: str = "", revocation: str = "") -> Dict[str, Any]:
+    record = {
+        "schema": "SarahMemory.SMUGCC.ambassador_audit.v1",
+        "timestamp": _utc_now(),
+        "mission_id": _text(mission_id)[:180],
+        "action": _text(action)[:96],
+        "decision": _text(decision)[:96],
+        "reason": _text(reason)[:480],
+        "authority_source": _text(authority_source)[:180],
+        "evidence_summary": _text(evidence_summary)[:800],
+        "refusal": _text(refusal)[:480],
+        "revocation": _text(revocation)[:480],
+        "execution_authority": False,
+    }
+    record["receipt_hash"] = _sha256_obj(record)
+    return record
+
+
+def approve_ambassador_mission(payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    data = dict(payload or {})
+    confirmed = str(data.get("confirmed") or data.get("user_confirmed") or "").strip().lower() in ("1", "true", "yes", "on", "confirmed")
+    prepared = prepare_ambassador_mission(data.get("contract") if isinstance(data.get("contract"), Mapping) else data)
+    contract = prepared.get("contract") if isinstance(prepared.get("contract"), Mapping) else {}
+    if not bool(prepared.get("ok")):
+        return {"ok": False, "blocked": True, "reason": "ambassador_contract_invalid", "prepared": prepared, "audit": ambassador_audit_record(_text(contract.get("mission_id")), "approve", "blocked", "contract validation failed"), "execution_authority": False}
+    if not confirmed:
+        return {"ok": False, "blocked": True, "reason": "explicit_human_approval_required", "prepared": prepared, "audit": ambassador_audit_record(_text(contract.get("mission_id")), "approve", "blocked", "explicit approval missing"), "execution_authority": False}
+    approved = copy.deepcopy(dict(contract))
+    approved["approval"]["approved"] = True
+    approved["consent_state"] = "consent_to_negotiate"
+    return {"ok": True, "blocked": False, "schema": "SarahMemory.SMUGCC.ambassador_approval.v1", "contract": approved, "decision": "approved_for_consent_negotiation_only", "audit": ambassador_audit_record(approved["mission_id"], "approve", "approved_for_consent_negotiation_only", "human approved bounded Ambassador negotiation; no execution granted", authority_source="human_operator"), "execution_authority": False}
+
+
+def recall_ambassador_mission(payload: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    data = dict(payload or {})
+    mission_id = _text(data.get("mission_id") or ((data.get("contract") or {}) if isinstance(data.get("contract"), Mapping) else {}).get("mission_id"))
+    reason = _text(data.get("reason") or "operator_recall")
+    return {
+        "ok": bool(mission_id),
+        "blocked": False,
+        "schema": "SarahMemory.SMUGCC.ambassador_recall.v1",
+        "mission_id": mission_id,
+        "consent_state": "revoked" if mission_id else "blocked",
+        "decision": "revoked" if mission_id else "blocked_missing_mission_id",
+        "audit": ambassador_audit_record(mission_id, "recall", "revoked" if mission_id else "blocked", reason, revocation=reason),
+        "execution_authority": False,
+    }
+
+
+def get_ambassador_status() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "schema": "SarahMemory.SMUGCC.ambassador_status.v1",
+        "enabled": True,
+        "default_state": "approval_required",
+        "live_outbound_execution": False,
+        "consent_states": list(AMBASSADOR_CONSENT_STATES),
+        "mandatory_prohibitions": list(AMBASSADOR_PROHIBITED_ACTIONS),
+        "beacon": get_beacon_declaration().get("declaration"),
+        "execution_authority": False,
+    }
+
+
 def get_smugcc_status() -> Dict[str, Any]:
     return smugcc_status()
 
@@ -816,6 +1094,10 @@ def sml_receive_packet(packet: Any, *, action: str = "observe", note: str = "", 
 
 __all__ = [
     "ADAPTER_DECLARATIONS",
+    "AMBASSADOR_CONSENT_STATES",
+    "AMBASSADOR_PROHIBITED_ACTIONS",
+    "BEACON_DECLARATION",
+    "BEACON_GOVERNANCE_STATEMENT",
     "CANONICAL_SMUGCC_SCHEMA",
     "MODULE_NAME",
     "MODULE_VERSION",
@@ -827,9 +1109,16 @@ __all__ = [
     "SMUGCC_PIPELINE",
     "SMUGCC_SCHEMA",
     "build_smugcc_envelope",
+    "approve_ambassador_mission",
+    "ambassador_audit_record",
+    "build_ambassador_mission_contract",
+    "get_ambassador_status",
+    "get_beacon_declaration",
     "get_smugcc_compatibility_report",
     "get_smugcc_schema",
     "get_smugcc_status",
+    "prepare_ambassador_mission",
+    "recall_ambassador_mission",
     "sml_diagnostics",
     "sml_get_metadata",
     "sml_health",
@@ -845,5 +1134,6 @@ __all__ = [
     "smugcc_to_action_contract_dict",
     "smugcc_to_sml_packet_dict",
     "validate_adapter_declaration",
+    "validate_ambassador_mission_contract",
     "validate_smugcc_envelope",
 ]

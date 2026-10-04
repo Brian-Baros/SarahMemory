@@ -2887,6 +2887,15 @@ def _dominant_color_and_name(bgr_roi) -> Dict[str, Any]:
 def _log_corpus_boot_message() -> None:
     """Log a summary message about corpus state on module load."""
     try:
+        run_mode = str(getattr(config, "RUN_MODE", os.getenv("RUN_MODE", "local")) or "local").strip().lower()
+        device_mode = str(getattr(config, "DEVICE_MODE", os.getenv("SARAH_DEVICE_MODE", "")) or "").strip().lower()
+        log_on_import = os.getenv("SARAH_ADVCU_LOG_CORPUS_ON_IMPORT", "0").strip().lower() in ("1", "true", "yes", "on")
+        if not log_on_import and (run_mode == "cloud" or device_mode == "public_web"):
+            logger.info("[AdvCU] Code corpus import summary held in governed cloud standby")
+            return
+    except Exception:
+        pass
+    try:
         stats = get_corpus_stats()
         counts = stats.get("counts") or {}
         files = counts.get("files", 0)
@@ -3699,4 +3708,3 @@ def sml_classify_packet_mission(packet, text=""):
         pkt.payload["raw_request"] = str(text)
     return get_protocol().classify_mission(pkt)
 # --- SML ADVCU SPECIALIZATION END ---
-

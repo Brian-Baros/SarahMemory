@@ -50,6 +50,8 @@ import ssl
 import time
 import stat
 import re
+import threading
+from collections import deque
 
 # Optional: access DB paths + cloud connector without duplicating logic
 try:
@@ -64,6 +66,67 @@ handler = logging.NullHandler()
 handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 if not logger.hasHandlers():
     logger.addHandler(handler)
+
+_DIAGNOSTICS_TIMING_LOCK = threading.RLock()
+_DIAGNOSTICS_TIMING_RING = deque(maxlen=512)
+
+
+def record_diagnostics_timing(
+    name: str,
+    elapsed_ms,
+    *,
+    ok: bool = True,
+    detail: str = "",
+    meta: dict | None = None,
+) -> dict:
+    """Record bounded in-memory timing data for hot runtime paths.
+
+    This does not write files, call networks, execute commands, or mutate any
+    durable SarahMemory state. It is intentionally process-local telemetry.
+    """
+    try:
+        metric = str(name or "unknown").strip()[:96] or "unknown"
+        value = round(float(elapsed_ms or 0.0), 3)
+        entry = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "monotonic": round(time.monotonic(), 6),
+            "name": metric,
+            "elapsed_ms": value,
+            "ok": bool(ok),
+            "detail": str(detail or "")[:160],
+        }
+        if isinstance(meta, dict) and meta:
+            entry["meta"] = {
+                str(k)[:48]: v
+                for k, v in meta.items()
+                if isinstance(k, str) and isinstance(v, (str, int, float, bool, type(None)))
+            }
+        with _DIAGNOSTICS_TIMING_LOCK:
+            _DIAGNOSTICS_TIMING_RING.append(entry)
+        return dict(entry)
+    except Exception:
+        return {}
+
+
+def get_diagnostics_timing_snapshot(prefix: str | None = None, limit: int = 100) -> dict:
+    """Return a bounded snapshot of recent in-memory timing entries."""
+    try:
+        max_items = max(1, min(int(limit or 100), 512))
+    except Exception:
+        max_items = 100
+    wanted = str(prefix or "").strip().lower()
+    with _DIAGNOSTICS_TIMING_LOCK:
+        rows = list(_DIAGNOSTICS_TIMING_RING)
+    if wanted:
+        rows = [row for row in rows if str(row.get("name") or "").lower().startswith(wanted)]
+    rows = rows[-max_items:]
+    return {
+        "ok": True,
+        "count": len(rows),
+        "maxlen": 512,
+        "scope": "process_local_in_memory",
+        "entries": rows,
+    }
 
 # Core functional files that must be present in the V9 root/core layout
 # SARAHMEMORY_PATCH_NOTE: v9 diagnostics file manifest uses CORE_DIR, not BASE_DIR.
@@ -4039,4 +4102,3 @@ def sml_protocol_diagnostics(core_path=None):
         proto.discover_organs(core_path, import_modules=False, max_files=250)
     return proto.diagnostics()
 # --- SML DIAGNOSTICS SPECIALIZATION END ---
-

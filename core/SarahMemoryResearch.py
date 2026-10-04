@@ -126,6 +126,9 @@ import html
 import logging
 import sqlite3
 import threading
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict, deque
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union, Set
@@ -350,6 +353,7 @@ class ResearchSource(Enum):
     API_HUGGINGFACE = "api_huggingface"
     API_PROVIDER = "api_provider"
     WEB_RSS = "web_rss"
+    CLOUD_SARAHMEMORY = "cloud_sarahmemory_node"
     NONE = "none"
 
 
@@ -739,6 +743,311 @@ def _external_research_allowed(kind: str = "web") -> bool:
         return bool(getattr(config, "WEB_RESEARCH_ENABLED", False))
     except Exception:
         return False
+
+
+def _cloud_node_base_url() -> str:
+    try:
+        base = str(getattr(config, "SARAHMEMORY_CLOUD_NODE_BASE_URL", "") or "").strip().rstrip("/")
+        return base
+    except Exception:
+        return ""
+
+
+def _cloud_node_timeout() -> float:
+    try:
+        return max(1.0, min(15.0, float(getattr(config, "SARAHMEMORY_CLOUD_NODE_TIMEOUT_SEC", 4.0) or 4.0)))
+    except Exception:
+        return 4.0
+
+
+def _runtime_is_cloud() -> bool:
+    try:
+        run_mode = str(getattr(config, "RUN_MODE", "local") or "local").strip().lower()
+        if run_mode == "cloud":
+            return True
+    except Exception:
+        pass
+    try:
+        host = (os.getenv("HOSTNAME") or os.getenv("COMPUTERNAME") or "").lower()
+        return bool(os.getenv("PYTHONANYWHERE_DOMAIN") or os.getenv("PA_HOME") or ".pythonanywhere.com" in host)
+    except Exception:
+        return False
+
+
+def _cloud_research_allowed() -> Tuple[bool, str]:
+    try:
+        if not bool(getattr(config, "SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED", True)):
+            return False, "cloud_node_discovery_disabled"
+        if str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in ("1", "true", "yes", "on"):
+            return False, "force_offline"
+        if _runtime_is_cloud():
+            return False, "cloud_runtime_recursion_guard"
+        if not _cloud_node_base_url():
+            return False, "cloud_node_base_url_missing"
+        explicitly_enabled = bool(getattr(config, "SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", False))
+        online_armed = bool(getattr(config, "SARAHMEMORY_ONLINE_SESSION_ARMED", False))
+        existing_research_gate = bool(getattr(config, "WEB_RESEARCH_ENABLED", False) or getattr(config, "API_RESEARCH_ENABLED", False))
+        if explicitly_enabled or online_armed or existing_research_gate:
+            return True, "allowed"
+        return False, "cloud_research_not_armed"
+    except Exception as exc:
+        return False, f"cloud_research_gate_error:{exc}"
+
+
+def _cloud_json_request(path: str, *, method: str = "GET", payload: Optional[Dict[str, Any]] = None, timeout: Optional[float] = None) -> Dict[str, Any]:
+    base = _cloud_node_base_url()
+    if not base:
+        return {"ok": False, "error": "cloud_node_base_url_missing", "execution_authority": False}
+    url = base + "/" + str(path or "").lstrip("/")
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "SarahMemoryLocalCloudBridge/1.0",
+        "X-SarahMemory-Bridge": "local-cloud-node",
+    }
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    try:
+        req = urllib.request.Request(url, data=data, method=str(method or "GET").upper(), headers=headers)
+        with urllib.request.urlopen(req, timeout=float(timeout or _cloud_node_timeout())) as resp:
+            raw = resp.read(1024 * 1024)
+            text = raw.decode("utf-8", errors="replace")
+            parsed = json.loads(text) if text.strip() else {}
+            if not isinstance(parsed, dict):
+                parsed = {"ok": False, "error": "non_object_json", "raw_type": type(parsed).__name__}
+            parsed.setdefault("http_status", int(getattr(resp, "status", 0) or 0))
+            parsed.setdefault("url", url)
+            parsed.setdefault("execution_authority", False)
+            return parsed
+    except urllib.error.HTTPError as exc:
+        return {"ok": False, "error": f"http_{exc.code}", "url": url, "http_status": int(exc.code), "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "url": url, "execution_authority": False}
+
+
+def _cloud_node_identity_from_beacon(beacon: Dict[str, Any]) -> Dict[str, Any]:
+    declaration = beacon.get("declaration") if isinstance(beacon.get("declaration"), dict) else {}
+    identity = declaration.get("node_identity") if isinstance(declaration.get("node_identity"), dict) else {}
+    return {
+        "schema": str(declaration.get("schema") or ""),
+        "node_id": str(identity.get("node_id") or ""),
+        "name": str(identity.get("name") or ""),
+        "node_class": str(identity.get("node_class") or ""),
+        "smugcc_compatible": bool(identity.get("smugcc_compatible")),
+        "protocol": declaration.get("protocol") if isinstance(declaration.get("protocol"), dict) else {},
+    }
+
+
+def discover_cloud_node(force: bool = False) -> Dict[str, Any]:
+    """Discover and verify the configured public SarahMemory node."""
+    started = time.time()
+    base = _cloud_node_base_url()
+    out: Dict[str, Any] = {
+        "ok": False,
+        "schema": "SarahMemory.cloud_node.discovery.v1",
+        "base_url": base,
+        "runtime_role": "cloud" if _runtime_is_cloud() else "local",
+        "verified": False,
+        "checks": {},
+        "identity": {},
+        "trust_negotiation": {
+            "sarahnet": False,
+            "smugcc": False,
+            "local_authority_retained": True,
+            "execution_authority": False,
+        },
+        "approved_capabilities": [],
+        "execution_authority": False,
+    }
+    if not bool(getattr(config, "SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED", True)) and not force:
+        out.update({"reason": "cloud_node_discovery_disabled"})
+        return out
+    if str(os.getenv("SARAH_FORCE_OFFLINE", "")).strip().lower() in ("1", "true", "yes", "on"):
+        out.update({"reason": "force_offline"})
+        return out
+    if not base:
+        out.update({"reason": "cloud_node_base_url_missing"})
+        return out
+
+    health = _cloud_json_request("/api/health")
+    version = _cloud_json_request("/api/version")
+    beacon = _cloud_json_request("/api/smugcc/beacon")
+    net2 = _cloud_json_request("/api/net2/health", timeout=min(_cloud_node_timeout(), 3.0))
+    identity = _cloud_node_identity_from_beacon(beacon if isinstance(beacon, dict) else {})
+    required_schema = str(getattr(config, "SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA", "SarahMemory.SMUGCC.beacon.v1") or "")
+    health_ok = bool(health.get("ok") or str(health.get("status") or "").lower() in ("ok", "healthy", "running"))
+    version_ok = bool(version.get("ok") or version.get("version") or version.get("build"))
+    beacon_ok = bool(beacon.get("ok")) and identity.get("schema") == required_schema and bool(identity.get("smugcc_compatible"))
+    sarahnet_ok = bool(net2.get("ok") or str(net2.get("status") or "").lower() in ("ok", "healthy", "running"))
+    verified = bool(health_ok and version_ok and beacon_ok)
+    out.update({
+        "ok": verified,
+        "verified": verified,
+        "reason": "verified" if verified else "required_checks_failed",
+        "identity": identity,
+        "checks": {
+            "health": {"ok": health_ok, "response": health},
+            "version": {"ok": version_ok, "response": version},
+            "beacon": {"ok": beacon_ok, "response": beacon},
+            "sarahnet": {"ok": sarahnet_ok, "response": net2},
+        },
+        "trust_negotiation": {
+            "sarahnet": sarahnet_ok,
+            "smugcc": beacon_ok,
+            "local_authority_retained": True,
+            "cloud_authority_over_local": False,
+            "execution_authority": False,
+        },
+        "approved_capabilities": list(getattr(config, "SARAHMEMORY_CLOUD_NODE_ALLOWED_CAPABILITIES", ("live_web_research",))),
+        "duration_ms": int((time.time() - started) * 1000),
+    })
+    return out
+
+
+def _record_cloud_node_receipt(event_type: str, query: str, verdict: str, summary: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        import SarahMemoryLedger as ledger  # type: ignore
+        fn = getattr(ledger, "record_governance_receipt", None)
+        if not callable(fn):
+            return {"ok": False, "error": "ledger_receipt_unavailable", "execution_authority": False}
+        task_id = "cloud_research_" + hashlib.sha256(str(query or "").encode("utf-8", errors="ignore")).hexdigest()[:18]
+        payload = {
+            "query_hash": hashlib.sha256(str(query or "").encode("utf-8", errors="ignore")).hexdigest(),
+            "cloud_node": _cloud_node_base_url(),
+            "metadata": metadata,
+        }
+        return fn(
+            "research",
+            event_type,
+            subject_id="cloud_node:" + _cloud_node_base_url(),
+            task_id=task_id,
+            lane="cloud_sarahmemory_bridge",
+            verdict=verdict,
+            risk="medium",
+            retention_class="cloud_research",
+            payload=payload,
+            summary=summary,
+            metadata=metadata,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "execution_authority": False}
+
+
+def get_cloud_research_data(query: str, *, force: bool = False) -> Dict[str, Any]:
+    """Request live research from the verified public SarahMemory node."""
+    started = time.time()
+    q = str(query or "").strip()
+    allowed, reason = _cloud_research_allowed()
+    if not q:
+        return {"ok": False, "source": "cloud_sarahmemory_node", "data": "", "confidence": 0.0, "reason": "empty_query", "execution_authority": False}
+    if not allowed:
+        metadata = {"reason": reason, "cloud_node": _cloud_node_base_url()}
+        receipt = _record_cloud_node_receipt("CLOUD_RESEARCH_BLOCKED", q, "BLOCK", f"Cloud research blocked: {reason}", metadata)
+        return {"ok": False, "source": "cloud_sarahmemory_node", "data": "", "confidence": 0.0, "reason": reason, "receipt": receipt, "execution_authority": False}
+
+    discovery = discover_cloud_node(force=True)
+    if not bool(discovery.get("verified")):
+        metadata = {"discovery": discovery}
+        receipt = _record_cloud_node_receipt("CLOUD_DISCOVERY_FAILED", q, "BLOCK", "Cloud node discovery or identity verification failed.", metadata)
+        return {"ok": False, "source": "cloud_sarahmemory_node", "data": "", "confidence": 0.0, "reason": "cloud_node_not_verified", "discovery": discovery, "receipt": receipt, "execution_authority": False}
+
+    request_payload = {
+        "query": q,
+        "source": "local_sarahmemory_cloud_bridge",
+        "governance": {
+            "schema": "SarahMemory.cloud_research_request.v1",
+            "local_authority_retained": True,
+            "cloud_authority_over_local": False,
+            "requested_capability": "live_web_research",
+            "requires_audit": True,
+        },
+    }
+    cloud = _cloud_json_request("/api/research/search", method="POST", payload=request_payload, timeout=max(_cloud_node_timeout(), 8.0))
+    cloud_ok = bool(cloud.get("ok") or cloud.get("success") or cloud.get("data") or cloud.get("answer") or cloud.get("result"))
+    data = str(cloud.get("data") or cloud.get("answer") or cloud.get("result") or cloud.get("snippet") or "")
+    if not data and isinstance(cloud.get("response"), dict):
+        response = cloud.get("response") or {}
+        data = str(response.get("data") or response.get("answer") or response.get("result") or response.get("snippet") or "")
+    confidence = 0.0
+    try:
+        confidence = float(cloud.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    if cloud_ok and confidence <= 0.0:
+        confidence = 0.72
+    metadata = {
+        "method": "cloud_sarahmemory_bridge",
+        "cloud_node": _cloud_node_base_url(),
+        "discovery": discovery,
+        "cloud_response_status": {"ok": cloud_ok, "http_status": cloud.get("http_status"), "url": cloud.get("url")},
+        "cloud_source": cloud.get("source"),
+        "local_authority_retained": True,
+        "execution_authority": False,
+    }
+    receipt = _record_cloud_node_receipt(
+        "CLOUD_RESEARCH_RETURNED" if cloud_ok else "CLOUD_RESEARCH_FAILED",
+        q,
+        "OBSERVED" if cloud_ok else "BLOCK",
+        "Cloud research returned through verified SarahMemory node." if cloud_ok else "Cloud research request failed after verification.",
+        metadata,
+    )
+    return {
+        "ok": cloud_ok,
+        "source": "cloud_sarahmemory_node",
+        "intent": str(cloud.get("intent") or "research"),
+        "data": data,
+        "snippet": data,
+        "confidence": min(0.92, max(0.0, confidence)),
+        "latency_ms": int((time.time() - started) * 1000),
+        "metadata": metadata,
+        "receipt": receipt,
+        "raw_cloud_response": cloud if not cloud_ok else {"source": cloud.get("source"), "metadata": cloud.get("metadata")},
+        "execution_authority": False,
+    }
+
+
+def cloud_node_status(force: bool = False) -> Dict[str, Any]:
+    allowed, reason = _cloud_research_allowed()
+    discovery = discover_cloud_node(force=force)
+    return {
+        "ok": True,
+        "schema": "SarahMemory.cloud_node.status.v1",
+        "cloud_node": _cloud_node_base_url(),
+        "runtime_role": "cloud" if _runtime_is_cloud() else "local",
+        "discovery": discovery,
+        "research_allowed": allowed,
+        "research_gate_reason": reason,
+        "local_authority_retained": True,
+        "execution_authority": False,
+    }
+
+
+def _query_needs_cloud_research(query: str, result: Optional[Dict[str, Any]] = None) -> bool:
+    q = str(query or "").lower()
+    current_markers = (
+        "current", "latest", "today", "tonight", "this week", "this month",
+        "news", "live", "web", "internet", "online", "search", "look up",
+        "price", "weather", "score", "schedule", "version", "release",
+    )
+    if any(marker in q for marker in current_markers):
+        return True
+    if not isinstance(result, dict):
+        return False
+    try:
+        confidence = float(result.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+    source = str(result.get("source") or "").lower()
+    if source in ("none", "error", "local_none", "local_error"):
+        return True
+    if confidence < 0.68:
+        return True
+    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    court = metadata.get("evidence_court") if isinstance(metadata, dict) else None
+    if isinstance(court, dict) and "freshness_required" in json.dumps(court, ensure_ascii=True).lower():
+        return True
+    return False
 
 
 def _research_source_label(result: "ResearchResult", lane: str) -> "ResearchResult":
@@ -2176,7 +2485,22 @@ def get_research_data(query: str) -> Dict[str, Any]:
         result = asyncio.run(parallel_research(query))
         
         # Convert to legacy dictionary format
-        return result.to_dict()
+        out = result.to_dict()
+        if _query_needs_cloud_research(query, out) and not _runtime_is_cloud():
+            cloud = get_cloud_research_data(query)
+            if bool(cloud.get("ok")) and str(cloud.get("data") or "").strip():
+                return cloud
+            try:
+                out.setdefault("metadata", {})
+                if isinstance(out.get("metadata"), dict):
+                    out["metadata"]["cloud_bridge"] = {
+                        "ok": bool(cloud.get("ok")),
+                        "reason": cloud.get("reason") or cloud.get("error"),
+                        "receipt": cloud.get("receipt"),
+                    }
+            except Exception:
+                pass
+        return out
     
     except Exception as e:
         logger.error(f"[RESEARCH ERROR] {e}")
@@ -2383,6 +2707,9 @@ __all__ = [
     # Main API
     'get_research_data',
     'get_local_research_data',
+    'discover_cloud_node',
+    'cloud_node_status',
+    'get_cloud_research_data',
     'parallel_research',
     
     # Research Classes
@@ -2603,4 +2930,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

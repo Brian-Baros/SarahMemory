@@ -4232,9 +4232,15 @@ def terminal_api_execute(payload: Dict[str, Any], *, caller: str = "api") -> Dic
 
 def _smugcc_operation_reply(payload: Dict[str, Any], *, task: str, caller: str) -> Optional[Dict[str, Any]]:
     raw = str(task or "").strip()
-    if not raw.lower().startswith("/smugcc"):
+    raw_low = raw.lower()
+    if raw_low.startswith("/beacon"):
+        body = "beacon " + raw[len("/beacon"):].strip()
+    elif raw_low.startswith("/agent ambassador"):
+        body = "ambassador " + raw[len("/agent ambassador"):].strip()
+    elif raw_low.startswith("/smugcc"):
+        body = raw[len("/smugcc"):].strip()
+    else:
         return None
-    body = raw[len("/smugcc"):].strip()
     low = body.lower()
     ts = datetime.now().isoformat()
 
@@ -4256,6 +4262,76 @@ def _smugcc_operation_reply(payload: Dict[str, Any], *, task: str, caller: str) 
     try:
         import importlib
         smugcc = importlib.import_module("SarahMemorySMUGCC")
+        if low in {"beacon", "beacon status", "beacon declaration"}:
+            data = smugcc.get_beacon_declaration()
+            return out(True, json.dumps(data, indent=2, default=str), data)
+        if low in {"ambassador", "ambassador help", "agent ambassador", "agent ambassador help"}:
+            data = smugcc.get_ambassador_status()
+            help_text = "\n".join([
+                "Beacon / Ambassador commands:",
+                "- /beacon",
+                "- /beacon declaration",
+                "- /agent ambassador status",
+                "- /agent ambassador prepare purpose=<purpose> scope=<scope> targets=<target1,target2>",
+                "- /agent ambassador approve purpose=<purpose> scope=<scope> targets=<target1,target2> --confirm",
+                "- /agent ambassador recall mission_id=<id> reason=<reason>",
+                "- /agent ambassador audit",
+                "",
+                "Ambassador missions are consent-based outreach contracts only. No execution authority is granted.",
+            ])
+            return out(True, help_text, data)
+        if low == "ambassador status":
+            data = smugcc.get_ambassador_status()
+            return out(True, json.dumps(data, indent=2, default=str), data)
+        if low.startswith("ambassador prepare"):
+            parsed = _terminal_agent_command_fields(body[len("ambassador prepare"):].strip())
+            purpose = str(parsed.get("purpose") or parsed.get("objective") or body[len("ambassador prepare"):].strip())
+            targets = parsed.get("targets") or parsed.get("allowed_targets") or []
+            if isinstance(targets, str):
+                targets = [x.strip() for x in targets.split(",") if x.strip()]
+            contract_payload = {
+                "purpose": purpose,
+                "scope": str(parsed.get("scope") or parsed.get("allowed_scope") or "operator_defined_ambassador_scope"),
+                "allowed_targets": targets,
+                "allowed_channels": parsed.get("channels") or parsed.get("allowed_channels") or ["approved_public_interface"],
+                "expires_at": parsed.get("expires_at") or parsed.get("expiry") or "",
+                "max_attempts": parsed.get("max_attempts") or 1,
+            }
+            data = smugcc.prepare_ambassador_mission(contract_payload)
+            return out(bool(data.get("ok")), json.dumps(data, indent=2, default=str), data, blocked=not bool(data.get("ok")), reason="ambassador_contract_invalid" if not data.get("ok") else "")
+        if low.startswith("ambassador approve"):
+            parsed = _terminal_agent_command_fields(body[len("ambassador approve"):].strip())
+            purpose = str(parsed.get("purpose") or parsed.get("objective") or body[len("ambassador approve"):].strip())
+            targets = parsed.get("targets") or parsed.get("allowed_targets") or []
+            if isinstance(targets, str):
+                targets = [x.strip() for x in targets.split(",") if x.strip()]
+            contract_payload = {
+                "purpose": purpose,
+                "scope": str(parsed.get("scope") or parsed.get("allowed_scope") or "operator_defined_ambassador_scope"),
+                "allowed_targets": targets,
+                "allowed_channels": parsed.get("channels") or parsed.get("allowed_channels") or ["approved_public_interface"],
+                "expires_at": parsed.get("expires_at") or parsed.get("expiry") or "",
+                "max_attempts": parsed.get("max_attempts") or 1,
+                "confirmed": _truthy_confirmation(payload, task),
+            }
+            data = smugcc.approve_ambassador_mission(contract_payload)
+            return out(bool(data.get("ok")), json.dumps(data, indent=2, default=str), data, blocked=not bool(data.get("ok")), reason=str(data.get("reason") or "ambassador_approval_blocked") if not data.get("ok") else "")
+        if low.startswith("ambassador recall") or low.startswith("ambassador revoke"):
+            rest = body.split(" ", 2)[2] if len(body.split(" ", 2)) >= 3 else ""
+            parsed = _terminal_agent_command_fields(rest)
+            data = smugcc.recall_ambassador_mission({
+                "mission_id": parsed.get("mission_id") or parsed.get("id") or rest.split()[0] if rest.split() else "",
+                "reason": parsed.get("reason") or "operator_recall",
+            })
+            return out(bool(data.get("ok")), json.dumps(data, indent=2, default=str), data, blocked=not bool(data.get("ok")), reason=str(data.get("decision") or "") if not data.get("ok") else "")
+        if low == "ambassador audit":
+            try:
+                ledger = importlib.import_module("SarahMemoryLedger")
+                rows = ledger.get_governance_receipts(domain="smugcc", limit=50)
+                rows = [row for row in rows if "AMBASSADOR" in str(row.get("event_type") or row.get("event") or "").upper()]
+            except Exception as exc:
+                rows = [{"error": str(exc)}]
+            return out(True, json.dumps(rows, indent=2, default=str), {"receipts": rows})
         if not body or low == "status":
             return out(True, json.dumps(smugcc.get_smugcc_status(), indent=2, default=str), {"status": smugcc.get_smugcc_status()})
         if low in {"adapters", "adapter"}:

@@ -743,6 +743,22 @@ except Exception as _e:
     logger.debug(f"[v9.0] Synapses bootstrap skipped/failed: {type(_e).__name__}: {_e}")
 
 try:
+    # World fabric is a governed display/state substrate. Boot seeding is local,
+    # auditable, and has no physical or remote execution authority.
+    import SarahMemoryWorld as _SM_WORLD  # type: ignore
+    if hasattr(_SM_WORLD, "SarahMemoryWorldMatrixFabric"):
+        _world = _SM_WORLD.SarahMemoryWorldMatrixFabric()  # type: ignore[attr-defined]
+        _world_summary = _world.boot_seed_world()
+        logger.info(
+            "[v9.0][WORLD] SarahMemoryWorld boot seed complete: entities=%s relationships=%s execution_authority=%s",
+            _world_summary.get("entity_count"),
+            _world_summary.get("relationship_count"),
+            _world_summary.get("execution_authority"),
+        )
+except Exception as _e:
+    logger.warning(f"[v9.0][WORLD] SarahMemoryWorld boot seed skipped/failed: {type(_e).__name__}: {_e}")
+
+try:
     _neosky = bool(getattr(config, "NEOSKYMATRIX", False)) or str(os.getenv("NEOSKYMATRIX", "")).strip().lower() in ("1","true","yes","on","enabled")
     _dev = bool(getattr(config, "DEVELOPERSMODE", False)) or str(os.getenv("DEVELOPERSMODE", "")).strip().lower() in ("1","true","yes","on","enabled")
     _autonomy_master = bool(getattr(config, "SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED", False))
@@ -806,13 +822,15 @@ def start_local_api_server() -> bool:
             logger.warning("[BOOT] API server script not found. Skipping API server startup.")
             return False
 
-        host = str(getattr(config, "SARAHMEMORY_LOCAL_API_BIND_HOST", "127.0.0.1") or "127.0.0.1")
-        probe_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-        port = int(getattr(config, "DEFAULT_PORT", 8000) or 8000)
+        # Governed local boot contract: SarahMemory local API always starts on
+        # loopback port 8000. Do not let stale env/config drift move local boot.
+        host = "127.0.0.1"
+        probe_host = "127.0.0.1"
+        port = 8000
         stale_pid = _sm_read_pid(_sm_api_pid_path())
         if stale_pid and not _sm_pid_alive(stale_pid):
             try:
-                os.remove(_sm_api_pid_path())
+                _sm_atomic_write_text(_sm_api_pid_path(), "0\n")
             except Exception:
                 pass
             stale_pid = 0
@@ -838,8 +856,12 @@ def start_local_api_server() -> bool:
                 logger.warning("[BOOT] local_api.pid points to SarahMemoryMain pid=%s; ignoring stale API marker and launching API child.", stale_pid)
                 stale_pid = 0
             elif not _sm_pid_is_sarah_api(stale_pid, api_server_script):
-                logger.error("[BOOT] local_api.pid points to a live non-SarahMemory process (%s). Startup denied.", stale_pid)
-                return False
+                logger.warning("[BOOT] local_api.pid points to a live non-SarahMemory process (%s), but port %s is free; clearing stale marker and launching API child.", stale_pid, port)
+                try:
+                    _sm_atomic_write_text(_sm_api_pid_path(), "0\n")
+                except Exception:
+                    pass
+                stale_pid = 0
         if stale_pid and _sm_pid_alive(stale_pid):
             if not _sm_pid_is_sarah_api(stale_pid, api_server_script):
                 logger.error("[BOOT] local_api.pid points to a live non-SarahMemory process (%s). Startup denied.", stale_pid)
@@ -905,8 +927,8 @@ def wait_for_api_server(timeout=30):
     if requests is None:
         logger.warning("[v9.0] requests is unavailable; skipping local API readiness probe.")
         return False
-    url_health = f"http://{config.DEFAULT_HOST}:{config.DEFAULT_PORT}/api/health"
-    url_status = f"http://{config.DEFAULT_HOST}:{config.DEFAULT_PORT}/api/status"
+    url_health = "http://127.0.0.1:8000/api/health"
+    url_status = "http://127.0.0.1:8000/api/status"
 
     for attempt in range(timeout):
         try:

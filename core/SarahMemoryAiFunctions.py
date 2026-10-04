@@ -854,6 +854,8 @@ class AdvancedAgentState:
 
     def shutdown(self, timeout: float = 3.0) -> Dict[str, Any]:
         """Stop lifecycle workers within one shared deadline and persist state."""
+        if not self._initialized and not any(t.is_alive() for t in self.executor_threads):
+            return {"ok": True, "joined": [], "alive": [], "standby": True}
         self.shutdown_flag.set()
         deadline = time.monotonic() + max(0.1, float(timeout))
         joined = []
@@ -1650,8 +1652,9 @@ def shutdown_advanced_agent(timeout: float = 3.0) -> Dict[str, Any]:
     if _watch_thread is not None and _watch_thread.is_alive() and _watch_thread is not threading.current_thread():
         _watch_thread.join(timeout=max(0.1, min(float(timeout), 1.0)))
         watcher_alive = _watch_thread.is_alive()
-    agent_result = ADVANCED_AGENT.shutdown(timeout=max(0.1, float(timeout)))
-    checkpoint = checkpoint_context_history("PASSIVE")
+    agent_started = bool(getattr(ADVANCED_AGENT, "_initialized", False)) or any(t.is_alive() for t in getattr(ADVANCED_AGENT, "executor_threads", []))
+    agent_result = ADVANCED_AGENT.shutdown(timeout=max(0.1, float(timeout))) if agent_started else {"ok": True, "standby": True}
+    checkpoint = checkpoint_context_history("PASSIVE") if bool(globals().get("_CONTEXT_INITIALIZED", False)) else {"ok": True, "standby": True}
     _watch_thread_started = bool(watcher_alive)
     return {"ok": bool(agent_result.get("ok")) and not watcher_alive, "agent": agent_result, "watcher_alive": watcher_alive, "checkpoint": checkpoint}
 
@@ -1668,6 +1671,12 @@ def advanced_agent_query(user_text: str, context: Optional[Dict] = None) -> str:
     - Autonomous learning
     """
     start_time = time.time()
+    try:
+        init_context_history()
+    except Exception:
+        pass
+    if not bool(getattr(ADVANCED_AGENT, "_initialized", False)):
+        initialize_advanced_agent()
     ADVANCED_AGENT.interaction_count += 1
     kg_engine = None  # created lazily; avoids NameError if Step 3 fails
 
@@ -2932,13 +2941,23 @@ def _legacy_route_query(user_text: str) -> str:
 def _module_init():
     """Initialize module on import"""
     try:
-        # Initialize context history
-        init_context_history()
+        import_autostart = bool(getattr(config, "ADVANCED_AGENT_IMPORT_AUTOSTART", True))
+
+        # Initialize context history only when import autostart is enabled.
+        # Cloud/public web WSGI boot should not hydrate DB-backed agent context
+        # until a governed chat/agent path actually asks for it.
+        if import_autostart:
+            init_context_history()
+        else:
+            logger.info("[SarahMemoryAiFunctions] Context history import hydration held in governed standby")
 
         # Initialize advanced agent if enabled
         if getattr(config, "USE_ADVANCED_AGENT", True):
-            initialize_advanced_agent()
-            logger.info("[SarahMemoryAiFunctions] v8.0 Advanced Agent loaded successfully")
+            if import_autostart:
+                initialize_advanced_agent()
+                logger.info("[SarahMemoryAiFunctions] v8.0 Advanced Agent loaded successfully")
+            else:
+                logger.info("[SarahMemoryAiFunctions] Advanced Agent held in governed import standby")
         else:
             logger.info("[SarahMemoryAiFunctions] Running in legacy mode")
     except Exception as e:
@@ -3614,4 +3633,3 @@ def sml_receive_packet(packet, *, action="observe", note="", updates=None):
     except Exception:
         return packet
 # --- SML ORGAN ADAPTER END ---
-

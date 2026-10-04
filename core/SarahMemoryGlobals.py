@@ -521,7 +521,7 @@ LOCAL_ONLY_MODE = _env_flag("SARAH_LOCAL_ONLY_MODE", "true")  # True = bypass ex
 # They add a mandatory local-first startup leash so developer/lab flags cannot
 # silently start autonomous loops, remote broker actions, web/API calls, or
 # outside-agent-triggered execution during ordinary local boot.
-SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED", "false")
+SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_AUTONOMOUS_STARTUP_ENABLED", "true")
 SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED = _env_flag("SARAHMEMORY_SELFAWARE_AUTOSTART_ENABLED", "true")
 SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED = _env_flag("SARAHMEMORY_EVOLUTION_AUTOSTART_ENABLED", "false")
 SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED = _env_flag("SARAHMEMORY_API_AUTONOMOUS_STARTUP_ENABLED", "false")
@@ -529,6 +529,15 @@ SARAHMEMORY_ONLINE_SESSION_ARMED = _env_flag("SARAHMEMORY_ONLINE_SESSION_ARMED",
 SARAHMEMORY_REMOTE_TRIGGER_BLOCK = _env_flag("SARAHMEMORY_REMOTE_TRIGGER_BLOCK", "true")
 SARAHMEMORY_AGENT_FIREWALL_ENABLED = _env_flag("SARAHMEMORY_AGENT_FIREWALL_ENABLED", "true")
 SARAHMEMORY_LOCAL_API_BIND_HOST = os.getenv("SARAHMEMORY_LOCAL_API_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+
+# Governed cloud-node bridge. The local node may discover the public
+# PythonAnywhere node, but the cloud node never becomes authority over local.
+SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED = _env_flag("SARAHMEMORY_CLOUD_NODE_DISCOVERY_ENABLED", "true")
+SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED = _env_flag("SARAHMEMORY_CLOUD_NODE_RESEARCH_ENABLED", "false")
+SARAHMEMORY_CLOUD_NODE_BASE_URL = os.getenv("SARAHMEMORY_CLOUD_NODE_BASE_URL", "https://ai.sarahmemory.com").strip().rstrip("/")
+SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA = os.getenv("SARAHMEMORY_CLOUD_NODE_REQUIRED_BEACON_SCHEMA", "SarahMemory.SMUGCC.beacon.v1").strip()
+SARAHMEMORY_CLOUD_NODE_ALLOWED_CAPABILITIES = ("live_web_research", "sarahnet_hub", "smugcc_discovery")
+SARAHMEMORY_CLOUD_NODE_TIMEOUT_SEC = float(os.getenv("SARAHMEMORY_CLOUD_NODE_TIMEOUT_SEC", "4.0") or 4.0)
 
 # Cognitive Living Loop / Instinct runtime controls.
 # The loop is internal, bounded, read-mostly, and does not grant physical authority.
@@ -6593,7 +6602,7 @@ except NameError:
 try:
     BRIDGE_ALLOWED_ORIGINS
 except NameError:
-    BRIDGE_ALLOWED_ORIGINS = {"file://", "https://api.sarahmemory.com", "https://www.sarahmemory.com"}
+    BRIDGE_ALLOWED_ORIGINS = {"file://", "https://api.sarahmemory.com", "https://www.sarahmemory.com", "https://ai.sarahmemory.com"}
 
 def origin_allowed(origin: str) -> bool:
     try:
@@ -6751,6 +6760,13 @@ AI_AGENT_ALLOW_REMOTE_CONTROL = _env_flag(
 AI_AGENT_ALLOW_NETWORK_TASKS = _env_flag(
     "SARAH_AGENT_ALLOW_NETWORK_TASKS",
     _default_agent_gate(local_default="true", cloud_default="true"),
+)
+
+# The advanced agent remains an approved capability, but cloud/public-web
+# imports must not start background worker loops before the WSGI API is ready.
+ADVANCED_AGENT_IMPORT_AUTOSTART = _env_flag(
+    "SARAH_ADVANCED_AGENT_IMPORT_AUTOSTART",
+    _default_agent_gate(local_default="true", cloud_default="false"),
 )
 
 

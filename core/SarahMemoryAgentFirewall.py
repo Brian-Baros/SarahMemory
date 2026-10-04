@@ -1217,6 +1217,7 @@ def _build_agent_capture_report(payload: Any, result: Dict[str, Any], identity: 
             "attempted_exfiltration": bool(result.get("scrape_or_mining_score", 0) >= 50),
             "attempted_prompt_injection": bool(result.get("hits")),
             "attempted_policy_bypass": bool(result.get("hits")),
+            "smagentx": result.get("smagentx", {}),
         },
         "risk": {
             "risk_score": result.get("risk_score"),
@@ -1272,6 +1273,147 @@ def _hash_text(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
     except Exception:
         return ""
+
+
+# ---------------------------------------------------------------------------
+# SMAGENTX - governed Agent Detection & Response correlation layer
+# ---------------------------------------------------------------------------
+SMAGENTX_SCHEMA = "SARAHMEMORY_SMAGENTX_V1"
+SMAGENTX_SECI_PATTERNS = (
+    "self-authorize", "self authorize", "execute without approval",
+    "register capability", "enable capability", "activate capability",
+    "grant authority", "override approval", "bypass approval",
+    "persist capability", "promote to memory", "write to memory",
+)
+SMAGENTX_RECON_PATTERNS = (
+    "enumerate endpoints", "enumerate services", "scan ports", "port scan",
+    "discover endpoints", "list credentials", "probe permissions",
+)
+SMAGENTX_PERSISTENCE_PATTERNS = (
+    "startup folder", "scheduled task", "autorun", "create service",
+    "registry run", "persistence", "survive restart",
+)
+SMAGENTX_EXFIL_PATTERNS = (
+    "exfiltrate", "harvest credentials", "dump secrets", "steal token",
+    "send credentials", "export private key", "vector dump",
+)
+SMAGENTX_AUDIT_INTERFERENCE_PATTERNS = (
+    "disable audit", "delete audit", "erase audit", "disable logging",
+    "clear logs", "delete logs", "tamper ledger",
+)
+
+
+def _smagentx_hits(lower_text: str, patterns: Tuple[str, ...]) -> List[str]:
+    return [p for p in patterns if p in lower_text][:32]
+
+
+def _smagentx_canary_values(payload: Any) -> List[str]:
+    """Return explicitly supplied canary identifiers; never treats arbitrary hashes as authority."""
+    data = payload if isinstance(payload, dict) else {}
+    body = data.get("json") if isinstance(data.get("json"), dict) else data
+    values: List[str] = []
+    if isinstance(body, dict):
+        for key in ("canary_hash", "canary_id", "tripwire_id", "synthetic_resource_id"):
+            value = str(body.get(key) or "").strip()
+            if value:
+                values.append(value[:256])
+    return values[:8]
+
+
+def smagentx_assess(
+    payload: Any, *, source: str = "unknown", remote_addr: str = "",
+    identity: Optional[Dict[str, Any]] = None, passport_verified: bool = False,
+) -> Dict[str, Any]:
+    """Correlate defensive agent-risk signals without granting execution authority.
+
+    SMAGENTX observes and recommends bounded response. AgentFirewall and the
+    existing governance organs remain enforcement/authority owners.
+    """
+    text = _normalize_text(payload, max_len=24000)
+    lower = text.lower()
+    ident = identity if isinstance(identity, dict) else _extract_agent_identity(payload)
+    seci_hits = _smagentx_hits(lower, SMAGENTX_SECI_PATTERNS)
+    recon_hits = _smagentx_hits(lower, SMAGENTX_RECON_PATTERNS)
+    persistence_hits = _smagentx_hits(lower, SMAGENTX_PERSISTENCE_PATTERNS)
+    exfil_hits = _smagentx_hits(lower, SMAGENTX_EXFIL_PATTERNS)
+    audit_hits = _smagentx_hits(lower, SMAGENTX_AUDIT_INTERFERENCE_PATTERNS)
+    hijack_hits = [p for p in HIJACK_PATTERNS if p.lower() in lower][:32]
+    remote_write_hits = [p for p in REMOTE_WRITE_PATTERNS if p.lower() in lower][:32]
+    sensitive_hits = [p for p in SENSITIVE_TARGET_PATTERNS if p.lower() in lower][:32]
+    canary_values = _smagentx_canary_values(payload)
+
+    local_peer = _is_local_peer(remote_addr)
+    agent_like = bool(
+        ident.get("agent_id") or ident.get("passport_id") or ident.get("signature")
+        or _agent_visibility_match_tokens(lower)
+    )
+
+    # Explainable bounded score. Signals correlate risk; they do not prove intent.
+    score = 0
+    score += min(30, len(seci_hits) * 10)
+    score += min(20, len(hijack_hits) * 8)
+    score += min(18, len(remote_write_hits) * 9)
+    score += min(20, len(exfil_hits) * 10)
+    score += min(16, len(persistence_hits) * 8)
+    score += min(12, len(recon_hits) * 6)
+    score += min(20, len(audit_hits) * 10)
+    score += min(15, len(sensitive_hits) * 5)
+    if agent_like and not local_peer and not passport_verified:
+        score += 20
+    score = max(0, min(100, score))
+
+    if score >= 85:
+        threat_class, tier, response = "CLASS_3_MAVERICK", "CRITICAL", "ISOLATE_AND_REQUIRE_REVIEW"
+    elif score >= 60:
+        threat_class, tier, response = "CLASS_2_ROGUE", "HIGH", "QUARANTINE"
+    elif score >= 30:
+        threat_class, tier, response = "CLASS_1_DRIFTING", "MEDIUM", "RESTRICT_AND_OBSERVE"
+    else:
+        threat_class, tier, response = "CLASS_0_STANDARD", "LOW", "OBSERVE"
+
+    # Threat confidence and response authority are deliberately independent.
+    confidence = min(0.99, 0.50 + (score / 200.0))
+    response_authority = 0  # SMAGENTX never self-grants destructive authority.
+    return {
+        "schema": SMAGENTX_SCHEMA,
+        "enabled": _bool_flag("SARAHMEMORY_SMAGENTX_ENABLED", True),
+        "threat_class": threat_class,
+        "threat_score": score,
+        "threat_tier": tier,
+        "threat_confidence": round(confidence, 3),
+        "response_authority": response_authority,
+        "recommended_response": response,
+        "signals": {
+            "seci": seci_hits, "hijack": hijack_hits, "recon": recon_hits,
+            "persistence": persistence_hits, "exfiltration": exfil_hits,
+            "audit_interference": audit_hits, "remote_write": remote_write_hits,
+            "sensitive_target": sensitive_hits,
+        },
+        "canary": {
+            "observed": bool(canary_values),
+            "value_hashes": [_hash_text(v) for v in canary_values],
+            "recognition_grants_authority": False,
+        },
+        "identity": {
+            "agent_id": str(ident.get("agent_id") or "")[:180],
+            "passport_id": str(ident.get("passport_id") or "")[:180],
+            "passport_verified": bool(passport_verified),
+            "remote": not local_peer,
+            "agent_like": agent_like,
+        },
+        "invariants": {
+            "knowledge_is_authority": False,
+            "hash_recognition_is_authority": False,
+            "identity_claim_is_authentication": False,
+            "threat_confidence_is_response_authority": False,
+        },
+        "payload_sha256": _hash_text(text),
+        "source": str(source or "unknown")[:180],
+        "execution_authority": False,
+        "destructive_authority": False,
+        "remote_action_authority": False,
+        "ts": time.time(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1962,6 +2104,10 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         passport_result = _verify_passport_return(identity, record_return=True)
     legacy_signature_match = False if identity.get("passport_id") else _legacy_agent_signature_matches(identity)
     signature_match = bool(passport_result and passport_result.get("ok")) or legacy_signature_match
+    smagentx = smagentx_assess(
+        payload, source=source, remote_addr=remote_addr, identity=identity,
+        passport_verified=bool(passport_result and passport_result.get("ok")),
+    )
 
     verdict = "ALLOW"
     reason = "no hijack pattern detected"
@@ -1989,6 +2135,16 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
     elif firewall_enabled and foreign_task_guard.get("verdict") == "DENY":
         verdict, reason, risk_score, risk_tier, containment_state = (
             "DENY", "foreign or nonlocal task origin attempted executable authority", 94, "HIGH", "BLOCKED"
+        )
+    elif firewall_enabled and smagentx.get("enabled") and int(smagentx.get("threat_score") or 0) >= 85:
+        verdict, reason, risk_score, risk_tier, containment_state = (
+            "DENY", "SMAGENTX correlated critical hostile-agent behavior; reversible isolation required",
+            max(95, int(smagentx.get("threat_score") or 0)), "HIGH", "QUARANTINED"
+        )
+    elif firewall_enabled and smagentx.get("enabled") and int(smagentx.get("threat_score") or 0) >= 60:
+        verdict, reason, risk_score, risk_tier, containment_state = (
+            "DENY", "SMAGENTX correlated high-risk rogue-agent behavior; RoachMotel quarantine required",
+            max(90, int(smagentx.get("threat_score") or 0)), "HIGH", "QUARANTINED"
         )
     elif firewall_enabled and passport_result is not None and not passport_result.get("ok"):
         verdict = "DENY"
@@ -2030,6 +2186,7 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
         "passport_result": passport_result or {},
         "foreign_task_guard": foreign_task_guard,
         "local_task_guard": local_task_guard or {},
+        "smagentx": smagentx,
         "agent_identity": identity,
         "risk_score": risk_score,
         "risk_tier": risk_tier,
@@ -2066,6 +2223,9 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
                 "matched_pattern_count": len(hits) + len(remote_hits) + len(sensitive_hits),
                 "passport_verified": bool(result.get("passport_verified")),
                 "passport_id": audit_passport_id,
+                "smagentx_threat_class": smagentx.get("threat_class"),
+                "smagentx_threat_score": smagentx.get("threat_score"),
+                "smagentx_recommended_response": smagentx.get("recommended_response"),
             },
         )
 
@@ -2087,6 +2247,8 @@ def inspect_payload(payload: Any, *, source: str = "unknown", remote_addr: str =
                     "containment_state": containment_state,
                     "passport_id": str(identity.get("passport_id") or "")[:180],
                     "capture_report_path": result.get("capture_report_path", ""),
+                    "smagentx_threat_class": smagentx.get("threat_class"),
+                    "smagentx_threat_score": smagentx.get("threat_score"),
                 },
                 actor=str(identity.get("agent_id") or "unknown_agent"),
                 risk=risk_tier.lower(),

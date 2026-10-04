@@ -139,6 +139,84 @@ def get_live_avatar_state() -> Dict[str, Any]:
         return _LIVE_AVATAR_STATE.to_dict()
 
 
+_AVATAR_LITE_STATE_KEYS = (
+    "mode",
+    "expression",
+    "emotion",
+    "speaking",
+    "listening",
+    "thinking",
+    "busy",
+    "diagnostics",
+    "current_action",
+    "life_state",
+    "life_enabled",
+    "sequence",
+    "heartbeat_count",
+    "booted_at",
+    "updated_at",
+    "last_interaction_at",
+    "last_life_tick",
+    "last_random_at",
+    "locked_until",
+    "last_success_at",
+    "last_error_at",
+    "idle_seconds",
+    "night_mode",
+    "current_image",
+    "avatar_image",
+    "avatar_image_url",
+)
+
+
+def build_avatar_lite_state(
+    state: Optional[Dict[str, Any]] = None,
+    *,
+    current_image: str = "",
+    avatar_image_url: str = "",
+    source: str = "SarahMemoryAvatar",
+) -> Dict[str, Any]:
+    """Build the hot-path AvatarPanel state without manifest/spec payloads.
+
+    The full avatar route remains the owner of heavy manifest, 3D spec, and
+    asset-discovery contracts. This helper keeps poll/heartbeat responses small
+    and contract-only: no shell, no network, no file writes, no authority grant.
+    """
+    src = dict(state or get_live_avatar_state())
+    now = time.time()
+    out: Dict[str, Any] = {
+        "ok": True,
+        "success": True,
+        "schema": "SarahMemory.avatar.state.lite.v1",
+        "detail": "lite",
+        "source": str(source or "SarahMemoryAvatar"),
+        "execution_authority": False,
+    }
+    for key in _AVATAR_LITE_STATE_KEYS:
+        if key in src:
+            out[key] = src.get(key)
+    if current_image:
+        out["current_image"] = current_image
+        out["avatar_image"] = current_image
+    if avatar_image_url:
+        out["avatar_image_url"] = avatar_image_url
+    out.setdefault("mode", "avatar_2d")
+    out.setdefault("expression", str(out.get("emotion") or "neutral"))
+    out.setdefault("emotion", str(out.get("expression") or "neutral"))
+    out.setdefault("speaking", False)
+    out.setdefault("listening", False)
+    out.setdefault("thinking", False)
+    out.setdefault("busy", False)
+    out.setdefault("diagnostics", False)
+    out.setdefault("current_action", "idle")
+    out.setdefault("life_state", "ready")
+    try:
+        out["idle_seconds"] = max(0.0, now - float(out.get("last_interaction_at") or now))
+    except Exception:
+        out["idle_seconds"] = 0.0
+    return out
+
+
 def update_live_avatar_state(updates: Optional[Dict[str, Any]] = None, **kwargs: Any) -> Dict[str, Any]:
     """Mutate only owned physical/presentation fields and return a new snapshot."""
     change = dict(updates or {})
