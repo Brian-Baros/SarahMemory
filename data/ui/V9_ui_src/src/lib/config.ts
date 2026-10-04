@@ -3,7 +3,7 @@
  * 
  * Configuration for connecting to the SarahMemory Flask backend.
  * Uses runtime backend contract first, then environment variables.
- * SARAHMEMORY_PATCH_NOTE 2026-06-24:
+ * SARAHMEMORY_PATCH_NOTE 2026-09-30:
  * V9 local UI must bind to the backend that served it. It must not silently
  * drift to api.sarahmemory.com when running inside pywebview/local Flask.
  */
@@ -31,7 +31,9 @@ export const getApiBase = (): string => {
   if (typeof window !== "undefined") {
     const { hostname, origin } = window.location;
 
-    // Priority 2: Hosted WebUI → API subdomain
+    // Priority 2: Public hosted UI body.
+    // Keep one UI codebase across local, device, and cloud bodies.
+    // Runtime overrides still win above; this only fixes the known public UI host.
     if (hostname === "ai.sarahmemory.com") {
       return "https://api.sarahmemory.com";
     }

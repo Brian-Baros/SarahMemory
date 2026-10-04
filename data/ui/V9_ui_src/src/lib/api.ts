@@ -916,6 +916,7 @@ export const chatApi = {
   ): Promise<ChatResponse> {
     const lastUserMessage = messages.filter((m) => m.role === "user").pop();
     const text = lastUserMessage?.content || "";
+    const selectedLane = String(options?.lane || "any").trim().toLowerCase() || "any";
 
     try {
       const { data } = await tryDirectEndpoints<any>(["/api/chat", "/chat", "/api/v1/chat"], {
@@ -947,12 +948,13 @@ export const chatApi = {
 
       if ((ok || data?.blocked) && (!content || (typeof content === "string" && !content.trim()))) {
         const reason = data?.reason || data?.error || data?.meta?.reason || "empty_backend_response";
+        const emptyMessage = `SarahMemory returned a governed but empty response. The request completed, but the ${selectedLane} answer lane did not provide presentable text.`;
         return {
           ok: Boolean(ok),
           blocked: Boolean(data?.blocked),
           reason,
-          reply: "SarahMemory returned a governed but empty response. The request completed, but the local answer lane did not provide presentable text.",
-          content: "SarahMemory returned a governed but empty response. The request completed, but the local answer lane did not provide presentable text.",
+          reply: emptyMessage,
+          content: emptyMessage,
           source: "sarah_backend",
           response_type: data.response_type || data.meta?.response_type,
           chips: Array.isArray(data.chips) ? data.chips : Array.isArray(data.meta?.chips) ? data.meta.chips : [],
@@ -1013,12 +1015,45 @@ export const chatApi = {
         throw error instanceof Error ? error : new Error("SarahMemory chat request stopped by user");
       }
       console.warn("[Chat] Direct local backend call failed; cloud fallback remains governed:", error);
+      if (Boolean(options?.localOnly || selectedLane === "local")) {
+        const directMessage = error instanceof Error && error.message ? error.message : String(error);
+        const localFailure = `Local mode failed before SarahMemory returned a usable response.\n\n${directMessage}`;
+        return {
+          ok: false,
+          content: localFailure,
+          reply: localFailure,
+          source: "sarah_backend",
+          error: directMessage,
+          meta: {
+            answer_mode: "local",
+            source_lane: "none",
+            chat_route_trace: {
+              requested_mode: "local",
+              effective_mode: "local",
+              classification: "local_backend_failure",
+              current_source_required: false,
+              attempted_lanes: ["local_backend"],
+              blocked_lanes: ["cloud_fallback"],
+              winning_lane: "none",
+              fallback_used: false,
+              cached_result_used: false,
+              provider_used: null,
+              verified_artifact: false,
+              response_label: "local_backend_failure",
+            },
+          },
+        };
+      }
       try {
         return await invokeEdgeFunction<ChatResponse>("chat", {
           messages,
           useAI: options?.useAI || false,
           conversation_id: options?.conversationId,
           research_mode: options?.researchMode || false,
+          lane: selectedLane,
+          api_mode: selectedLane,
+          local_only: false,
+          external_api_allowed_by_ui_lane: ["any", "auto", "web", "api"].includes(selectedLane),
         });
       } catch (edgeError) {
         console.error("[Chat] Edge function also failed:", edgeError);
@@ -1335,11 +1370,12 @@ export const voiceApi = {
 // ============================================================================
 
 export const avatarApi = {
-  async getState(): Promise<AvatarState> {
+  async getState(detail: "full" | "lite" = "full"): Promise<AvatarState> {
     try {
-      const { data } = await tryDirectEndpoints<any>(["/api/avatar/state"], {
+      const endpoint = detail === "lite" ? "/api/avatar/state?detail=lite" : "/api/avatar/state";
+      const { data } = await tryDirectEndpoints<any>([endpoint], {
         method: "POST",
-        body: JSON.stringify({ action: "get_state" }),
+        body: JSON.stringify({ action: "get_state", detail }),
       });
       return (
         data?.state || data || {
@@ -1360,6 +1396,10 @@ export const avatarApi = {
         }
       );
     }
+  },
+
+  async getLiteState(): Promise<AvatarState> {
+    return avatarApi.getState("lite");
   },
 
   async setMode(mode: AvatarState["mode"]): Promise<AvatarResponse> {
@@ -2353,6 +2393,34 @@ export const dlengineApi = {
 };
 
 
+
+// ============================================================================
+// SMUGCC API
+// ============================================================================
+
+export const smugccApi = {
+  async status(): Promise<any> { return directCall<any>("/api/smugcc/status", { method: "GET" }); },
+  async schema(): Promise<any> { return directCall<any>("/api/smugcc/schema", { method: "GET" }); },
+  async compatibility(): Promise<any> { return directCall<any>("/api/smugcc/compatibility", { method: "GET" }); },
+  async validate(envelope: Record<string, unknown>): Promise<any> {
+    return directCall<any>("/api/smugcc/validate", { method: "POST", body: JSON.stringify({ envelope }) });
+  },
+  async validateAdapter(declaration: Record<string, unknown>): Promise<any> {
+    return directCall<any>("/api/smugcc/adapter/validate", { method: "POST", body: JSON.stringify({ declaration }) });
+  },
+  async build(payload: Record<string, unknown>): Promise<any> {
+    return directCall<any>("/api/smugcc/build", { method: "POST", body: JSON.stringify(payload || {}) });
+  },
+  async trace(payload: Record<string, unknown>): Promise<any> {
+    return directCall<any>("/api/smugcc/trace", { method: "POST", body: JSON.stringify(payload || {}) });
+  },
+  async stage(payload: Record<string, unknown>): Promise<any> {
+    return directCall<any>("/api/smugcc/mission/stage", { method: "POST", body: JSON.stringify(payload || {}) });
+  },
+  async receipts(): Promise<any> { return directCall<any>("/api/smugcc/receipts", { method: "GET" }); },
+  async passports(): Promise<any> { return directCall<any>("/api/smugcc/passports", { method: "GET" }); },
+  async quarantine(): Promise<any> { return directCall<any>("/api/smugcc/quarantine", { method: "GET" }); },
+};
 // ============================================================================
 // NAILDE API
 // ============================================================================
@@ -2618,7 +2686,12 @@ export const api = {
   vr: vrApi,
   models: modelsApi,
   dlengine: dlengineApi,
+  smugcc: smugccApi,
   nailde: naildeApi,
 };
 
 export default api;
+
+
+
+
