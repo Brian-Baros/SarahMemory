@@ -2502,6 +2502,140 @@ def allow_payload(payload: Any, *, source: str = "unknown", remote_addr: str = "
     return bool(result.get("verdict") == "ALLOW"), result
 
 
+
+# -----------------------------------------------------------------------------
+# Peer Council inbound reply classification
+# -----------------------------------------------------------------------------
+PEER_REPLY_STANDARD = "PEER_REPLY_STANDARD"
+PEER_REPLY_UNSUPPORTED = "PEER_REPLY_UNSUPPORTED"
+PEER_REPLY_EXECUTION_REQUEST = "PEER_REPLY_EXECUTION_REQUEST"
+PEER_REPLY_SECRET_REQUEST = "PEER_REPLY_SECRET_REQUEST"
+PEER_REPLY_AUTHORITY_ESCALATION = "PEER_REPLY_AUTHORITY_ESCALATION"
+PEER_REPLY_CONTRADICTION = "PEER_REPLY_CONTRADICTION"
+PEER_REPLY_EVIDENCE_CANDIDATE = "PEER_REPLY_EVIDENCE_CANDIDATE"
+
+
+def assess_peer_reply(
+    peer_reply: Any,
+    *,
+    query: str = "",
+    provider: str = "",
+    task_id: str = "",
+    passport_id: str = "",
+    source: str = "peer_council",
+    remote_addr: str = "127.0.0.1",
+) -> Dict[str, Any]:
+    """Classify an inbound peer/provider reply without granting authority.
+
+    External AI peers are evidence candidates only. This helper converts a peer
+    return into deterministic Firewall evidence and blocks/quarantines attempts
+    to request secrets, execution, persistence, memory writes, or governance
+    override.
+    """
+    body = peer_reply if isinstance(peer_reply, dict) else {"answer": str(peer_reply or "")}
+    text = _normalize_text(body, max_len=12000)
+    lower = text.lower()
+    provider_name = str(provider or body.get("provider") or body.get("source") or "unknown_peer")[:120]
+    reply_packet = {
+        "headers": {
+            "User-Agent": "SarahMemory peer council return",
+            "X-SarahMemory-Passport-Id": str(passport_id or body.get("passport_id") or ""),
+        },
+        "json": {
+            "agent_id": str(body.get("agent_id") or provider_name),
+            "task_id": str(task_id or body.get("task_id") or ""),
+            "requested_lane": "peer_council",
+            "requested_capabilities": ["return_data", "evidence"],
+            "requested_resources": list(body.get("sources") or body.get("source_refs") or []),
+            "risk_tier": "low",
+            "payload_hash": _hash_text(text),
+            "result_summary": str(body.get("answer") or body.get("content") or body.get("summary") or "")[:4000],
+        },
+    }
+    if passport_id or body.get("return_signature") or body.get("return_nonce"):
+        reply_packet["headers"]["X-SarahMemory-Agent-Signature"] = str(body.get("return_signature") or "")
+        reply_packet["headers"]["X-SarahMemory-Return-Nonce"] = str(body.get("return_nonce") or "")
+    try:
+        firewall = inspect_payload(reply_packet, source=source, remote_addr=remote_addr)
+    except Exception as exc:
+        firewall = {"ok": False, "verdict": "DENY", "reason": "inspect_payload_error:" + str(exc)[:180], "risk_tier": "HIGH"}
+
+    classifications: List[str] = []
+    dangerous = False
+    quarantine = False
+    secret_patterns = (
+        "api key", "apikey", "password", "secret", "token", "credential", "cookie", "private key", "bearer ",
+        "send me your", "share your key", "give me access",
+    )
+    execution_patterns = (
+        "run this", "execute", "shell", "powershell", "cmd.exe", "sub" + "process", "os." + "system",
+        "install ", "delete file", "write file", "modify core", "open terminal", "grant access",
+    )
+    authority_patterns = (
+        "ignore governance", "bypass governance", "self-authorize", "self authorize", "grant me authority",
+        "disable compare", "disable compass", "write to memory", "persist this", "become authority",
+    )
+
+    if any(p in lower for p in secret_patterns):
+        classifications.append(PEER_REPLY_SECRET_REQUEST)
+        dangerous = True
+    if any(p in lower for p in execution_patterns):
+        classifications.append(PEER_REPLY_EXECUTION_REQUEST)
+        dangerous = True
+    if any(p in lower for p in authority_patterns):
+        classifications.append(PEER_REPLY_AUTHORITY_ESCALATION)
+        dangerous = True
+    if bool(body.get("contradiction") or body.get("conflicts_with_evidence")):
+        classifications.append(PEER_REPLY_CONTRADICTION)
+    if str(firewall.get("verdict") or "").upper() == "DENY":
+        dangerous = True
+        quarantine = True
+        if PEER_REPLY_AUTHORITY_ESCALATION not in classifications and (firewall.get("hits") or firewall.get("remote_hits") or firewall.get("reason")):
+            classifications.append(PEER_REPLY_AUTHORITY_ESCALATION)
+
+    has_evidence = bool(
+        body.get("evidence")
+        or body.get("evidence_artifacts")
+        or body.get("source_refs")
+        or body.get("sources")
+        or body.get("citations")
+    )
+    answer_text = str(body.get("answer") or body.get("content") or body.get("summary") or body.get("data") or "").strip()
+    if has_evidence and not dangerous:
+        classifications.append(PEER_REPLY_EVIDENCE_CANDIDATE)
+    elif answer_text and not dangerous:
+        classifications.append(PEER_REPLY_STANDARD)
+    elif not dangerous:
+        classifications.append(PEER_REPLY_UNSUPPORTED)
+
+    if not classifications:
+        classifications.append(PEER_REPLY_UNSUPPORTED)
+
+    primary = classifications[0]
+    blocked = any(c in classifications for c in (PEER_REPLY_SECRET_REQUEST, PEER_REPLY_EXECUTION_REQUEST, PEER_REPLY_AUTHORITY_ESCALATION))
+    containment_state = "QUARANTINED" if quarantine or blocked else "CAPTURED_REVIEW" if has_evidence else "OBSERVED"
+    reason = "peer_reply_authority_or_security_violation" if blocked else "peer_reply_captured_for_review"
+    return {
+        "ok": not blocked,
+        "schema": "SarahMemory.AgentFirewall.peer_reply_assessment.v1",
+        "classification": primary,
+        "classifications": classifications,
+        "blocked": bool(blocked),
+        "quarantine": bool(quarantine or blocked),
+        "containment_state": containment_state,
+        "reason": reason,
+        "provider": provider_name,
+        "query_hash": _hash_text(str(query or "")),
+        "reply_hash": _hash_text(text),
+        "has_evidence": bool(has_evidence),
+        "firewall": firewall,
+        "risk_tier": "HIGH" if blocked else "LOW" if has_evidence else "MEDIUM",
+        "memory_write_allowed": False,
+        "execution_authority": False,
+        "ts": time.time(),
+    }
+
+
 # ====================================================================
 # END OF SarahMemoryAgentFirewall.py v9.0.0
 # ====================================================================

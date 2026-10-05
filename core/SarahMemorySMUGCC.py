@@ -305,6 +305,88 @@ ADAPTER_DECLARATIONS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+
+# -----------------------------------------------------------------------------
+# Peer Council provider declarations (contract-only; no provider calls here)
+# -----------------------------------------------------------------------------
+_PEER_PROVIDER_SAFETY_LIMITS = {
+    "execution_authority": False,
+    "provider_calls": False,
+    "issues_passports": False,
+    "writes_memory": False,
+    "device_control": False,
+    "shell_execution": False,
+    "filesystem_write": False,
+    "output_is_evidence_only": True,
+}
+
+
+def _peer_provider_declaration(adapter_id: str, source_protocol: str, aliases: Sequence[str], *, api_provider: str = "") -> Dict[str, Any]:
+    """Declare an external AI peer as evidence-only SMUGCC contract metadata.
+
+    SMUGCC remains contract-only and validator-only. These declarations let
+    Terminal/Compare reason about peer identity and limits without making calls,
+    issuing passports, writing memory, or granting authority.
+    """
+    return {
+        "adapter_id": adapter_id,
+        "source_protocol": source_protocol,
+        "translates_to": SMUGCC_SCHEMA,
+        "capabilities_declared": ["peer.review", "peer.compare", "evidence.return", "provider.metadata.return"],
+        "credential_aliases_required": [],
+        "provider_aliases": list(aliases),
+        "api_provider": api_provider,
+        "limits": dict(_PEER_PROVIDER_SAFETY_LIMITS),
+        "governance": {
+            "passport_issuance_owner": "SarahMemoryAgentFirewall/SarahMemoryTrustRegistry",
+            "provider_communication_owner": "SarahMemoryAPI or existing read-only Terminal adapters",
+            "compare_owner": "SarahMemoryCompare",
+            "compass_owner": "SarahMemoryCognitiveCompass",
+            "ledger_owner": "SarahMemoryLedger",
+            "provider_output_status": "evidence_only_never_authority",
+            "memory_write_allowed": False,
+            "execution_authority": False,
+        },
+        "evidence_support": ["response_hash", "source_refs", "provider_reliability_metadata"],
+        "error_normalization": True,
+        "execution_authority": False,
+    }
+
+
+ADAPTER_DECLARATIONS.update({
+    "openai_chatgpt_style_provider": _peer_provider_declaration(
+        "openai_chatgpt_style_provider", "OpenAI/ChatGPT-style peer provider", ["openai", "chatgpt"], api_provider="openai"
+    ),
+    "microsoft_copilot_style_provider": _peer_provider_declaration(
+        "microsoft_copilot_style_provider", "Microsoft Copilot-style peer provider", ["microsoft", "copilot"], api_provider=""
+    ),
+    "anthropic_claude_style_provider": _peer_provider_declaration(
+        "anthropic_claude_style_provider", "Anthropic Claude-style peer provider", ["anthropic", "claude"], api_provider="claude"
+    ),
+    "google_gemini_style_provider": _peer_provider_declaration(
+        "google_gemini_style_provider", "Google Gemini-style peer provider", ["google", "gemini"], api_provider="gemini"
+    ),
+    "xai_grok_style_provider": _peer_provider_declaration(
+        "xai_grok_style_provider", "xAI Grok-style peer provider", ["xai", "grok"], api_provider="grok"
+    ),
+    "aws_bedrock_style_provider": _peer_provider_declaration(
+        "aws_bedrock_style_provider", "AWS Bedrock-style peer provider", ["aws", "bedrock"], api_provider=""
+    ),
+    "meta_ai_style_provider": _peer_provider_declaration(
+        "meta_ai_style_provider", "Meta AI-style peer provider", ["meta", "llama"], api_provider="meta"
+    ),
+    "local_llama_style_provider": _peer_provider_declaration(
+        "local_llama_style_provider", "Local Llama/Ollama-style peer provider", ["local_llama", "ollama", "llama", "local"], api_provider="local_llm"
+    ),
+    "generic_browser_ai_peer": _peer_provider_declaration(
+        "generic_browser_ai_peer", "Generic browser AI peer", ["browser_ai_peer"], api_provider=""
+    ),
+    "generic_rest_ai_peer": _peer_provider_declaration(
+        "generic_rest_ai_peer", "Generic REST AI peer", ["rest_ai_peer"], api_provider=""
+    ),
+})
+
+
 BEACON_GOVERNANCE_STATEMENT = (
     "SarahMemory influence is transparent, consent-based, auditable, and revocable. "
     "Ambassador agents may identify, demonstrate, invite, negotiate, and disengage. "

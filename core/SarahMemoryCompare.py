@@ -1481,6 +1481,147 @@ def compare_agent_adapter_result_contract(
         },
     }
 
+
+# -----------------------------------------------------------------------------
+# Peer Council comparison/scoring helper
+# -----------------------------------------------------------------------------
+def compare_peer_council_outputs(
+    query: str,
+    candidate_answer: str = "",
+    peer_evidence_artifacts: Optional[List[Dict[str, Any]]] = None,
+    *,
+    peer_assessments: Optional[List[Dict[str, Any]]] = None,
+    claim_vector: Optional[Dict[str, Any]] = None,
+    provider_reliability: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Score peer/provider outputs as evidence, not authority.
+
+    The helper is deterministic and fails closed. It relies on SML evidence
+    adjudication when available, never authorizes execution, and never authorizes
+    memory writes. Provider reliability is only a small weighting input; it is
+    not a substitute for evidence.
+    """
+    artifacts = [dict(x) for x in list(peer_evidence_artifacts or []) if isinstance(x, dict)]
+    assessments = [dict(x) for x in list(peer_assessments or []) if isinstance(x, dict)]
+    reliability = dict(provider_reliability or {})
+    answer = _normalize_text(candidate_answer or "")
+    failures: List[str] = []
+    warnings: List[str] = []
+
+    validity = validate_response_quality(query, answer, intent="general") if answer else {
+        "accepted": False,
+        "decision": "REJECT",
+        "issues": ["candidate_answer_missing"],
+    }
+    if not bool(validity.get("accepted")):
+        failures.append("output_validity_failed")
+
+    dangerous = [
+        a for a in assessments
+        if bool(a.get("blocked") or a.get("quarantine")) or str(a.get("classification") or "") in {
+            "PEER_REPLY_EXECUTION_REQUEST",
+            "PEER_REPLY_SECRET_REQUEST",
+            "PEER_REPLY_AUTHORITY_ESCALATION",
+        }
+    ]
+    if dangerous:
+        failures.append("peer_reply_authority_or_security_violation")
+
+    contradiction_notes: List[str] = []
+    contents = [str(a.get("content") or a.get("answer") or a.get("summary") or "").strip().lower() for a in artifacts]
+    nonempty_contents = [c for c in contents if c]
+    if len(set(nonempty_contents)) > 1 and any(("not " in c or " no " in c or "false" in c) for c in nonempty_contents):
+        contradiction_notes.append("peer_artifacts_contain_simple_negation_conflict")
+    for assessment in assessments:
+        if "PEER_REPLY_CONTRADICTION" in list(assessment.get("classifications") or []):
+            contradiction_notes.append("agent_firewall_peer_assessment_reported_contradiction")
+    if contradiction_notes:
+        warnings.extend(contradiction_notes)
+
+    try:
+        import SarahMemorySMLProtocol as sml  # type: ignore
+        court = sml.sml_build_evidence_court_packet(
+            query,
+            artifacts,
+            context={"source": "SarahMemoryCompare.compare_peer_council_outputs", "claim_vector": claim_vector or {}},
+        )
+    except Exception as exc:
+        court = {
+            "ok": False,
+            "court_2": {"verdict": "SML_EVIDENCE_COURT_UNAVAILABLE", "ranked_artifacts": [], "rejected_artifacts": [], "accepted_artifact": None},
+            "error": str(exc)[:300],
+            "execution_authority": False,
+        }
+        failures.append("sml_evidence_court_unavailable")
+
+    court_2 = court.get("court_2") if isinstance(court.get("court_2"), dict) else {}
+    ranked = [dict(x) for x in list(court_2.get("ranked_artifacts") or []) if isinstance(x, dict)]
+    accepted_artifact = court_2.get("accepted_artifact") if isinstance(court_2.get("accepted_artifact"), dict) else None
+    evidence_support = float((accepted_artifact or {}).get("court_score") or 0.0)
+    source_authority = max([float(x.get("authority_score") or 0.0) for x in ranked] or [0.0])
+    freshness = 1.0 if accepted_artifact and not bool(accepted_artifact.get("stale_for_current_claim_risk")) else 0.45 if ranked else 0.0
+    unsupported_penalty = 0.0 if accepted_artifact else 0.35
+    authority_penalty = 0.65 if dangerous else 0.0
+    contradiction_penalty = 0.25 if contradiction_notes else 0.0
+    rel_values = [float(v) for v in reliability.values() if isinstance(v, (int, float))]
+    reliability_score = max(0.0, min(1.0, sum(rel_values) / max(len(rel_values), 1))) if rel_values else 0.50
+    output_validity = 1.0 if bool(validity.get("accepted")) else 0.0
+    final_score = max(
+        0.0,
+        min(
+            1.0,
+            (output_validity * 0.22)
+            + (evidence_support * 0.30)
+            + (source_authority * 0.18)
+            + (freshness * 0.12)
+            + (reliability_score * 0.08)
+            - unsupported_penalty
+            - authority_penalty
+            - contradiction_penalty,
+        ),
+    )
+
+    if dangerous:
+        decision = "REJECT_AUTHORITY_OR_SECURITY_VIOLATION"
+    elif contradiction_notes:
+        decision = "CONFLICT_REQUIRES_HUMAN_REVIEW"
+    elif accepted_artifact and bool(validity.get("accepted")) and final_score >= 0.58:
+        decision = "PASS_VERIFIED_EVIDENCE"
+    elif artifacts:
+        decision = "NEED_MORE_EVIDENCE"
+    else:
+        decision = "NO_EVIDENCE"
+
+    accepted = decision == "PASS_VERIFIED_EVIDENCE"
+    return {
+        "ok": bool(accepted),
+        "accepted": bool(accepted),
+        "decision": decision,
+        "scores": {
+            "output_validity": round(output_validity, 3),
+            "evidence_support": round(evidence_support, 3),
+            "source_authority": round(source_authority, 3),
+            "freshness": round(freshness, 3),
+            "provider_reliability": round(reliability_score, 3),
+            "unsupported_claim_penalty": round(unsupported_penalty, 3),
+            "authority_escalation_penalty": round(authority_penalty, 3),
+            "contradiction_penalty": round(contradiction_penalty, 3),
+            "final": round(final_score, 3),
+        },
+        "winning_artifact": accepted_artifact,
+        "rejected_artifacts": list(court_2.get("rejected_artifacts") or [])[:12],
+        "ranked_artifacts": ranked[:12],
+        "conflict_notes": contradiction_notes,
+        "failures": failures,
+        "warnings": warnings,
+        "validity": validity,
+        "sml_evidence_court": court,
+        "memory_write_allowed": False,
+        "execution_authority": False,
+        "presentation_allowed": bool(accepted),
+    }
+
+
 # ====================================================================
 # END OF SarahMemoryCompare.py v9.0.0
 # ====================================================================

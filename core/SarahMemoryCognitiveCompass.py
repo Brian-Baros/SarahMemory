@@ -1942,6 +1942,71 @@ def assess_sovereign_agent_bearing(goal: str = "", envelope: Optional[Dict[str, 
     }
 # --- SM V8.0 SOVEREIGN AGENT RUNTIME CONSOLIDATION PASS 7 END ---
 
+
+# -----------------------------------------------------------------------------
+# Peer Council bounded recursive-loop policy
+# -----------------------------------------------------------------------------
+def assess_peer_council_loop_policy(
+    *,
+    round_index: int = 0,
+    same_claim_repeats: int = 0,
+    unresolved_conflicts: int = 0,
+    new_evidence_count: int = 0,
+    compare_passed: bool = False,
+    authority_violation: bool = False,
+    max_peer_rounds: int = 3,
+    max_same_claim_repeats: int = 2,
+    max_unresolved_conflicts: int = 2,
+) -> Dict[str, Any]:
+    """Return bounded peer-council continuation guidance only."""
+    reasons: List[str] = []
+    directive = "CONTINUE_PEER_REVIEW"
+    stop = False
+    if authority_violation:
+        stop = True
+        directive = "STOP_AUTHORITY_VIOLATION"
+        reasons.append("peer_return_attempted_authority_escalation_or_unsafe_execution")
+    elif compare_passed:
+        stop = True
+        directive = "STOP_COMPARE_PASS"
+        reasons.append("compare_passed_release_gate")
+    elif int(round_index or 0) >= int(max_peer_rounds or 3):
+        stop = True
+        directive = "STOP_MAX_ROUNDS"
+        reasons.append("max_peer_rounds_reached")
+    elif int(same_claim_repeats or 0) >= int(max_same_claim_repeats or 2):
+        stop = True
+        directive = "STOP_SAME_CLAIM_REPEAT"
+        reasons.append("same_claim_repeat_limit_reached")
+    elif int(unresolved_conflicts or 0) >= int(max_unresolved_conflicts or 2):
+        stop = True
+        directive = "STOP_UNRESOLVED_CONFLICTS"
+        reasons.append("unresolved_conflict_limit_reached")
+    elif int(new_evidence_count or 0) <= 0 and int(round_index or 0) > 0:
+        stop = True
+        directive = "STOP_NO_NEW_EVIDENCE"
+        reasons.append("peer_round_added_no_new_evidence")
+    if not reasons:
+        reasons.append("peer_council_within_bounded_review_policy")
+    return {
+        "ok": True,
+        "schema": "SarahMemory.Compass.peer_council_loop_policy.v1",
+        "stop": bool(stop),
+        "directive": directive,
+        "round_index": int(round_index or 0),
+        "limits": {
+            "max_peer_rounds": int(max_peer_rounds or 3),
+            "max_same_claim_repeats": int(max_same_claim_repeats or 2),
+            "max_unresolved_conflicts": int(max_unresolved_conflicts or 2),
+        },
+        "reasons": reasons,
+        "reply_allowed": bool(compare_passed and not authority_violation),
+        "continue_allowed": not bool(stop),
+        "memory_write_allowed": False,
+        "execution_authority": False,
+    }
+
+
 # ====================================================================
 # END OF SarahMemoryCognitiveCompass.py v9.0.0
 # ====================================================================

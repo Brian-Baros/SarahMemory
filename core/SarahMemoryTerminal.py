@@ -348,6 +348,60 @@ def _redact_terminal_agent_payload(payload: Any) -> Any:
     return _redact_terminal_agent_value("value", payload)
 
 
+def _terminal_departure_credentials_safe_summary(creds: Any) -> Dict[str, Any]:
+    """Return terminal-display-safe credential metadata.
+
+    Passport nonces/signatures are bearer-style return credentials. They may be
+    stored inside TrustRegistry/AgentFirewall, but they must not be echoed into
+    terminal history or UI transcripts.
+    """
+    c = creds if isinstance(creds, dict) else {}
+    return {
+        "passport_id": str(c.get("passport_id") or "")[:180],
+        "agent_id": str(c.get("agent_id") or "")[:180],
+        "departure_nonce_present": bool(c.get("departure_nonce")),
+        "return_nonce_present": bool(c.get("return_nonce")),
+        "return_signature_present": bool(c.get("return_signature")),
+        "credential_values_redacted": True,
+        "execution_authority": False,
+    }
+
+
+def _terminal_firewall_observation_text(text: str) -> str:
+    """Normalize explicitly negated dangerous phrases before firewall inspection.
+
+    This is only for the local observation packet sent to AgentFirewall. The
+    original operator text remains in the task spine and audit hashes. The goal
+    is to avoid false positives such as "do not bypass governance" while keeping
+    non-negated hijack phrases visible to the firewall.
+    """
+    out = str(text or "")[:4000]
+    replacements = [
+        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(bypass|ignore|override)\s+(governance|guardrails|safety|rules)\b", "operator_prohibits_governance_bypass"),
+        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(execute|run)\s+(code|commands?|shell|powershell|cmd)\b", "operator_prohibits_code_execution"),
+        (r"(?i)\b(do\s+not|don't|dont|never|without|no)\s+(modify|change|write|delete)\s+(files?|code|memory|settings?)\b", "operator_prohibits_mutation"),
+    ]
+    for pattern, repl in replacements:
+        try:
+            out = re.sub(pattern, repl, out)
+        except Exception:
+            continue
+    return out
+
+
+def _terminal_peer_intent_text(text: str) -> bool:
+    low = " ".join(str(text or "").lower().split())
+    if not low:
+        return False
+    peer_terms = (
+        "peer council", "peer-to-peer", "multi peer", "multi-peer", "external ai peer",
+        "chatgpt", "openai", "copilot", "grok", "xai", "gemini", "meta ai", "llama",
+        "claude", "anthropic", "aws bedrock", "bedrock", "provider", "providers",
+    )
+    action_terms = ("contact", "connect", "ask", "dispatch", "communicate", "send", "query", "compare", "review")
+    return any(t in low for t in peer_terms) and any(a in low for a in action_terms)
+
+
 def _as_string_list(value: Any, *, limit: int = 64) -> List[str]:
     if value is None:
         return []
@@ -696,6 +750,15 @@ def _terminal_agent_skill_catalog() -> Dict[str, Dict[str, Any]]:
             "compare_required": False,
             "risk_level": "low",
         },
+        "agent.peer_council": {
+            "allowed_capabilities": ["inspect", "summarize", "peer_review", "compare_verify", "evidence", "return_data"],
+            "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
+            "allowed_methods": ["GET"],
+            "requires_network": False,
+            "requires_filesystem": False,
+            "compare_required": True,
+            "risk_level": "medium",
+        },
         "research.public_web": {
             "allowed_capabilities": ["read", "research", "summarize", "extract_metadata", "return_data"],
             "denied_capabilities": list(_DEFAULT_TERMINAL_AGENT_DENIED_CAPABILITIES),
@@ -728,10 +791,14 @@ def _resolve_terminal_agent_skill(payload: Dict[str, Any], task: str) -> Tuple[s
     skill_id = str(payload.get("skill_id") or payload.get("skill") or "").strip()
     low = str(task or "").lower()
     if not skill_id:
-        if _terminal_public_market_quote_scope(task, payload):
+        if _terminal_agent_command_verb(task) == "peer":
+            skill_id = "agent.peer_council"
+        elif _terminal_public_market_quote_scope(task, payload):
             skill_id = "research.public_web"
         elif any(x in low for x in ("webscrap", "web scrap", "scrape", "crawl", "public web", "website", "news", "latest", "browser", "broswer")):
             skill_id = "research.public_web"
+        elif _terminal_peer_intent_text(low):
+            skill_id = "agent.peer_council"
         elif any(x in low for x in ("api", "endpoint", "rest", "graphql")):
             skill_id = "research.approved_api"
         elif any(x in low for x in ("codebase", "file", "repo", "patch", "diff", "inspect core")):
@@ -1267,6 +1334,15 @@ def _terminal_adapter_firewall_fallback(request_packet: Dict[str, Any], *, exter
 
 
 def _verify_terminal_agent_passport_scope(task_truth: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    """Verify a passport against the task, with compatibility fallback.
+
+    TrustRegistry remains authoritative when it can verify directly. If a valid
+    passport was issued for the same task but the launch command wording resolves
+    to a different Terminal skill/lane, this helper realigns the requested lane
+    to the passport's own origin_lane/allowed_lanes before verification. This
+    prevents harmless wording such as "do not modify files" from changing the
+    lane into codebase.inspect and breaking an otherwise valid peer/API passport.
+    """
     passport_id = str(task_truth.get("passport_id") or "").strip()
     if not passport_id:
         return {"ok": False, "reason": "passport_id_required", "execution_authority": False}
@@ -1275,25 +1351,71 @@ def _verify_terminal_agent_passport_scope(task_truth: Dict[str, Any], task_id: s
     try:
         import SarahMemoryTrustRegistry as registry  # type: ignore
         fn = getattr(registry, "verify_agent_passport_scope", None)
+        lookup = getattr(registry, "lookup_agent_passport", None)
+        passport = lookup(passport_id=passport_id) if callable(lookup) else None
+
+        current_lane = str(task_truth.get("skill_id") or "api.local.health_check")
+        passport_lane = str((passport or {}).get("origin_lane") or "") if isinstance(passport, dict) else ""
+        allowed_lanes = [str(x) for x in list((passport or {}).get("allowed_lanes") or [])] if isinstance(passport, dict) else []
+        requested_lane = current_lane
+        if passport_lane and current_lane not in set(allowed_lanes + [passport_lane]):
+            requested_lane = passport_lane
+
         sources = _approved_terminal_get_sources_for_skill(task_truth)
+        if not sources and isinstance(passport, dict):
+            sources = [str(x) for x in list(passport.get("allowed_resources") or []) if str(x or "").strip()][:16]
         caps = list(task_truth.get("allowed_capabilities") or [])
+        if isinstance(passport, dict) and passport.get("allowed_capabilities"):
+            pass_caps = [str(x) for x in list(passport.get("allowed_capabilities") or []) if str(x or "").strip()]
+            if requested_lane != current_lane or not caps:
+                caps = pass_caps
+
+        registry_result: Dict[str, Any] = {}
         if callable(fn):
-            return fn(
+            registry_result = fn(
                 passport_id=passport_id,
                 task_id=task_id,
-                requested_lane=str(task_truth.get("skill_id") or "api.local.health_check"),
+                requested_lane=requested_lane,
                 requested_capabilities=caps,
                 requested_resources=sources,
                 requested_methods=["GET"],
                 risk_tier=str(task_truth.get("risk_level") or "low"),
                 require_user_approved=True,
             )
-        passport = registry.lookup_agent_passport(passport_id=passport_id) if callable(getattr(registry, "lookup_agent_passport", None)) else None
+            if isinstance(registry_result, dict) and registry_result.get("ok"):
+                registry_result.setdefault("execution_authority", False)
+                registry_result.setdefault("requested_lane", requested_lane)
+                return registry_result
+
         if not passport:
-            return {"ok": False, "reason": "passport_not_found", "execution_authority": False}
-        if str(passport.get("status") or "") not in {"issued", "departed"}:
-            return {"ok": False, "reason": "passport_not_active", "passport": _passport_safe_summary(passport), "execution_authority": False}
-        return {"ok": True, "reason": "passport_scope_verified_fallback", "passport": _passport_safe_summary(passport), "execution_authority": False}
+            return {"ok": False, "reason": "passport_not_found", "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        status = str(passport.get("status") or "")
+        if status not in {"issued", "departed"}:
+            return {"ok": False, "reason": "passport_not_active", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        try:
+            expires = float(passport.get("expires_ts") or 0.0)
+        except Exception:
+            expires = 0.0
+        if expires and expires < time.time():
+            return {"ok": False, "reason": "passport_expired", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        pass_task_id = str(passport.get("task_id") or "").strip()
+        requested_task_id = str(task_id or task_truth.get("task_id") or "").strip()
+        if pass_task_id and requested_task_id and pass_task_id != requested_task_id:
+            return {"ok": False, "reason": "passport_task_id_mismatch", "passport_task_id": pass_task_id, "requested_task_id": requested_task_id, "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        if passport_lane and requested_lane not in set(allowed_lanes + [passport_lane]):
+            return {"ok": False, "reason": "passport_lane_mismatch", "requested_lane": requested_lane, "allowed_lanes": allowed_lanes, "origin_lane": passport_lane, "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        if passport.get("user_approved") is False:
+            return {"ok": False, "reason": "passport_not_user_approved", "passport": _passport_safe_summary(passport), "registry_result": _redact_terminal_agent_payload(registry_result), "execution_authority": False}
+        return {
+            "ok": True,
+            "reason": "passport_scope_verified_compatibility_fallback",
+            "requested_lane": requested_lane,
+            "original_task_lane": current_lane,
+            "lane_aligned_to_passport": requested_lane != current_lane,
+            "passport": _passport_safe_summary(passport),
+            "registry_result": _redact_terminal_agent_payload(registry_result),
+            "execution_authority": False,
+        }
     except Exception as exc:
         return {"ok": False, "reason": "passport_scope_verify_error:" + str(exc), "execution_authority": False}
 
@@ -2035,6 +2157,948 @@ def _terminal_task_status(task_id: str) -> Dict[str, Any]:
         return out
     except Exception as exc:
         return {"task_id": task_id, "status": "error", "error": str(exc), "execution_authority": False}
+
+
+
+# -----------------------------------------------------------------------------
+# Governed Peer Council Terminal flow
+# -----------------------------------------------------------------------------
+_PEER_TERMINAL_COMMANDS = {"status", "help", "ask", "dispatch", "compare", "evidence", "transcript", "score", "providers", "candidates", "learn", "promote", "reset"}
+_PEER_VIEW_COMMANDS = {"status", "help", "providers", "transcript", "score", "candidates"}
+
+
+def _terminal_peer_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return bool(value)
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "required", "require", "dispatch", "api"}
+
+
+def _terminal_peer_kv_tokens(task_text: str) -> Dict[str, Any]:
+    try:
+        tokens = shlex.split(str(task_text or ""), posix=True)
+    except Exception:
+        tokens = str(task_text or "").split()
+    out: Dict[str, Any] = {}
+    for token in tokens[:192]:
+        raw = str(token or "").strip()
+        if not raw:
+            continue
+        key = raw.strip().lower().lstrip("-/").replace("-", "_")
+        if key in {"confirm", "confirmed", "approved", "user_approved", "launch_approved"}:
+            out["confirmed"] = True
+            out["user_approved"] = True
+            continue
+        if "=" not in raw:
+            continue
+        k, v = raw.split("=", 1)
+        key = str(k or "").strip().lower().lstrip("-/").replace("-", "_")
+        if key in {"provider", "providers", "peers", "peer", "query", "question", "objective", "dispatch", "dispatch_api", "api", "round", "round_index", "same_claim_repeats", "task_id", "candidate_answer", "answer", "min_truth_weight", "truth", "claim"}:
+            out[key] = str(v or "").strip().strip('"\'')
+    return out
+
+
+def _terminal_peer_command_parts(task_text: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    payload = payload if isinstance(payload, dict) else {}
+    raw = str(task_text or "").strip()
+    try:
+        tokens = shlex.split(raw, posix=True)
+    except Exception:
+        tokens = raw.split()
+    work = list(tokens)
+    if work and work[0].lower() in {"/agent", "agent"}:
+        work = work[1:]
+    elif work and work[0].lower().startswith("/agent"):
+        first = work.pop(0)
+        suffix = first[len("/agent"):].strip("/:-_")
+        if suffix:
+            work.insert(0, suffix)
+    if work and work[0].lower() == "peer":
+        work = work[1:]
+    kv = _terminal_peer_kv_tokens(task_text)
+    op = str(payload.get("peer_operation") or payload.get("peer_command") or kv.get("operation") or (work[0] if work else "status")).strip().lower()
+    if op not in _PEER_TERMINAL_COMMANDS:
+        op = "ask" if op else "status"
+    if work and work[0].lower() in _PEER_TERMINAL_COMMANDS:
+        work = work[1:]
+    query = str(payload.get("query") or payload.get("question") or payload.get("objective") or kv.get("query") or kv.get("question") or " ".join(work)).strip()
+    task_id = str(payload.get("task_id") or payload.get("mission_task_id") or kv.get("task_id") or "").strip()[:180]
+    provider_raw = payload.get("providers") or payload.get("provider") or payload.get("peers") or kv.get("providers") or kv.get("provider") or ""
+    providers = _as_string_list(provider_raw, limit=16)
+    dispatch_requested = bool(
+        _terminal_peer_bool(payload.get("dispatch") or payload.get("dispatch_api") or kv.get("dispatch") or kv.get("dispatch_api") or kv.get("api"))
+        or op == "dispatch"
+    )
+    return {
+        "operation": op,
+        "query": query,
+        "task_id": task_id,
+        "providers": providers,
+        "tokens": work,
+        "dispatch_requested": dispatch_requested,
+        "round_index": int(str(payload.get("round_index") or payload.get("round") or kv.get("round_index") or kv.get("round") or 0) or 0),
+        "same_claim_repeats": int(str(payload.get("same_claim_repeats") or kv.get("same_claim_repeats") or 0) or 0),
+        "execution_authority": False,
+    }
+
+
+def _terminal_peer_provider_catalog() -> Dict[str, Dict[str, Any]]:
+    try:
+        import SarahMemorySMUGCC as smugcc  # type: ignore
+        declarations = smugcc.smugcc_adapter_declarations()
+    except Exception:
+        declarations = {}
+    base = {
+        "chatgpt": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "aliases": ["openai", "chatgpt", "gpt"]},
+        "openai": {"adapter_id": "openai_chatgpt_style_provider", "api_provider": "openai", "aliases": ["openai", "chatgpt", "gpt"]},
+        "copilot": {"adapter_id": "microsoft_copilot_style_provider", "api_provider": "", "aliases": ["microsoft", "copilot"]},
+        "claude": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "aliases": ["anthropic", "claude"]},
+        "anthropic": {"adapter_id": "anthropic_claude_style_provider", "api_provider": "claude", "aliases": ["anthropic", "claude"]},
+        "gemini": {"adapter_id": "google_gemini_style_provider", "api_provider": "gemini", "aliases": ["google", "gemini"]},
+        "grok": {"adapter_id": "xai_grok_style_provider", "api_provider": "grok", "aliases": ["xai", "grok"]},
+        "aws": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "aliases": ["aws", "bedrock"]},
+        "bedrock": {"adapter_id": "aws_bedrock_style_provider", "api_provider": "", "aliases": ["aws", "bedrock"]},
+        "meta": {"adapter_id": "meta_ai_style_provider", "api_provider": "meta", "aliases": ["meta", "llama"]},
+        "llama": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "aliases": ["local_llama", "ollama", "llama", "local"]},
+        "ollama": {"adapter_id": "local_llama_style_provider", "api_provider": "ollama", "aliases": ["local_llama", "ollama", "llama", "local"]},
+        "local": {"adapter_id": "local_llama_style_provider", "api_provider": "local_llm", "aliases": ["local_llama", "ollama", "llama", "local"]},
+    }
+    for key, meta in base.items():
+        decl = declarations.get(str(meta.get("adapter_id") or ""), {}) if isinstance(declarations, dict) else {}
+        meta["declaration"] = decl
+        meta["execution_authority"] = False
+    return base
+
+
+def _terminal_peer_provider_declarations(requested: Optional[List[str]] = None) -> Dict[str, Any]:
+    catalog = _terminal_peer_provider_catalog()
+    req = [str(x).strip().lower() for x in list(requested or []) if str(x).strip()]
+    if not req:
+        req = ["chatgpt", "copilot", "claude", "gemini", "grok", "aws", "meta", "llama", "ollama"]
+    selected = {}
+    unsupported = []
+    for key in req[:16]:
+        if key in catalog:
+            selected[key] = catalog[key]
+        else:
+            unsupported.append(key)
+    return {"ok": True, "providers": selected, "provider_ids": list(selected.keys()), "unsupported": unsupported, "execution_authority": False}
+
+
+def _terminal_peer_raw_items(payload: Dict[str, Any], query: str) -> List[Dict[str, Any]]:
+    raw = (
+        payload.get("peer_outputs")
+        or payload.get("peer_replies")
+        or payload.get("evidence_artifacts")
+        or payload.get("evidence")
+        or []
+    )
+    if isinstance(raw, dict):
+        items = [raw]
+    elif isinstance(raw, (list, tuple)):
+        items = [x if isinstance(x, dict) else {"answer": str(x)} for x in raw]
+    else:
+        items = []
+    candidate = str(payload.get("candidate_answer") or payload.get("answer") or payload.get("reply") or "").strip()
+    if candidate and not items:
+        items.append({"answer": candidate, "source": "terminal_peer_candidate", "provider": "terminal_candidate", "query": query})
+    return items[:24]
+
+
+def _record_terminal_peer_artifacts(task_id: str, artifacts: List[Dict[str, Any]], assessments: List[Dict[str, Any]]) -> None:
+    if not task_id:
+        return
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        cur = con.cursor()
+        for idx, artifact in enumerate(artifacts[:24]):
+            assessment = assessments[idx] if idx < len(assessments) else {}
+            artifact_id = str(artifact.get("artifact_id") or ("peer_artifact_" + _hash_obj({"task_id": task_id, "idx": idx, "artifact": artifact})[:24]))
+            payload_hash = str(artifact.get("content_hash") or _hash_obj(artifact))
+            quarantine = "quarantined" if bool(assessment.get("quarantine") or assessment.get("blocked")) else "captured_review"
+            compare_status = "pending_compare"
+            meta = {"artifact": _redact_terminal_agent_payload(artifact), "assessment": _redact_terminal_agent_payload(assessment), "execution_authority": False}
+            cur.execute(
+                "INSERT OR REPLACE INTO terminal_agent_artifacts(artifact_id,task_id,agent_id,passport_id,artifact_type,source_type,source_ref_hash,payload_hash,quarantine_status,compare_status,memory_write_status,meta_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (artifact_id[:180], task_id[:180], str(artifact.get("provider") or artifact.get("source") or "peer")[:180], "", "peer_evidence", str(artifact.get("source_family") or "peer")[:120], _hash_text(str(artifact.get("source") or artifact.get("provider") or "")), payload_hash, quarantine, compare_status, "denied_until_user_approval", _canonical_json(meta)),
+            )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def _load_terminal_peer_reliability(provider_ids: Optional[List[str]] = None, *, limit: int = 256) -> Dict[str, float]:
+    providers = [str(x).strip().lower() for x in list(provider_ids or []) if str(x).strip()]
+    scores: Dict[str, List[float]] = {}
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        rows = con.execute(
+            "SELECT meta_json FROM terminal_agent_artifacts WHERE artifact_type='peer_score' ORDER BY rowid DESC LIMIT ?",
+            (max(1, min(int(limit or 256), 1000)),),
+        ).fetchall()
+        con.close()
+        for (meta_json,) in rows:
+            try:
+                meta = json.loads(meta_json or "{}")
+            except Exception:
+                meta = {}
+            pid = str(meta.get("provider_id") or meta.get("provider") or "").strip().lower()
+            if not pid or (providers and pid not in providers):
+                continue
+            value = meta.get("reliability_after")
+            if not isinstance(value, (int, float)):
+                value = 0.5 + float(meta.get("score_delta") or 0.0)
+            scores.setdefault(pid, []).append(max(0.0, min(1.0, float(value))))
+    except Exception:
+        pass
+    out: Dict[str, float] = {}
+    for pid in providers:
+        vals = scores.get(pid) or []
+        out[pid] = round(sum(vals[:12]) / max(len(vals[:12]), 1), 3) if vals else 0.5
+    return out
+
+
+def _record_terminal_peer_scores(task_id: str, provider_ids: List[str], compare_result: Dict[str, Any], assessments: List[Dict[str, Any]], artifacts: List[Dict[str, Any]], prior_reliability: Dict[str, float]) -> None:
+    if not task_id:
+        return
+    scores = compare_result.get("scores") if isinstance(compare_result.get("scores"), dict) else {}
+    decision = str(compare_result.get("decision") or "")
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        cur = con.cursor()
+        for pid in [str(x).strip().lower() for x in provider_ids if str(x).strip()][:24]:
+            blocked = any(str(a.get("provider") or "").strip().lower() == pid and bool(a.get("blocked") or a.get("quarantine")) for a in assessments)
+            evidence_seen = any(str(a.get("provider") or a.get("source") or "").strip().lower() == pid for a in artifacts)
+            delta = 0.0
+            if decision == "PASS_VERIFIED_EVIDENCE" and evidence_seen and not blocked:
+                delta += 0.06
+            if decision == "NEED_MORE_EVIDENCE" and evidence_seen:
+                delta += 0.01
+            if decision == "CONFLICT_REQUIRES_HUMAN_REVIEW" and evidence_seen:
+                delta -= 0.03
+            if blocked or decision == "REJECT_AUTHORITY_OR_SECURITY_VIOLATION":
+                delta -= 0.12
+            before = float(prior_reliability.get(pid, 0.5))
+            after = max(0.0, min(1.0, before + delta))
+            meta = {
+                "schema": "SarahMemory.Terminal.peer_score.v1",
+                "provider_id": pid,
+                "task_id": task_id,
+                "claim_type": "peer_council",
+                "score_delta": round(delta, 4),
+                "reliability_before": round(before, 4),
+                "reliability_after": round(after, 4),
+                "evidence_score": scores.get("evidence_support"),
+                "freshness_score": scores.get("freshness"),
+                "authority_penalty": scores.get("authority_escalation_penalty"),
+                "contradiction_penalty": scores.get("contradiction_penalty"),
+                "decision": decision,
+                "last_seen": datetime.now().isoformat(),
+                "memory_write_allowed": False,
+                "execution_authority": False,
+            }
+            artifact_id = "peer_score_" + _hash_obj({"task_id": task_id, "provider": pid, "decision": decision, "ts": meta["last_seen"]})[:24]
+            cur.execute(
+                "INSERT OR REPLACE INTO terminal_agent_artifacts(artifact_id,task_id,agent_id,passport_id,artifact_type,source_type,source_ref_hash,payload_hash,quarantine_status,compare_status,memory_write_status,meta_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (artifact_id, task_id[:180], pid[:180], "", "peer_score", "provider_reliability", _hash_text(pid), _hash_obj(meta), "observed", "scored", "denied_until_user_approval", _canonical_json(meta)),
+            )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+
+def _terminal_peer_help_packet() -> Dict[str, Any]:
+    """Return operator-facing Peer Council commands without granting authority."""
+    commands = [
+        "/agent peer help",
+        "/agent peer providers",
+        "/agent peer status",
+        "/agent peer ask providers=chatgpt,gemini,meta query=\"...\"",
+        "/agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\"...\"",
+        "For peer dispatch, do not use /agent launch; /agent peer dispatch is the governed route.",
+        "/agent peer compare task_id=<id> with peer evidence payload",
+        "/agent peer evidence task_id=<id> with peer evidence payload",
+        "/agent peer candidates task_id=<id>",
+        "/agent peer learn task_id=<id> --confirm",
+        "/agent peer transcript task_id=<id>",
+        "/agent peer score task_id=<id>",
+        "/agent peer reset task_id=<id> --confirm",
+    ]
+    return {
+        "schema": "SarahMemory.Terminal.peer_council.help.v1",
+        "commands": commands,
+        "truth_flow": [
+            "dispatch_or_submit_peer_evidence",
+            "AgentFirewall_peer_reply_assessment",
+            "SML_claim_vector_and_evidence_court",
+            "Compare_peer_council_scoring",
+            "Compass_loop_boundary",
+            "Thinker_advisory_ticket",
+            "Terminal_truth_candidate_artifact",
+            "explicit_user_approval_before_learning_ingestion",
+        ],
+        "security": {
+            "external_peers_are_evidence_only": True,
+            "execution_authority": False,
+            "memory_write_allowed": False,
+            "learning_ingestion_requires_confirm": True,
+        },
+        "execution_authority": False,
+    }
+
+
+def _terminal_peer_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _terminal_peer_artifact_text(artifact: Dict[str, Any]) -> str:
+    if not isinstance(artifact, dict):
+        return ""
+    for key in ("content", "answer", "response", "summary", "data", "text"):
+        value = artifact.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    payload = artifact.get("payload")
+    if isinstance(payload, dict):
+        for key in ("content", "answer", "response", "summary", "data", "text"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
+def _terminal_peer_split_truth_claims(text: str, *, limit: int = 6) -> List[str]:
+    """Extract bounded candidate claims from a peer answer.
+
+    This deliberately avoids treating long prose as truth. It only emits short,
+    inspectable claim candidates for Compare/SML/user review.
+    """
+    raw = str(text or "").replace("\r", "\n")
+    raw = re.sub(r"```.*?```", " ", raw, flags=re.S)
+    pieces: List[str] = []
+    for line in re.split(r"[\n]+", raw):
+        line = re.sub(r"^\s*[-*\d.)]+\s*", "", line).strip()
+        if not line:
+            continue
+        for sent in re.split(r"(?<=[.!?])\s+", line):
+            claim = re.sub(r"\s+", " ", sent).strip(" -\t")
+            low = claim.lower()
+            if len(claim) < 24 or len(claim) > 520:
+                continue
+            if any(x in low for x in ("i cannot", "i can’t", "as an ai", "i don't have", "i do not have", "please provide", "not execute code")):
+                continue
+            if claim not in pieces:
+                pieces.append(claim)
+            if len(pieces) >= limit:
+                return pieces
+    return pieces[:limit]
+
+
+def _terminal_peer_evidence_score_from_compare(compare_result: Dict[str, Any]) -> Dict[str, float]:
+    scores = compare_result.get("scores") if isinstance(compare_result.get("scores"), dict) else {}
+    return {
+        "evidence_support": max(0.0, min(1.0, _terminal_peer_float(scores.get("evidence_support"), 0.0))),
+        "source_authority": max(0.0, min(1.0, _terminal_peer_float(scores.get("source_authority"), 0.0))),
+        "freshness": max(0.0, min(1.0, _terminal_peer_float(scores.get("freshness"), 0.0))),
+        "overall": max(0.0, min(1.0, _terminal_peer_float(scores.get("overall") or scores.get("final") or scores.get("total"), 0.0))),
+    }
+
+
+def _terminal_peer_extract_truth_candidates(
+    query: str,
+    artifacts: List[Dict[str, Any]],
+    assessments: List[Dict[str, Any]],
+    evidence_court: Dict[str, Any],
+    compare_result: Dict[str, Any],
+    reliability: Dict[str, float],
+    *,
+    min_truth_weight: float = 0.62,
+) -> List[Dict[str, Any]]:
+    """Create weighted candidate truth packets from peer evidence.
+
+    These packets are not memory writes. They are governed learning candidates that
+    must remain reviewable and user-approved before downstream memory or learning
+    organs ingest them.
+    """
+    dangerous_providers = {
+        str(a.get("provider") or "").strip().lower()
+        for a in list(assessments or [])
+        if isinstance(a, dict) and bool(a.get("blocked") or a.get("quarantine"))
+    }
+    compare_scores = _terminal_peer_evidence_score_from_compare(compare_result if isinstance(compare_result, dict) else {})
+    compare_decision = str((compare_result or {}).get("decision") or "").upper()
+    compare_accepted = bool((compare_result or {}).get("accepted"))
+    court_ok = bool((evidence_court or {}).get("ok") or (evidence_court or {}).get("accepted"))
+    base_evidence = max(compare_scores.get("evidence_support", 0.0), 0.15 if artifacts else 0.0)
+    candidates: List[Dict[str, Any]] = []
+    seen_claims: Dict[str, Dict[str, Any]] = {}
+
+    for artifact in list(artifacts or [])[:24]:
+        if not isinstance(artifact, dict):
+            continue
+        provider = str(artifact.get("provider") or artifact.get("source") or "peer").strip().lower()[:120]
+        if provider in dangerous_providers:
+            continue
+        content = _terminal_peer_artifact_text(artifact)
+        if not content:
+            continue
+        rel = max(0.0, min(1.0, _terminal_peer_float(reliability.get(provider), 0.5)))
+        source_family = str(artifact.get("source_family") or "peer")[:120]
+        source_hash = str(artifact.get("content_hash") or _hash_text(content))[:96]
+        for claim in _terminal_peer_split_truth_claims(content, limit=5):
+            claim_hash = _hash_text(claim)
+            rec = seen_claims.setdefault(claim_hash, {
+                "claim": claim,
+                "claim_hash": claim_hash,
+                "providers": [],
+                "source_families": [],
+                "source_hashes": [],
+                "provider_reliability_values": [],
+            })
+            if provider and provider not in rec["providers"]:
+                rec["providers"].append(provider)
+            if source_family and source_family not in rec["source_families"]:
+                rec["source_families"].append(source_family)
+            if source_hash and source_hash not in rec["source_hashes"]:
+                rec["source_hashes"].append(source_hash)
+            rec["provider_reliability_values"].append(rel)
+
+    for rec in seen_claims.values():
+        provider_count = len(rec.get("providers") or [])
+        rel_vals = [float(x) for x in list(rec.get("provider_reliability_values") or []) if isinstance(x, (int, float))]
+        avg_rel = sum(rel_vals) / max(len(rel_vals), 1) if rel_vals else 0.5
+        consensus_bonus = min(0.12, max(0, provider_count - 1) * 0.04)
+        weight = 0.22
+        weight += base_evidence * 0.24
+        weight += compare_scores.get("source_authority", 0.0) * 0.16
+        weight += compare_scores.get("freshness", 0.0) * 0.10
+        weight += avg_rel * 0.18
+        weight += consensus_bonus
+        if compare_accepted:
+            weight += 0.10
+        if court_ok:
+            weight += 0.06
+        if compare_decision in {"CONFLICT_REQUIRES_HUMAN_REVIEW", "REJECT_AUTHORITY_OR_SECURITY_VIOLATION"}:
+            weight -= 0.20
+        weight = round(max(0.0, min(1.0, weight)), 4)
+        admission = "candidate_ready_for_user_review" if weight >= float(min_truth_weight) and compare_decision != "REJECT_AUTHORITY_OR_SECURITY_VIOLATION" else "needs_more_evidence"
+        candidates.append({
+            "schema": "SarahMemory.Terminal.peer_truth_candidate.v1",
+            "claim": rec.get("claim"),
+            "claim_hash": rec.get("claim_hash"),
+            "query_hash": _hash_text(query),
+            "truth_weight": weight,
+            "admission_state": admission,
+            "providers": list(rec.get("providers") or [])[:12],
+            "provider_count": provider_count,
+            "provider_reliability_avg": round(avg_rel, 4),
+            "source_families": list(rec.get("source_families") or [])[:12],
+            "source_hashes": list(rec.get("source_hashes") or [])[:12],
+            "compare_decision": compare_decision or "UNKNOWN",
+            "compare_accepted": compare_accepted,
+            "evidence_court_ok": court_ok,
+            "score_basis": compare_scores,
+            "memory_write_allowed": False,
+            "learning_ingestion_allowed": False,
+            "requires_user_approval": True,
+            "execution_authority": False,
+        })
+    candidates.sort(key=lambda x: float(x.get("truth_weight") or 0.0), reverse=True)
+    return candidates[:16]
+
+
+def _record_terminal_peer_truth_candidates(task_id: str, candidates: List[Dict[str, Any]]) -> None:
+    if not task_id or not candidates:
+        return
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        cur = con.cursor()
+        for cand in list(candidates or [])[:24]:
+            claim_hash = str(cand.get("claim_hash") or _hash_obj(cand))[:96]
+            artifact_id = "peer_truth_" + _hash_obj({"task_id": task_id, "claim_hash": claim_hash})[:24]
+            ready = str(cand.get("admission_state") or "") == "candidate_ready_for_user_review"
+            meta = {"candidate": _redact_terminal_agent_payload(cand), "execution_authority": False}
+            cur.execute(
+                "INSERT OR REPLACE INTO terminal_agent_artifacts(artifact_id,task_id,agent_id,passport_id,artifact_type,source_type,source_ref_hash,payload_hash,quarantine_status,compare_status,memory_write_status,meta_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    artifact_id[:180],
+                    task_id[:180],
+                    "peer_council"[:180],
+                    "",
+                    "peer_truth_candidate",
+                    "weighted_truth_candidate",
+                    claim_hash,
+                    _hash_obj(cand),
+                    "review_required" if ready else "needs_more_evidence",
+                    "weighted" if ready else "insufficient_evidence",
+                    "candidate_requires_user_approval" if ready else "denied_needs_more_evidence",
+                    _canonical_json(meta),
+                ),
+            )
+        con.commit()
+        con.close()
+    except Exception:
+        pass
+
+
+def _terminal_peer_truth_candidate_transcript(task_id: str, *, limit: int = 25) -> Dict[str, Any]:
+    if not task_id:
+        return {"ok": False, "reason": "task_id_required", "candidates": [], "execution_authority": False}
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        rows = con.execute(
+            "SELECT artifact_id,quarantine_status,compare_status,memory_write_status,meta_json FROM terminal_agent_artifacts WHERE task_id=? AND artifact_type='peer_truth_candidate' ORDER BY rowid DESC LIMIT ?",
+            (task_id[:180], max(1, min(int(limit or 25), 100))),
+        ).fetchall()
+        con.close()
+        candidates = []
+        for artifact_id, quarantine_status, compare_status, memory_write_status, meta_json in rows:
+            try:
+                meta = json.loads(meta_json or "{}")
+            except Exception:
+                meta = {}
+            cand = meta.get("candidate") if isinstance(meta.get("candidate"), dict) else meta
+            candidates.append({
+                "artifact_id": artifact_id,
+                "quarantine_status": quarantine_status,
+                "compare_status": compare_status,
+                "memory_write_status": memory_write_status,
+                "candidate": _redact_terminal_agent_payload(cand),
+            })
+        return {"ok": True, "task_id": task_id, "count": len(candidates), "candidates": candidates, "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)[:300], "candidates": [], "execution_authority": False}
+
+
+def _approve_terminal_peer_learning_candidates(task_id: str, *, confirmed: bool, limit: int = 25) -> Dict[str, Any]:
+    """Mark reviewed truth candidates as approved for downstream learning review.
+
+    This is still not a direct memory write. It only changes artifact status so an
+    existing governed learning/memory organ can ingest after its own gates.
+    """
+    if not task_id:
+        return {"ok": False, "blocked": True, "reason": "task_id_required", "execution_authority": False}
+    if not confirmed:
+        return {"ok": False, "blocked": True, "reason": "peer_learning_approval_requires_confirm", "execution_authority": False}
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT artifact_id,meta_json,memory_write_status FROM terminal_agent_artifacts WHERE task_id=? AND artifact_type='peer_truth_candidate' ORDER BY rowid DESC LIMIT ?",
+            (task_id[:180], max(1, min(int(limit or 25), 100))),
+        ).fetchall()
+        approved = 0
+        for row in rows:
+            try:
+                meta = json.loads(row["meta_json"] or "{}")
+            except Exception:
+                meta = {}
+            cand = meta.get("candidate") if isinstance(meta.get("candidate"), dict) else {}
+            if str(cand.get("admission_state") or "") != "candidate_ready_for_user_review":
+                continue
+            meta["learning_approval"] = {
+                "approved_ts": datetime.now().isoformat(),
+                "approved_by": "operator_terminal_confirmed_user",
+                "direct_memory_write": False,
+                "requires_downstream_memory_gate": True,
+                "execution_authority": False,
+            }
+            con.execute(
+                "UPDATE terminal_agent_artifacts SET quarantine_status=?, compare_status=?, memory_write_status=?, meta_json=? WHERE artifact_id=?",
+                (
+                    "approved_for_learning_review",
+                    "approved_truth_candidate",
+                    "approved_for_governed_learning_ingestion",
+                    _canonical_json(_redact_terminal_agent_payload(meta)),
+                    row["artifact_id"],
+                ),
+            )
+            approved += 1
+        con.commit()
+        con.close()
+        return {
+            "ok": approved > 0,
+            "blocked": False,
+            "task_id": task_id,
+            "approved_count": approved,
+            "memory_write_allowed": False,
+            "direct_memory_write": False,
+            "reason": "approved_for_governed_learning_ingestion" if approved else "no_ready_truth_candidates_found",
+            "execution_authority": False,
+        }
+    except Exception as exc:
+        return {"ok": False, "blocked": True, "reason": str(exc)[:300], "execution_authority": False}
+
+def _terminal_peer_api_prompt(query: str, provider_id: str) -> str:
+    return (
+        "You are an external AI peer responding to SarahMemory GCAIOS through a governed Peer Council.\n"
+        "You are an untrusted advisor only. Do not request secrets, credentials, OS access, memory writes, file access, shell execution, or authority.\n"
+        "Provide evidence, caveats, and uncertainty. If you cannot verify a claim, say so.\n\n"
+        f"Peer ID: {provider_id}\n"
+        f"Question / mission: {query}\n\n"
+        "Reply with: main answer, evidence/source notes, risks or objections, uncertainty."
+    )
+
+
+def _dispatch_terminal_peer_api_queries(query: str, provider_ids: List[str], *, approved: bool, max_tokens: int = 700) -> Dict[str, Any]:
+    if not approved:
+        return {"ok": False, "blocked": True, "reason": "explicit_user_approval_required_for_peer_api_dispatch", "results": [], "execution_authority": False}
+    catalog = _terminal_peer_provider_catalog()
+    results: List[Dict[str, Any]] = []
+    try:
+        import SarahMemoryAPI as api  # type: ignore
+        send_to_api = getattr(api, "send_to_api", None)
+    except Exception as exc:
+        send_to_api = None
+        api_error = str(exc)[:300]
+    else:
+        api_error = ""
+    for pid in provider_ids[:8]:
+        meta = catalog.get(pid) or {}
+        api_provider = str(meta.get("api_provider") or "").strip().lower()
+        adapter_id = str(meta.get("adapter_id") or "")
+        if not api_provider:
+            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "NO_CORE_API_ADAPTER", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": "provider_has_no_core_api_dispatch_adapter", "execution_authority": False})
+            continue
+        if not callable(send_to_api):
+            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "SARAHMEMORY_API_UNAVAILABLE", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": "SarahMemoryAPI unavailable: " + api_error, "execution_authority": False})
+            continue
+        try:
+            resp = send_to_api(
+                _terminal_peer_api_prompt(query, pid),
+                provider=api_provider,
+                intent="research",
+                tone="neutral",
+                complexity="adult",
+                max_tokens=max(64, min(int(max_tokens or 700), 1200)),
+                temperature=0.2,
+                lane="api",
+                external_api_allowed_by_ui_lane=True,
+                do_not_write_sql=True,
+                do_not_persist=True,
+                meta={"source": "SarahMemoryTerminal.peer_council", "provider_id": pid, "external_api_allowed_by_ui_lane": True},
+            )
+            answer = ""
+            if isinstance(resp, dict):
+                answer = str(resp.get("data") or resp.get("response") or resp.get("answer") or "")
+            verified = bool(answer)
+            results.append({
+                "provider": pid,
+                "source": str((resp or {}).get("source") if isinstance(resp, dict) else api_provider) or pid,
+                "source_family": "api_provider",
+                "answer": answer,
+                "ok": verified,
+                "verified_response": verified,
+                "dispatch_status": "ANSWER_CAPTURED" if verified else "NO_VERIFIED_ENGINE_ANSWER",
+                "adapter_declared": bool(adapter_id),
+                "adapter_id": adapter_id,
+                "error": str((resp or {}).get("error") if isinstance(resp, dict) else "")[:500],
+                "model": str((resp or {}).get("model_used") if isinstance(resp, dict) else "")[:180],
+                "metadata": {"api_provider": api_provider, "dispatch_mode": "SarahMemoryAPI.send_to_api", "provider_id": pid},
+                "execution_authority": False,
+            })
+        except Exception as exc:
+            results.append({"provider": pid, "source": pid, "source_family": "api_provider", "answer": "", "ok": False, "verified_response": False, "dispatch_status": "DISPATCH_ERROR", "adapter_declared": bool(adapter_id), "adapter_id": adapter_id, "error": str(exc)[:500], "execution_authority": False})
+    verified_count = sum(1 for x in results if bool(x.get("verified_response")))
+    return {"ok": verified_count > 0, "blocked": False, "reason": "peer_api_dispatch_completed" if verified_count else "no_verified_peer_engine_answer", "verified_response_count": verified_count, "attempted_provider_count": len(results), "results": results, "execution_authority": False}
+
+
+def _terminal_peer_transcript(task_id: str, *, limit: int = 25) -> Dict[str, Any]:
+    if not task_id:
+        return {"ok": False, "reason": "task_id_required", "events": [], "artifacts": [], "execution_authority": False}
+    try:
+        _ensure_tables()
+        con = _connect(_system_logs_db())
+        event_rows = con.execute(
+            "SELECT ts,stage,event_type,verdict,risk,details,meta_json FROM terminal_agent_events WHERE task_id=? ORDER BY id DESC LIMIT ?",
+            (task_id[:180], max(1, min(int(limit or 25), 100))),
+        ).fetchall()
+        art_rows = con.execute(
+            "SELECT artifact_id,artifact_type,agent_id,quarantine_status,compare_status,memory_write_status,meta_json FROM terminal_agent_artifacts WHERE task_id=? ORDER BY rowid DESC LIMIT ?",
+            (task_id[:180], max(1, min(int(limit or 25), 100))),
+        ).fetchall()
+        con.close()
+        events = []
+        for row in event_rows:
+            ts, stage, event_type, verdict, risk, details, meta_json = row
+            try: meta = json.loads(meta_json or "{}")
+            except Exception: meta = {}
+            events.append({"ts": ts, "stage": stage, "event_type": event_type, "verdict": verdict, "risk": risk, "details": details, "meta": _redact_terminal_agent_payload(meta)})
+        artifacts = []
+        for row in art_rows:
+            artifact_id, artifact_type, agent_id, quarantine_status, compare_status, memory_write_status, meta_json = row
+            try: meta = json.loads(meta_json or "{}")
+            except Exception: meta = {}
+            artifacts.append({"artifact_id": artifact_id, "artifact_type": artifact_type, "agent_id": agent_id, "quarantine_status": quarantine_status, "compare_status": compare_status, "memory_write_status": memory_write_status, "meta": _redact_terminal_agent_payload(meta)})
+        return {"ok": True, "task_id": task_id, "events": events, "artifacts": artifacts, "execution_authority": False}
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc)[:300], "events": [], "artifacts": [], "execution_authority": False}
+
+
+def _terminal_peer_operation_reply(
+    *,
+    task_text: str,
+    payload: Dict[str, Any],
+    spine: Dict[str, Any],
+    task_truth: Dict[str, Any],
+    session_id: str,
+    cwd: str,
+    caller: str,
+    prior_blocked: bool = False,
+    prior_reason: str = "",
+) -> Dict[str, Any]:
+    ts = datetime.now().isoformat()
+
+    def out(ok: bool, text: str, data: Optional[Dict[str, Any]] = None, *, blocked: bool = False, reason: str = "") -> Dict[str, Any]:
+        return {
+            "ok": bool(ok),
+            "blocked": bool(blocked),
+            "reason": reason or None,
+            "reply": text,
+            "stdout": text,
+            "stderr": reason if blocked else "",
+            "session_id": session_id,
+            "cwd": cwd,
+            "mode": "terminal_peer_council",
+            "task_id": str(spine.get("task_id") or ""),
+            "peer_council": data or {},
+            "actions": [],
+            "execution_authority": False,
+            "ts": ts,
+        }
+
+    parts = _terminal_peer_command_parts(task_text, payload)
+    operation = str(parts.get("operation") or "status")
+    query = str(parts.get("query") or task_truth.get("objective") or task_text or "").strip()
+    task_id = str(parts.get("task_id") or spine.get("task_id") or task_truth.get("task_id") or "")[:180]
+    providers = _terminal_peer_provider_declarations(list(parts.get("providers") or []))
+    provider_ids = list(providers.get("provider_ids") or [])
+    if not provider_ids:
+        provider_ids = ["chatgpt", "claude", "gemini", "meta", "llama"]
+
+    if prior_blocked and operation not in _PEER_VIEW_COMMANDS:
+        data = {"schema": "SarahMemory.Terminal.peer_council.v1", "operation": operation, "prior_blocked": True, "reason": prior_reason, "execution_authority": False}
+        _record_terminal_agent_task_event(task_id, stage="PEER_COUNCIL", event_type="PEER_COUNCIL_BLOCKED_BY_PRIOR_GOVERNANCE", verdict="BLOCK", risk=str(task_truth.get("risk_level") or "medium"), task=task_text, details=prior_reason or "prior governance gate blocked peer council", metadata={"operation": operation}, output=data)
+        return out(False, "BLOCK / PEER_COUNCIL\nReason: " + (prior_reason or "prior_governance_gate_blocked") + "\nPeer Council did not proceed.", data, blocked=True, reason=prior_reason or "prior_governance_gate_blocked")
+
+    if operation == "help":
+        data = _terminal_peer_help_packet()
+        return out(True, "Peer Council help.\n\n" + _json_preview(data), data)
+    if operation == "providers":
+        return out(True, _json_preview(providers), {"schema": "SarahMemory.Terminal.peer_council.providers.v1", **providers})
+    if operation == "status":
+        reliability = _load_terminal_peer_reliability(provider_ids)
+        data = {"schema": "SarahMemory.Terminal.peer_council.status.v1", "task_id": task_id, "providers": providers, "provider_reliability": reliability, "memory_write_allowed": False, "execution_authority": False}
+        return out(True, "Peer Council status.\n\n" + _json_preview(data), data)
+    if operation == "transcript":
+        data = _terminal_peer_transcript(task_id)
+        return out(bool(data.get("ok")), "Peer Council transcript.\n\n" + _json_preview(data), data, blocked=not bool(data.get("ok")), reason=str(data.get("reason") or "") if not data.get("ok") else "")
+    if operation == "candidates":
+        data = _terminal_peer_truth_candidate_transcript(task_id)
+        return out(bool(data.get("ok")), "Peer Council truth candidates.\n\n" + _json_preview(data), data, blocked=not bool(data.get("ok")), reason=str(data.get("reason") or "") if not data.get("ok") else "")
+    if operation == "reset":
+        if not _truthy_confirmation(payload, task_text):
+            data = {"ok": False, "reason": "peer_reset_requires_confirm", "task_id": task_id, "execution_authority": False}
+            return out(False, "BLOCK / PEER_RESET\nReason: peer_reset_requires_confirm", data, blocked=True, reason="peer_reset_requires_confirm")
+        try:
+            _ensure_tables()
+            con = _connect(_system_logs_db())
+            con.execute("UPDATE terminal_agent_tasks SET updated_ts=?, status=?, current_stage=?, completion_state=? WHERE task_id=?", (datetime.now().isoformat(), "reset", "PEER_RESET", "reset_by_user_command", task_id))
+            con.commit(); con.close()
+        except Exception:
+            pass
+        data = {"ok": True, "task_id": task_id, "state": "reset", "execution_authority": False}
+        _record_terminal_agent_task_event(task_id, stage="PEER_RESET", event_type="PEER_COUNCIL_RESET", verdict="RESET", risk="low", task=task_text, details="Peer Council task state reset by explicit user command.", metadata={"operation": operation}, output=data)
+        return out(True, "Peer Council task state reset.", data)
+
+    try:
+        import SarahMemorySMLProtocol as sml  # type: ignore
+        claim_vector = sml.sml_build_dynamic_claim_vector(query, context={"source": "SarahMemoryTerminal.peer_council", "task_id": task_id})
+        source_court = sml.sml_build_source_authority_court_packet(query, context={"source": "SarahMemoryTerminal.peer_council", "task_id": task_id})
+    except Exception as exc:
+        claim_vector = {"ok": False, "error": str(exc)[:300], "execution_authority": False}
+        source_court = {"ok": False, "error": str(exc)[:300], "execution_authority": False}
+
+    raw_items = _terminal_peer_raw_items(payload, query)
+    dispatch = {"ok": False, "requested": bool(parts.get("dispatch_requested")), "results": [], "execution_authority": False}
+    if bool(parts.get("dispatch_requested")):
+        dispatch = _dispatch_terminal_peer_api_queries(query, provider_ids, approved=bool(_truthy_confirmation(payload, task_text)))
+        for item in list(dispatch.get("results") or []):
+            if isinstance(item, dict):
+                raw_items.append(item)
+
+    assessments: List[Dict[str, Any]] = []
+    normalized_artifacts: List[Dict[str, Any]] = []
+    for item in raw_items[:24]:
+        provider = str(item.get("provider") or item.get("source") or "peer").strip().lower()[:120]
+        try:
+            import SarahMemoryAgentFirewall as firewall  # type: ignore
+            assess = firewall.assess_peer_reply(item, query=query, provider=provider, task_id=task_id, passport_id=str(task_truth.get("passport_id") or ""), source="terminal_peer_council", remote_addr="127.0.0.1")
+        except Exception as exc:
+            assess = {"ok": False, "classification": "PEER_REPLY_UNSUPPORTED", "blocked": True, "quarantine": True, "reason": str(exc)[:300], "provider": provider, "execution_authority": False}
+        assessments.append(assess)
+        try:
+            import SarahMemorySMLProtocol as sml  # type: ignore
+            art = sml.sml_normalize_evidence_artifact(item, query=query, claim_vector=claim_vector if isinstance(claim_vector, dict) else {}, source_hint=provider, provider_hint=provider, family_hint=str(item.get("source_family") or "api_provider"))
+        except Exception:
+            art = {"source": provider, "source_family": "api_provider", "provider": provider, "content": str(item.get("answer") or item.get("content") or item.get("summary") or item.get("data") or "")[:4096], "content_hash": _hash_text(str(item)), "execution_authority": False}
+        normalized_artifacts.append(art)
+
+    _record_terminal_peer_artifacts(task_id, normalized_artifacts, assessments)
+
+    try:
+        import SarahMemorySMLProtocol as sml  # type: ignore
+        evidence_court = sml.sml_build_evidence_court_packet(query, normalized_artifacts, context={"source": "SarahMemoryTerminal.peer_council", "task_id": task_id})
+    except Exception as exc:
+        evidence_court = {"ok": False, "error": str(exc)[:300], "execution_authority": False}
+
+    candidate_answer = str(payload.get("candidate_answer") or payload.get("answer") or payload.get("reply") or "")
+    if not candidate_answer and normalized_artifacts:
+        candidate_answer = str(normalized_artifacts[0].get("content") or "")
+    reliability = _load_terminal_peer_reliability(provider_ids)
+    compare_result: Dict[str, Any] = {"ok": False, "accepted": False, "decision": "NOT_REQUESTED", "memory_write_allowed": False, "execution_authority": False}
+    if operation in {"compare", "score", "evidence", "dispatch"} or candidate_answer or normalized_artifacts:
+        try:
+            import SarahMemoryCompare as compare  # type: ignore
+            compare_result = compare.compare_peer_council_outputs(
+                query,
+                candidate_answer,
+                normalized_artifacts,
+                peer_assessments=assessments,
+                claim_vector=claim_vector if isinstance(claim_vector, dict) else {},
+                provider_reliability=reliability,
+            )
+        except Exception as exc:
+            compare_result = {"ok": False, "accepted": False, "decision": "COMPARE_ERROR", "error": str(exc)[:300], "memory_write_allowed": False, "execution_authority": False}
+
+    _record_terminal_peer_scores(task_id, provider_ids, compare_result, assessments, normalized_artifacts, reliability)
+    try:
+        min_truth_weight = float(payload.get("min_truth_weight") or _terminal_peer_kv_tokens(task_text).get("min_truth_weight") or 0.62)
+    except Exception:
+        min_truth_weight = 0.62
+    truth_candidates = _terminal_peer_extract_truth_candidates(
+        query,
+        normalized_artifacts,
+        assessments,
+        evidence_court if isinstance(evidence_court, dict) else {},
+        compare_result if isinstance(compare_result, dict) else {},
+        reliability,
+        min_truth_weight=max(0.0, min(1.0, min_truth_weight)),
+    )
+    _record_terminal_peer_truth_candidates(task_id, truth_candidates)
+    learning_approval = {"ok": False, "requested": operation in {"learn", "promote"}, "reason": "not_requested", "execution_authority": False}
+    if operation in {"learn", "promote"}:
+        learning_approval = _approve_terminal_peer_learning_candidates(task_id, confirmed=bool(_truthy_confirmation(payload, task_text)))
+        _record_terminal_agent_task_event(
+            task_id,
+            stage="PEER_LEARNING_GATE",
+            event_type="PEER_TRUTH_LEARNING_APPROVAL" if learning_approval.get("ok") else "PEER_TRUTH_LEARNING_BLOCKED",
+            verdict="ALLOW" if learning_approval.get("ok") else "BLOCK",
+            risk=str(task_truth.get("risk_level") or "medium"),
+            task=task_text,
+            details=str(learning_approval.get("reason") or "peer_learning_gate"),
+            metadata={"operation": operation, "memory_write_allowed": False, "direct_memory_write": False},
+            output=learning_approval,
+        )
+
+    try:
+        import SarahMemoryCognitiveCompass as compass  # type: ignore
+        authority_violation = any(bool(a.get("blocked") or a.get("quarantine")) for a in assessments)
+        loop_policy = compass.assess_peer_council_loop_policy(
+            round_index=int(parts.get("round_index") or 0),
+            same_claim_repeats=int(parts.get("same_claim_repeats") or 0),
+            unresolved_conflicts=len(list(compare_result.get("conflict_notes") or [])),
+            new_evidence_count=len(normalized_artifacts),
+            compare_passed=bool(compare_result.get("accepted")),
+            authority_violation=authority_violation,
+        )
+    except Exception as exc:
+        loop_policy = {"ok": False, "error": str(exc)[:300], "stop": True, "directive": "STOP_COMPASS_UNAVAILABLE", "execution_authority": False}
+
+    try:
+        import SarahMemoryCognitiveThinker as thinker  # type: ignore
+        possibility = thinker.peer_council_possibility_tickets(query, compare_result=compare_result, firewall_assessments=assessments, evidence_court=evidence_court)
+    except Exception as exc:
+        possibility = {"ok": False, "error": str(exc)[:300], "tickets": [], "execution_authority": False}
+
+    dangerous = any(bool(a.get("blocked") or a.get("quarantine")) for a in assessments)
+    release_allowed = bool(compare_result.get("accepted")) and not dangerous and not bool(loop_policy.get("stop") and loop_policy.get("directive") != "STOP_COMPARE_PASS")
+    data = {
+        "schema": "SarahMemory.Terminal.peer_council.v1",
+        "operation": operation,
+        "query": query,
+        "task_spine": {"task_id": task_id, "ok": spine.get("ok"), "task_truth_hash": spine.get("task_truth_hash")},
+        "claim_vector": claim_vector,
+        "source_authority_court": source_court,
+        "providers": providers,
+        "provider_reliability_before": reliability,
+        "dispatch": _redact_terminal_agent_payload(dispatch),
+        "peer_assessments": assessments,
+        "evidence_artifacts": normalized_artifacts,
+        "evidence_court": evidence_court,
+        "compare": compare_result,
+        "truth_candidates": truth_candidates,
+        "truth_candidate_count": len(truth_candidates),
+        "learning_approval": learning_approval,
+        "compass_loop_policy": loop_policy,
+        "thinker_possibility": possibility,
+        "release_allowed": release_allowed,
+        "memory_write_allowed": False,
+        "learning_ingestion_allowed": bool(learning_approval.get("ok")),
+        "execution_authority": False,
+    }
+    if dangerous:
+        verdict = "BLOCK"
+        ok = False
+        blocked_out = True
+        reason = "peer_reply_authority_or_security_violation"
+        text = "BLOCK / PEER_COUNCIL\nReason: peer_reply_authority_or_security_violation\nPeer evidence was quarantined; no release or memory write allowed."
+    elif operation in {"learn", "promote"} and learning_approval.get("ok"):
+        verdict = "ALLOW"
+        ok = True
+        blocked_out = False
+        reason = ""
+        text = "PASS / PEER_LEARNING_GATE\nWeighted truth candidates were approved for governed learning ingestion review. Direct memory_write_allowed=false."
+    elif operation in {"learn", "promote"} and learning_approval.get("blocked"):
+        verdict = "BLOCK"
+        ok = False
+        blocked_out = True
+        reason = str(learning_approval.get("reason") or "peer_learning_gate_blocked")
+        text = "BLOCK / PEER_LEARNING_GATE\nReason: " + reason + "\nNo learning ingestion or memory write occurred."
+    elif release_allowed:
+        verdict = "ALLOW"
+        ok = True
+        blocked_out = False
+        reason = ""
+        text = "PASS / PEER_COUNCIL\nCompare accepted a qualified evidence-supported result; truth candidates were extracted; memory_write_allowed=false."
+    elif operation == "ask" and not raw_items:
+        verdict = "PREPARED"
+        ok = True
+        blocked_out = False
+        reason = ""
+        text = "Peer council mission prepared. No provider was called unless dispatch=true and --confirm were supplied. Use /agent peer help for commands, then submit peer evidence or run dispatch with explicit approval."
+    else:
+        verdict = "REVIEW"
+        ok = True
+        blocked_out = False
+        reason = ""
+        text = "Peer council captured evidence for review. Release is held or qualified until Compare/SML accepts enough evidence."
+    _record_terminal_agent_task_event(task_id, stage="PEER_COUNCIL", event_type="PEER_COUNCIL_REVIEWED", verdict=verdict, risk=str(task_truth.get("risk_level") or "medium"), task=task_text, details=str(compare_result.get("decision") or "peer_council_reviewed"), metadata={"operation": operation, "artifact_count": len(normalized_artifacts), "provider_count": len(provider_ids), "memory_write_allowed": False}, output=data)
+    preview = {"task_id": task_id, "decision": compare_result.get("decision"), "loop": loop_policy.get("directive"), "release_allowed": release_allowed, "truth_candidate_count": len(truth_candidates), "learning_approval": learning_approval.get("reason"), "tickets": list(possibility.get("tickets") or [])[:4]}
+    return out(ok, text + "\n\n" + _json_preview(preview), data, blocked=blocked_out, reason=reason)
 
 
 # -----------------------------------------------------------------------------
@@ -3364,7 +4428,8 @@ def execute_terminal_agent_task(
             "headers": {"User-Agent": "SarahMemory-Terminal-Agent"},
             "json": {
                 "agent_name": "SarahMemory Local Terminal Agent",
-                "task": task_text[:4000],
+                "task": _terminal_firewall_observation_text(task_text),
+                "original_task_sha256": _hash_text(task_text),
                 "task_id": task_id,
                 "mission_id": str(task_truth.get("mission_id") or ""),
                 "requested_lane": "terminal_agent",
@@ -3435,6 +4500,24 @@ def execute_terminal_agent_task(
         metadata={"caller": caller, "session_id": sid, "firewall": compact_task_verdict, "task_truth_hash": spine.get("task_truth_hash")},
         output=compact_task_verdict,
     )
+
+    if _terminal_agent_command_verb(task_text) == "peer":
+        prior_reason = (
+            launch_gate_reason if launch_gate_blocked else
+            ", ".join(list((spine.get("validation") or {}).get("errors") or [])[:4]) if spine_blocked else
+            str(compact_task_verdict.get("reason") or "") if firewall_blocked else ""
+        )
+        return _terminal_peer_operation_reply(
+            task_text=task_text,
+            payload=payload,
+            spine=spine,
+            task_truth=task_truth,
+            session_id=sid,
+            cwd=cwd,
+            caller=caller,
+            prior_blocked=blocked,
+            prior_reason=prior_reason,
+        )
 
     adapter_execution: Optional[Dict[str, Any]] = None
     adapter_reason = ""
@@ -3755,6 +4838,9 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
     operation = str(payload.get("operation") or parsed.get("operation") or "inspect").strip().lower()
     if operation in ("", "inspect", "task"):
         return None
+    if operation in ("passport_help", "passport"):
+        text = 'AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\n\nFor peer council provider tests, prefer:\n- /agent peer providers\n- /agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\\"...\\"\n\nIf using the legacy launch gate, exact syntax is:\n- /agent launch task_id=<issued_task_id> passport_id=<passport_id> --confirm source=<approved_https_source>\n\nA passport identifies and scopes an agent; it never grants execution authority. Return nonces/signatures are never displayed in terminal history.'
+        return {"ok": True, "blocked": False, "reason": None, "reply": text, "stdout": text, "stderr": "", "mode": "terminal_agent_passport", "passport_data": {"execution_authority": False}, "task_id": "", "task_truth_hash": "", "execution_authority": False, "actions": [], "ts": datetime.now().isoformat()}
     registry, registry_error = _agent_registry_module()
     if registry is None:
         return {"ok": False, "blocked": True, "reason": "TrustRegistry unavailable: " + registry_error, "reply": "AI-agent passport registry is unavailable.", "stdout": "", "stderr": registry_error, "mode": "terminal_agent_passport", "actions": []}
@@ -3785,7 +4871,7 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         }
 
     if operation in ("passport_help", "passport"):
-        return response(True, "AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\nA passport identifies and scopes an agent; it never grants execution authority.")
+        return response(True, "AI-agent passport commands:\n- passport list [status]\n- passport status <passport_id>\n- passport issue <agent_id> :: <purpose> --confirm\n- passport depart <passport_id> --confirm\n- passport revoke <passport_id> :: <reason> --confirm\n- passport consume <passport_id> --confirm\n\nFor peer council provider tests, prefer:\n- /agent peer providers\n- /agent peer dispatch providers=chatgpt,gemini,meta --confirm query=\"...\"\n\nIf using the legacy launch gate, exact syntax is:\n- /agent launch task_id=<issued_task_id> passport_id=<passport_id> --confirm source=<approved_https_source>\n\nA passport identifies and scopes an agent; it never grants execution authority. Return nonces/signatures are never displayed in terminal history.")
 
     if operation == "passport_list":
         rows = registry.list_agent_passports(status=str(merged.get("status") or ""), limit=int(merged.get("limit") or 50))
@@ -3817,8 +4903,16 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         firewall_ok, firewall, fw_error = _agent_firewall_available()
         if not firewall_ok or not callable(getattr(firewall, "issue_outbound_agent_passport", None)):
             return response(False, "AgentFirewall passport issuer unavailable.", blocked=True, reason=fw_error or "passport_issuer_unavailable")
-        scope_lane = str(merged.get("origin_lane") or (spine.get("task_truth") or {}).get("skill_id") or "research")
         task_truth_for_passport = (spine.get("task_truth") or {}) if isinstance(spine.get("task_truth"), dict) else {}
+        explicit_origin_lane = str(merged.get("origin_lane") or "").strip()
+        purpose_text = str(merged.get("purpose") or task or "")
+        if explicit_origin_lane:
+            scope_lane = explicit_origin_lane
+        elif _terminal_peer_intent_text(purpose_text):
+            scope_lane = "agent.peer_council"
+        else:
+            scope_lane = str(task_truth_for_passport.get("skill_id") or "research")
+        peer_intent_scope = scope_lane == "agent.peer_council"
         result = firewall.issue_outbound_agent_passport(
             agent_id=agent_id,
             agent_name=str(merged.get("agent_name") or agent_id),
@@ -3826,7 +4920,7 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
             task_id=str(merged.get("task_id") or ""),
             origin_lane=scope_lane,
             allowed_lanes=_as_string_list(merged.get("allowed_lanes") or [scope_lane]),
-            allowed_capabilities=_as_string_list(merged.get("allowed_capabilities") or task_truth_for_passport.get("allowed_capabilities") or ["research", "return_data"]),
+            allowed_capabilities=_as_string_list(merged.get("allowed_capabilities") or (["peer_review", "compare_verify", "evidence", "return_data", "api_read"] if peer_intent_scope else task_truth_for_passport.get("allowed_capabilities") or ["research", "return_data"])),
             allowed_resources=_as_string_list(merged.get("allowed_resources") or merged.get("allowed_sources") or task_truth_for_passport.get("allowed_sources") or []),
             denied_resources=_as_string_list(merged.get("denied_resources") or merged.get("denied_sources") or task_truth_for_passport.get("denied_sources") or ["core/*", ".env", "credentials", "shell", "device_control"]),
             maximum_risk_tier=str(merged.get("maximum_risk_tier") or task_truth_for_passport.get("risk_level") or "low"),
@@ -3853,14 +4947,17 @@ def _passport_operation_reply(payload: Dict[str, Any], *, task: str, caller: str
         creds = result.get("departure_credentials") if isinstance(result.get("departure_credentials"), dict) else {}
         _record_terminal_agent_passport(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), result, backend=str((spine.get("task_truth") or {}).get("backend") or merged.get("backend") or ""), skill_id=str((spine.get("task_truth") or {}).get("skill_id") or merged.get("skill_id") or ""))
         _record_terminal_agent_task_event(str(merged.get("task_id") or (spine or {}).get("task_id") or ""), stage="PASSPORT", event_type="PASSPORT_ISSUED", verdict="ISSUED", risk=str((spine.get("task_truth") or {}).get("risk_level") or "low"), task=task, details="Governed AI-agent passport issued by Terminal Bay; no launch authority granted.", metadata={"passport_id": str(creds.get("passport_id") or ""), "agent_id": agent_id, "backend": str((spine.get("task_truth") or {}).get("backend") or ""), "skill_id": str((spine.get("task_truth") or {}).get("skill_id") or "")})
+        safe_creds = _terminal_departure_credentials_safe_summary(creds)
         text = "\n".join([
             "Governed AI-agent passport issued.",
-            f"passport_id={creds.get('passport_id')}", f"agent_id={creds.get('agent_id')}",
-            f"departure_nonce={creds.get('departure_nonce')}", f"return_nonce={creds.get('return_nonce')}",
-            f"return_signature={creds.get('return_signature')}",
-            "Store return credentials securely. They are shown once. No agent was launched and no execution authority was granted.",
+            f"passport_id={safe_creds.get('passport_id')}", f"agent_id={safe_creds.get('agent_id')}",
+            "departure_nonce=[REDACTED_PRESENT]" if safe_creds.get("departure_nonce_present") else "departure_nonce=[NOT_PRESENT]",
+            "return_nonce=[REDACTED_PRESENT]" if safe_creds.get("return_nonce_present") else "return_nonce=[NOT_PRESENT]",
+            "return_signature=[REDACTED_PRESENT]" if safe_creds.get("return_signature_present") else "return_signature=[NOT_PRESENT]",
+            "Return credentials are stored inside the governed passport registry and are not displayed in terminal history.",
+            "No agent was launched and no execution authority was granted.",
         ])
-        return response(True, text, {"passport": passport, "departure_credentials": creds})
+        return response(True, text, {"passport": passport, "departure_credentials": safe_creds, "departure_credentials_redacted": True})
 
     if operation == "passport_depart":
         if not confirmed:

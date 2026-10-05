@@ -1777,6 +1777,69 @@ def generate_hyper_awake_rem_candidates(
         },
     }
 
+
+# -----------------------------------------------------------------------------
+# Peer Council advisory possibility tickets
+# -----------------------------------------------------------------------------
+def peer_council_possibility_tickets(
+    query: str,
+    *,
+    compare_result: Optional[Dict[str, Any]] = None,
+    firewall_assessments: Optional[List[Dict[str, Any]]] = None,
+    evidence_court: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Produce advisory peer-council next-step tickets without execution."""
+    cmp = dict(compare_result or {})
+    court = dict(evidence_court or {})
+    assessments = [dict(x) for x in list(firewall_assessments or []) if isinstance(x, dict)]
+    decision = str(cmp.get("decision") or "").upper()
+    dangerous = [a for a in assessments if bool(a.get("blocked") or a.get("quarantine"))]
+    tickets: List[Dict[str, Any]] = []
+
+    def _ticket(action: str, rationale: str, priority: int) -> None:
+        tickets.append({
+            "ticket_id": "peer-ticket-" + uuid.uuid4().hex[:12],
+            "state": "advisory",
+            "category": "peer_council",
+            "title": action.replace("_", " ").title(),
+            "proposed_action": action,
+            "rationale": _safe_text(rationale, 600),
+            "priority": int(priority),
+            "safeguards": {
+                "advisory_only": True,
+                "no_execution_authority": True,
+                "no_memory_write_authority": True,
+                "requires_compare": True,
+                "requires_user_review_for_learning": True,
+            },
+        })
+
+    if dangerous:
+        _ticket("quarantine_suspicious_return", "At least one peer reply was blocked or quarantined by AgentFirewall.", 90)
+        _ticket("downgrade_peer_trust_score", "Peer reliability should be reduced until a human reviews the captured return.", 80)
+    if decision in {"NO_EVIDENCE", "NEED_MORE_EVIDENCE", ""}:
+        _ticket("ask_another_source", "Compare/SML did not receive enough accepted evidence to release a verified answer.", 55)
+    if decision == "CONFLICT_REQUIRES_HUMAN_REVIEW":
+        _ticket("request_human_review", "Peer outputs conflict and should not be collapsed into truth automatically.", 85)
+    if decision == "PASS_VERIFIED_EVIDENCE":
+        _ticket("promote_as_candidate_answer", "Compare accepted a source-supported peer answer for qualified release.", 25)
+        _ticket("convert_to_learning_candidate", "Only after explicit user approval, the verified result may become a learning candidate.", 45)
+    if not tickets:
+        _ticket("reject_peer_response", "No governed peer action was justified by the available evidence.", 65)
+
+    court_2 = court.get("court_2") if isinstance(court.get("court_2"), dict) else {}
+    return {
+        "ok": True,
+        "schema": "SarahMemory.CognitiveThinker.peer_council_possibility_tickets.v1",
+        "query": _safe_text(query, 800),
+        "tickets": tickets,
+        "compare_decision": decision or "UNKNOWN",
+        "evidence_court_verdict": str(court_2.get("verdict") or ""),
+        "memory_write_allowed": False,
+        "execution_authority": False,
+    }
+
+
 # ====================================================================
 # END OF SarahMemoryCognitiveThinker.py v9.0.0
 # ====================================================================
